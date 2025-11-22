@@ -77,7 +77,7 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
             : 'bg-white/5 border-transparent z-10' // Base state
           }
           ${!isSectionActive 
-            ? 'blur-[1px] opacity-70 hover:blur-0 hover:opacity-100' 
+            ? 'opacity-70 hover:opacity-100' 
             : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/10 hover:shadow-md opacity-80 hover:opacity-100')
           }
           ${task.checked ? 'opacity-40' : ''}
@@ -202,7 +202,8 @@ const Tasks: React.FC = () => {
   };
 
   const isSectionActive = isHovered || isInputFocused;
-  const blurClass = isSectionActive ? 'blur-0 opacity-100' : 'blur-[2px] opacity-50';
+  const shouldBlur = !isSectionActive && !settings.disableBlur;
+  const blurClass = shouldBlur ? 'blur-[2px] opacity-50' : 'blur-0 opacity-100';
   
   // Pomo Counter Logic
   const pomosPerSet = settings.longBreakInterval || 4;
@@ -230,9 +231,10 @@ const Tasks: React.FC = () => {
           className={`
             mb-8 relative group z-30 transition-all duration-500
             ${isInputFocused 
-              ? 'scale-100 shadow-xl opacity-100 blur-0' 
-              : 'scale-[0.98] shadow-none opacity-50 blur-[2px] hover:blur-0 hover:opacity-100'
+              ? 'scale-100 shadow-xl' 
+              : 'scale-[0.98] shadow-none'
             }
+            ${blurClass}
           `}
           onFocus={() => setIsInputFocused(true)}
           onBlur={(e) => {
@@ -242,7 +244,8 @@ const Tasks: React.FC = () => {
           }}
         >
           <div className={`
-            bg-white/5 backdrop-blur-xl rounded-xl border 
+            bg-white/5 rounded-xl border 
+            ${!settings.disableBlur ? 'backdrop-blur-xl' : ''}
             ${isInputFocused ? 'border-white/30 bg-white/15' : 'border-white/10 hover:border-white/20 hover:bg-white/10'}
             overflow-hidden transition-all duration-300
           `}>

@@ -21,20 +21,24 @@ export interface Task {
 }
 
 export interface LogEntry {
-  type: 'work' | 'break' | 'allpause' | 'task-complete';
+  type: 'work' | 'break' | 'allpause' | 'task-complete' | 'grace';
   start: string;
   end: string;
   duration: number;
   reason?: string;
   task?: { id: number; name: string } | null;
-  color?: string; // Added color
+  color?: string; 
 }
+
+export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood';
 
 export interface TimerSettings {
   workDuration: number;
   shortBreakDuration: number;
   longBreakDuration: number;
   longBreakInterval: number; // Pomodoros before a long break
+  disableBlur: boolean;
+  alarmSound: AlarmSound;
 }
 
 export interface TimerState {

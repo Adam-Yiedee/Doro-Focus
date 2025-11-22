@@ -1,3 +1,4 @@
+
 import React, { useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
@@ -40,10 +41,11 @@ interface TimerSquareProps {
   activeMode: 'work' | 'break';
   label?: string;
   isIdle: boolean;
+  disableBlur: boolean;
   onActivate: (type: 'work' | 'break') => void;
 }
 
-const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMode, label, isIdle, onActivate }) => {
+const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMode, label, isIdle, disableBlur, onActivate }) => {
   const [isHovered, setIsHovered] = useState(false);
   const isActive = !isIdle && activeMode === type;
   const isWork = type === 'work';
@@ -88,21 +90,24 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let textClasses = "";
   let labelClasses = "";
   
+  const blurEffect = disableBlur ? '' : 'backdrop-blur-xl';
+  const hoverBlurEffect = disableBlur ? '' : 'backdrop-blur-md';
+
   if (isActive) {
     // ACTIVE STATE
-    containerClasses = "z-20 scale-100 opacity-100 blur-0 bg-white/10 border-white/20 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] ring-1 ring-white/30 backdrop-blur-xl border";
+    containerClasses = `z-20 scale-100 opacity-100 blur-0 bg-white/10 border-white/20 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] ring-1 ring-white/30 border ${blurEffect}`;
     textClasses = "scale-100 text-white drop-shadow-2xl";
     labelClasses = "text-white/90 translate-y-0";
   } else if (isHovered) {
     // HOVERED STATE
-    containerClasses = "z-30 scale-[1.02] opacity-90 blur-0 grayscale-0 bg-white/10 border-white/20 shadow-[0_20px_40px_-5px_rgba(0,0,0,0.2)] -translate-y-2 cursor-pointer backdrop-blur-md border";
+    containerClasses = `z-30 scale-[1.02] opacity-90 blur-0 grayscale-0 bg-white/10 border-white/20 shadow-[0_20px_40px_-5px_rgba(0,0,0,0.2)] -translate-y-2 cursor-pointer border ${hoverBlurEffect}`;
     textClasses = "scale-95 text-white/90";
     labelClasses = "text-white/80 translate-y-0";
   } else {
     // IDLE STATE
-    containerClasses = "z-10 scale-90 opacity-60 bg-transparent border-transparent shadow-none backdrop-blur-none";
-    textClasses = "scale-90 text-white/50 blur-[3px] saturate-50"; 
-    labelClasses = "text-white/40 blur-[3px]";
+    containerClasses = "z-10 scale-90 opacity-60 bg-transparent border-transparent shadow-none";
+    textClasses = `scale-90 text-white/50 saturate-50 ${disableBlur ? '' : 'blur-[3px]'}`; 
+    labelClasses = `text-white/40 ${disableBlur ? '' : 'blur-[3px]'}`;
   }
 
   return (
@@ -135,7 +140,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       {isActive && (
         <>
           <div className="absolute inset-0 bg-gradient-to-tr from-white/10 via-white/0 to-transparent pointer-events-none z-10" />
-          <div className="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-gradient-to-b from-white/10 to-transparent rounded-full blur-[80px] pointer-events-none mix-blend-overlay z-10" />
+          <div className={`absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-gradient-to-b from-white/10 to-transparent rounded-full pointer-events-none mix-blend-overlay z-10 ${disableBlur ? '' : 'blur-[80px]'}`} />
           <div className="absolute inset-0 shadow-[inset_0_0_60px_rgba(255,255,255,0.1)] rounded-[3rem] pointer-events-none z-20" />
         </>
       )}
@@ -253,7 +258,7 @@ const TimerDisplay: React.FC = () => {
             onMouseLeave={handleResetUp}
             onTouchStart={handleResetDown}
             onTouchEnd={handleResetUp}
-            className="absolute -top-6 md:-top-12 z-50 flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 backdrop-blur-md text-white/40 hover:text-white transition-all duration-500 group active:scale-95 select-none blur-[2px] opacity-50 hover:blur-0 hover:opacity-100"
+            className={`absolute -top-6 md:-top-12 z-50 flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white/40 hover:text-white transition-all duration-500 group active:scale-95 select-none opacity-50 hover:opacity-100 ${settings.disableBlur ? '' : 'backdrop-blur-md blur-[2px] hover:blur-0'}`}
         >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-[-180deg] transition-transform duration-500"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
             <div className="flex flex-col items-start leading-none">
@@ -272,6 +277,7 @@ const TimerDisplay: React.FC = () => {
             activeMode={activeMode} 
             label={activeTask ? activeTask.name : 'Focus'}
             isIdle={isIdle} 
+            disableBlur={settings.disableBlur}
             onActivate={activateMode} 
         />
         <TimerSquare 
@@ -280,6 +286,7 @@ const TimerDisplay: React.FC = () => {
             maxTime={settings.longBreakDuration}
             activeMode={activeMode} 
             isIdle={isIdle} 
+            disableBlur={settings.disableBlur}
             onActivate={activateMode} 
         />
       </div>

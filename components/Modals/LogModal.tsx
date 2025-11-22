@@ -2,11 +2,14 @@
 import React, { useState, useMemo } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import TaskViewModal from './TaskViewModal';
+import { AlarmSound } from '../../types';
+import { playAlarm } from '../../utils/sound';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
   const { logs, clearLogs, settings, updateSettings } = useTimer();
   const [tab, setTab] = useState<'log' | 'history' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [pixelsPerMin, setPixelsPerMin] = useState(2);
   
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const formatDur = (sec: number) => {
@@ -14,11 +17,9 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
     return `${Math.floor(sec/60)}m ${Math.floor(sec%60)}s`;
   };
 
-  // Historical Schedule Data
   const historyData = useMemo(() => {
       if (tab !== 'history') return null;
       
-      const PIXELS_PER_MINUTE = 2;
       let blocks: any[] = [];
       let minTime = new Date().setHours(8,0,0,0);
       let maxTime = new Date().setHours(18,0,0,0);
@@ -26,7 +27,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       logs.forEach((log, i) => {
           const start = new Date(log.start);
           const end = new Date(log.end);
-          
           if (start.getTime() < minTime) minTime = start.getTime();
           if (end.getTime() > maxTime) maxTime = end.getTime();
           
@@ -50,8 +50,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           for (let i = 1; i < blocks.length; i++) {
               const next = blocks[i];
               const gap = next.start.getTime() - current.end.getTime();
-              // Merge if same type, same label, and very close (less than 2 min gap)
-              // This allows "extra work" (grace period logged as work) to visually attach to the main session
               if (next.type === current.type && next.label === current.label && gap < 120000) {
                   current.end = next.end;
               } else {
@@ -71,13 +69,13 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           const height = (b.end.getTime() - b.start.getTime()) / 60000;
           return {
               ...b,
-              topPx: top * PIXELS_PER_MINUTE,
-              heightPx: Math.max(10, height * PIXELS_PER_MINUTE) 
+              topPx: top * pixelsPerMin,
+              heightPx: Math.max(10, height * pixelsPerMin) 
           };
       });
 
-      return { blocks: renderedBlocks, totalHeight: totalDurationMins * PIXELS_PER_MINUTE, startTime: startBound };
-  }, [logs, tab]);
+      return { blocks: renderedBlocks, totalHeight: totalDurationMins * pixelsPerMin, startTime: startBound };
+  }, [logs, tab, pixelsPerMin]);
 
   const formatTime12 = (d: Date) => {
       const h = d.getHours();
@@ -86,6 +84,15 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       const hour12 = h % 12 || 12;
       return `${hour12}:${m.toString().padStart(2, '0')} ${ampm}`;
   };
+
+  const SOUND_OPTIONS: { val: AlarmSound, label: string }[] = [
+      { val: 'bell', label: 'Classic Bell' },
+      { val: 'digital', label: 'Digital Alarm' },
+      { val: 'chime', label: 'Soft Chime' },
+      { val: 'gong', label: 'Zen Gong' },
+      { val: 'pop', label: 'Pop' },
+      { val: 'wood', label: 'Woodblock' }
+  ];
 
   if (!isOpen) return null;
 
@@ -142,6 +149,10 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                         borderColor = 'border-white/10';
                         bgColor = 'bg-black/20';
                         textColor = 'text-white/50';
+                    } else if (log.type === 'grace') {
+                        borderColor = 'border-purple-500/30';
+                        bgColor = 'bg-purple-500/10';
+                        textColor = 'text-purple-200';
                     }
 
                     return (
@@ -176,11 +187,18 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
           {tab === 'history' && historyData && (
              <div className="relative w-full min-h-full bg-[#0F0F11]" style={{ height: Math.max(600, historyData.totalHeight) }}>
-                 {Array.from({ length: Math.ceil(historyData.totalHeight / 120) + 1 }).map((_, i) => {
+                 <div className="sticky top-0 z-30 flex justify-end p-2 bg-black/20 backdrop-blur-md">
+                     <div className="flex items-center gap-2">
+                        <span className="text-[9px] font-bold text-white/30 uppercase">Zoom</span>
+                        <input type="range" min="1" max="6" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
+                     </div>
+                 </div>
+
+                 {Array.from({ length: Math.ceil(historyData.totalHeight / (60 * pixelsPerMin)) + 1 }).map((_, i) => {
                      const time = new Date(historyData.startTime);
                      time.setMinutes(time.getMinutes() + i * 60);
                      return (
-                         <div key={i} className="absolute w-full border-t border-white/5 flex" style={{ top: i * 60 * 2 }}>
+                         <div key={i} className="absolute w-full border-t border-white/5 flex pointer-events-none" style={{ top: i * 60 * pixelsPerMin }}>
                              <span className="text-[9px] font-mono text-white/30 pl-2 pt-1">{formatTime12(time)}</span>
                          </div>
                      )
@@ -239,6 +257,40 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                       </div>
                     </div>
                 ))}
+
+                {/* Alarm Sound */}
+                <div>
+                   <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-2">Alarm Sound</label>
+                   <div className="grid grid-cols-2 gap-2">
+                       {SOUND_OPTIONS.map(opt => (
+                           <button 
+                             key={opt.val}
+                             onClick={() => {
+                                updateSettings({ ...settings, alarmSound: opt.val });
+                                playAlarm(opt.val);
+                             }}
+                             className={`p-3 rounded-lg text-xs font-bold text-left transition-colors border ${settings.alarmSound === opt.val ? 'bg-white text-black border-white' : 'bg-white/5 text-white/60 border-transparent hover:bg-white/10'}`}
+                           >
+                               {opt.label}
+                           </button>
+                       ))}
+                   </div>
+                </div>
+
+                {/* Disable Blur */}
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                    <div>
+                        <div className="text-sm font-bold text-white">Disable Blur Effects</div>
+                        <div className="text-[10px] text-white/40">Improves performance on older devices</div>
+                    </div>
+                    <button 
+                        onClick={() => updateSettings({ ...settings, disableBlur: !settings.disableBlur })}
+                        className={`w-12 h-6 rounded-full p-1 transition-colors ${settings.disableBlur ? 'bg-green-500' : 'bg-white/10'}`}
+                    >
+                        <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${settings.disableBlur ? 'translate-x-6' : ''}`} />
+                    </button>
+                </div>
+
               </div>
             </div>
           )}

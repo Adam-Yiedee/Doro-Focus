@@ -1,13 +1,20 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { TimerMode, Task, Category, LogEntry, TimerSettings } from '../types';
-import { playBell, playSwitch } from '../utils/sound';
+import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound } from '../types';
+import { playAlarm, playSwitch } from '../utils/sound';
 
 export interface ScheduleBreak {
   id: string;
   startTime: string; // "HH:MM" 24h format
   duration: number; // minutes
   label: string;
+}
+
+export interface SessionStats {
+  totalWorkMinutes: number;
+  totalBreakMinutes: number;
+  tasksCompleted: number;
+  pomosCompleted: number;
 }
 
 interface TimerContextType {
@@ -35,6 +42,10 @@ interface TimerContextType {
   activeColor?: string;
   scheduleBreaks: ScheduleBreak[];
   scheduleStartTime: string;
+  sessionStartTime: string | null;
+
+  showSummary: boolean;
+  sessionStats: SessionStats | null;
 
   // Actions
   startTimer: () => void;
@@ -47,7 +58,9 @@ interface TimerContextType {
   endAllPause: () => void;
   resumeFromPause: (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => void;
   restartActiveTimer: (customSeconds?: number) => void;
-  resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' }) => void;
+  resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => void;
+  endSession: () => void;
+  closeSummary: () => void;
   
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
@@ -74,13 +87,15 @@ interface TimerContextType {
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'lumina_focus_v6_cal'; // Increment version
+const STORAGE_KEY = 'lumina_focus_v7_cal'; 
 
 const DEFAULT_SETTINGS: TimerSettings = {
-  workDuration: 1500, // 25 min
-  shortBreakDuration: 300, // 5 min banked per cycle
+  workDuration: 1500, 
+  shortBreakDuration: 300, 
   longBreakDuration: 900,
-  longBreakInterval: 4, // 4 pomos for long break
+  longBreakInterval: 4, 
+  disableBlur: false,
+  alarmSound: 'bell'
 };
 
 // Recursive Helpers for Tasks
@@ -200,6 +215,15 @@ const incrementCompletedInTree = (tasks: Task[], id: number): Task[] => {
   });
 };
 
+const removeCompletedTasks = (tasks: Task[]): Task[] => {
+    return tasks
+        .filter(t => !t.checked) // Remove checked
+        .map(t => ({
+            ...t,
+            subtasks: removeCompletedTasks(t.subtasks)
+        }));
+};
+
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [workTime, setWorkTime] = useState(1500);
@@ -224,6 +248,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [scheduleBreaks, setScheduleBreaks] = useState<ScheduleBreak[]>([]);
   const [scheduleStartTime, setScheduleStartTime] = useState<string>('08:00');
+  const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
+
+  const [showSummary, setShowSummary] = useState(false);
+  const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
 
   const lastTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -242,18 +270,34 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setScheduleBreaks(parsed.scheduleBreaks || []);
         if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
         if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
-        if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
+        
+        if (parsed.sessionStartTime) {
+            setSessionStartTime(parsed.sessionStartTime);
+            if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
+        } else {
+             // No session active, reset schedule start to Now
+             const now = new Date();
+             const h = now.getHours().toString().padStart(2, '0');
+             const m = now.getMinutes().toString().padStart(2, '0');
+             setScheduleStartTime(`${h}:${m}`);
+        }
       } catch (e) {
         console.error("Failed to load state", e);
       }
+    } else {
+         // No save found, initialize defaults to Now
+         const now = new Date();
+         const h = now.getHours().toString().padStart(2, '0');
+         const m = now.getMinutes().toString().padStart(2, '0');
+         setScheduleStartTime(`${h}:${m}`);
     }
   }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime
+      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime
     }));
-  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime]);
+  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime]);
 
   useEffect(() => {
     const workerCode = `
@@ -280,7 +324,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const activeColor = activeContext.color;
 
   const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
-    // Removed minimum duration check to log all activities
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
     
@@ -304,7 +347,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const handleWorkLoopComplete = useCallback(() => {
-    playBell();
+    playAlarm(settings.alarmSound);
     setBreakTime(prev => prev + settings.shortBreakDuration);
     setPomodoroCount(prev => prev + 1);
 
@@ -344,7 +387,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [settings, logActivity, sendNotification]);
 
   const handleBreakLoopComplete = useCallback(() => {
-    playBell();
+    playAlarm(settings.alarmSound);
     if (currentActivityStartRef.current) {
       const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
       logActivity('break', currentActivityStartRef.current, duration, 'Break Bank Depleted');
@@ -355,7 +398,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceTotal(0);
     setGraceOpen(true);
     sendNotification("Break Time's Up!", "Back to work!");
-  }, [logActivity, sendNotification]);
+  }, [logActivity, sendNotification, settings.alarmSound]);
 
   const tick = useCallback(() => {
     const now = Date.now();
@@ -401,6 +444,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startTimer = () => {
     if (!timerStarted) {
+      // First start of session logic
+      if (!sessionStartTime) {
+          const now = new Date();
+          const startStr = now.toISOString();
+          setSessionStartTime(startStr);
+          // Auto-adjust schedule start to now when session starts
+          const h = now.getHours().toString().padStart(2, '0');
+          const m = now.getMinutes().toString().padStart(2, '0');
+          setScheduleStartTime(`${h}:${m}`);
+      }
+
       if (isIdle) { setIsIdle(false); currentActivityStartRef.current = new Date(); }
       setTimerStarted(true);
       lastTickRef.current = Date.now(); 
@@ -468,7 +522,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setAllPauseActive(false);
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
-       // If logging as work, we want to simulate "extra work" on active task if possible
        let taskOverride: Task | undefined = undefined;
        if (logPauseAs === 'work' && activeTask) {
            taskOverride = activeTask;
@@ -483,10 +536,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     startTimer();
   };
 
-  const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' }) => {
+  const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
     if (graceOpen && options?.logGraceAs) {
         const graceStart = new Date(Date.now() - graceTotal * 1000);
-        // If user was working, attribute to active task
         let taskOverride: Task | undefined = undefined;
         if (options.logGraceAs === 'work' && activeTask) {
             taskOverride = activeTask;
@@ -502,6 +554,51 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     else setWorkTime(settings.workDuration); 
     currentActivityStartRef.current = new Date();
     startTimer();
+  };
+
+  const endSession = () => {
+    stopTimer();
+    setAllPauseActive(false);
+
+    // Calculate Stats for Summary
+    const workLogs = logs.filter(l => l.type === 'work' && l.start > (sessionStartTime || ''));
+    const breakLogs = logs.filter(l => l.type === 'break' && l.start > (sessionStartTime || ''));
+    const totalWork = workLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
+    const totalBreak = breakLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
+    
+    const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
+    
+    setSessionStats({
+        totalWorkMinutes: totalWork,
+        totalBreakMinutes: totalBreak,
+        tasksCompleted: completedTasksCount,
+        pomosCompleted: pomodoroCount
+    });
+
+    // Reset App State (Keep Logs)
+    setTasks(prev => removeCompletedTasks(prev)); // Remove completed
+    setPomodoroCount(0);
+    setWorkTime(settings.workDuration);
+    setBreakTime(0);
+    setIsIdle(true);
+    setTimerStarted(false);
+    setGraceOpen(false);
+    setGraceContext(null);
+    setSessionStartTime(null);
+    currentActivityStartRef.current = null;
+    
+    // Reset Schedule to Now
+    const now = new Date();
+    const h = now.getHours().toString().padStart(2, '0');
+    const m = now.getMinutes().toString().padStart(2, '0');
+    setScheduleStartTime(`${h}:${m}`);
+    
+    setShowSummary(true);
+  };
+
+  const closeSummary = () => {
+      setShowSummary(false);
+      setSessionStats(null);
   };
 
   const addTask = (name: string, estimated: number, categoryId: number | null, parentId?: number, color?: string) => {
@@ -545,40 +642,37 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTasks(prev => {
         const newTasks = [...prev];
         const fromIndex = newTasks.findIndex(t => t.id === fromId);
-        const toIndex = newTasks.findIndex(t => t.id === toId);
-        if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return prev;
+        if (fromIndex === -1) return prev;
+        
+        // Remove 'from'
         const [moved] = newTasks.splice(fromIndex, 1);
-        // Re-find index after splice (indices shift)
-        const newToIndex = newTasks.findIndex(t => t.id === toId);
-        // If Moving Down (from < to), insert AFTER target
-        // If Moving Up (from > to), insert BEFORE target
-        if (fromIndex < toIndex) newTasks.splice(newToIndex + 1, 0, moved);
-        else newTasks.splice(newToIndex, 0, moved);
+        
+        // Find 'to' index in the array *after* removal
+        const toIndex = newTasks.findIndex(t => t.id === toId);
+        if (toIndex === -1) {
+            newTasks.push(moved);
+        } else {
+             newTasks.splice(toIndex, 0, moved);
+        }
         return newTasks;
     });
   };
 
   const moveSubtask = (fromParentId: number, toParentId: number, subId: number, targetSubId: number | null) => {
     setTasks(prev => {
-        // 1. Extract Phase
         let movedSub: Task | null = null;
-        let originalFromIndex = -1;
-
         const tasksWithoutSub = (list: Task[]): Task[] => {
             return list.map(t => {
                 if (t.id === fromParentId) {
                     const idx = t.subtasks.findIndex(s => s.id === subId);
                     if (idx !== -1) {
                         movedSub = t.subtasks[idx];
-                        originalFromIndex = idx;
                         const newSubs = [...t.subtasks];
                         newSubs.splice(idx, 1);
                         return recalculateStats({ ...t, subtasks: newSubs });
                     }
                 }
-                if (t.subtasks.length > 0) {
-                    return recalculateStats({ ...t, subtasks: tasksWithoutSub(t.subtasks) });
-                }
+                if (t.subtasks.length > 0) return recalculateStats({ ...t, subtasks: tasksWithoutSub(t.subtasks) });
                 return t;
             });
         };
@@ -586,53 +680,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const tempTasks = tasksWithoutSub(prev);
         if (!movedSub) return prev;
 
-        // 2. Insert Phase
         const insertSub = (list: Task[]): Task[] => {
             return list.map(t => {
                 if (t.id === toParentId) {
                     const newSubs = [...t.subtasks];
-                    
                     if (targetSubId === null) {
-                        // Append
                         newSubs.push(movedSub!);
                     } else {
                         const tIdx = newSubs.findIndex(s => s.id === targetSubId);
-                        if (tIdx !== -1) {
-                           // Same Parent Logic
-                           if (fromParentId === toParentId) {
-                                // If we moved DOWN (originalFrom < originalTarget), 
-                                // the target index in the reduced array effectively refers to the item.
-                                // We want to place it AFTER.
-                                
-                                // We need to know if we moved down.
-                                // Since we can't easily get original target index here without another pass,
-                                // We rely on: If 'tIdx' (current index of target) is >= originalFromIndex?
-                                // No, that's risky.
-                                
-                                // Re-check original parent to see order
-                                const originalParent = findTask(prev, fromParentId);
-                                const originalTargetIdx = originalParent?.subtasks.findIndex(s => s.id === targetSubId) ?? -1;
-                                
-                                if (originalFromIndex < originalTargetIdx) {
-                                     // Moved Down -> Insert After
-                                     newSubs.splice(tIdx + 1, 0, movedSub!);
-                                } else {
-                                     // Moved Up -> Insert Before
-                                     newSubs.splice(tIdx, 0, movedSub!);
-                                }
-                           } else {
-                                // Different Parent -> Always Insert Before Target (Standard behavior)
-                                newSubs.splice(tIdx, 0, movedSub!);
-                           }
-                        } else {
-                           newSubs.push(movedSub!);
-                        }
+                        if (tIdx !== -1) newSubs.splice(tIdx, 0, movedSub!);
+                        else newSubs.push(movedSub!);
                     }
                     return recalculateStats({ ...t, subtasks: newSubs });
                 }
-                if (t.subtasks.length > 0) {
-                    return recalculateStats({ ...t, subtasks: insertSub(t.subtasks) });
-                }
+                if (t.subtasks.length > 0) return recalculateStats({ ...t, subtasks: insertSub(t.subtasks) });
                 return t;
             });
         };
@@ -679,10 +740,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     <TimerContext.Provider value={{
       workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
-      tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime,
-      activeTask, activeColor, 
+      tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
+      activeTask, activeColor, showSummary, sessionStats,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
-      startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace,
+      startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,

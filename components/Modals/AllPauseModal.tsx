@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
 
@@ -11,8 +12,9 @@ const formatDuration = (seconds: number) => {
 };
 
 const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { confirmAllPause, activeMode } = useTimer();
+  const { confirmAllPause, activeMode, endSession } = useTimer();
   const [reason, setReason] = useState('');
+  const [isConfirmingEnd, setIsConfirmingEnd] = useState(false);
 
   if (!isOpen) return null;
 
@@ -22,7 +24,27 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
     onClose();
   };
 
+  const handleEndSession = () => {
+      endSession();
+      onClose();
+  };
+
   const themeColor = activeMode === 'break' ? 'text-teal-200 border-teal-500/30' : 'text-red-200 border-red-500/30';
+
+  if (isConfirmingEnd) {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xl animate-fade-in">
+          <div className="w-full max-w-sm bg-[#1c1c1e] rounded-[2rem] shadow-2xl border border-white/10 p-8 flex flex-col items-center gap-6 animate-slide-up">
+            <h3 className="text-xl font-bold text-white tracking-tight text-center">End Work Session?</h3>
+            <p className="text-white/40 text-center text-xs">This will clear completed tasks and reset timers.</p>
+            <div className="flex gap-4 w-full">
+              <button onClick={() => setIsConfirmingEnd(false)} className="flex-1 py-3 text-white/50 hover:text-white rounded-xl text-xs font-bold uppercase tracking-wider">Back</button>
+              <button onClick={handleEndSession} className="flex-1 py-3 bg-red-500/20 text-red-200 hover:bg-red-500/30 rounded-xl text-xs font-bold uppercase tracking-wider">End Session</button>
+            </div>
+          </div>
+        </div>
+      );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xl animate-fade-in">
@@ -56,6 +78,13 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
             Pause
           </button>
         </div>
+
+        <button 
+            onClick={() => setIsConfirmingEnd(true)}
+            className="mt-2 text-[10px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold opacity-60 hover:opacity-100 transition-opacity"
+        >
+            End Work Session
+        </button>
       </div>
     </div>
   );
@@ -70,15 +99,11 @@ export const ResumeModal: React.FC = () => {
   const secs = Math.floor(allPauseTime % 60);
   const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
 
-  // Determine Theme
   const themeClass = activeMode === 'break' ? 'shadow-teal-500/20' : 'shadow-red-500/20';
   const buttonHoverBorder = activeMode === 'break' ? 'group-hover:border-teal-400/40' : 'group-hover:border-red-400/40';
   const gradientFrom = activeMode === 'break' ? 'from-teal-500/10' : 'from-red-500/10';
   const accentText = activeMode === 'break' ? 'text-teal-200' : 'text-red-200';
 
-  // Calculate adjustments based on Grace Menu logic
-  // "I was working" -> Adds (time/5) to bank.
-  // "I was resting" -> Deducts (time) from bank.
   const addToBankAmount = allPauseTime / 5; 
   const deductFromBankAmount = allPauseTime;
 
@@ -112,7 +137,7 @@ export const ResumeModal: React.FC = () => {
              {/* Left: I Was Working */}
              <div className="flex flex-col items-center w-full">
                 <button 
-                   onClick={() => resumeFromPause('work', -addToBankAmount)}
+                   onClick={() => resumeFromPause('work', -addToBankAmount, 'work')}
                    className={`${buttonBaseClass} ${buttonHoverBorder}`}
                 >
                     <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-700 bg-gradient-to-br ${gradientFrom} to-transparent`} />
@@ -136,7 +161,7 @@ export const ResumeModal: React.FC = () => {
              {/* Right: I Was Resting */}
              <div className="flex flex-col items-center w-full">
                 <button 
-                   onClick={() => resumeFromPause('break', deductFromBankAmount)}
+                   onClick={() => resumeFromPause('break', deductFromBankAmount, 'break')}
                    className={`${buttonBaseClass} ${buttonHoverBorder}`}
                 >
                     <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-700 bg-gradient-to-br ${gradientFrom} to-transparent`} />

@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
 
@@ -18,9 +19,9 @@ const GraceModal: React.FC = () => {
     }
   }, [graceOpen]);
 
-  // Reveal options after delay (simulating user settling in)
+  // Reveal options after delay
   useEffect(() => {
-    if (graceOpen && graceTotal > 30 && !showOptions) {
+    if (graceOpen && graceTotal > 5 && !showOptions) {
         setShowOptions(true);
     }
   }, [graceTotal, graceOpen, showOptions]);
@@ -31,14 +32,17 @@ const GraceModal: React.FC = () => {
   
   const handleWasWorking = () => {
     const nextMode = isAfterWork ? 'break' : 'work';
-    // Log as work, add to bank
     resolveGrace(nextMode, { adjustBreakBalance: -(graceTotal / 5), logGraceAs: 'work' });
   };
 
   const handleWasResting = () => {
     const nextMode = isAfterWork ? 'break' : 'work';
-    // Log as break, deduct from bank
     resolveGrace(nextMode, { adjustBreakBalance: graceTotal, logGraceAs: 'break' });
+  };
+  
+  const handleNeutral = () => {
+      const nextMode = isAfterWork ? 'break' : 'work';
+      resolveGrace(nextMode, { logGraceAs: 'grace' });
   };
 
   const addToBankAmount = graceTotal / 5;
@@ -67,7 +71,7 @@ const GraceModal: React.FC = () => {
            </p>
         </div>
 
-        {/* Buttons Centered & Close (Gap reduced to 4) */}
+        {/* Buttons */}
         <div className="flex flex-row items-center justify-center gap-4">
           
           {/* Button: Work */}
@@ -114,6 +118,17 @@ const GraceModal: React.FC = () => {
             </div>
           </button>
         </div>
+
+        {/* Neutral Option */}
+        {showOptions && (
+            <button 
+                onClick={handleNeutral}
+                className="text-[10px] font-bold uppercase tracking-widest text-white/30 hover:text-white transition-colors"
+            >
+                Start {isAfterWork ? 'Break' : 'Focus'} (No Adjustment)
+            </button>
+        )}
+
       </div>
     </div>
   );

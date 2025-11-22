@@ -15,7 +15,7 @@ interface WorkUnit {
 
 interface TimeBlock {
     id: string;
-    type: 'work' | 'break' | 'scheduled-break';
+    type: 'work' | 'break' | 'scheduled-break' | 'log-work' | 'log-break' | 'log-pause';
     startTime: Date;
     endTime: Date;
     durationMinutes: number;
@@ -24,22 +24,20 @@ interface TimeBlock {
     color?: string;
     topPx: number;
     heightPx: number;
+    isPast?: boolean;
 }
 
 const PRESET_COLORS = [
-  '#BA4949', // Red
-  '#38858a', // Teal
-  '#397097', // Blue
-  '#8c5e32', // Sienna 
-  '#7a5c87', // Purple
-  '#547a59', // Green
+  '#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59'
 ];
 
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
-    const { tasks, settings, pomodoroCount, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, updateTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime } = useTimer();
+    const { tasks, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime } = useTimer();
     
-    const [startHour, setStartHour] = useState(8);
-    const [startMinute, setStartMinute] = useState(0); 
+    // Start Time State
+    const [stHourStr, setStHourStr] = useState('08');
+    const [stMinStr, setStMinStr] = useState('00');
+    const [stAmPm, setStAmPm] = useState<'AM'|'PM'>('AM');
 
     const [isCreating, setIsCreating] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
@@ -59,32 +57,52 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
 
     const [splittingTaskId, setSplittingTaskId] = useState<number | null>(null);
     const [splitValue, setSplitValue] = useState(2);
+    const [pixelsPerMin, setPixelsPerMin] = useState(3);
 
     const [draggedId, setDraggedId] = useState<{ type: 'task' | 'subtask', id: number, parentId?: number } | null>(null);
     const [dropTargetId, setDropTargetId] = useState<{ id: number, parentId?: number, type: 'task' | 'subtask' } | null>(null);
 
-    const listEndRef = useRef<HTMLDivElement>(null);
     const calendarRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (isOpen) {
-            const [h, m] = scheduleStartTime.split(':').map(Number);
-            setStartHour(h || 8);
-            setStartMinute(m || 0);
+            const [hStr, mStr] = scheduleStartTime.split(':');
+            let h = parseInt(hStr) || 8;
+            const m = parseInt(mStr) || 0;
+            const isPm = h >= 12;
+            if (h > 12) h -= 12;
+            if (h === 0) h = 12;
+            setStHourStr(h.toString().padStart(2,'0'));
+            setStMinStr(m.toString().padStart(2,'0'));
+            setStAmPm(isPm ? 'PM' : 'AM');
             
-            // Set default break time to current time
+            // Break Defaults to Now
             const now = new Date();
             let curH = now.getHours();
             const curM = now.getMinutes();
-            const isPm = curH >= 12;
+            const curIsPm = curH >= 12;
             if (curH > 12) curH -= 12;
             if (curH === 0) curH = 12;
-            
             setBreakHourStr(curH.toString());
             setBreakMinStr(curM.toString().padStart(2, '0'));
-            setBreakAmPm(isPm ? 'PM' : 'AM');
+            setBreakAmPm(curIsPm ? 'PM' : 'AM');
         }
     }, [isOpen, scheduleStartTime]);
+
+    const updateScheduleStart = () => {
+        let h = parseInt(stHourStr);
+        const m = parseInt(stMinStr);
+        if (isNaN(h) || isNaN(m)) return;
+        if (stAmPm === 'PM' && h !== 12) h += 12;
+        if (stAmPm === 'AM' && h === 12) h = 0;
+        setScheduleStartTime(`${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`);
+    };
+
+    // Auto-update schedule start when inputs change (debounce?)
+    useEffect(() => {
+        const t = setTimeout(updateScheduleStart, 800);
+        return () => clearTimeout(t);
+    }, [stHourStr, stMinStr, stAmPm]);
 
     const flattenedWorkUnits = useMemo(() => {
         const units: WorkUnit[] = [];
@@ -112,26 +130,115 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         });
         return units;
     }, [tasks]);
-
-    const PIXELS_PER_MINUTE = 3;
     
     const timelineData = useMemo(() => {
         const blocks: TimeBlock[] = [];
-        const scheduleStart = new Date();
-        scheduleStart.setHours(startHour, startMinute, 0, 0);
+        const now = new Date();
+        const [schH, schM] = scheduleStartTime.split(':').map(Number);
         
-        let currentTime = new Date(scheduleStart);
+        // 1. Establish Schedule Anchor
+        // Timeline starts at Schedule Start Time today.
+        let timelineStart = new Date();
+        timelineStart.setHours(schH, schM, 0, 0);
+        
+        // Filter logs to "Current Session" logs (e.g. today or since session start).
+        // If sessionStartTime exists, use that as cutoff for logs to ensure relevancy.
+        const sessionLogs = sessionStartTime 
+            ? logs.filter(l => l.start >= sessionStartTime)
+            : logs.filter(l => {
+                 // Fallback: logs from today
+                 const d = new Date(l.start);
+                 const today = new Date();
+                 return d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+            });
+        
+        // Map Logs to Blocks (Past)
+        let lastLogEnd = new Date(timelineStart);
+        
+        // Sort logs ASC
+        const sortedLogs = [...sessionLogs].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+        
+        sortedLogs.forEach((log, i) => {
+            const start = new Date(log.start);
+            const end = new Date(log.end);
+            if (end > lastLogEnd) lastLogEnd = end;
+            
+            const diffMins = (start.getTime() - timelineStart.getTime()) / 60000;
+            const durMins = (end.getTime() - start.getTime()) / 60000;
+            
+            blocks.push({
+                id: `log-${i}`, 
+                type: log.type === 'work' ? 'log-work' : (log.type === 'break' ? 'log-break' : 'log-pause'),
+                startTime: start, 
+                endTime: end, 
+                durationMinutes: durMins,
+                label: log.task ? log.task.name : (log.type === 'work' ? 'Focus' : 'Break'),
+                subLabel: log.reason || (log.type === 'allpause' ? 'Paused' : undefined),
+                color: log.color,
+                topPx: diffMins * pixelsPerMin, 
+                heightPx: durMins * pixelsPerMin,
+                isPast: true
+            });
+        });
 
+        // 2. Determine Projection Start
+        // Projection starts at NOW.
+        let projectionTime = new Date();
+        if (projectionTime < timelineStart) projectionTime = timelineStart; 
+
+        // If Timer is Started, we are inside a block.
+        let virtualPomoCount = pomodoroCount;
+        
+        if (timerStarted) {
+            // Add current running block
+            const remainingMins = workTime / 60; 
+            const endTime = new Date(projectionTime.getTime() + remainingMins * 60000);
+            
+            const currentUnit = flattenedWorkUnits[0]; 
+            if (currentUnit) {
+                 const diffMins = (projectionTime.getTime() - timelineStart.getTime()) / 60000;
+                 blocks.push({
+                    id: `current-work`, type: 'work', startTime: projectionTime, endTime: endTime, durationMinutes: remainingMins,
+                    label: currentUnit.name, subLabel: 'Current Session', color: currentUnit.color,
+                    topPx: diffMins * pixelsPerMin, heightPx: remainingMins * pixelsPerMin
+                });
+                // Remove first unit from projection list
+                flattenedWorkUnits.shift();
+                virtualPomoCount++;
+                projectionTime = endTime;
+                
+                // Add Break after this?
+                const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
+                const breakDur = isLongBreak ? (settings.longBreakDuration/60) : (settings.shortBreakDuration/60);
+                const bEnd = new Date(projectionTime.getTime() + breakDur * 60000);
+                const bDiff = (projectionTime.getTime() - timelineStart.getTime()) / 60000;
+                blocks.push({
+                    id: `current-break-proj`, type: 'break', startTime: projectionTime, endTime: bEnd, durationMinutes: breakDur,
+                    label: isLongBreak ? 'Long Break' : 'Short Break',
+                    topPx: bDiff * pixelsPerMin, heightPx: breakDur * pixelsPerMin, color: isLongBreak ? '#2dd4bf' : undefined
+                });
+                projectionTime = bEnd;
+            }
+        }
+        
+        // 3. Project Future
         const dailyBreaks = scheduleBreaks.map(b => {
             const [h, m] = b.startTime.split(':').map(Number);
-            const start = new Date(scheduleStart);
+            const start = new Date(timelineStart);
             start.setHours(h, m, 0, 0);
-            if (start < scheduleStart && h < startHour) start.setDate(start.getDate() + 1);
+            if (start < timelineStart && h < schH) start.setDate(start.getDate() + 1);
             const end = new Date(start.getTime() + b.duration * 60000);
             return { ...b, start, end };
         });
 
-        let virtualPomoCount = pomodoroCount; 
+        // Add Scheduled Breaks (Fixed)
+        dailyBreaks.forEach(brk => {
+             const diffMins = (brk.start.getTime() - timelineStart.getTime()) / 60000;
+             blocks.push({
+                id: brk.id, type: 'scheduled-break', startTime: brk.start, endTime: brk.end, durationMinutes: brk.duration, label: brk.label,
+                topPx: diffMins * pixelsPerMin, heightPx: brk.duration * pixelsPerMin, color: '#555'
+            });
+        });
 
         const advanceTimeIfBreak = (time: Date): Date => {
             let updatedTime = new Date(time);
@@ -139,6 +246,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             while (overlap) {
                 overlap = false;
                 for (const brk of dailyBreaks) {
+                    // If time is inside a break
                     if (updatedTime >= brk.start && updatedTime < brk.end) {
                         updatedTime = new Date(brk.end);
                         overlap = true;
@@ -148,76 +256,67 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             return updatedTime;
         };
 
-        dailyBreaks.forEach(brk => {
-            const diffMins = (brk.start.getTime() - scheduleStart.getTime()) / 60000;
-            if (diffMins >= 0) {
-                 blocks.push({
-                    id: brk.id, type: 'scheduled-break', startTime: brk.start, endTime: brk.end, durationMinutes: brk.duration, label: brk.label,
-                    topPx: diffMins * PIXELS_PER_MINUTE, heightPx: brk.duration * PIXELS_PER_MINUTE, color: '#555'
-                });
-            }
-        });
-
         flattenedWorkUnits.forEach((unit, index) => {
-            currentTime = advanceTimeIfBreak(currentTime);
-            const workStart = new Date(currentTime);
-            const workDuration = settings.workDuration / 60; 
-            const diffMins = (workStart.getTime() - scheduleStart.getTime()) / 60000;
+            projectionTime = advanceTimeIfBreak(projectionTime);
+            const workStart = new Date(projectionTime);
+            const workDuration = settings.workDuration / 60;
+            const diffMins = (workStart.getTime() - timelineStart.getTime()) / 60000;
             
             blocks.push({
-                id: `work-${index}`, type: 'work', startTime: workStart, endTime: new Date(workStart.getTime() + workDuration * 60000), durationMinutes: workDuration,
-                label: unit.name, subLabel: unit.subtaskName || `Session ${unit.pomoIndex}/${unit.estimatedTotal}`, color: unit.color,
-                topPx: diffMins * PIXELS_PER_MINUTE, heightPx: workDuration * PIXELS_PER_MINUTE
+                id: `work-proj-${index}`, type: 'work', startTime: workStart, endTime: new Date(workStart.getTime() + workDuration * 60000), durationMinutes: workDuration,
+                label: unit.name, subLabel: unit.subtaskName, color: unit.color,
+                topPx: diffMins * pixelsPerMin, heightPx: workDuration * pixelsPerMin
             });
             
-            currentTime = new Date(currentTime.getTime() + workDuration * 60000);
+            projectionTime = new Date(projectionTime.getTime() + workDuration * 60000);
             virtualPomoCount++;
-            const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
-            const breakDuration = isLongBreak ? (settings.longBreakDuration / 60) : (settings.shortBreakDuration / 60);
             
-            currentTime = advanceTimeIfBreak(currentTime);
-            const breakStart = new Date(currentTime);
-            const breakDiffMins = (breakStart.getTime() - scheduleStart.getTime()) / 60000;
+            const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
+            const breakDur = isLongBreak ? (settings.longBreakDuration / 60) : (settings.shortBreakDuration / 60);
+            
+            projectionTime = advanceTimeIfBreak(projectionTime);
+            const breakStart = new Date(projectionTime);
+            const breakDiffMins = (breakStart.getTime() - timelineStart.getTime()) / 60000;
 
             blocks.push({
-                id: `break-${index}`, type: 'break', startTime: breakStart, endTime: new Date(breakStart.getTime() + breakDuration * 60000), durationMinutes: breakDuration,
+                id: `break-proj-${index}`, type: 'break', startTime: breakStart, endTime: new Date(breakStart.getTime() + breakDur * 60000), durationMinutes: breakDur,
                 label: isLongBreak ? 'Long Break' : 'Short Break',
-                topPx: breakDiffMins * PIXELS_PER_MINUTE, heightPx: breakDuration * PIXELS_PER_MINUTE, color: isLongBreak ? '#2dd4bf' : undefined
+                topPx: breakDiffMins * pixelsPerMin, heightPx: breakDur * pixelsPerMin, color: isLongBreak ? '#2dd4bf' : undefined
             });
 
-            currentTime = new Date(currentTime.getTime() + breakDuration * 60000);
+            projectionTime = new Date(projectionTime.getTime() + breakDur * 60000);
         });
-        
-        const lastBlock = blocks[blocks.length - 1];
-        const endMins = lastBlock ? (lastBlock.topPx / PIXELS_PER_MINUTE) + lastBlock.durationMinutes : 0;
-        const totalHeight = Math.max(1440, endMins + 60) * PIXELS_PER_MINUTE;
 
-        return { blocks, totalHeight, scheduleStart };
-    }, [startHour, startMinute, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks]);
+        const lastBlock = blocks.sort((a,b) => (a.topPx + a.heightPx) - (b.topPx + b.heightPx)).pop();
+        const endMins = lastBlock ? (lastBlock.topPx / pixelsPerMin) + lastBlock.durationMinutes : 0;
+        const totalHeight = Math.max(1440, endMins + 60) * pixelsPerMin;
+
+        return { blocks, totalHeight, timelineStart };
+    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime]);
 
     useEffect(() => {
         if (isOpen && calendarRef.current) {
-            const firstBlock = timelineData.blocks[0];
-            if (firstBlock) calendarRef.current.scrollTo({ top: firstBlock.topPx - 50, behavior: 'smooth' });
+            // Scroll to NOW
+            const now = new Date();
+            const start = timelineData.timelineStart;
+            const diffMins = (now.getTime() - start.getTime()) / 60000;
+            const top = diffMins * pixelsPerMin;
+            // Add slight delay to ensure layout
+            setTimeout(() => {
+                calendarRef.current?.scrollTo({ top: Math.max(0, top - 200), behavior: 'smooth' });
+            }, 100);
         }
-    }, [isOpen, timelineData.blocks]);
+    }, [isOpen]); 
 
     const onDragStart = (e: React.DragEvent, type: 'task' | 'subtask', id: number, parentId?: number) => {
         e.stopPropagation();
         setDraggedId({ type, id, parentId });
-        e.dataTransfer.effectAllowed = "move";
-        const ghost = document.createElement('div');
-        ghost.style.opacity = '0';
-        document.body.appendChild(ghost);
-        e.dataTransfer.setDragImage(ghost, 0, 0);
-        setTimeout(() => document.body.removeChild(ghost), 0);
     };
 
     const onDragOver = (e: React.DragEvent, id: number, type: 'task' | 'subtask', parentId?: number) => {
         e.preventDefault();
         e.stopPropagation();
         if (!draggedId) return;
-        if (draggedId.type === 'task' && type === 'subtask') return; 
         setDropTargetId({ id, parentId, type });
     };
 
@@ -265,16 +364,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         setBreakLabel('Lunch');
     };
 
-    const adjustTime = (type: 'hour' | 'minute', amount: number) => {
-        let h = startHour;
-        let m = startMinute;
-        if (type === 'hour') h = (h + amount + 24) % 24;
-        else m = (m + amount + 60) % 60;
-        setStartHour(h);
-        setStartMinute(m);
-        setScheduleStartTime(`${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`);
-    };
-
     const formatTime12 = (h: number, m: number = 0) => {
         const ampm = h >= 12 ? 'PM' : 'AM';
         const hour12 = h % 12 || 12;
@@ -286,11 +375,13 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={onClose}>
              <div className="w-full max-w-7xl h-[90vh] bg-[#0F0F11] rounded-[2.5rem] shadow-2xl border border-white/10 flex flex-col md:flex-row overflow-hidden relative" onClick={e => e.stopPropagation()}>
+                {/* Priority Queue (Left) */}
                 <div className="w-full md:w-4/12 bg-[#141416] border-r border-white/5 flex flex-col relative z-10">
                     <div className="h-16 px-6 border-b border-white/5 flex items-center justify-between bg-[#18181a] shrink-0">
                         <h2 className="text-white/80 font-bold uppercase tracking-widest text-xs">Priority Queue</h2>
                         <button onClick={() => setIsCreating(!isCreating)} className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 border border-transparent ${isCreating ? 'bg-red-500/20 text-red-200' : 'bg-white/10 text-white'}`}>{isCreating ? 'Cancel' : '+ Task'}</button>
                     </div>
+                    {/* Creator Form */}
                     <div className={`overflow-hidden transition-all duration-500 ease-in-out bg-[#1c1c1e] ${isCreating ? 'max-h-[600px] opacity-100 border-b border-white/5' : 'max-h-0 opacity-0'}`}>
                          <div className="p-5 space-y-4">
                              <div>
@@ -318,13 +409,21 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                              <button onClick={handleCreateTask} className="w-full py-3 bg-white text-black text-xs font-bold uppercase tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all">Add to Queue</button>
                          </div>
                     </div>
+                    {/* Task List */}
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-2 relative">
                         {tasks.filter(t => !t.checked).map((task, index) => {
                             const isSplitting = splittingTaskId === task.id;
                             const isDragged = draggedId?.type === 'task' && draggedId.id === task.id;
+                            const isDropTarget = dropTargetId?.type === 'task' && dropTargetId.id === task.id;
                             return (
                                 <div key={task.id} className="transition-all duration-300 ease-out" style={{opacity: isDragged ? 0.3 : 1}}>
-                                    <div draggable onDragStart={(e) => onDragStart(e, 'task', task.id)} onDragEnd={() => { setDraggedId(null); setDropTargetId(null); }} onDragOver={(e) => onDragOver(e, task.id, 'task')} onDrop={onDrop} className="relative rounded-xl border transition-all duration-300 group overflow-hidden bg-[#1c1c1e] border-white/5 hover:border-white/20 hover:shadow-lg">
+                                    <div 
+                                        draggable 
+                                        onDragStart={(e) => onDragStart(e, 'task', task.id)} 
+                                        onDragOver={(e) => onDragOver(e, task.id, 'task')} 
+                                        onDrop={onDrop} 
+                                        className={`relative rounded-xl border transition-all duration-200 group overflow-hidden bg-[#1c1c1e] ${isDropTarget ? 'border-white/50 scale-[1.02]' : 'border-white/5 hover:border-white/20'}`}
+                                    >
                                         <div className="absolute left-0 top-0 bottom-0 w-1.5 transition-colors" style={{ backgroundColor: task.color || '#BA4949' }} />
                                         <div className="pl-4 pr-3 py-3">
                                             <div className="flex justify-between items-center cursor-grab active:cursor-grabbing">
@@ -341,7 +440,14 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                             {task.subtasks.length > 0 && (
                                                 <div className="mt-2 space-y-1">
                                                      {task.subtasks.map((sub) => (
-                                                        <div key={sub.id} className="pl-2 py-1 rounded text-xs text-white/60 hover:bg-white/5 cursor-grab flex justify-between group/sub transition-all duration-300" draggable onDragStart={(e) => onDragStart(e, 'subtask', sub.id, task.id)} onDragEnd={() => { setDraggedId(null); setDropTargetId(null); }} onDragOver={(e) => onDragOver(e, sub.id, 'subtask', task.id)} onDrop={onDrop}>
+                                                        <div 
+                                                            key={sub.id} 
+                                                            className={`pl-2 py-1 rounded text-xs text-white/60 hover:bg-white/5 cursor-grab flex justify-between group/sub transition-all duration-200 ${(dropTargetId?.id === sub.id) ? 'bg-white/10' : ''}`} 
+                                                            draggable 
+                                                            onDragStart={(e) => onDragStart(e, 'subtask', sub.id, task.id)} 
+                                                            onDragOver={(e) => onDragOver(e, sub.id, 'subtask', task.id)} 
+                                                            onDrop={onDrop}
+                                                        >
                                                             <span>{sub.name} ({sub.estimated})</span>
                                                         </div>
                                                      ))}
@@ -352,14 +458,29 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                 </div>
                             );
                         })}
-                        <div ref={listEndRef} />
                     </div>
                 </div>
+
+                {/* Schedule (Right) */}
                 <div className="flex-1 flex flex-col bg-[#0F0F11] relative z-0">
                     <div className="h-16 px-8 border-b border-white/5 flex items-center justify-between bg-[#141416] shadow-xl shrink-0">
                         <div className="flex items-center gap-4">
                             <h2 className="text-lg font-bold text-white tracking-tight">Schedule</h2>
-                            <div className="flex bg-black/30 rounded-lg p-1 border border-white/5 items-center"><button onClick={() => adjustTime('hour', -1)} className="px-2 text-white/30 hover:text-white text-xs">◀</button><span className="px-2 text-xs font-mono text-white font-bold pt-0.5">Start: {formatTime12(startHour, startMinute)}</span><button onClick={() => adjustTime('hour', 1)} className="px-2 text-white/30 hover:text-white text-xs">▶</button></div>
+                            
+                            {/* Start Time Input */}
+                            <div className="flex items-center gap-1 bg-black/30 border border-white/5 rounded px-2 py-1">
+                                <span className="text-[10px] font-bold text-white/30 mr-1 uppercase">Start</span>
+                                <input type="text" maxLength={2} value={stHourStr} onChange={e => setStHourStr(e.target.value.replace(/\D/g,''))} className="bg-transparent text-xs text-white outline-none w-5 text-center font-mono" />
+                                <span className="text-white/30">:</span>
+                                <input type="text" maxLength={2} value={stMinStr} onChange={e => setStMinStr(e.target.value.replace(/\D/g,''))} className="bg-transparent text-xs text-white outline-none w-5 text-center font-mono" />
+                                <button onClick={() => setStAmPm(p => p === 'AM' ? 'PM' : 'AM')} className="ml-1 px-1 py-0.5 rounded bg-white/10 text-[9px] font-bold text-white hover:bg-white/20">{stAmPm}</button>
+                            </div>
+                            
+                            {/* Zoom Slider */}
+                             <div className="flex items-center gap-2 ml-4">
+                                <span className="text-[9px] font-bold text-white/30 uppercase">Zoom</span>
+                                <input type="range" min="1" max="6" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
+                             </div>
                         </div>
                         <div className="flex items-center gap-4">
                             <button onClick={() => setIsAddingBreak(!isAddingBreak)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors ${isAddingBreak ? 'bg-white/10 text-white' : ''}`}>+ Add Break</button>
@@ -381,20 +502,47 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                     )}
                     <div ref={calendarRef} className="flex-1 overflow-y-auto custom-scrollbar relative bg-[#0F0F11]">
                         <div className="relative w-full" style={{ height: timelineData.totalHeight }}>
-                            {Array.from({ length: Math.ceil(timelineData.totalHeight / (60 * PIXELS_PER_MINUTE)) + 1 }).map((_, i) => {
+                            {/* Grid Lines */}
+                            {Array.from({ length: Math.ceil(timelineData.totalHeight / (60 * pixelsPerMin)) + 1 }).map((_, i) => {
                                 const totalMins = i * 60;
-                                const timeDate = new Date(timelineData.scheduleStart);
+                                const timeDate = new Date(timelineData.timelineStart);
                                 timeDate.setMinutes(timeDate.getMinutes() + totalMins);
-                                return (<div key={i} className="absolute left-0 right-0 border-t border-white/5 flex items-start pointer-events-none" style={{ top: totalMins * PIXELS_PER_MINUTE }}><div className="w-16 pl-4 pt-2 text-[10px] font-mono text-white/30 select-none">{formatTime12(timeDate.getHours(), timeDate.getMinutes())}</div></div>);
+                                return (<div key={i} className="absolute left-0 right-0 border-t border-white/5 flex items-start pointer-events-none" style={{ top: totalMins * pixelsPerMin }}><div className="w-16 pl-4 pt-2 text-[10px] font-mono text-white/30 select-none">{formatTime12(timeDate.getHours(), timeDate.getMinutes())}</div></div>);
                             })}
+                            
+                            {/* Now Line */}
+                            {(() => {
+                                const now = new Date();
+                                const diff = (now.getTime() - timelineData.timelineStart.getTime()) / 60000;
+                                if (diff >= 0) {
+                                    return <div className="absolute left-0 right-0 border-t-2 border-red-500 z-20 pointer-events-none" style={{ top: diff * pixelsPerMin }}><div className="absolute right-2 -top-2.5 bg-red-500 text-black text-[9px] font-bold px-1 rounded">NOW</div></div>
+                                }
+                                return null;
+                            })()}
+
+                            {/* Blocks */}
                             {timelineData.blocks.map((block) => {
-                                const isWork = block.type === 'work';
-                                const isBreak = block.type === 'break';
+                                const isWork = block.type === 'work' || block.type === 'log-work';
+                                const isBreak = block.type === 'break' || block.type === 'log-break' || block.type === 'log-pause';
                                 const isScheduled = block.type === 'scheduled-break';
+                                const isPast = block.isPast;
+                                
+                                let bgClass = '';
+                                let borderClass = '';
+                                if (block.type === 'log-work') { bgClass = 'bg-blue-900/30'; borderClass = 'border-blue-500/30'; }
+                                else if (block.type === 'log-break') { bgClass = 'bg-teal-900/30'; borderClass = 'border-teal-500/30'; }
+                                else if (block.type === 'log-pause') { bgClass = 'bg-gray-800/50'; borderClass = 'border-white/10'; }
+                                else if (isWork) { bgClass = 'bg-[#1c1c1e]'; borderClass = 'border-white/10'; }
+                                else if (isScheduled) { bgClass = 'bg-[#222]'; borderClass = 'border-white/5'; }
+                                else { bgClass = 'bg-[#152e2e]'; borderClass = 'border-teal-500/20'; }
+
                                 return (
-                                    <div key={block.id} className={`absolute left-16 right-4 rounded-lg border shadow-sm overflow-hidden transition-all hover:z-10 hover:shadow-lg flex flex-col justify-center px-4 ${isWork ? 'bg-[#1c1c1e] border-white/10' : (isScheduled ? 'bg-[#222] border-white/5' : 'bg-[#152e2e] border-teal-500/20')}`} style={{ top: block.topPx, height: block.heightPx - 1, borderLeftWidth: '4px', borderLeftColor: block.color || (isBreak ? '#2dd4bf' : '#555') }}>
+                                    <div key={block.id} className={`absolute left-16 right-4 rounded-lg border shadow-sm overflow-hidden transition-all hover:z-30 hover:shadow-lg flex flex-col justify-center px-4 ${bgClass} ${borderClass} ${isPast ? 'opacity-80 grayscale-[0.3]' : ''}`} style={{ top: block.topPx, height: Math.max(2, block.heightPx - 1), borderLeftWidth: '4px', borderLeftColor: block.color || (isBreak ? '#2dd4bf' : '#555') }}>
                                         <div className="flex justify-between items-start">
-                                            <div className="flex flex-col overflow-hidden"><span className={`text-xs font-bold truncate ${isWork ? 'text-white' : 'text-white/70'}`}>{block.label}</span>{block.subLabel && <span className="text-[10px] text-white/40 truncate">{block.subLabel}</span>}</div>
+                                            <div className="flex flex-col overflow-hidden leading-tight">
+                                                <span className={`text-xs font-bold truncate ${isWork ? 'text-white' : 'text-white/70'} ${isPast ? 'line-through decoration-white/30' : ''}`}>{block.label}</span>
+                                                {block.subLabel && <span className="text-[9px] text-white/40 truncate">{block.subLabel}</span>}
+                                            </div>
                                             <div className="text-[9px] font-mono text-white/30 pl-2 flex-shrink-0">{formatTime12(block.startTime.getHours(), block.startTime.getMinutes())} - {formatTime12(block.endTime.getHours(), block.endTime.getMinutes())}</div>
                                         </div>
                                         {isScheduled && (<button onClick={(e) => { e.stopPropagation(); deleteScheduleBreak(block.id); }} className="absolute top-1 right-1 p-1 text-white/20 hover:text-red-400">✕</button>)}
