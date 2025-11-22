@@ -1,0 +1,7 @@
+{
+  "name": "Doro Focus",
+  "description": "A premium, liquid-glass aesthetic Pomodoro timer with chess-clock style time banking. Work cycles bank break time automatically.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
