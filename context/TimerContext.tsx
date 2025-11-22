@@ -25,7 +25,7 @@ interface TimerContextType {
   settings: TimerSettings;
   selectedCategoryId: number | null;
   activeTask: Task | null;
-  activeColor?: string; // Added activeColor
+  activeColor?: string;
 
   // Actions
   startTimer: () => void;
@@ -57,12 +57,13 @@ interface TimerContextType {
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'lumina_focus_v3_stable';
+const STORAGE_KEY = 'lumina_focus_v4_stable';
 
 const DEFAULT_SETTINGS: TimerSettings = {
   workDuration: 1500, // 25 min
   shortBreakDuration: 300, // 5 min banked per cycle
-  longBreakDuration: 900, 
+  longBreakDuration: 900,
+  longBreakInterval: 4, // 4 pomos for long break
 };
 
 // Recursive Helpers for Tasks
@@ -204,7 +205,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setSettings(parsed.settings || DEFAULT_SETTINGS);
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed.settings }); // Merge with default for new keys
         setTasks(parsed.tasks || []);
         setCategories(parsed.categories || []);
         setLogs(parsed.logs || []);
@@ -257,7 +258,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (duration < 1) return;
     
     const selectedTask = taskOverride || findSelectedTask(tasks);
-    // Re-find context to get color if not passed explicitly
     const currentContext = findActiveContext(tasks);
     
     const entry: LogEntry = {
@@ -267,10 +267,32 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       duration,
       reason,
       task: selectedTask ? { id: selectedTask.id, name: selectedTask.name } : null,
-      color: currentContext.color // Save the color snapshot
+      color: currentContext.color 
     };
     setLogs(prev => [entry, ...prev]);
   }, [tasks]);
+
+  // --- Robust Notification Helper ---
+  const sendNotification = useCallback((title: string, body: string) => {
+    if (!("Notification" in window)) return;
+
+    const trigger = () => {
+       new Notification(title, { 
+         body, 
+         requireInteraction: true, // Keeps it on screen until user clicks
+         icon: '/favicon.ico',
+         tag: 'lumina-timer' // Replaces old notifications from same app
+       });
+    };
+
+    if (Notification.permission === "granted") {
+      trigger();
+    } else if (Notification.permission !== "denied") {
+      Notification.requestPermission().then(permission => {
+        if (permission === "granted") trigger();
+      });
+    }
+  }, []);
 
   const handleWorkLoopComplete = useCallback(() => {
     playBell();
@@ -290,19 +312,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       body = `Completed 1 Pomodoro on ${selected.name}`;
     }
 
-    if ("Notification" in window && Notification.permission === "granted") {
-       new Notification("Focus Session Complete", { 
-         body,
-         requireInteraction: true,
-         icon: '/icon.png' // Assuming standard icon if available, optional
-       });
-    }
+    sendNotification("Focus Session Complete", body);
 
     setTimerStarted(false);
     setGraceContext('afterWork');
     setGraceTotal(0);
     setGraceOpen(true);
-  }, [settings, tasks, logActivity]);
+  }, [settings, tasks, logActivity, sendNotification]);
 
   const handleBreakLoopComplete = useCallback(() => {
     playBell();
@@ -318,13 +334,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceTotal(0);
     setGraceOpen(true);
     
-    if ("Notification" in window && Notification.permission === "granted") {
-        new Notification("Break Time's Up!", { 
-          body: "Your break bank is empty.", 
-          requireInteraction: true 
-        });
-    }
-  }, [logActivity]);
+    sendNotification("Break Time's Up!", "Your break bank is empty. Back to work!");
+  }, [logActivity, sendNotification]);
 
   const tick = useCallback(() => {
     const now = Date.now();
@@ -333,6 +344,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
     }
     
+    // Delta Calculation for Drift Protection
     const delta = (now - lastTickRef.current) / 1000;
     lastTickRef.current = now;
 
@@ -351,12 +363,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setWorkTime(prev => {
           const next = prev - delta;
           if (next <= 0) {
-            // Trigger immediately if we cross zero
             return 0; 
           }
           return next;
         });
-        // Check outside the setter to handle state updates correctly
+        // Check outside the setter to trigger effects
         setWorkTime(prev => {
            if (prev <= 0) {
              handleWorkLoopComplete();
@@ -368,8 +379,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Break mode
         setBreakTime(prev => {
           const next = prev - delta;
-          // CRITICAL FIX: Only trigger finish if we are CROSSING zero from positive.
-          // If we are already negative (debt), we continue.
           if (prev > 0 && next <= 0) {
             handleBreakLoopComplete();
             return 0;
@@ -409,10 +418,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         currentActivityStartRef.current = new Date();
       }
       setTimerStarted(true);
-      lastTickRef.current = Date.now(); // Reset tick ref immediately
+      lastTickRef.current = Date.now(); 
       if (!currentActivityStartRef.current) {
         currentActivityStartRef.current = new Date();
       }
+      // Resume AudioContext on user interaction
+      playSwitch(); 
     }
   };
 
@@ -425,19 +436,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const performSwitch = (targetMode: TimerMode) => {
     playSwitch();
     
-    // 1. Log the previous session if it was active
     if (!isIdle && currentActivityStartRef.current) {
         const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
         logActivity(activeMode, currentActivityStartRef.current, duration, 'Switch');
     }
 
-    // 2. Update State
     setActiveMode(targetMode);
     setIsIdle(false);
     setGraceOpen(false);
     setGraceContext(null);
 
-    // 3. Start New Timer
     currentActivityStartRef.current = new Date();
     setTimerStarted(true);
     lastTickRef.current = Date.now();
@@ -445,13 +453,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const activateMode = (mode: TimerMode) => {
     if (isIdle) {
-        // Initial start
         performSwitch(mode);
     } else if (activeMode !== mode) {
-        // Explicit switch request
         performSwitch(mode);
     } else {
-        // Same mode, just ensure it's running
         if (!timerStarted) {
             startTimer();
             playSwitch();
@@ -467,18 +472,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const restartActiveTimer = (customSeconds?: number) => {
     stopTimer();
     
-    // DO NOT LOG on restart as per user request
-    // if (!isIdle && currentActivityStartRef.current) {
-    //    const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
-    //    logActivity(activeMode, currentActivityStartRef.current, duration, 'Restarted Timer');
-    // }
-    
     if (activeMode === 'work') {
         setWorkTime(customSeconds !== undefined ? customSeconds : settings.workDuration);
     } else {
         setBreakTime(prev => {
             if (customSeconds !== undefined) return customSeconds;
-            // If resetting break manually, clear negative debt to 0.
             return prev < 0 ? 0 : prev;
         });
     }
@@ -535,27 +533,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setActiveMode(nextMode);
     setIsIdle(false);
 
-    // Apply Break Balance Adjustment (if any)
-    // Positive adjustBreakBalance means we SPENT break time (subtract).
-    // Negative adjustBreakBalance means we EARNED break time (add).
     if (options?.adjustBreakBalance) {
         setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
     }
 
     if (nextMode === 'work') {
-        // If starting work, reset work time minus any adjustment
         setWorkTime(Math.max(0, settings.workDuration - (options?.adjustWorkStart || 0)));
     } else {
-        // If starting break, work time resets to full for next time
         setWorkTime(settings.workDuration); 
-        // Break time is already adjusted above
     }
     
     currentActivityStartRef.current = new Date();
     startTimer();
   };
 
-  // Data Helpers
   const addTask = (name: string, estimated: number, categoryId: number | null, parentId?: number, color?: string) => {
     const newTask: Task = {
       id: Date.now(),
@@ -629,7 +620,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime,
       graceOpen, graceContext, graceTotal,
       tasks, categories, logs, settings, selectedCategoryId, 
-      activeTask, activeColor, // Exported activeColor
+      activeTask, activeColor, 
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace,
       addTask, updateTask, deleteTask, selectTask, toggleTaskExpansion,

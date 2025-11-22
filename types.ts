@@ -34,6 +34,7 @@ export interface TimerSettings {
   workDuration: number;
   shortBreakDuration: number;
   longBreakDuration: number;
+  longBreakInterval: number; // Pomodoros before a long break
 }
 
 export interface TimerState {

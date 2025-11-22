@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
@@ -5,11 +6,13 @@ import Tasks from './Tasks';
 import AllPauseModal, { ResumeModal } from './Modals/AllPauseModal';
 import LogModal from './Modals/LogModal';
 import GraceModal from './Modals/GraceModal';
+import TaskViewModal from './Modals/TaskViewModal'; // Import
 
 const Layout: React.FC = () => {
   const { activeMode, activeColor } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
+  const [showTaskViewModal, setShowTaskViewModal] = useState(false); // State for standalone task view if needed by layout buttons (optional, currently Tasks handles it)
 
   // Use Inherited activeColor from context, or default
   const containerStyle: React.CSSProperties = {
@@ -67,6 +70,10 @@ const Layout: React.FC = () => {
       <GraceModal />
       <LogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
       
+      {/* TaskView is mostly triggered from Tasks or LogModal, but we can host a global instance if needed. 
+          Currently Tasks.tsx hosts its own, and LogModal will trigger one.
+          To avoid duplication, we can hoist it here if we passed state down, but simpler to let components invoke it.
+      */}
     </div>
   );
 };

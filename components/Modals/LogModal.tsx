@@ -1,9 +1,12 @@
-import React from 'react';
+
+import React, { useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
+import TaskViewModal from './TaskViewModal';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
   const { logs, clearLogs, settings, updateSettings, categories, addCategory, deleteCategory, activeMode } = useTimer();
-  const [tab, setTab] = React.useState<'log' | 'settings' | 'categories'>('log');
+  const [tab, setTab] = React.useState<'log' | 'schedule' | 'categories' | 'settings'>('log');
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
   
   const [newCatName, setNewCatName] = React.useState('');
   const [newCatColor, setNewCatColor] = React.useState('#BA4949');
@@ -17,15 +20,22 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   };
 
   return (
+    <>
     <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xl animate-fade-in" onClick={onClose}>
       <div className="w-full max-w-2xl bg-white/10 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
         
-        <div className="flex border-b border-white/10">
-          {['log', 'categories', 'settings'].map(t => (
+        <div className="flex border-b border-white/10 overflow-x-auto">
+          {['log', 'schedule', 'categories', 'settings'].map(t => (
             <button 
               key={t}
-              onClick={() => setTab(t as any)}
-              className={`flex-1 py-5 font-bold text-xs uppercase tracking-[0.2em] transition-colors ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
+              onClick={() => {
+                  if (t === 'schedule') {
+                      setShowScheduleModal(true);
+                  } else {
+                    setTab(t as any);
+                  }
+              }}
+              className={`flex-1 py-5 px-2 font-bold text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
             >
               {t}
             </button>
@@ -45,16 +55,14 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               ) : (
                 <div className="space-y-3">
                   {logs.map((log, i) => {
-                    // Determine Colors
                     let borderColor = 'border-white/10';
                     let bgColor = 'bg-white/5';
                     let textColor = 'text-white/80';
 
                     if (log.type === 'work') {
-                        // Use stored color, or fallback to white/red
                         const c = log.color || '#BA4949';
-                        borderColor = `border-[${c}]`; // Note: Tailwind arbitrary values won't interpolate perfectly without full config, using inline style for border/bg is safer
-                        bgColor = ''; // Will use inline
+                        borderColor = `border-[${c}]`; 
+                        bgColor = ''; 
                         textColor = 'text-white';
                     } else if (log.type === 'break') {
                         borderColor = 'border-teal-500/30';
@@ -101,20 +109,24 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               <h3 className="font-bold text-white text-lg tracking-tight">Timer Configuration</h3>
               <div className="space-y-6">
                 {[
-                    { label: 'Work Duration', val: settings.workDuration, key: 'workDuration' },
-                    { label: 'Short Break Reward', val: settings.shortBreakDuration, key: 'shortBreakDuration' },
-                    { label: 'Break Bank Cap', val: settings.longBreakDuration, key: 'longBreakDuration' }
+                    { label: 'Work Duration', val: settings.workDuration, key: 'workDuration', unit: 'min' },
+                    { label: 'Short Break Reward', val: settings.shortBreakDuration, key: 'shortBreakDuration', unit: 'min' },
+                    { label: 'Break Bank Cap', val: settings.longBreakDuration, key: 'longBreakDuration', unit: 'min' },
+                    { label: 'Long Break Interval', val: settings.longBreakInterval, key: 'longBreakInterval', unit: 'pomos' }
                 ].map((item) => (
                     <div key={item.key}>
                       <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-2">{item.label}</label>
                       <div className="flex items-center gap-3">
                         <input 
                             type="number" 
-                            value={item.val / 60}
-                            onChange={e => updateSettings({ ...settings, [item.key]: Number(e.target.value) * 60 })}
+                            value={item.unit === 'min' ? item.val / 60 : item.val}
+                            onChange={e => updateSettings({ 
+                                ...settings, 
+                                [item.key]: item.unit === 'min' ? Number(e.target.value) * 60 : Number(e.target.value)
+                            })}
                             className="w-full p-4 bg-white/5 rounded-xl border border-white/10 text-white font-mono focus:border-white/30 outline-none transition-colors"
                         />
-                        <span className="text-white/30 font-bold text-sm">min</span>
+                        <span className="text-white/30 font-bold text-sm">{item.unit}</span>
                       </div>
                     </div>
                 ))}
@@ -165,6 +177,9 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
         </div>
       </div>
     </div>
+    
+    <TaskViewModal isOpen={showScheduleModal} onClose={() => setShowScheduleModal(false)} />
+    </>
   );
 };
 

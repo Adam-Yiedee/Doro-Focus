@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
+import TaskViewModal from './Modals/TaskViewModal';
 
 const PRESET_COLORS = [
   '#BA4949', // Red
@@ -82,10 +83,8 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
           ${task.checked ? 'opacity-40' : ''}
         `}
       >
-        {/* Selection Indicator */}
         {task.selected && isSectionActive && <div className="absolute left-0 inset-y-2 w-1 bg-white rounded-r-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" />}
         
-        {/* Expand/Collapse */}
         {task.subtasks.length > 0 ? (
           <button 
             onClick={(e) => { e.stopPropagation(); toggleTaskExpansion(task.id); }}
@@ -102,7 +101,6 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
           <div className="w-3 h-3 px-1" />
         )}
 
-        {/* Check Circle */}
         <div 
           onClick={handleCheck}
           className={`
@@ -117,7 +115,6 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
           {task.checked && <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
         </div>
         
-        {/* Task Name */}
         <div className="flex-1 min-w-0 flex flex-col justify-center">
           <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : 'group-hover:text-white'} ${depth === 0 ? 'font-medium text-sm' : 'text-xs'}`}>
             {task.name}
@@ -127,14 +124,12 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
           )}
         </div>
 
-        {/* Estimate Pill */}
         <div className="text-glass-textMuted font-mono text-[10px] bg-black/20 px-2 py-0.5 rounded-md backdrop-blur-sm group-hover:bg-black/30 transition-colors border border-white/5">
           <span className={task.completed >= task.estimated ? 'text-green-400 font-bold' : ''}>{task.completed}</span>
           <span className="opacity-40 mx-0.5">/</span>
           <span>{task.estimated}</span>
         </div>
 
-        {/* Actions (Hover) */}
         <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-300">
            <button 
              onClick={(e) => { e.stopPropagation(); setIsAddingSub(true); updateTask({ ...task, isExpanded: true }); }} 
@@ -151,7 +146,6 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
         </div>
       </div>
 
-      {/* Subtasks */}
       <div className="pl-6 md:pl-8">
         {isAddingSub && (
           <form onSubmit={handleAddSubtask} className="flex gap-2 p-2 mb-2 bg-white/5 rounded-lg border border-white/10 animate-slide-up backdrop-blur-sm">
@@ -187,12 +181,13 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
 };
 
 const Tasks: React.FC = () => {
-  const { tasks, addTask, selectedCategoryId } = useTimer();
+  const { tasks, addTask, selectedCategoryId, pomodoroCount, settings } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [isHovered, setIsHovered] = useState(false); 
+  const [isHovered, setIsHovered] = useState(false);
+  const [showTaskView, setShowTaskView] = useState(false);
 
   const filteredTasks = selectedCategoryId 
     ? tasks.filter(t => t.categoryId === selectedCategoryId)
@@ -206,22 +201,28 @@ const Tasks: React.FC = () => {
     setNewEst(1);
   };
 
-  // Section is active if user is hovering or typing in the input
   const isSectionActive = isHovered || isInputFocused;
+  const blurClass = isSectionActive ? 'blur-0 opacity-100' : 'blur-[2px] opacity-50';
+  
+  // Pomo Counter Logic
+  const pomosPerSet = settings.longBreakInterval || 4;
+  const currentInSet = pomodoroCount % pomosPerSet;
+  const untilLongBreak = pomosPerSet - currentInSet;
 
   return (
+    <>
     <div 
       className="w-full max-w-lg mx-auto transition-all duration-700"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className={`transition-all duration-700 ease-out ${isSectionActive ? 'opacity-100' : 'opacity-60'}`}>
-        {/* Header: Unblurs if typing or hovering */}
-        <div className={`flex justify-between items-center mb-4 px-2 transition-all duration-500 ${isSectionActive ? 'blur-0 opacity-100' : 'blur-[2px] opacity-50'}`}>
+      <div className="relative">
+        {/* Header */}
+        <div className={`flex justify-between items-center mb-4 px-2 transition-all duration-500 ${blurClass}`}>
           <h2 className="text-[10px] font-bold text-white/50 tracking-[0.2em] uppercase">Task List</h2>
         </div>
 
-        {/* Add Task Input */}
+        {/* Input Area */}
         <form 
           onSubmit={handleSubmit} 
           className={`
@@ -251,15 +252,25 @@ const Tasks: React.FC = () => {
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
                 />
+                
+                 {/* Task View Toggle (Visible when NOT typing for clean look, or always? Prompt said "in a button next to add") */}
+                 {!isInputFocused && (
+                    <button 
+                        type="button" 
+                        onClick={() => setShowTaskView(true)}
+                        className="mr-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-transparent hover:border-white/10"
+                    >
+                        Task View
+                    </button>
+                 )}
             </div>
             
             <div className={`
               overflow-hidden transition-all duration-300 ease-in-out border-t border-white/5
-              ${isInputFocused ? 'max-h-16 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
+              ${isInputFocused ? 'max-h-20 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
             `}>
               <div className="flex justify-between items-center">
                 <div className="flex items-center gap-4">
-                    {/* Color Picker */}
                     <div className="flex gap-1.5">
                       {PRESET_COLORS.map(c => (
                         <button
@@ -271,10 +282,7 @@ const Tasks: React.FC = () => {
                         />
                       ))}
                     </div>
-
                     <div className="w-px h-3 bg-white/10" />
-
-                    {/* Estimate */}
                     <div className="flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
                       <span className="font-bold">EST</span>
                       <input 
@@ -286,26 +294,62 @@ const Tasks: React.FC = () => {
                       />
                     </div>
                 </div>
-
-                <button 
-                    type="submit"
-                    className="px-3 py-1 bg-white/90 text-black text-[10px] rounded-lg font-bold hover:bg-white transition-all shadow-lg active:scale-95 uppercase tracking-wider"
-                >
-                    Add
-                </button>
+                
+                <div className="flex gap-2">
+                    <button 
+                        type="button" 
+                        onClick={() => setShowTaskView(true)}
+                        className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
+                    >
+                        Task View
+                    </button>
+                    <button 
+                        type="submit"
+                        className="px-4 py-1 bg-white text-black text-[10px] rounded-lg font-bold hover:bg-gray-200 transition-all shadow-lg active:scale-95 uppercase tracking-wider"
+                    >
+                        Add
+                    </button>
+                </div>
               </div>
             </div>
           </div>
         </form>
 
-        {/* Task List: Blurs completely if not hovering or typing */}
-        <div className={`space-y-1 pb-20 transition-all duration-500 ${isSectionActive ? 'blur-0 opacity-100' : 'blur-[2px] opacity-40'}`}>
+        {/* Task List */}
+        <div className={`space-y-1 pb-8 transition-all duration-500 ${blurClass}`}>
           {filteredTasks.map(task => (
             <TaskItem key={task.id} task={task} isSectionActive={isSectionActive} />
           ))}
+          {filteredTasks.length === 0 && (
+            <div className="text-center py-8 text-white/20 text-xs italic tracking-wide">
+              No active tasks. Add one to focus.
+            </div>
+          )}
         </div>
+        
+        {/* Pomo Counter Footer (Blurs with List) */}
+        <div className={`
+            mt-2 pt-4 border-t border-white/10 flex justify-between items-center 
+            text-[10px] uppercase tracking-[0.2em] font-bold text-white/30
+            transition-all duration-500 ${blurClass}
+        `}>
+            <div className="flex items-center gap-4">
+                 <span className="flex items-center gap-2">
+                    <span className={`text-lg font-mono ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/70'}`}>{untilLongBreak}</span>
+                    <span>Until Long Break</span>
+                 </span>
+            </div>
+            <div className="flex items-center gap-2">
+                <span>Total</span>
+                <span className="text-lg font-mono text-white/70">{pomodoroCount}</span>
+            </div>
+        </div>
+
       </div>
     </div>
+
+    <TaskViewModal isOpen={showTaskView} onClose={() => setShowTaskView(false)} />
+    </>
   );
 };
 
