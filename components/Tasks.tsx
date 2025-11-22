@@ -206,7 +206,9 @@ const Tasks: React.FC = () => {
   
   // Pomo Counter Logic
   const pomosPerSet = settings.longBreakInterval || 4;
+  // How many pomos completed in current set
   const currentInSet = pomodoroCount % pomosPerSet;
+  // Pomos remaining until long break (if 0, next is long break)
   const untilLongBreak = pomosPerSet - currentInSet;
 
   return (
@@ -216,7 +218,7 @@ const Tasks: React.FC = () => {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className="relative">
+      <div className="relative flex flex-col">
         {/* Header */}
         <div className={`flex justify-between items-center mb-4 px-2 transition-all duration-500 ${blurClass}`}>
           <h2 className="text-[10px] font-bold text-white/50 tracking-[0.2em] uppercase">Task List</h2>
@@ -253,7 +255,6 @@ const Tasks: React.FC = () => {
                   onChange={e => setNewName(e.target.value)}
                 />
                 
-                 {/* Task View Toggle (Visible when NOT typing for clean look, or always? Prompt said "in a button next to add") */}
                  {!isInputFocused && (
                     <button 
                         type="button" 
@@ -316,32 +317,28 @@ const Tasks: React.FC = () => {
         </form>
 
         {/* Task List */}
-        <div className={`space-y-1 pb-8 transition-all duration-500 ${blurClass}`}>
+        <div className={`space-y-1 pb-8 min-h-[100px] transition-all duration-500 ${blurClass}`}>
           {filteredTasks.map(task => (
             <TaskItem key={task.id} task={task} isSectionActive={isSectionActive} />
           ))}
           {filteredTasks.length === 0 && (
-            <div className="text-center py-8 text-white/20 text-xs italic tracking-wide">
-              No active tasks. Add one to focus.
-            </div>
+            <div className="flex items-center justify-center h-24 opacity-0" />
           )}
         </div>
         
-        {/* Pomo Counter Footer (Blurs with List) */}
+        {/* Permanent Pomo Counter Footer */}
         <div className={`
-            mt-2 pt-4 border-t border-white/10 flex justify-between items-center 
-            text-[10px] uppercase tracking-[0.2em] font-bold text-white/30
+            mt-auto pt-6 pb-2 border-t border-white/5 flex justify-between items-center 
+            text-[10px] uppercase tracking-[0.2em] font-bold text-white/40
             transition-all duration-500 ${blurClass}
         `}>
-            <div className="flex items-center gap-4">
-                 <span className="flex items-center gap-2">
-                    <span className={`text-lg font-mono ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/70'}`}>{untilLongBreak}</span>
-                    <span>Until Long Break</span>
-                 </span>
+            <div className="flex items-center gap-2">
+                 <span className={`text-lg font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>
+                 <span>until long break</span>
             </div>
             <div className="flex items-center gap-2">
-                <span>Total</span>
-                <span className="text-lg font-mono text-white/70">{pomodoroCount}</span>
+                <span>total pomos</span>
+                <span className="text-lg font-mono font-bold text-white/80">{pomodoroCount}</span>
             </div>
         </div>
 

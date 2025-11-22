@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
 
@@ -32,12 +31,14 @@ const GraceModal: React.FC = () => {
   
   const handleWasWorking = () => {
     const nextMode = isAfterWork ? 'break' : 'work';
-    resolveGrace(nextMode, { adjustBreakBalance: -(graceTotal / 5) });
+    // Log as work, add to bank
+    resolveGrace(nextMode, { adjustBreakBalance: -(graceTotal / 5), logGraceAs: 'work' });
   };
 
   const handleWasResting = () => {
     const nextMode = isAfterWork ? 'break' : 'work';
-    resolveGrace(nextMode, { adjustBreakBalance: graceTotal });
+    // Log as break, deduct from bank
+    resolveGrace(nextMode, { adjustBreakBalance: graceTotal, logGraceAs: 'break' });
   };
 
   const addToBankAmount = graceTotal / 5;
@@ -66,8 +67,8 @@ const GraceModal: React.FC = () => {
            </p>
         </div>
 
-        {/* Buttons Centered & Close */}
-        <div className="flex flex-row items-center justify-center gap-6">
+        {/* Buttons Centered & Close (Gap reduced to 4) */}
+        <div className="flex flex-row items-center justify-center gap-4">
           
           {/* Button: Work */}
           <button 

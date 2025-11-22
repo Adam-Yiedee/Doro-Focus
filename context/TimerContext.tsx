@@ -3,6 +3,13 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import { TimerMode, Task, Category, LogEntry, TimerSettings } from '../types';
 import { playBell, playSwitch } from '../utils/sound';
 
+export interface ScheduleBreak {
+  id: string;
+  startTime: string; // "HH:MM" 24h format
+  duration: number; // minutes
+  label: string;
+}
+
 interface TimerContextType {
   // State
   workTime: number;
@@ -26,6 +33,8 @@ interface TimerContextType {
   selectedCategoryId: number | null;
   activeTask: Task | null;
   activeColor?: string;
+  scheduleBreaks: ScheduleBreak[];
+  scheduleStartTime: string;
 
   // Actions
   startTimer: () => void;
@@ -36,16 +45,21 @@ interface TimerContextType {
   startAllPause: () => void;
   confirmAllPause: (reason: string) => void;
   endAllPause: () => void;
-  resumeFromPause: (action: 'work' | 'break', adjustAmount: number) => void;
+  resumeFromPause: (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => void;
   restartActiveTimer: (customSeconds?: number) => void;
-  resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number }) => void;
+  resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' }) => void;
   
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
+  addDetailedTask: (task: Partial<Task> & { name: string, estimated: number }) => void;
+  addSubtasksToTask: (parentId: number, subtasks: { name: string, est: number }[]) => void;
   updateTask: (task: Task) => void;
   deleteTask: (id: number) => void;
   selectTask: (id: number) => void;
   toggleTaskExpansion: (id: number) => void;
+  moveTask: (fromId: number, toId: number) => void;
+  moveSubtask: (fromParentId: number, toParentId: number, subId: number, targetSubId: number | null) => void;
+  splitTask: (taskId: number, splitAt: number) => void;
   addCategory: (name: string, color: string) => void;
   updateCategory: (cat: Category) => void;
   deleteCategory: (id: number) => void;
@@ -53,11 +67,14 @@ interface TimerContextType {
   updateSettings: (newSettings: TimerSettings) => void;
   clearLogs: () => void;
   resetTimers: () => void;
+  addScheduleBreak: (brk: ScheduleBreak) => void;
+  deleteScheduleBreak: (id: string) => void;
+  setScheduleStartTime: (time: string) => void;
 }
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'lumina_focus_v4_stable';
+const STORAGE_KEY = 'lumina_focus_v6_cal'; // Increment version
 
 const DEFAULT_SETTINGS: TimerSettings = {
   workDuration: 1500, // 25 min
@@ -67,14 +84,17 @@ const DEFAULT_SETTINGS: TimerSettings = {
 };
 
 // Recursive Helpers for Tasks
-const recalculateEstimates = (task: Task): Task => {
+const recalculateStats = (task: Task): Task => {
   if (task.subtasks.length > 0) {
-    const updatedSubtasks = task.subtasks.map(recalculateEstimates);
+    const updatedSubtasks = task.subtasks.map(recalculateStats);
     const sumEst = updatedSubtasks.reduce((acc, t) => acc + t.estimated, 0);
+    const sumComp = updatedSubtasks.reduce((acc, t) => acc + t.completed, 0);
+    
     return { 
       ...task, 
       subtasks: updatedSubtasks, 
-      estimated: sumEst > 0 ? sumEst : task.estimated 
+      estimated: sumEst > 0 ? sumEst : task.estimated,
+      completed: sumComp
     };
   }
   return task;
@@ -93,10 +113,10 @@ const findTask = (tasks: Task[], id: number): Task | null => {
 
 const updateTaskInTree = (tasks: Task[], updatedTask: Task): Task[] => {
   return tasks.map(t => {
-    if (t.id === updatedTask.id) return recalculateEstimates(updatedTask);
+    if (t.id === updatedTask.id) return recalculateStats(updatedTask);
     if (t.subtasks.length > 0) {
       const newSubtasks = updateTaskInTree(t.subtasks, updatedTask);
-      return recalculateEstimates({ ...t, subtasks: newSubtasks });
+      return recalculateStats({ ...t, subtasks: newSubtasks });
     }
     return t;
   });
@@ -107,7 +127,7 @@ const deleteTaskInTree = (tasks: Task[], id: number): Task[] => {
     .filter(t => t.id !== id)
     .map(t => {
         const newSubtasks = deleteTaskInTree(t.subtasks, id);
-        return recalculateEstimates({ ...t, subtasks: newSubtasks });
+        return recalculateStats({ ...t, subtasks: newSubtasks });
     });
 };
 
@@ -123,11 +143,11 @@ const addTaskToTree = (tasks: Task[], parentId: number, newTask: Task): Task[] =
   return tasks.map(t => {
     if (t.id === parentId) {
       const updated = { ...t, subtasks: [...t.subtasks, newTask], isExpanded: true };
-      return recalculateEstimates(updated);
+      return recalculateStats(updated);
     }
     if (t.subtasks.length > 0) {
       const newSubtasks = addTaskToTree(t.subtasks, parentId, newTask);
-      return recalculateEstimates({ ...t, subtasks: newSubtasks });
+      return recalculateStats({ ...t, subtasks: newSubtasks });
     }
     return t;
   });
@@ -142,7 +162,17 @@ const findSelectedTask = (tasks: Task[]): Task | null => {
   return null;
 };
 
-// Helper to find active task and its inherited color context
+const flattenTasks = (tasks: Task[]): Task[] => {
+    let flat: Task[] = [];
+    tasks.forEach(t => {
+        flat.push(t);
+        if (t.subtasks.length > 0) {
+            flat = flat.concat(flattenTasks(t.subtasks));
+        }
+    });
+    return flat;
+};
+
 const findActiveContext = (tasks: Task[], parentColor?: string): { task: Task | null, color?: string } => {
   for (const task of tasks) {
     const currentColor = task.color || parentColor;
@@ -159,18 +189,19 @@ const findActiveContext = (tasks: Task[], parentColor?: string): { task: Task | 
 
 const incrementCompletedInTree = (tasks: Task[], id: number): Task[] => {
   return tasks.map(t => {
-    if (t.id === id) return { ...t, completed: t.completed + 1 };
+    if (t.id === id) {
+        return recalculateStats({ ...t, completed: t.completed + 1 });
+    }
     if (t.subtasks.length > 0) {
-      return { ...t, subtasks: incrementCompletedInTree(t.subtasks, id) };
+      const newSubtasks = incrementCompletedInTree(t.subtasks, id);
+      return recalculateStats({ ...t, subtasks: newSubtasks });
     }
     return t;
   });
 };
 
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // --- State ---
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
-  
   const [workTime, setWorkTime] = useState(1500);
   const [breakTime, setBreakTime] = useState(0); 
   const [activeMode, setActiveMode] = useState<TimerMode>('work');
@@ -183,49 +214,47 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [allPauseReason, setAllPauseReason] = useState('');
   const [allPauseStartTime, setAllPauseStartTime] = useState<number | null>(null);
 
-  // Grace Mode
   const [graceOpen, setGraceOpen] = useState(false);
   const [graceContext, setGraceContext] = useState<'afterWork' | 'afterBreak' | null>(null);
   const [graceTotal, setGraceTotal] = useState(0);
 
-  // Data
   const [tasks, setTasks] = useState<Task[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [scheduleBreaks, setScheduleBreaks] = useState<ScheduleBreak[]>([]);
+  const [scheduleStartTime, setScheduleStartTime] = useState<string>('08:00');
 
-  // Refs
   const lastTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const currentActivityStartRef = useRef<Date | null>(null);
 
-  // Load State
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setSettings({ ...DEFAULT_SETTINGS, ...parsed.settings }); // Merge with default for new keys
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed.settings });
         setTasks(parsed.tasks || []);
         setCategories(parsed.categories || []);
         setLogs(parsed.logs || []);
         setPomodoroCount(parsed.pomodoroCount || 0);
+        setScheduleBreaks(parsed.scheduleBreaks || []);
         if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
         if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
+        if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
       } catch (e) {
         console.error("Failed to load state", e);
       }
     }
   }, []);
 
-  // Save State
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime
+      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime
     }));
-  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime]);
+  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime]);
 
-  // Init Web Worker
   useEffect(() => {
     const workerCode = `
       let intervalId;
@@ -243,20 +272,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     `;
     const blob = new Blob([workerCode], { type: 'application/javascript' });
     workerRef.current = new Worker(URL.createObjectURL(blob));
-
-    return () => {
-      workerRef.current?.terminate();
-    };
+    return () => { workerRef.current?.terminate(); };
   }, []);
 
-  // Calculate Active Context
   const activeContext = findActiveContext(tasks);
   const activeTask = activeContext.task;
   const activeColor = activeContext.color;
 
   const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
-    if (duration < 1) return;
-    
+    // Removed minimum duration check to log all activities
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
     
@@ -272,137 +296,101 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setLogs(prev => [entry, ...prev]);
   }, [tasks]);
 
-  // --- Robust Notification Helper ---
   const sendNotification = useCallback((title: string, body: string) => {
     if (!("Notification" in window)) return;
-
-    const trigger = () => {
-       new Notification(title, { 
-         body, 
-         requireInteraction: true, // Keeps it on screen until user clicks
-         icon: '/favicon.ico',
-         tag: 'lumina-timer' // Replaces old notifications from same app
-       });
-    };
-
-    if (Notification.permission === "granted") {
-      trigger();
-    } else if (Notification.permission !== "denied") {
-      Notification.requestPermission().then(permission => {
-        if (permission === "granted") trigger();
-      });
-    }
+    const trigger = () => { new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer' }); };
+    if (Notification.permission === "granted") trigger();
+    else if (Notification.permission !== "denied") Notification.requestPermission().then(p => { if (p === "granted") trigger(); });
   }, []);
 
   const handleWorkLoopComplete = useCallback(() => {
     playBell();
-    const earned = settings.shortBreakDuration;
-    setBreakTime(prev => prev + earned);
+    setBreakTime(prev => prev + settings.shortBreakDuration);
     setPomodoroCount(prev => prev + 1);
 
     if (currentActivityStartRef.current) {
       logActivity('work', currentActivityStartRef.current, settings.workDuration, 'Pomodoro Complete');
       currentActivityStartRef.current = null; 
     }
+    
+    setTasks(prevTasks => {
+        const selected = findSelectedTask(prevTasks);
+        if (!selected) return prevTasks;
+        const updatedTasks = incrementCompletedInTree(prevTasks, selected.id);
+        const updatedSelected = findSelectedTask(updatedTasks);
+        if (updatedSelected && updatedSelected.completed >= updatedSelected.estimated) {
+             const flat = flattenTasks(updatedTasks);
+             const currentIdx = flat.findIndex(t => t.id === updatedSelected.id);
+             if (currentIdx !== -1) {
+                 let nextId: number | null = null;
+                 for (let i = currentIdx + 1; i < flat.length; i++) {
+                     const t = flat[i];
+                     if (!t.checked && t.completed < t.estimated && t.subtasks.length === 0) {
+                          nextId = t.id;
+                          break;
+                     }
+                 }
+                 if (nextId) return selectTaskInTree(updatedTasks, nextId);
+             }
+        }
+        return updatedTasks;
+    });
 
-    const selected = findSelectedTask(tasks);
-    let body = "5 minutes added to break bank.";
-    if (selected) {
-      setTasks(prev => incrementCompletedInTree(prev, selected.id));
-      body = `Completed 1 Pomodoro on ${selected.name}`;
-    }
-
-    sendNotification("Focus Session Complete", body);
-
+    sendNotification("Focus Session Complete", "5 minutes added to break bank.");
     setTimerStarted(false);
     setGraceContext('afterWork');
     setGraceTotal(0);
     setGraceOpen(true);
-  }, [settings, tasks, logActivity, sendNotification]);
+  }, [settings, logActivity, sendNotification]);
 
   const handleBreakLoopComplete = useCallback(() => {
     playBell();
-    
     if (currentActivityStartRef.current) {
       const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
       logActivity('break', currentActivityStartRef.current, duration, 'Break Bank Depleted');
       currentActivityStartRef.current = null;
     }
-
     setTimerStarted(false);
     setGraceContext('afterBreak');
     setGraceTotal(0);
     setGraceOpen(true);
-    
-    sendNotification("Break Time's Up!", "Your break bank is empty. Back to work!");
+    sendNotification("Break Time's Up!", "Back to work!");
   }, [logActivity, sendNotification]);
 
   const tick = useCallback(() => {
     const now = Date.now();
-    if (!lastTickRef.current) {
-        lastTickRef.current = now;
-        return;
-    }
-    
-    // Delta Calculation for Drift Protection
+    if (!lastTickRef.current) { lastTickRef.current = now; return; }
     const delta = (now - lastTickRef.current) / 1000;
     lastTickRef.current = now;
 
-    if (allPauseActive) {
-      setAllPauseTime(prev => prev + delta);
-      return;
-    }
-
-    if (graceOpen) {
-        setGraceTotal(prev => prev + delta);
-        return;
-    }
+    if (allPauseActive) { setAllPauseTime(prev => prev + delta); return; }
+    if (graceOpen) { setGraceTotal(prev => prev + delta); return; }
 
     if (timerStarted && !isIdle) {
       if (activeMode === 'work') {
         setWorkTime(prev => {
           const next = prev - delta;
-          if (next <= 0) {
-            return 0; 
-          }
+          if (next <= 0) return 0; 
           return next;
         });
-        // Check outside the setter to trigger effects
-        setWorkTime(prev => {
-           if (prev <= 0) {
-             handleWorkLoopComplete();
-             return 0;
-           }
-           return prev;
-        });
+        setWorkTime(prev => { if (prev <= 0) { handleWorkLoopComplete(); return 0; } return prev; });
       } else {
-        // Break mode
         setBreakTime(prev => {
           const next = prev - delta;
-          if (prev > 0 && next <= 0) {
-            handleBreakLoopComplete();
-            return 0;
-          }
+          if (prev > 0 && next <= 0) { handleBreakLoopComplete(); return 0; }
           return next;
         });
       }
     }
   }, [activeMode, timerStarted, isIdle, allPauseActive, graceOpen, handleWorkLoopComplete, handleBreakLoopComplete]);
 
-  // Handle Worker Messages
   useEffect(() => {
     if (!workerRef.current) return;
-    workerRef.current.onmessage = (e) => {
-      if (e.data === 'tick') {
-        tick();
-      }
-    };
+    workerRef.current.onmessage = (e) => { if (e.data === 'tick') tick(); };
   }, [tick]);
 
-  // Toggle Worker based on state
   useEffect(() => {
-    const shouldRun = timerStarted || allPauseActive || graceOpen;
-    if (shouldRun) {
+    if (timerStarted || allPauseActive || graceOpen) {
       if (!lastTickRef.current) lastTickRef.current = Date.now();
       workerRef.current?.postMessage('start');
     } else {
@@ -413,84 +401,52 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startTimer = () => {
     if (!timerStarted) {
-      if (isIdle) {
-        setIsIdle(false);
-        currentActivityStartRef.current = new Date();
-      }
+      if (isIdle) { setIsIdle(false); currentActivityStartRef.current = new Date(); }
       setTimerStarted(true);
       lastTickRef.current = Date.now(); 
-      if (!currentActivityStartRef.current) {
-        currentActivityStartRef.current = new Date();
-      }
-      // Resume AudioContext on user interaction
+      if (!currentActivityStartRef.current) currentActivityStartRef.current = new Date();
       playSwitch(); 
     }
   };
 
-  const stopTimer = () => {
-    setTimerStarted(false);
-  };
-
+  const stopTimer = () => { setTimerStarted(false); };
   const toggleTimer = () => timerStarted ? stopTimer() : startTimer();
 
   const performSwitch = (targetMode: TimerMode) => {
     playSwitch();
-    
     if (!isIdle && currentActivityStartRef.current) {
         const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
         logActivity(activeMode, currentActivityStartRef.current, duration, 'Switch');
     }
-
     setActiveMode(targetMode);
     setIsIdle(false);
     setGraceOpen(false);
     setGraceContext(null);
-
     currentActivityStartRef.current = new Date();
     setTimerStarted(true);
     lastTickRef.current = Date.now();
   };
 
   const activateMode = (mode: TimerMode) => {
-    if (isIdle) {
-        performSwitch(mode);
-    } else if (activeMode !== mode) {
-        performSwitch(mode);
-    } else {
-        if (!timerStarted) {
-            startTimer();
-            playSwitch();
-        }
-    }
+    if (isIdle) performSwitch(mode);
+    else if (activeMode !== mode) performSwitch(mode);
+    else if (!timerStarted) { startTimer(); playSwitch(); }
   };
 
-  const switchMode = () => {
-    const next = activeMode === 'work' ? 'break' : 'work';
-    performSwitch(next);
-  };
+  const switchMode = () => performSwitch(activeMode === 'work' ? 'break' : 'work');
 
   const restartActiveTimer = (customSeconds?: number) => {
     stopTimer();
-    
-    if (activeMode === 'work') {
-        setWorkTime(customSeconds !== undefined ? customSeconds : settings.workDuration);
-    } else {
-        setBreakTime(prev => {
-            if (customSeconds !== undefined) return customSeconds;
-            return prev < 0 ? 0 : prev;
-        });
-    }
-    
+    if (activeMode === 'work') setWorkTime(customSeconds !== undefined ? customSeconds : settings.workDuration);
+    else setBreakTime(prev => customSeconds !== undefined ? customSeconds : (prev < 0 ? 0 : prev));
     setGraceOpen(false);
     setIsIdle(false);
-    
     currentActivityStartRef.current = new Date();
     setTimerStarted(true);
     lastTickRef.current = Date.now();
   };
 
   const startAllPause = () => {};
-
   const confirmAllPause = (reason: string) => {
     stopTimer();
     setAllPauseReason(reason);
@@ -508,123 +464,228 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     currentActivityStartRef.current = new Date();
   };
 
-  const resumeFromPause = (action: 'work' | 'break', adjustAmount: number) => {
+  const resumeFromPause = (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => {
     setAllPauseActive(false);
-    
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
-       logActivity('allpause', start, allPauseTime, allPauseReason);
+       // If logging as work, we want to simulate "extra work" on active task if possible
+       let taskOverride: Task | undefined = undefined;
+       if (logPauseAs === 'work' && activeTask) {
+           taskOverride = activeTask;
+       }
+       logActivity(logPauseAs || 'allpause', start, allPauseTime, allPauseReason || 'Paused', taskOverride);
     }
-
     setActiveMode(action);
     setIsIdle(false);
-    if (action === 'work') {
-      setWorkTime(prev => Math.max(0, prev - adjustAmount));
-    } else {
-      setBreakTime(prev => prev - adjustAmount);
-    }
+    if (action === 'work') setWorkTime(prev => Math.max(0, prev - adjustAmount));
+    else setBreakTime(prev => prev - adjustAmount);
     currentActivityStartRef.current = new Date();
     startTimer();
   };
 
-  const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number }) => {
+  const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' }) => {
+    if (graceOpen && options?.logGraceAs) {
+        const graceStart = new Date(Date.now() - graceTotal * 1000);
+        // If user was working, attribute to active task
+        let taskOverride: Task | undefined = undefined;
+        if (options.logGraceAs === 'work' && activeTask) {
+            taskOverride = activeTask;
+        }
+        logActivity(options.logGraceAs, graceStart, graceTotal, 'Grace Period', taskOverride);
+    }
     setGraceOpen(false);
     setGraceContext(null);
     setActiveMode(nextMode);
     setIsIdle(false);
-
-    if (options?.adjustBreakBalance) {
-        setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
-    }
-
-    if (nextMode === 'work') {
-        setWorkTime(Math.max(0, settings.workDuration - (options?.adjustWorkStart || 0)));
-    } else {
-        setWorkTime(settings.workDuration); 
-    }
-    
+    if (options?.adjustBreakBalance) setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
+    if (nextMode === 'work') setWorkTime(Math.max(0, settings.workDuration - (options?.adjustWorkStart || 0)));
+    else setWorkTime(settings.workDuration); 
     currentActivityStartRef.current = new Date();
     startTimer();
   };
 
   const addTask = (name: string, estimated: number, categoryId: number | null, parentId?: number, color?: string) => {
     const newTask: Task = {
-      id: Date.now(),
-      name,
-      estimated,
-      completed: 0,
-      checked: false,
-      selected: tasks.length === 0 && !parentId, 
-      categoryId,
-      subtasks: [],
-      isExpanded: true,
-      color: color || undefined
+      id: Date.now(), name, estimated, completed: 0, checked: false,
+      selected: tasks.length === 0 && !parentId, categoryId, subtasks: [], isExpanded: true, color: color || undefined
     };
-    
-    if (parentId) {
-      setTasks(prev => addTaskToTree(prev, parentId, newTask));
-    } else {
+    if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
+    else setTasks(prev => [...prev, newTask]);
+  };
+
+  const addDetailedTask = (taskProps: Partial<Task> & { name: string, estimated: number }) => {
+      const newTask: Task = {
+        id: Date.now(), name: taskProps.name, estimated: taskProps.estimated, completed: 0, checked: false,
+        selected: tasks.length === 0, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color
+      };
       setTasks(prev => [...prev, newTask]);
-    }
   };
 
-  const updateTask = (task: Task) => {
-    setTasks(prev => updateTaskInTree(prev, task));
+  const addSubtasksToTask = (parentId: number, subtasks: { name: string, est: number }[]) => {
+    setTasks(prev => {
+        let newTasks = [...prev];
+        subtasks.forEach(sub => {
+             const t: Task = { id: Date.now() + Math.random(), name: sub.name, estimated: sub.est, completed: 0, checked: false, selected: false, categoryId: null, subtasks: [], isExpanded: false };
+             newTasks = addTaskToTree(newTasks, parentId, t);
+        });
+        return newTasks;
+    });
   };
 
+  const updateTask = (task: Task) => setTasks(prev => updateTaskInTree(prev, task));
   const deleteTask = (id: number) => setTasks(prev => deleteTaskInTree(prev, id));
+  const selectTask = (id: number) => setTasks(prev => selectTaskInTree(prev, id));
   
-  const selectTask = (id: number) => {
-    setTasks(prev => selectTaskInTree(prev, id));
-  };
-
   const toggleTaskExpansion = (id: number) => {
     const task = findTask(tasks, id);
-    if (task) {
-      setTasks(prev => updateTaskInTree(prev, { ...task, isExpanded: !task.isExpanded }));
-    }
+    if (task) setTasks(prev => updateTaskInTree(prev, { ...task, isExpanded: !task.isExpanded }));
   };
 
-  const addCategory = (name: string, color: string) => {
-    setCategories(prev => [...prev, { id: Date.now(), name, color }]);
+  const moveTask = (fromId: number, toId: number) => {
+    setTasks(prev => {
+        const newTasks = [...prev];
+        const fromIndex = newTasks.findIndex(t => t.id === fromId);
+        const toIndex = newTasks.findIndex(t => t.id === toId);
+        if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return prev;
+        const [moved] = newTasks.splice(fromIndex, 1);
+        // Re-find index after splice (indices shift)
+        const newToIndex = newTasks.findIndex(t => t.id === toId);
+        // If Moving Down (from < to), insert AFTER target
+        // If Moving Up (from > to), insert BEFORE target
+        if (fromIndex < toIndex) newTasks.splice(newToIndex + 1, 0, moved);
+        else newTasks.splice(newToIndex, 0, moved);
+        return newTasks;
+    });
   };
 
-  const updateCategory = (cat: Category) => {
-    setCategories(prev => prev.map(c => c.id === cat.id ? cat : c));
+  const moveSubtask = (fromParentId: number, toParentId: number, subId: number, targetSubId: number | null) => {
+    setTasks(prev => {
+        // 1. Extract Phase
+        let movedSub: Task | null = null;
+        let originalFromIndex = -1;
+
+        const tasksWithoutSub = (list: Task[]): Task[] => {
+            return list.map(t => {
+                if (t.id === fromParentId) {
+                    const idx = t.subtasks.findIndex(s => s.id === subId);
+                    if (idx !== -1) {
+                        movedSub = t.subtasks[idx];
+                        originalFromIndex = idx;
+                        const newSubs = [...t.subtasks];
+                        newSubs.splice(idx, 1);
+                        return recalculateStats({ ...t, subtasks: newSubs });
+                    }
+                }
+                if (t.subtasks.length > 0) {
+                    return recalculateStats({ ...t, subtasks: tasksWithoutSub(t.subtasks) });
+                }
+                return t;
+            });
+        };
+
+        const tempTasks = tasksWithoutSub(prev);
+        if (!movedSub) return prev;
+
+        // 2. Insert Phase
+        const insertSub = (list: Task[]): Task[] => {
+            return list.map(t => {
+                if (t.id === toParentId) {
+                    const newSubs = [...t.subtasks];
+                    
+                    if (targetSubId === null) {
+                        // Append
+                        newSubs.push(movedSub!);
+                    } else {
+                        const tIdx = newSubs.findIndex(s => s.id === targetSubId);
+                        if (tIdx !== -1) {
+                           // Same Parent Logic
+                           if (fromParentId === toParentId) {
+                                // If we moved DOWN (originalFrom < originalTarget), 
+                                // the target index in the reduced array effectively refers to the item.
+                                // We want to place it AFTER.
+                                
+                                // We need to know if we moved down.
+                                // Since we can't easily get original target index here without another pass,
+                                // We rely on: If 'tIdx' (current index of target) is >= originalFromIndex?
+                                // No, that's risky.
+                                
+                                // Re-check original parent to see order
+                                const originalParent = findTask(prev, fromParentId);
+                                const originalTargetIdx = originalParent?.subtasks.findIndex(s => s.id === targetSubId) ?? -1;
+                                
+                                if (originalFromIndex < originalTargetIdx) {
+                                     // Moved Down -> Insert After
+                                     newSubs.splice(tIdx + 1, 0, movedSub!);
+                                } else {
+                                     // Moved Up -> Insert Before
+                                     newSubs.splice(tIdx, 0, movedSub!);
+                                }
+                           } else {
+                                // Different Parent -> Always Insert Before Target (Standard behavior)
+                                newSubs.splice(tIdx, 0, movedSub!);
+                           }
+                        } else {
+                           newSubs.push(movedSub!);
+                        }
+                    }
+                    return recalculateStats({ ...t, subtasks: newSubs });
+                }
+                if (t.subtasks.length > 0) {
+                    return recalculateStats({ ...t, subtasks: insertSub(t.subtasks) });
+                }
+                return t;
+            });
+        };
+
+        return insertSub(tempTasks);
+    });
   };
 
+  const splitTask = (taskId: number, splitAt: number) => {
+    setTasks(prev => {
+        const index = prev.findIndex(t => t.id === taskId);
+        if (index === -1) return prev;
+        const task = prev[index];
+        if (splitAt <= task.completed || splitAt >= task.estimated) return prev;
+        const remainingEst = task.estimated - splitAt;
+        const part1 = { ...task, estimated: splitAt };
+        const part2 = { ...task, id: Date.now(), name: `${task.name} (Part 2)`, estimated: remainingEst, completed: 0, subtasks: [] };
+        const newTasks = [...prev];
+        newTasks[index] = part1;
+        newTasks.splice(index + 1, 0, part2);
+        return newTasks;
+    });
+  };
+
+  const addCategory = (name: string, color: string) => setCategories(prev => [...prev, { id: Date.now(), name, color }]);
+  const updateCategory = (cat: Category) => setCategories(prev => prev.map(c => c.id === cat.id ? cat : c));
   const deleteCategory = (id: number) => {
     setCategories(prev => prev.filter(c => c.id !== id));
     if (selectedCategoryId === id) setSelectedCategoryId(null);
   };
 
-  const resetTimers = () => {
-    restartActiveTimer();
-  };
+  const addScheduleBreak = (brk: ScheduleBreak) => setScheduleBreaks(prev => [...prev, brk].sort((a,b) => a.startTime.localeCompare(b.startTime)));
+  const deleteScheduleBreak = (id: string) => setScheduleBreaks(prev => prev.filter(b => b.id !== id));
 
   const updateSettings = (newSettings: TimerSettings) => {
     setSettings(newSettings);
-    if (!timerStarted && activeMode === 'work') {
-      setWorkTime(newSettings.workDuration);
-    }
+    if (!timerStarted && activeMode === 'work') setWorkTime(newSettings.workDuration);
   };
 
-  const clearLogs = () => {
-    setLogs([]);
-    setPomodoroCount(0);
-  };
+  const clearLogs = () => { setLogs([]); setPomodoroCount(0); };
+  const resetTimers = () => restartActiveTimer();
 
   return (
     <TimerContext.Provider value={{
       workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
-      allPauseActive, allPauseTime,
-      graceOpen, graceContext, graceTotal,
-      tasks, categories, logs, settings, selectedCategoryId, 
+      allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
+      tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime,
       activeTask, activeColor, 
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace,
-      addTask, updateTask, deleteTask, selectTask, toggleTaskExpansion,
+      addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
+      addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
       updateSettings, clearLogs, resetTimers
     }}>
       {children}
