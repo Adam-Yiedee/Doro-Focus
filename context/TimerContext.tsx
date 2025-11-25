@@ -47,6 +47,10 @@ interface TimerContextType {
   showSummary: boolean;
   sessionStats: SessionStats | null;
 
+  // Group Study State
+  groupSessionId: string | null;
+  userName: string;
+
   // Actions
   startTimer: () => void;
   stopTimer: () => void;
@@ -63,6 +67,11 @@ interface TimerContextType {
   closeSummary: () => void;
   hardReset: () => void;
   
+  // Group Actions
+  createGroupSession: (name: string) => void;
+  joinGroupSession: (id: string, name: string) => void;
+  leaveGroupSession: () => void;
+
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
   addDetailedTask: (task: Partial<Task> & { name: string, estimated: number }) => void;
@@ -255,6 +264,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [showSummary, setShowSummary] = useState(false);
   const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
 
+  // Group Study State
+  const [groupSessionId, setGroupSessionId] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string>('');
+  const [userId] = useState(() => 'user_' + Math.random().toString(36).substr(2, 9));
+  const isRemoteUpdate = useRef(false);
+
   const lastTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const currentActivityStartRef = useRef<Date | null>(null);
@@ -272,12 +287,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setScheduleBreaks(parsed.scheduleBreaks || []);
         if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
         if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
+        if (parsed.userName) setUserName(parsed.userName); // Persist username
         
         if (parsed.sessionStartTime) {
             setSessionStartTime(parsed.sessionStartTime);
             if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
         } else {
-             // No session active, reset schedule start to Now
              const now = new Date();
              const h = now.getHours().toString().padStart(2, '0');
              const m = now.getMinutes().toString().padStart(2, '0');
@@ -287,7 +302,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.error("Failed to load state", e);
       }
     } else {
-         // No save found, initialize defaults to Now
          const now = new Date();
          const h = now.getHours().toString().padStart(2, '0');
          const m = now.getMinutes().toString().padStart(2, '0');
@@ -297,9 +311,132 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime
+      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName
     }));
-  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime]);
+  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName]);
+
+  // ---- GROUP SYNC LOGIC ----
+  const broadcastState = useCallback((type: 'STATE_UPDATE' | 'NEW_PEER', forceState?: any) => {
+    if (!groupSessionId) return;
+    
+    const payload = {
+       type,
+       senderId: userId,
+       userName: userName,
+       timestamp: Date.now(),
+       state: forceState || {
+           settings,
+           tasks,
+           categories,
+           logs,
+           activeMode,
+           timerStarted,
+           workTime,
+           breakTime,
+           pomodoroCount,
+           scheduleBreaks,
+           scheduleStartTime,
+           sessionStartTime,
+           allPauseActive
+       }
+    };
+    
+    // Write to a session-specific key to trigger storage events in other tabs
+    const key = `lumina_sess_${groupSessionId}`;
+    localStorage.setItem(key, JSON.stringify(payload));
+  }, [groupSessionId, userId, userName, settings, tasks, categories, logs, activeMode, timerStarted, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive]);
+
+  // Broadcast on state changes
+  useEffect(() => {
+     if(!groupSessionId || isRemoteUpdate.current) return;
+     // Debounce slightly
+     const t = setTimeout(() => {
+         broadcastState('STATE_UPDATE');
+     }, 50);
+     return () => clearTimeout(t);
+  }, [
+      // Dependency list: Critical state that should trigger a sync
+      tasks, settings, activeMode, timerStarted, 
+      scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive,
+      // Note: we exclude workTime/breakTime to prevent rapid-fire sync on every tick.
+      // However, start/stop/pause actions change 'timerStarted' or 'allPauseActive', 
+      // capturing the time at that moment which is sufficient for sync.
+  ]);
+
+  // Listen for sync events
+  useEffect(() => {
+      if (!groupSessionId) return;
+
+      const handleStorage = (e: StorageEvent) => {
+          if (e.key === `lumina_sess_${groupSessionId}` && e.newValue) {
+              try {
+                  const data = JSON.parse(e.newValue);
+                  if (data.senderId === userId) return; // Ignore self
+
+                  if (data.type === 'NEW_PEER') {
+                      // Someone joined, broadcast my state so they can sync immediately
+                      broadcastState('STATE_UPDATE');
+                  } else if (data.type === 'STATE_UPDATE') {
+                      const remote = data.state;
+                      isRemoteUpdate.current = true;
+                      
+                      // Bulk update state
+                      setSettings(remote.settings);
+                      setTasks(remote.tasks);
+                      setCategories(remote.categories);
+                      setLogs(remote.logs);
+                      setActiveMode(remote.activeMode);
+                      setTimerStarted(remote.timerStarted);
+                      setWorkTime(remote.workTime);
+                      setBreakTime(remote.breakTime);
+                      setPomodoroCount(remote.pomodoroCount);
+                      setScheduleBreaks(remote.scheduleBreaks);
+                      setScheduleStartTime(remote.scheduleStartTime);
+                      setSessionStartTime(remote.sessionStartTime);
+                      setAllPauseActive(remote.allPauseActive);
+
+                      // Force worker sync
+                      if (remote.timerStarted) {
+                          workerRef.current?.postMessage('start');
+                          lastTickRef.current = Date.now();
+                          currentActivityStartRef.current = new Date(); 
+                      } else {
+                          workerRef.current?.postMessage('stop');
+                      }
+
+                      setTimeout(() => { isRemoteUpdate.current = false; }, 300);
+                  }
+              } catch (err) { console.error("Sync error", err); }
+          }
+      };
+
+      window.addEventListener('storage', handleStorage);
+      return () => window.removeEventListener('storage', handleStorage);
+  }, [groupSessionId, broadcastState, userId]);
+
+  const createGroupSession = (name: string) => {
+      setUserName(name);
+      // Generate a simple 6-char ID
+      const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
+      setGroupSessionId(newId);
+  };
+
+  const joinGroupSession = (id: string, name: string) => {
+      setUserName(name);
+      setGroupSessionId(id);
+      // Announce presence
+      setTimeout(() => {
+          const key = `lumina_sess_${id}`;
+          const payload = { type: 'NEW_PEER', senderId: userId, userName: name, timestamp: Date.now() };
+          localStorage.setItem(key, JSON.stringify(payload));
+      }, 100);
+  };
+
+  const leaveGroupSession = () => {
+      setGroupSessionId(null);
+  };
+
+  // ---- END GROUP SYNC LOGIC ----
 
   useEffect(() => {
     const workerCode = `
@@ -636,6 +773,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setScheduleBreaks([]);
       setSessionStats(null);
       setShowSummary(false);
+      setGroupSessionId(null);
       
       const now = new Date();
       const h = now.getHours().toString().padStart(2, '0');
@@ -788,8 +926,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
+      groupSessionId, userName,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
+      createGroupSession, joinGroupSession, leaveGroupSession,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,

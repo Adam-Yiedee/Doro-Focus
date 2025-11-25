@@ -1,4 +1,3 @@
-
 import React, { useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
@@ -15,19 +14,20 @@ const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { p
   // Calculate bottom position to transition from -300% (Empty/Low) to -185% (Full/High)
   // Increased size to 300% to ensure corners are filled and liquid spans full width properly
   const safePercent = Math.max(0, Math.min(1.1, percent));
-  const bottomVal = -300 + (safePercent * 115);
+  const bottomVal = -295 + (safePercent * 115);
 
   const primaryClass = colorMode === 'red' ? 'bg-red-500/20' : 'bg-white/5';
   const secondaryClass = colorMode === 'red' ? 'bg-red-500/10' : 'bg-white/3';
 
+  // Rounded 48% makes it much flatter (closer to circle) than 45% or 40%
   return (
     <div className={`absolute inset-0 z-0 transition-opacity duration-700 pointer-events-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${primaryClass} rounded-[40%] transition-all duration-1000 ease-in-out ${isActive ? 'animate-spin-slow' : ''}`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${primaryClass} rounded-[48%] transition-all duration-1000 ease-in-out ${isActive ? 'animate-spin-slow' : ''}`}
          style={{ bottom: `${bottomVal}%` }}
        />
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${secondaryClass} rounded-[42%] transition-all duration-1000 ease-in-out ${isActive ? 'animate-spin-slower' : ''}`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${secondaryClass} rounded-[47%] transition-all duration-1000 ease-in-out ${isActive ? 'animate-spin-slower' : ''}`}
          style={{ bottom: `${bottomVal}%` }}
        />
     </div>

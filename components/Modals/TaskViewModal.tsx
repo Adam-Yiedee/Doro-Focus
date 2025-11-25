@@ -31,6 +31,17 @@ const PRESET_COLORS = [
   '#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59'
 ];
 
+const GripIcon = () => (
+    <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+        <circle cx="2" cy="2" r="1.5" />
+        <circle cx="2" cy="8" r="1.5" />
+        <circle cx="2" cy="14" r="1.5" />
+        <circle cx="8" cy="2" r="1.5" />
+        <circle cx="8" cy="8" r="1.5" />
+        <circle cx="8" cy="14" r="1.5" />
+    </svg>
+);
+
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
     const { tasks, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime } = useTimer();
     
@@ -59,14 +70,32 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const [splitValue, setSplitValue] = useState(2);
     const [pixelsPerMin, setPixelsPerMin] = useState(3);
 
-    const [draggedId, setDraggedId] = useState<{ type: 'task' | 'subtask', id: number, parentId?: number } | null>(null);
-    const [dropTargetId, setDropTargetId] = useState<{ id: number, parentId?: number, type: 'task' | 'subtask' } | null>(null);
+    // Drag and Drop State (Positional)
+    const [dragState, setDragState] = useState<{ type: 'task' | 'subtask', id: number, parentId?: number } | null>(null);
+    const [dropTarget, setDropTarget] = useState<{ id: number, position: 'top' | 'bottom', type: 'task' | 'subtask', parentId?: number } | null>(null);
 
     const calendarRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (isOpen) {
-            const [hStr, mStr] = scheduleStartTime.split(':');
+            // Determine Start Time: Use Session Start if active, otherwise Current Time
+            let targetTime = scheduleStartTime;
+            
+            // If NO session is active, we force update to NOW
+            // This ensures if they open it later, it updates to current time
+            if (!sessionStartTime) {
+                 const now = new Date();
+                 const h = now.getHours().toString().padStart(2, '0');
+                 const m = now.getMinutes().toString().padStart(2, '0');
+                 targetTime = `${h}:${m}`;
+                 setScheduleStartTime(targetTime); // Update context to current time
+            } else {
+                 // If session is active, ensure we use session start time
+                 const d = new Date(sessionStartTime);
+                 targetTime = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            }
+            
+            const [hStr, mStr] = targetTime.split(':');
             let h = parseInt(hStr) || 8;
             const m = parseInt(mStr) || 0;
             const isPm = h >= 12;
@@ -87,7 +116,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             setBreakMinStr(curM.toString().padStart(2, '0'));
             setBreakAmPm(curIsPm ? 'PM' : 'AM');
         }
-    }, [isOpen, scheduleStartTime]);
+    }, [isOpen]); 
 
     const updateScheduleStart = () => {
         let h = parseInt(stHourStr);
@@ -136,26 +165,18 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         const now = new Date();
         const [schH, schM] = scheduleStartTime.split(':').map(Number);
         
-        // 1. Establish Schedule Anchor
-        // Timeline starts at Schedule Start Time today.
         let timelineStart = new Date();
         timelineStart.setHours(schH, schM, 0, 0);
         
-        // Filter logs to "Current Session" logs (e.g. today or since session start).
-        // If sessionStartTime exists, use that as cutoff for logs to ensure relevancy.
         const sessionLogs = sessionStartTime 
             ? logs.filter(l => l.start >= sessionStartTime)
             : logs.filter(l => {
-                 // Fallback: logs from today
                  const d = new Date(l.start);
                  const today = new Date();
                  return d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
             });
         
-        // Map Logs to Blocks (Past)
         let lastLogEnd = new Date(timelineStart);
-        
-        // Sort logs ASC
         const sortedLogs = [...sessionLogs].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
         
         sortedLogs.forEach((log, i) => {
@@ -181,16 +202,12 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             });
         });
 
-        // 2. Determine Projection Start
-        // Projection starts at NOW.
         let projectionTime = new Date();
         if (projectionTime < timelineStart) projectionTime = timelineStart; 
 
-        // If Timer is Started, we are inside a block.
         let virtualPomoCount = pomodoroCount;
         
         if (timerStarted) {
-            // Add current running block
             const remainingMins = workTime / 60; 
             const endTime = new Date(projectionTime.getTime() + remainingMins * 60000);
             
@@ -202,12 +219,10 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                     label: currentUnit.name, subLabel: 'Current Session', color: currentUnit.color,
                     topPx: diffMins * pixelsPerMin, heightPx: remainingMins * pixelsPerMin
                 });
-                // Remove first unit from projection list
                 flattenedWorkUnits.shift();
                 virtualPomoCount++;
                 projectionTime = endTime;
                 
-                // Add Break after this?
                 const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
                 const breakDur = isLongBreak ? (settings.longBreakDuration/60) : (settings.shortBreakDuration/60);
                 const bEnd = new Date(projectionTime.getTime() + breakDur * 60000);
@@ -221,7 +236,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             }
         }
         
-        // 3. Project Future
         const dailyBreaks = scheduleBreaks.map(b => {
             const [h, m] = b.startTime.split(':').map(Number);
             const start = new Date(timelineStart);
@@ -231,7 +245,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             return { ...b, start, end };
         });
 
-        // Add Scheduled Breaks (Fixed)
         dailyBreaks.forEach(brk => {
              const diffMins = (brk.start.getTime() - timelineStart.getTime()) / 60000;
              blocks.push({
@@ -246,7 +259,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             while (overlap) {
                 overlap = false;
                 for (const brk of dailyBreaks) {
-                    // If time is inside a break
                     if (updatedTime >= brk.start && updatedTime < brk.end) {
                         updatedTime = new Date(brk.end);
                         overlap = true;
@@ -296,44 +308,80 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
 
     useEffect(() => {
         if (isOpen && calendarRef.current) {
-            // Scroll to NOW
             const now = new Date();
             const start = timelineData.timelineStart;
             const diffMins = (now.getTime() - start.getTime()) / 60000;
             const top = diffMins * pixelsPerMin;
-            // Add slight delay to ensure layout
             setTimeout(() => {
                 calendarRef.current?.scrollTo({ top: Math.max(0, top - 200), behavior: 'smooth' });
             }, 100);
         }
     }, [isOpen]); 
 
+    // ---- DRAG AND DROP LOGIC (Positional) ----
     const onDragStart = (e: React.DragEvent, type: 'task' | 'subtask', id: number, parentId?: number) => {
-        e.stopPropagation();
-        setDraggedId({ type, id, parentId });
+        e.dataTransfer.effectAllowed = "move";
+        setDragState({ type, id, parentId });
+        
+        // Hide default drag image if possible for cleaner look, or let it be
+        // e.dataTransfer.setDragImage(new Image(), 0, 0); 
     };
 
     const onDragOver = (e: React.DragEvent, id: number, type: 'task' | 'subtask', parentId?: number) => {
         e.preventDefault();
         e.stopPropagation();
-        if (!draggedId) return;
-        setDropTargetId({ id, parentId, type });
+        
+        if (!dragState) return;
+        if (dragState.type !== type) return;
+        if (dragState.id === id) return; // Ignore self
+
+        const rect = e.currentTarget.getBoundingClientRect();
+        const midY = rect.top + (rect.height / 2);
+        const position = e.clientY < midY ? 'top' : 'bottom';
+        
+        setDropTarget({ id, position, type, parentId });
     };
 
     const onDrop = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        if (!draggedId || !dropTargetId) return;
 
-        if (draggedId.type === 'task' && dropTargetId.type === 'task') {
-            if (draggedId.id !== dropTargetId.id) moveTask(draggedId.id, dropTargetId.id);
-        } else if (draggedId.type === 'subtask') {
-             if (draggedId.parentId === undefined) return;
-             if (dropTargetId.type === 'task') moveSubtask(draggedId.parentId, dropTargetId.id, draggedId.id, null);
-             else moveSubtask(draggedId.parentId, dropTargetId.parentId!, draggedId.id, dropTargetId.id);
+        if (dragState && dropTarget) {
+            if (dragState.type === 'task' && dropTarget.type === 'task') {
+                if (dropTarget.position === 'top') {
+                    // Move dragged ID before dropTarget ID
+                    moveTask(dragState.id, dropTarget.id);
+                } else {
+                    // Move dragged ID after dropTarget ID
+                    const idx = tasks.findIndex(t => t.id === dropTarget.id);
+                    if (idx !== -1 && idx < tasks.length - 1) {
+                        moveTask(dragState.id, tasks[idx + 1].id);
+                    } else {
+                        // End of list
+                        moveTask(dragState.id, -1);
+                    }
+                }
+            } else if (dragState.type === 'subtask' && dropTarget.type === 'subtask') {
+                 if (dragState.parentId !== undefined && dropTarget.parentId !== undefined) {
+                    const parent = tasks.find(t => t.id === dropTarget.parentId);
+                    if (parent) {
+                        if (dropTarget.position === 'top') {
+                             moveSubtask(dragState.parentId, dropTarget.parentId, dragState.id, dropTarget.id);
+                        } else {
+                             const sIdx = parent.subtasks.findIndex(s => s.id === dropTarget.id);
+                             if (sIdx !== -1 && sIdx < parent.subtasks.length - 1) {
+                                  moveSubtask(dragState.parentId, dropTarget.parentId, dragState.id, parent.subtasks[sIdx+1].id);
+                             } else {
+                                  moveSubtask(dragState.parentId, dropTarget.parentId, dragState.id, null);
+                             }
+                        }
+                    }
+                 }
+            }
         }
-        setDraggedId(null);
-        setDropTargetId(null);
+        
+        setDragState(null);
+        setDropTarget(null);
     };
 
     const handleAddSubtaskToForm = () => {
@@ -410,11 +458,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                          </div>
                     </div>
                     {/* Task List */}
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-2 relative">
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4 relative">
                         {tasks.map((task, index) => {
                             if (task.checked) {
                                 return (
-                                    <div key={task.id} className="relative rounded-xl border border-white/5 bg-black/20 p-3 opacity-40 group">
+                                    <div key={task.id} className="relative rounded-xl border border-white/5 bg-black/20 p-3 opacity-40 group mb-2">
                                         <div className="flex justify-between items-center">
                                             <div className="flex-1 min-w-0">
                                                 <div className="text-sm font-bold text-white line-through truncate">{task.name}</div>
@@ -429,46 +477,75 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                             }
 
                             const isSplitting = splittingTaskId === task.id;
-                            const isDragged = draggedId?.type === 'task' && draggedId.id === task.id;
-                            const isDropTarget = dropTargetId?.type === 'task' && dropTargetId.id === task.id;
+                            const isDragged = dragState?.id === task.id;
+                            const isDropTarget = dropTarget?.id === task.id;
+                            const isTop = dropTarget?.position === 'top';
+                            
                             return (
-                                <div key={task.id} className="transition-all duration-300 ease-out" style={{opacity: isDragged ? 0.3 : 1}}>
+                                <div 
+                                    key={task.id} 
+                                    className={`transition-all duration-300 ease-out pb-2`}
+                                    style={{opacity: isDragged ? 0.3 : 1}}
+                                    onDragOver={(e) => onDragOver(e, task.id, 'task')}
+                                    onDrop={onDrop}
+                                >
                                     <div 
                                         draggable 
                                         onDragStart={(e) => onDragStart(e, 'task', task.id)} 
-                                        onDragOver={(e) => onDragOver(e, task.id, 'task')} 
-                                        onDrop={onDrop} 
-                                        className={`relative rounded-xl border transition-all duration-200 group overflow-hidden bg-[#1c1c1e] ${isDropTarget ? 'border-white/50 scale-[1.02]' : 'border-white/5 hover:border-white/20'}`}
+                                        className={`relative rounded-xl border transition-all duration-200 group overflow-hidden bg-[#1c1c1e] flex flex-col ${isDropTarget ? 'border-blue-500/50' : 'border-white/5 hover:border-white/20'}`}
                                     >
-                                        <div className="absolute left-0 top-0 bottom-0 w-1.5 transition-colors" style={{ backgroundColor: task.color || '#BA4949' }} />
-                                        <div className="pl-4 pr-3 py-3">
-                                            <div className="flex justify-between items-center cursor-grab active:cursor-grabbing">
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="text-sm font-bold text-white/90 truncate">{task.name}</div>
-                                                    <div className="text-[10px] text-white/40 font-mono flex items-center gap-2 mt-0.5"><span>{task.estimated - task.completed} left</span>{task.subtasks.length > 0 && <span className="text-white/20">• {task.subtasks.length} sub</span>}</div>
-                                                </div>
-                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                     {(task.estimated - task.completed > 1) && (<button onClick={() => { setSplittingTaskId(isSplitting ? null : task.id); setSplitValue(Math.floor((task.estimated - task.completed) / 2)); }} className={`p-1.5 rounded hover:bg-white/10 text-white/30 hover:text-white`}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M9 21H4v-5"/></svg></button>)}
-                                                     <button onClick={() => deleteTask(task.id)} className="p-1.5 text-white/30 hover:text-red-400 rounded hover:bg-white/10"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                                        {/* Drop Indicators */}
+                                        {isDropTarget && isTop && <div className="absolute top-0 left-0 right-0 h-1 bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.8)] z-50 pointer-events-none" />}
+                                        {isDropTarget && !isTop && <div className="absolute bottom-0 left-0 right-0 h-1 bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.8)] z-50 pointer-events-none" />}
+
+                                        <div className="flex w-full">
+                                            {/* Drag Handle Area */}
+                                            <div className="w-8 cursor-move bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/20 hover:text-white/60 transition-colors border-r border-white/5" onMouseDown={e => e.stopPropagation()}>
+                                                <GripIcon />
+                                            </div>
+
+                                            <div className="flex-1 min-w-0 relative">
+                                                <div className="absolute left-0 top-0 bottom-0 w-1 transition-colors" style={{ backgroundColor: task.color || '#BA4949' }} />
+                                                <div className="pl-4 pr-3 py-3">
+                                                    <div className="flex justify-between items-center">
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="text-sm font-bold text-white/90 truncate select-none">{task.name}</div>
+                                                            <div className="text-[10px] text-white/40 font-mono flex items-center gap-2 mt-0.5"><span>{task.estimated - task.completed} left</span>{task.subtasks.length > 0 && <span className="text-white/20">• {task.subtasks.length} sub</span>}</div>
+                                                        </div>
+                                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                            {(task.estimated - task.completed > 1) && (<button onClick={() => { setSplittingTaskId(isSplitting ? null : task.id); setSplitValue(Math.floor((task.estimated - task.completed) / 2)); }} className={`p-1.5 rounded hover:bg-white/10 text-white/30 hover:text-white`}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M9 21H4v-5"/></svg></button>)}
+                                                            <button onClick={() => deleteTask(task.id)} className="p-1.5 text-white/30 hover:text-red-400 rounded hover:bg-white/10"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    {isSplitting && (<div className="mt-2 pt-2 border-t border-white/5 flex justify-between items-center animate-slide-up"><span className="text-[10px] text-white/50 uppercase font-bold">Split at</span><div className="flex items-center gap-2"><button onClick={() => setSplitValue(v => Math.max(1, v-1))} className="w-5 h-5 flex items-center justify-center bg-white/10 rounded text-white">-</button><span className="text-xs font-mono text-white">{splitValue}</span><button onClick={() => setSplitValue(v => Math.min(task.estimated - task.completed - 1, v+1))} className="w-5 h-5 flex items-center justify-center bg-white/10 rounded text-white">+</button></div><button onClick={() => { splitTask(task.id, splitValue); setSplittingTaskId(null); }} className="px-2 py-1 bg-white text-black text-[10px] font-bold rounded">OK</button></div>)}
+                                                    
+                                                    {task.subtasks.length > 0 && (
+                                                        <div className="mt-2 space-y-1">
+                                                            {task.subtasks.map((sub) => {
+                                                                const isSubDrop = dropTarget?.id === sub.id && dropTarget?.type === 'subtask';
+                                                                const isSubTop = dropTarget?.position === 'top';
+                                                                
+                                                                return (
+                                                                    <div 
+                                                                        key={sub.id} 
+                                                                        className={`relative pl-2 py-1 rounded text-xs text-white/60 hover:bg-white/5 cursor-grab flex justify-between group/sub transition-all duration-200`} 
+                                                                        draggable={!sub.checked}
+                                                                        onDragStart={(e) => !sub.checked && onDragStart(e, 'subtask', sub.id, task.id)} 
+                                                                        onDragOver={(e) => !sub.checked && onDragOver(e, sub.id, 'subtask', task.id)} 
+                                                                        onDrop={onDrop}
+                                                                    >
+                                                                        {isSubDrop && isSubTop && <div className="absolute top-0 left-0 right-0 h-0.5 bg-blue-500 z-10" />}
+                                                                        {isSubDrop && !isSubTop && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 z-10" />}
+
+                                                                        <span className={sub.checked ? "line-through opacity-50" : ""}>{sub.name} ({sub.estimated})</span>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
-                                            {isSplitting && (<div className="mt-2 pt-2 border-t border-white/5 flex justify-between items-center animate-slide-up"><span className="text-[10px] text-white/50 uppercase font-bold">Split at</span><div className="flex items-center gap-2"><button onClick={() => setSplitValue(v => Math.max(1, v-1))} className="w-5 h-5 flex items-center justify-center bg-white/10 rounded text-white">-</button><span className="text-xs font-mono text-white">{splitValue}</span><button onClick={() => setSplitValue(v => Math.min(task.estimated - task.completed - 1, v+1))} className="w-5 h-5 flex items-center justify-center bg-white/10 rounded text-white">+</button></div><button onClick={() => { splitTask(task.id, splitValue); setSplittingTaskId(null); }} className="px-2 py-1 bg-white text-black text-[10px] font-bold rounded">OK</button></div>)}
-                                            {task.subtasks.length > 0 && (
-                                                <div className="mt-2 space-y-1">
-                                                     {task.subtasks.map((sub) => (
-                                                        <div 
-                                                            key={sub.id} 
-                                                            className={`pl-2 py-1 rounded text-xs text-white/60 hover:bg-white/5 cursor-grab flex justify-between group/sub transition-all duration-200 ${(dropTargetId?.id === sub.id) ? 'bg-white/10' : ''}`} 
-                                                            draggable={!sub.checked}
-                                                            onDragStart={(e) => !sub.checked && onDragStart(e, 'subtask', sub.id, task.id)} 
-                                                            onDragOver={(e) => !sub.checked && onDragOver(e, sub.id, 'subtask', task.id)} 
-                                                            onDrop={onDrop}
-                                                        >
-                                                            <span className={sub.checked ? "line-through opacity-50" : ""}>{sub.name} ({sub.estimated})</span>
-                                                        </div>
-                                                     ))}
-                                                </div>
-                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -495,7 +572,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                             {/* Zoom Slider */}
                              <div className="flex items-center gap-2 ml-4">
                                 <span className="text-[9px] font-bold text-white/30 uppercase">Zoom</span>
-                                <input type="range" min="1" max="6" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
+                                <input type="range" min="1" max="12" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
                              </div>
                         </div>
                         <div className="flex items-center gap-4">

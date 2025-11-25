@@ -6,12 +6,16 @@ import { AlarmSound } from '../../types';
 import { playAlarm } from '../../utils/sound';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount } = useTimer();
-  const [tab, setTab] = useState<'log' | 'history' | 'settings'>('log');
+  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession } = useTimer();
+  const [tab, setTab] = useState<'log' | 'history' | 'group' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [pixelsPerMin, setPixelsPerMin] = useState(2);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   
+  // Group Study Form State
+  const [inputName, setInputName] = useState(userName || '');
+  const [inputSessionId, setInputSessionId] = useState('');
+
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const formatDur = (sec: number) => {
     if (sec < 60) return `${Math.floor(sec)}s`;
@@ -94,6 +98,17 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       { val: 'pop', label: 'Pop' },
       { val: 'wood', label: 'Woodblock' }
   ];
+  
+  const handleStartGroup = () => {
+      if(!inputName.trim()) return;
+      createGroupSession(inputName);
+  };
+  
+  const handleJoinGroup = () => {
+      if(!inputName.trim() || !inputSessionId.trim()) return;
+      joinGroupSession(inputSessionId.toUpperCase(), inputName);
+      setInputSessionId('');
+  };
 
   if (!isOpen) return null;
 
@@ -103,7 +118,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       <div className="w-full max-w-3xl bg-white/10 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
         
         <div className="flex border-b border-white/10 overflow-x-auto shrink-0">
-          {['log', 'history', 'schedule', 'settings'].map(t => (
+          {['log', 'history', 'schedule', 'group', 'settings'].map(t => (
             <button 
               key={t}
               onClick={() => {
@@ -115,7 +130,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               }}
               className={`flex-1 py-5 px-4 font-bold text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
             >
-              {t === 'history' ? 'Schedule Log' : t}
+              {t === 'history' ? 'Schedule Log' : (t === 'group' ? 'Group Study' : t)}
             </button>
           ))}
         </div>
@@ -205,7 +220,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                  <div className="sticky top-0 z-30 flex justify-end p-2 bg-black/20 backdrop-blur-md">
                      <div className="flex items-center gap-2">
                         <span className="text-[9px] font-bold text-white/30 uppercase">Zoom</span>
-                        <input type="range" min="1" max="6" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
+                        <input type="range" min="1" max="12" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
                      </div>
                  </div>
 
@@ -244,6 +259,103 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                      <div className="absolute inset-0 flex items-center justify-center text-white/30 italic">No history yet</div>
                  )}
              </div>
+          )}
+
+          {tab === 'group' && (
+              <div className="p-8 flex flex-col items-center justify-center min-h-[500px]">
+                  {!groupSessionId ? (
+                      <div className="w-full max-w-sm space-y-8 animate-slide-up">
+                          <div className="text-center space-y-2">
+                              <h2 className="text-2xl font-bold text-white tracking-tight">Join the Hive</h2>
+                              <p className="text-white/40 text-xs uppercase tracking-widest">Collaborative Focus Sessions</p>
+                          </div>
+                          
+                          <div className="space-y-4">
+                              <div>
+                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
+                                  <input 
+                                      type="text" 
+                                      placeholder="Your Name"
+                                      className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 focus:bg-white/10 transition-all placeholder-white/20"
+                                      value={inputName}
+                                      onChange={e => setInputName(e.target.value)}
+                                  />
+                              </div>
+
+                              <div className="pt-4 flex flex-col gap-4">
+                                  <button 
+                                      onClick={handleStartGroup}
+                                      disabled={!inputName.trim()}
+                                      className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                      Start Group Study
+                                  </button>
+                                  
+                                  <div className="relative flex items-center py-2">
+                                      <div className="flex-grow border-t border-white/10"></div>
+                                      <span className="flex-shrink-0 mx-4 text-white/20 text-[10px] uppercase font-bold">Or Join Existing</span>
+                                      <div className="flex-grow border-t border-white/10"></div>
+                                  </div>
+
+                                  <div className="flex gap-2">
+                                      <input 
+                                          type="text" 
+                                          placeholder="Session ID"
+                                          className="flex-1 p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 uppercase font-mono text-sm"
+                                          value={inputSessionId}
+                                          onChange={e => setInputSessionId(e.target.value)}
+                                      />
+                                      <button 
+                                          onClick={handleJoinGroup}
+                                          disabled={!inputName.trim() || !inputSessionId.trim()}
+                                          className="px-6 bg-white/10 hover:bg-white/20 text-white font-bold uppercase text-xs tracking-widest rounded-xl transition-all disabled:opacity-50"
+                                      >
+                                          Join
+                                      </button>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  ) : (
+                      <div className="w-full max-w-sm flex flex-col items-center gap-8 animate-fade-in">
+                          <div className="w-24 h-24 rounded-full bg-green-500/20 border border-green-500/30 flex items-center justify-center mb-2 animate-pulse">
+                              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                          </div>
+                          
+                          <div className="text-center space-y-1">
+                              <h2 className="text-xl font-bold text-white tracking-tight">Connected to Hive</h2>
+                              <p className="text-green-400 text-xs uppercase tracking-widest font-bold">Synchronized</p>
+                          </div>
+                          
+                          <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
+                              <div>
+                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Session ID</label>
+                                  <div 
+                                      onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
+                                      className="text-2xl font-mono font-bold text-white tracking-widest cursor-pointer hover:text-white/80 select-all"
+                                  >
+                                      {groupSessionId}
+                                  </div>
+                              </div>
+                              <div>
+                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Signed in as</label>
+                                  <div className="text-sm font-bold text-white">{userName}</div>
+                              </div>
+                          </div>
+
+                          <button 
+                              onClick={leaveGroupSession}
+                              className="px-8 py-3 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
+                          >
+                              Leave Study Session
+                          </button>
+                          
+                          <p className="text-[10px] text-white/30 text-center max-w-xs">
+                              All timers, tasks, and schedules are currently synced with the group host.
+                          </p>
+                      </div>
+                  )}
+              </div>
           )}
 
           {tab === 'settings' && (
