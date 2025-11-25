@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTimer, ScheduleBreak } from '../../context/TimerContext';
 import { Task } from '../../types';
@@ -43,7 +42,7 @@ const GripIcon = () => (
 );
 
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
-    const { tasks, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime } = useTimer();
+    const { tasks, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode } = useTimer();
     
     // Start Time State
     const [stHourStr, setStHourStr] = useState('08');
@@ -118,7 +117,21 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         }
     }, [isOpen]); 
 
+    // Center view helper
+    const centerView = () => {
+        if (calendarRef.current) {
+            const now = new Date();
+            const start = timelineData.timelineStart;
+            const diffMins = (now.getTime() - start.getTime()) / 60000;
+            const top = diffMins * pixelsPerMin;
+            calendarRef.current.scrollTo({ top: Math.max(0, top - 200), behavior: 'smooth' });
+        }
+    };
+
     const updateScheduleStart = () => {
+        // Only allow updating schedule start if no session is running
+        if(sessionStartTime) return; 
+
         let h = parseInt(stHourStr);
         const m = parseInt(stMinStr);
         if (isNaN(h) || isNaN(m)) return;
@@ -162,22 +175,33 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     
     const timelineData = useMemo(() => {
         const blocks: TimeBlock[] = [];
-        const now = new Date();
         const [schH, schM] = scheduleStartTime.split(':').map(Number);
         
         let timelineStart = new Date();
         timelineStart.setHours(schH, schM, 0, 0);
         
-        const sessionLogs = sessionStartTime 
-            ? logs.filter(l => l.start >= sessionStartTime)
-            : logs.filter(l => {
-                 const d = new Date(l.start);
-                 const today = new Date();
-                 return d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
-            });
+        // Include ALL logs for today + logs that belong to current session
+        const relevantLogs = logs.filter(l => {
+             const d = new Date(l.start);
+             const today = new Date();
+             const isToday = d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+             const isSession = sessionStartTime && l.start >= sessionStartTime;
+             return isToday || isSession;
+        });
+        
+        // Find earliest time to adjust start of timeline if logs exist before schedule start
+        if (relevantLogs.length > 0) {
+            const earliestLog = relevantLogs.reduce((a, b) => new Date(a.start) < new Date(b.start) ? a : b);
+            if (new Date(earliestLog.start) < timelineStart) {
+                // Adjust timeline start to fit logs, rounding down to hour
+                const newStart = new Date(earliestLog.start);
+                newStart.setMinutes(0, 0, 0);
+                timelineStart = newStart;
+            }
+        }
         
         let lastLogEnd = new Date(timelineStart);
-        const sortedLogs = [...sessionLogs].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+        const sortedLogs = [...relevantLogs].sort((a,b) => new Date(a.start).getTime() - new Date(b.start).getTime());
         
         sortedLogs.forEach((log, i) => {
             const start = new Date(log.start);
@@ -202,16 +226,22 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             });
         });
 
+        // Projection logic
         let projectionTime = new Date();
+        // If the last log ended in the future relative to now (unlikely but possible) use that
+        if (lastLogEnd > projectionTime) projectionTime = lastLogEnd;
+        // Ensure projection doesn't start before timeline
         if (projectionTime < timelineStart) projectionTime = timelineStart; 
 
         let virtualPomoCount = pomodoroCount;
+        const workQueue = [...flattenedWorkUnits];
         
-        if (timerStarted) {
+        // If actively working, visualize current remaining time
+        if (timerStarted && activeMode === 'work') {
             const remainingMins = workTime / 60; 
             const endTime = new Date(projectionTime.getTime() + remainingMins * 60000);
             
-            const currentUnit = flattenedWorkUnits[0]; 
+            const currentUnit = workQueue[0]; 
             if (currentUnit) {
                  const diffMins = (projectionTime.getTime() - timelineStart.getTime()) / 60000;
                  blocks.push({
@@ -219,10 +249,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                     label: currentUnit.name, subLabel: 'Current Session', color: currentUnit.color,
                     topPx: diffMins * pixelsPerMin, heightPx: remainingMins * pixelsPerMin
                 });
-                flattenedWorkUnits.shift();
+                workQueue.shift();
                 virtualPomoCount++;
                 projectionTime = endTime;
                 
+                // Add implicit break after current work
                 const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
                 const breakDur = isLongBreak ? (settings.longBreakDuration/60) : (settings.shortBreakDuration/60);
                 const bEnd = new Date(projectionTime.getTime() + breakDur * 60000);
@@ -236,6 +267,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             }
         }
         
+        // Scheduled Fixed Breaks
         const dailyBreaks = scheduleBreaks.map(b => {
             const [h, m] = b.startTime.split(':').map(Number);
             const start = new Date(timelineStart);
@@ -268,7 +300,8 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             return updatedTime;
         };
 
-        flattenedWorkUnits.forEach((unit, index) => {
+        // Project remaining tasks
+        workQueue.forEach((unit, index) => {
             projectionTime = advanceTimeIfBreak(projectionTime);
             const workStart = new Date(projectionTime);
             const workDuration = settings.workDuration / 60;
@@ -304,17 +337,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         const totalHeight = Math.max(1440, endMins + 60) * pixelsPerMin;
 
         return { blocks, totalHeight, timelineStart };
-    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime]);
+    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime, activeMode]);
 
     useEffect(() => {
         if (isOpen && calendarRef.current) {
-            const now = new Date();
-            const start = timelineData.timelineStart;
-            const diffMins = (now.getTime() - start.getTime()) / 60000;
-            const top = diffMins * pixelsPerMin;
-            setTimeout(() => {
-                calendarRef.current?.scrollTo({ top: Math.max(0, top - 200), behavior: 'smooth' });
-            }, 100);
+            setTimeout(centerView, 100);
         }
     }, [isOpen]); 
 
@@ -561,7 +588,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                             <h2 className="text-lg font-bold text-white tracking-tight">Schedule</h2>
                             
                             {/* Start Time Input */}
-                            <div className="flex items-center gap-1 bg-black/30 border border-white/5 rounded px-2 py-1">
+                            <div className={`flex items-center gap-1 bg-black/30 border border-white/5 rounded px-2 py-1 ${sessionStartTime ? 'opacity-50 pointer-events-none' : ''}`}>
                                 <span className="text-[10px] font-bold text-white/30 mr-1 uppercase">Start</span>
                                 <input type="text" maxLength={2} value={stHourStr} onChange={e => setStHourStr(e.target.value.replace(/\D/g,''))} className="bg-transparent text-xs text-white outline-none w-5 text-center font-mono" />
                                 <span className="text-white/30">:</span>
@@ -576,6 +603,9 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                              </div>
                         </div>
                         <div className="flex items-center gap-4">
+                            <button onClick={centerView} className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/40 hover:text-white flex items-center justify-center transition-all" title="Recenter View">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/></svg>
+                            </button>
                             <button onClick={() => setIsAddingBreak(!isAddingBreak)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors ${isAddingBreak ? 'bg-white/10 text-white' : ''}`}>+ Add Break</button>
                             <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/40 hover:text-white flex items-center justify-center transition-all">✕</button>
                         </div>

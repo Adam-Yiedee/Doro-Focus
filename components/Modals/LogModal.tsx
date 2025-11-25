@@ -5,10 +5,9 @@ import { AlarmSound } from '../../types';
 import { playAlarm } from '../../utils/sound';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost } = useTimer();
-  const [tab, setTab] = useState<'log' | 'history' | 'group' | 'settings'>('log');
+  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError } = useTimer();
+  const [tab, setTab] = useState<'log' | 'group' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [pixelsPerMin, setPixelsPerMin] = useState(2);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   
   // Group Study Form State
@@ -20,74 +19,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const formatDur = (sec: number) => {
     if (sec < 60) return `${Math.floor(sec)}s`;
     return `${Math.floor(sec/60)}m ${Math.floor(sec%60)}s`;
-  };
-
-  const historyData = useMemo(() => {
-      if (tab !== 'history') return null;
-      
-      let blocks: any[] = [];
-      let minTime = new Date().setHours(8,0,0,0);
-      let maxTime = new Date().setHours(18,0,0,0);
-
-      logs.forEach((log, i) => {
-          const start = new Date(log.start);
-          const end = new Date(log.end);
-          if (start.getTime() < minTime) minTime = start.getTime();
-          if (end.getTime() > maxTime) maxTime = end.getTime();
-          
-          blocks.push({
-              id: i,
-              start,
-              end,
-              type: log.type,
-              label: log.task ? log.task.name : (log.type === 'work' ? 'Focus' : (log.type === 'break' ? 'Break' : 'Paused')),
-              subLabel: log.reason,
-              color: log.color
-          });
-      });
-
-      // Sort and Merge
-      blocks.sort((a, b) => a.start.getTime() - b.start.getTime());
-      
-      const merged: any[] = [];
-      if (blocks.length > 0) {
-          let current = blocks[0];
-          for (let i = 1; i < blocks.length; i++) {
-              const next = blocks[i];
-              const gap = next.start.getTime() - current.end.getTime();
-              if (next.type === current.type && next.label === current.label && gap < 120000) {
-                  current.end = next.end;
-              } else {
-                  merged.push(current);
-                  current = next;
-              }
-          }
-          merged.push(current);
-      }
-      
-      const startBound = new Date(minTime);
-      startBound.setMinutes(startBound.getMinutes() - 30);
-      const totalDurationMins = (maxTime - startBound.getTime()) / 60000 + 60; 
-
-      const renderedBlocks = merged.map(b => {
-          const top = (b.start.getTime() - startBound.getTime()) / 60000;
-          const height = (b.end.getTime() - b.start.getTime()) / 60000;
-          return {
-              ...b,
-              topPx: top * pixelsPerMin,
-              heightPx: Math.max(10, height * pixelsPerMin) 
-          };
-      });
-
-      return { blocks: renderedBlocks, totalHeight: totalDurationMins * pixelsPerMin, startTime: startBound };
-  }, [logs, tab, pixelsPerMin]);
-
-  const formatTime12 = (d: Date) => {
-      const h = d.getHours();
-      const m = d.getMinutes();
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      const hour12 = h % 12 || 12;
-      return `${hour12}:${m.toString().padStart(2, '0')} ${ampm}`;
   };
 
   const SOUND_OPTIONS: { val: AlarmSound, label: string }[] = [
@@ -102,14 +33,22 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const handleStartGroup = async () => {
       if(!inputName.trim()) return;
       setIsConnecting(true);
-      await createGroupSession(inputName);
+      try {
+        await createGroupSession(inputName);
+      } catch (e) {
+          console.error(e);
+      }
       setIsConnecting(false);
   };
   
   const handleJoinGroup = async () => {
       if(!inputName.trim() || !inputSessionId.trim()) return;
       setIsConnecting(true);
-      await joinGroupSession(inputSessionId.trim(), inputName);
+      try {
+        await joinGroupSession(inputSessionId.trim(), inputName);
+      } catch(e) {
+          console.error(e);
+      }
       setInputSessionId('');
       setIsConnecting(false);
   };
@@ -122,7 +61,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       <div className="w-full max-w-3xl bg-white/10 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
         
         <div className="flex border-b border-white/10 overflow-x-auto shrink-0">
-          {['log', 'history', 'schedule', 'group', 'settings'].map(t => (
+          {['log', 'schedule', 'group', 'settings'].map(t => (
             <button 
               key={t}
               onClick={() => {
@@ -134,7 +73,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               }}
               className={`flex-1 py-5 px-4 font-bold text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
             >
-              {t === 'history' ? 'Schedule Log' : (t === 'group' ? 'Group Study' : t)}
+              {t === 'group' ? 'Group Study' : (t === 'schedule' ? 'Schedule' : t)}
             </button>
           ))}
         </div>
@@ -143,8 +82,8 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           {tab === 'log' && (
             <div className="p-8 space-y-4">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="font-bold text-white text-lg tracking-tight">Activity History</h3>
-                <button onClick={clearLogs} className="text-[10px] uppercase tracking-widest text-red-300 hover:text-red-200 font-bold border border-red-500/30 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors">Clear History</button>
+                <h3 className="font-bold text-white text-lg tracking-tight">Activity Log</h3>
+                <button onClick={clearLogs} className="text-[10px] uppercase tracking-widest text-red-300 hover:text-red-200 font-bold border border-red-500/30 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors">Clear</button>
               </div>
               
               {logs.length === 0 ? (
@@ -219,66 +158,26 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
             </div>
           )}
 
-          {tab === 'history' && historyData && (
-             <div className="relative w-full min-h-full bg-[#0F0F11]" style={{ height: Math.max(600, historyData.totalHeight) }}>
-                 <div className="sticky top-0 z-30 flex justify-end p-2 bg-black/20 backdrop-blur-md">
-                     <div className="flex items-center gap-2">
-                        <span className="text-[9px] font-bold text-white/30 uppercase">Zoom</span>
-                        <input type="range" min="1" max="12" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
-                     </div>
-                 </div>
-
-                 {Array.from({ length: Math.ceil(historyData.totalHeight / (60 * pixelsPerMin)) + 1 }).map((_, i) => {
-                     const time = new Date(historyData.startTime);
-                     time.setMinutes(time.getMinutes() + i * 60);
-                     return (
-                         <div key={i} className="absolute w-full border-t border-white/5 flex pointer-events-none" style={{ top: i * 60 * pixelsPerMin }}>
-                             <span className="text-[9px] font-mono text-white/30 pl-2 pt-1">{formatTime12(time)}</span>
-                         </div>
-                     )
-                 })}
-                 
-                 {historyData.blocks.map((block: any) => (
-                     <div 
-                        key={block.id}
-                        className={`absolute left-16 right-4 rounded border shadow-lg flex flex-col justify-center px-3 overflow-hidden hover:z-10 hover:scale-[1.01] transition-transform
-                             ${block.type === 'work' ? 'bg-[#1c1c1e] border-white/10' : (block.type === 'break' ? 'bg-teal-900/20 border-teal-500/20' : 'bg-black/40 border-white/5 border-dashed')}
-                        `}
-                        style={{
-                            top: block.topPx,
-                            height: block.heightPx,
-                            borderLeftWidth: '3px',
-                            borderLeftColor: block.color || (block.type === 'break' ? '#2dd4bf' : '#777')
-                        }}
-                     >
-                         <div className="flex justify-between">
-                             <span className="text-xs font-bold text-white/90 truncate">{block.label}</span>
-                             <span className="text-[9px] font-mono text-white/40">{formatTime12(block.start)}</span>
-                         </div>
-                         {block.subLabel && <span className="text-[9px] text-white/50 truncate">{block.subLabel}</span>}
-                     </div>
-                 ))}
-                 
-                 {logs.length === 0 && (
-                     <div className="absolute inset-0 flex items-center justify-center text-white/30 italic">No history yet</div>
-                 )}
-             </div>
-          )}
-
           {tab === 'group' && (
               <div className="p-8 flex flex-col items-center justify-center min-h-[500px]">
                   {isConnecting ? (
                       <div className="flex flex-col items-center justify-center gap-4">
-                          <div className="w-8 h-8 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
-                          <span className="text-white/50 text-xs font-bold uppercase tracking-widest">Establishing Connection...</span>
+                          <div className="w-12 h-12 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
+                          <span className="text-white/50 text-xs font-bold uppercase tracking-widest">Connecting...</span>
                       </div>
                   ) : !groupSessionId ? (
                       <div className="w-full max-w-sm space-y-8 animate-slide-up">
                           <div className="text-center space-y-2">
-                              <h2 className="text-2xl font-bold text-white tracking-tight">Group Study</h2>
-                              <p className="text-white/40 text-xs uppercase tracking-widest">Collaborative Focus Sessions</p>
+                              <h2 className="text-3xl font-bold text-white tracking-tight">Group Study</h2>
+                              <p className="text-white/40 text-xs uppercase tracking-widest">Sync Timers & Tasks</p>
                           </div>
                           
+                          {peerError && (
+                              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-200 text-xs text-center font-bold">
+                                  {peerError}
+                              </div>
+                          )}
+
                           <div className="space-y-4">
                               <div>
                                   <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
@@ -295,9 +194,9 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                   <button 
                                       onClick={handleStartGroup}
                                       disabled={!inputName.trim()}
-                                      className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                      className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
                                   >
-                                      Create New Study Group
+                                      Start Group Study
                                   </button>
                                   
                                   <div className="relative flex items-center py-2">
@@ -317,7 +216,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                       <button 
                                           onClick={handleJoinGroup}
                                           disabled={!inputName.trim() || !inputSessionId.trim()}
-                                          className="px-6 bg-white/10 hover:bg-white/20 text-white font-bold uppercase text-xs tracking-widest rounded-xl transition-all disabled:opacity-50"
+                                          className="px-6 bg-white/10 hover:bg-white/20 text-white font-bold uppercase text-xs tracking-widest rounded-xl transition-all disabled:opacity-50 border border-white/5"
                                       >
                                           Join
                                       </button>
@@ -327,47 +226,46 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                       </div>
                   ) : (
                       <div className="w-full max-w-sm flex flex-col items-center gap-8 animate-fade-in">
-                          <div className="w-24 h-24 rounded-full bg-green-500/20 border border-green-500/30 flex items-center justify-center mb-2 animate-pulse">
-                              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                          <div className="w-24 h-24 rounded-full bg-blue-500/10 border border-blue-400/30 flex items-center justify-center mb-2 animate-pulse relative overflow-hidden">
+                              <div className="absolute inset-0 bg-blue-500/20 blur-xl"></div>
+                              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-300 relative z-10"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
                           </div>
                           
                           <div className="text-center space-y-1">
-                              <h2 className="text-xl font-bold text-white tracking-tight">Study Group Active</h2>
-                              <p className="text-green-400 text-xs uppercase tracking-widest font-bold">Synchronized</p>
+                              <h2 className="text-2xl font-bold text-white tracking-tight">Group Study Active</h2>
+                              <p className="text-blue-300 text-xs uppercase tracking-widest font-bold">Live Synchronized</p>
                           </div>
                           
-                          <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
+                          <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4 backdrop-blur-md">
                               {isHost && (
                                   <div>
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Session ID (Share This)</label>
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Session ID (Share This)</label>
                                       <div 
                                           onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
-                                          className="text-sm font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/20 p-3 rounded-lg break-all border border-white/5"
+                                          className="text-sm font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/40 p-4 rounded-xl break-all border border-white/5 shadow-inner text-center"
                                       >
                                           {groupSessionId}
                                       </div>
                                   </div>
                               )}
-                              <div>
-                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Signed in as</label>
-                                  <div className="text-sm font-bold text-white">{userName}</div>
-                              </div>
-                              <div>
-                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Role</label>
-                                  <div className="text-sm font-bold text-white">{isHost ? 'Host (Source of Truth)' : 'Participant'}</div>
+                              <div className="flex justify-between items-center pt-2 border-t border-white/5">
+                                  <div>
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Username</label>
+                                      <div className="text-sm font-bold text-white">{userName}</div>
+                                  </div>
+                                  <div className="text-right">
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Role</label>
+                                      <div className="text-sm font-bold text-white">{isHost ? 'Host' : 'Member'}</div>
+                                  </div>
                               </div>
                           </div>
 
                           <button 
                               onClick={leaveGroupSession}
-                              className="px-8 py-3 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
+                              className="w-full py-4 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
                           >
-                              Leave Study Group
+                              Leave Session
                           </button>
-                          
-                          <p className="text-[10px] text-white/30 text-center max-w-xs">
-                              All timers, tasks, and schedules are currently synced via WebRTC.
-                          </p>
                       </div>
                   )}
               </div>
@@ -375,7 +273,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
           {tab === 'settings' && (
             <div className="p-8 space-y-8 pb-16">
-              <h3 className="font-bold text-white text-lg tracking-tight">Timer Configuration</h3>
+              <h3 className="font-bold text-white text-lg tracking-tight">Configuration</h3>
               <div className="space-y-6">
                 
                 {/* Manual Pomo Count */}

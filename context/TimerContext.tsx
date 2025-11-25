@@ -51,6 +51,7 @@ interface TimerContextType {
   groupSessionId: string | null;
   userName: string;
   isHost: boolean;
+  peerError: string | null;
 
   // Actions
   startTimer: () => void;
@@ -99,7 +100,7 @@ interface TimerContextType {
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'lumina_focus_v7_cal'; 
+const STORAGE_KEY = 'lumina_focus_v8_cal'; 
 
 const DEFAULT_SETTINGS: TimerSettings = {
   workDuration: 1500, 
@@ -269,6 +270,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [groupSessionId, setGroupSessionId] = useState<string | null>(null);
   const [userName, setUserName] = useState<string>('');
   const [isHost, setIsHost] = useState(false);
+  const [peerError, setPeerError] = useState<string | null>(null);
   
   const isRemoteUpdate = useRef(false);
   const peerRef = useRef<Peer | null>(null);
@@ -357,15 +359,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           workerRef.current?.postMessage('stop');
       }
 
+      // Short timeout to allow state to settle before enabling broadcast again
       setTimeout(() => { isRemoteUpdate.current = false; }, 300);
   }, []);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
-      if (!groupSessionId) return;
+      if (!groupSessionId || connectionsRef.current.length === 0) return;
       const state = getCurrentState();
-      
-      // If we are Host: Broadcast to ALL connected clients (except sender if specified)
-      // If we are Client: Broadcast to Host only
       
       connectionsRef.current.forEach(conn => {
           if (conn.open && conn.peer !== excludeConnId) {
@@ -374,98 +374,111 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
   }, [groupSessionId, getCurrentState]);
 
-  // Trigger broadcast on state changes
+  // Trigger broadcast on significant state changes
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
+     
+     // Debounce the broadcast slightly
      const t = setTimeout(() => {
          broadcastState();
-     }, 50);
+     }, 100);
      return () => clearTimeout(t);
   }, [
-      // Major state changes only
+      // We listen to major state changes. 
+      // Note: We do NOT listen to workTime/breakTime tick-by-tick to avoid network flooding.
+      // Time sync happens on pause/start/reset events mostly.
       tasks, settings, activeMode, timerStarted, 
       scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, 
       graceOpen, groupSessionId, broadcastState
-      // Exclude workTime/breakTime to avoid flooding network on every tick
   ]);
 
   const createGroupSession = async (name: string): Promise<string> => {
       setUserName(name);
-      return new Promise((resolve) => {
-          const peer = new Peer();
-          peerRef.current = peer;
+      return new Promise((resolve, reject) => {
+          try {
+            // @ts-ignore - PeerJS import
+            const peer = new Peer();
+            peerRef.current = peer;
 
-          peer.on('open', (id) => {
-              setGroupSessionId(id);
-              setIsHost(true);
-              resolve(id);
-          });
+            peer.on('open', (id: string) => {
+                setGroupSessionId(id);
+                setIsHost(true);
+                setPeerError(null);
+                resolve(id);
+            });
 
-          peer.on('connection', (conn) => {
-              connectionsRef.current.push(conn);
-              
-              conn.on('open', () => {
-                  // Immediately sync new peer with current state
-                  conn.send({ type: 'STATE_UPDATE', state: getCurrentState() });
-              });
+            peer.on('connection', (conn: DataConnection) => {
+                connectionsRef.current.push(conn);
+                
+                conn.on('open', () => {
+                    // Send full state to new peer
+                    conn.send({ type: 'STATE_UPDATE', state: getCurrentState() });
+                });
 
-              conn.on('data', (data: any) => {
-                  if (data.type === 'STATE_UPDATE') {
-                      // Host received update from a client
-                      applyRemoteState(data.state);
-                      // As Host, we must relay this to other clients
-                      // But applyRemoteState sets isRemoteUpdate=true preventing auto-broadcast
-                      // So we must manually broadcast to others
-                      // We exclude the sender to avoid echo
-                      connectionsRef.current.forEach(otherConn => {
-                          if (otherConn.open && otherConn.peer !== conn.peer) {
-                              otherConn.send({ type: 'STATE_UPDATE', state: data.state });
-                          }
-                      });
-                  }
-              });
+                conn.on('data', (data: any) => {
+                    if (data.type === 'STATE_UPDATE') {
+                        // Host received update from client (e.g. client checked a task)
+                        applyRemoteState(data.state);
+                        // Host propagates to all OTHER clients
+                        broadcastState(conn.peer);
+                    }
+                });
 
-              conn.on('close', () => {
-                  connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
-              });
-          });
+                conn.on('close', () => {
+                    connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+                });
+            });
+
+            peer.on('error', (err: any) => {
+                console.error("PeerJS Error:", err);
+                setPeerError("Connection Error: " + err.type);
+            });
+          } catch (e) {
+              reject(e);
+          }
       });
   };
 
   const joinGroupSession = async (hostId: string, name: string): Promise<void> => {
       setUserName(name);
-      return new Promise((resolve) => {
-          const peer = new Peer();
-          peerRef.current = peer;
+      return new Promise((resolve, reject) => {
+          try {
+            // @ts-ignore
+            const peer = new Peer();
+            peerRef.current = peer;
 
-          peer.on('open', (id) => {
-              setGroupSessionId(hostId); // We track the Host ID as the session ID
-              setIsHost(false);
-              
-              const conn = peer.connect(hostId);
-              connectionsRef.current = [conn];
+            peer.on('open', (id: string) => {
+                setGroupSessionId(hostId); // Track Host ID
+                setIsHost(false);
+                setPeerError(null);
+                
+                const conn = peer.connect(hostId);
+                connectionsRef.current = [conn];
 
-              conn.on('open', () => {
-                  resolve();
-              });
+                conn.on('open', () => {
+                    resolve();
+                });
 
-              conn.on('data', (data: any) => {
-                  if (data.type === 'STATE_UPDATE') {
-                      applyRemoteState(data.state);
-                  }
-              });
-              
-              conn.on('close', () => {
-                  alert("Host disconnected");
-                  leaveGroupSession();
-              });
-          });
-          
-          peer.on('error', (err) => {
-              console.error(err);
-              alert("Could not connect to session. Check ID.");
-              setGroupSessionId(null);
-          });
+                conn.on('data', (data: any) => {
+                    if (data.type === 'STATE_UPDATE') {
+                        applyRemoteState(data.state);
+                    }
+                });
+                
+                conn.on('close', () => {
+                    setPeerError("Disconnected from Host");
+                    leaveGroupSession();
+                });
+            });
+            
+            peer.on('error', (err: any) => {
+                 console.error(err);
+                 setPeerError("Connection Failed. Check ID.");
+                 setGroupSessionId(null);
+            });
+          } catch (e) {
+              reject(e);
+          }
       });
   };
 
@@ -477,8 +490,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       connectionsRef.current = [];
       setGroupSessionId(null);
       setIsHost(false);
+      setPeerError(null);
+      // We keep the state as is when leaving, so user can continue independently
   };
-
   // ---- END PEERJS LOGIC ----
 
   useEffect(() => {
@@ -969,7 +983,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost,
+      groupSessionId, userName, isHost, peerError,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession,
