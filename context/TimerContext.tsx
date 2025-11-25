@@ -1,7 +1,7 @@
-
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound } from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
+import Peer, { DataConnection } from 'peerjs';
 
 export interface ScheduleBreak {
   id: string;
@@ -50,6 +50,7 @@ interface TimerContextType {
   // Group Study State
   groupSessionId: string | null;
   userName: string;
+  isHost: boolean;
 
   // Actions
   startTimer: () => void;
@@ -68,8 +69,8 @@ interface TimerContextType {
   hardReset: () => void;
   
   // Group Actions
-  createGroupSession: (name: string) => void;
-  joinGroupSession: (id: string, name: string) => void;
+  createGroupSession: (name: string) => Promise<string>;
+  joinGroupSession: (id: string, name: string) => Promise<void>;
   leaveGroupSession: () => void;
 
   // Data Management
@@ -267,8 +268,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Group Study State
   const [groupSessionId, setGroupSessionId] = useState<string | null>(null);
   const [userName, setUserName] = useState<string>('');
-  const [userId] = useState(() => 'user_' + Math.random().toString(36).substr(2, 9));
+  const [isHost, setIsHost] = useState(false);
+  
   const isRemoteUpdate = useRef(false);
+  const peerRef = useRef<Peer | null>(null);
+  const connectionsRef = useRef<DataConnection[]>([]);
 
   const lastTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -287,7 +291,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setScheduleBreaks(parsed.scheduleBreaks || []);
         if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
         if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
-        if (parsed.userName) setUserName(parsed.userName); // Persist username
+        if (parsed.userName) setUserName(parsed.userName); 
         
         if (parsed.sessionStartTime) {
             setSessionStartTime(parsed.sessionStartTime);
@@ -315,128 +319,167 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }));
   }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName]);
 
-  // ---- GROUP SYNC LOGIC ----
-  const broadcastState = useCallback((type: 'STATE_UPDATE' | 'NEW_PEER', forceState?: any) => {
-    if (!groupSessionId) return;
-    
-    const payload = {
-       type,
-       senderId: userId,
-       userName: userName,
-       timestamp: Date.now(),
-       state: forceState || {
-           settings,
-           tasks,
-           categories,
-           logs,
-           activeMode,
-           timerStarted,
-           workTime,
-           breakTime,
-           pomodoroCount,
-           scheduleBreaks,
-           scheduleStartTime,
-           sessionStartTime,
-           allPauseActive
-       }
+  // ---- PEERJS SYNC LOGIC ----
+  const getCurrentState = useCallback(() => {
+    return {
+       settings, tasks, categories, logs, activeMode, timerStarted,
+       workTime, breakTime, pomodoroCount, scheduleBreaks,
+       scheduleStartTime, sessionStartTime, allPauseActive,
+       allPauseReason, graceOpen, graceContext
     };
-    
-    // Write to a session-specific key to trigger storage events in other tabs
-    const key = `lumina_sess_${groupSessionId}`;
-    localStorage.setItem(key, JSON.stringify(payload));
-  }, [groupSessionId, userId, userName, settings, tasks, categories, logs, activeMode, timerStarted, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive]);
+  }, [settings, tasks, categories, logs, activeMode, timerStarted, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext]);
 
-  // Broadcast on state changes
+  const applyRemoteState = useCallback((remote: any) => {
+      isRemoteUpdate.current = true;
+      
+      setSettings(remote.settings);
+      setTasks(remote.tasks);
+      setCategories(remote.categories);
+      setLogs(remote.logs);
+      setActiveMode(remote.activeMode);
+      setTimerStarted(remote.timerStarted);
+      setWorkTime(remote.workTime);
+      setBreakTime(remote.breakTime);
+      setPomodoroCount(remote.pomodoroCount);
+      setScheduleBreaks(remote.scheduleBreaks);
+      setScheduleStartTime(remote.scheduleStartTime);
+      setSessionStartTime(remote.sessionStartTime);
+      setAllPauseActive(remote.allPauseActive);
+      setAllPauseReason(remote.allPauseReason || '');
+      setGraceOpen(remote.graceOpen || false);
+      setGraceContext(remote.graceContext || null);
+
+      if (remote.timerStarted) {
+          workerRef.current?.postMessage('start');
+          lastTickRef.current = Date.now();
+          currentActivityStartRef.current = new Date(); 
+      } else {
+          workerRef.current?.postMessage('stop');
+      }
+
+      setTimeout(() => { isRemoteUpdate.current = false; }, 300);
+  }, []);
+
+  const broadcastState = useCallback((excludeConnId?: string) => {
+      if (!groupSessionId) return;
+      const state = getCurrentState();
+      
+      // If we are Host: Broadcast to ALL connected clients (except sender if specified)
+      // If we are Client: Broadcast to Host only
+      
+      connectionsRef.current.forEach(conn => {
+          if (conn.open && conn.peer !== excludeConnId) {
+              conn.send({ type: 'STATE_UPDATE', state });
+          }
+      });
+  }, [groupSessionId, getCurrentState]);
+
+  // Trigger broadcast on state changes
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
-     // Debounce slightly
      const t = setTimeout(() => {
-         broadcastState('STATE_UPDATE');
+         broadcastState();
      }, 50);
      return () => clearTimeout(t);
   }, [
-      // Dependency list: Critical state that should trigger a sync
+      // Major state changes only
       tasks, settings, activeMode, timerStarted, 
-      scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive,
-      // Note: we exclude workTime/breakTime to prevent rapid-fire sync on every tick.
-      // However, start/stop/pause actions change 'timerStarted' or 'allPauseActive', 
-      // capturing the time at that moment which is sufficient for sync.
+      scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, 
+      graceOpen, groupSessionId, broadcastState
+      // Exclude workTime/breakTime to avoid flooding network on every tick
   ]);
 
-  // Listen for sync events
-  useEffect(() => {
-      if (!groupSessionId) return;
-
-      const handleStorage = (e: StorageEvent) => {
-          if (e.key === `lumina_sess_${groupSessionId}` && e.newValue) {
-              try {
-                  const data = JSON.parse(e.newValue);
-                  if (data.senderId === userId) return; // Ignore self
-
-                  if (data.type === 'NEW_PEER') {
-                      // Someone joined, broadcast my state so they can sync immediately
-                      broadcastState('STATE_UPDATE');
-                  } else if (data.type === 'STATE_UPDATE') {
-                      const remote = data.state;
-                      isRemoteUpdate.current = true;
-                      
-                      // Bulk update state
-                      setSettings(remote.settings);
-                      setTasks(remote.tasks);
-                      setCategories(remote.categories);
-                      setLogs(remote.logs);
-                      setActiveMode(remote.activeMode);
-                      setTimerStarted(remote.timerStarted);
-                      setWorkTime(remote.workTime);
-                      setBreakTime(remote.breakTime);
-                      setPomodoroCount(remote.pomodoroCount);
-                      setScheduleBreaks(remote.scheduleBreaks);
-                      setScheduleStartTime(remote.scheduleStartTime);
-                      setSessionStartTime(remote.sessionStartTime);
-                      setAllPauseActive(remote.allPauseActive);
-
-                      // Force worker sync
-                      if (remote.timerStarted) {
-                          workerRef.current?.postMessage('start');
-                          lastTickRef.current = Date.now();
-                          currentActivityStartRef.current = new Date(); 
-                      } else {
-                          workerRef.current?.postMessage('stop');
-                      }
-
-                      setTimeout(() => { isRemoteUpdate.current = false; }, 300);
-                  }
-              } catch (err) { console.error("Sync error", err); }
-          }
-      };
-
-      window.addEventListener('storage', handleStorage);
-      return () => window.removeEventListener('storage', handleStorage);
-  }, [groupSessionId, broadcastState, userId]);
-
-  const createGroupSession = (name: string) => {
+  const createGroupSession = async (name: string): Promise<string> => {
       setUserName(name);
-      // Generate a simple 6-char ID
-      const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
-      setGroupSessionId(newId);
+      return new Promise((resolve) => {
+          const peer = new Peer();
+          peerRef.current = peer;
+
+          peer.on('open', (id) => {
+              setGroupSessionId(id);
+              setIsHost(true);
+              resolve(id);
+          });
+
+          peer.on('connection', (conn) => {
+              connectionsRef.current.push(conn);
+              
+              conn.on('open', () => {
+                  // Immediately sync new peer with current state
+                  conn.send({ type: 'STATE_UPDATE', state: getCurrentState() });
+              });
+
+              conn.on('data', (data: any) => {
+                  if (data.type === 'STATE_UPDATE') {
+                      // Host received update from a client
+                      applyRemoteState(data.state);
+                      // As Host, we must relay this to other clients
+                      // But applyRemoteState sets isRemoteUpdate=true preventing auto-broadcast
+                      // So we must manually broadcast to others
+                      // We exclude the sender to avoid echo
+                      connectionsRef.current.forEach(otherConn => {
+                          if (otherConn.open && otherConn.peer !== conn.peer) {
+                              otherConn.send({ type: 'STATE_UPDATE', state: data.state });
+                          }
+                      });
+                  }
+              });
+
+              conn.on('close', () => {
+                  connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+              });
+          });
+      });
   };
 
-  const joinGroupSession = (id: string, name: string) => {
+  const joinGroupSession = async (hostId: string, name: string): Promise<void> => {
       setUserName(name);
-      setGroupSessionId(id);
-      // Announce presence
-      setTimeout(() => {
-          const key = `lumina_sess_${id}`;
-          const payload = { type: 'NEW_PEER', senderId: userId, userName: name, timestamp: Date.now() };
-          localStorage.setItem(key, JSON.stringify(payload));
-      }, 100);
+      return new Promise((resolve) => {
+          const peer = new Peer();
+          peerRef.current = peer;
+
+          peer.on('open', (id) => {
+              setGroupSessionId(hostId); // We track the Host ID as the session ID
+              setIsHost(false);
+              
+              const conn = peer.connect(hostId);
+              connectionsRef.current = [conn];
+
+              conn.on('open', () => {
+                  resolve();
+              });
+
+              conn.on('data', (data: any) => {
+                  if (data.type === 'STATE_UPDATE') {
+                      applyRemoteState(data.state);
+                  }
+              });
+              
+              conn.on('close', () => {
+                  alert("Host disconnected");
+                  leaveGroupSession();
+              });
+          });
+          
+          peer.on('error', (err) => {
+              console.error(err);
+              alert("Could not connect to session. Check ID.");
+              setGroupSessionId(null);
+          });
+      });
   };
 
   const leaveGroupSession = () => {
+      if (peerRef.current) {
+          peerRef.current.destroy();
+          peerRef.current = null;
+      }
+      connectionsRef.current = [];
       setGroupSessionId(null);
+      setIsHost(false);
   };
 
-  // ---- END GROUP SYNC LOGIC ----
+  // ---- END PEERJS LOGIC ----
 
   useEffect(() => {
     const workerCode = `
@@ -773,7 +816,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setScheduleBreaks([]);
       setSessionStats(null);
       setShowSummary(false);
-      setGroupSessionId(null);
+      leaveGroupSession();
       
       const now = new Date();
       const h = now.getHours().toString().padStart(2, '0');
@@ -926,7 +969,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName,
+      groupSessionId, userName, isHost,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession,

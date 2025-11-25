@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import TaskViewModal from './TaskViewModal';
@@ -6,7 +5,7 @@ import { AlarmSound } from '../../types';
 import { playAlarm } from '../../utils/sound';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession } = useTimer();
+  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost } = useTimer();
   const [tab, setTab] = useState<'log' | 'history' | 'group' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [pixelsPerMin, setPixelsPerMin] = useState(2);
@@ -15,6 +14,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   // Group Study Form State
   const [inputName, setInputName] = useState(userName || '');
   const [inputSessionId, setInputSessionId] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const formatDur = (sec: number) => {
@@ -99,15 +99,19 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       { val: 'wood', label: 'Woodblock' }
   ];
   
-  const handleStartGroup = () => {
+  const handleStartGroup = async () => {
       if(!inputName.trim()) return;
-      createGroupSession(inputName);
+      setIsConnecting(true);
+      await createGroupSession(inputName);
+      setIsConnecting(false);
   };
   
-  const handleJoinGroup = () => {
+  const handleJoinGroup = async () => {
       if(!inputName.trim() || !inputSessionId.trim()) return;
-      joinGroupSession(inputSessionId.toUpperCase(), inputName);
+      setIsConnecting(true);
+      await joinGroupSession(inputSessionId.trim(), inputName);
       setInputSessionId('');
+      setIsConnecting(false);
   };
 
   if (!isOpen) return null;
@@ -263,10 +267,15 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
           {tab === 'group' && (
               <div className="p-8 flex flex-col items-center justify-center min-h-[500px]">
-                  {!groupSessionId ? (
+                  {isConnecting ? (
+                      <div className="flex flex-col items-center justify-center gap-4">
+                          <div className="w-8 h-8 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
+                          <span className="text-white/50 text-xs font-bold uppercase tracking-widest">Establishing Connection...</span>
+                      </div>
+                  ) : !groupSessionId ? (
                       <div className="w-full max-w-sm space-y-8 animate-slide-up">
                           <div className="text-center space-y-2">
-                              <h2 className="text-2xl font-bold text-white tracking-tight">Join the Hive</h2>
+                              <h2 className="text-2xl font-bold text-white tracking-tight">Group Study</h2>
                               <p className="text-white/40 text-xs uppercase tracking-widest">Collaborative Focus Sessions</p>
                           </div>
                           
@@ -288,7 +297,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                       disabled={!inputName.trim()}
                                       className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                      Start Group Study
+                                      Create New Study Group
                                   </button>
                                   
                                   <div className="relative flex items-center py-2">
@@ -300,8 +309,8 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                   <div className="flex gap-2">
                                       <input 
                                           type="text" 
-                                          placeholder="Session ID"
-                                          className="flex-1 p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 uppercase font-mono text-sm"
+                                          placeholder="Enter Host ID"
+                                          className="flex-1 p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 font-mono text-sm"
                                           value={inputSessionId}
                                           onChange={e => setInputSessionId(e.target.value)}
                                       />
@@ -323,23 +332,29 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           </div>
                           
                           <div className="text-center space-y-1">
-                              <h2 className="text-xl font-bold text-white tracking-tight">Connected to Hive</h2>
+                              <h2 className="text-xl font-bold text-white tracking-tight">Study Group Active</h2>
                               <p className="text-green-400 text-xs uppercase tracking-widest font-bold">Synchronized</p>
                           </div>
                           
                           <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
-                              <div>
-                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Session ID</label>
-                                  <div 
-                                      onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
-                                      className="text-2xl font-mono font-bold text-white tracking-widest cursor-pointer hover:text-white/80 select-all"
-                                  >
-                                      {groupSessionId}
+                              {isHost && (
+                                  <div>
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Session ID (Share This)</label>
+                                      <div 
+                                          onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
+                                          className="text-sm font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/20 p-3 rounded-lg break-all border border-white/5"
+                                      >
+                                          {groupSessionId}
+                                      </div>
                                   </div>
-                              </div>
+                              )}
                               <div>
                                   <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Signed in as</label>
                                   <div className="text-sm font-bold text-white">{userName}</div>
+                              </div>
+                              <div>
+                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-1">Role</label>
+                                  <div className="text-sm font-bold text-white">{isHost ? 'Host (Source of Truth)' : 'Participant'}</div>
                               </div>
                           </div>
 
@@ -347,11 +362,11 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                               onClick={leaveGroupSession}
                               className="px-8 py-3 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
                           >
-                              Leave Study Session
+                              Leave Study Group
                           </button>
                           
                           <p className="text-[10px] text-white/30 text-center max-w-xs">
-                              All timers, tasks, and schedules are currently synced with the group host.
+                              All timers, tasks, and schedules are currently synced via WebRTC.
                           </p>
                       </div>
                   )}
