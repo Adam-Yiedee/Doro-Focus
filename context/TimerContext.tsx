@@ -537,7 +537,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const sendNotification = useCallback((title: string, body: string) => {
     if (!("Notification" in window)) return;
-    const trigger = () => { new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer' }); };
+    const trigger = () => { new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer', requireInteraction: true }); };
     if (Notification.permission === "granted") trigger();
     else if (Notification.permission !== "denied") Notification.requestPermission().then(p => { if (p === "granted") trigger(); });
   }, []);
@@ -759,7 +759,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceContext(null);
     setActiveMode(nextMode);
     setIsIdle(false);
-    if (options?.adjustBreakBalance) setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
+    
+    // Crucial Fix: Explicitly check if adjustment is defined before applying.
+    // If undefined (neutral "Continue Focus"), do NOT modify break balance.
+    // The '|| 0' ensures we don't pass undefined to the setter, but the 'if' ensures we only call it if adjustment is intended.
+    if (options && options.adjustBreakBalance !== undefined) {
+        setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
+    }
+    
     if (nextMode === 'work') setWorkTime(Math.max(0, settings.workDuration - (options?.adjustWorkStart || 0)));
     else setWorkTime(settings.workDuration); 
     currentActivityStartRef.current = new Date();

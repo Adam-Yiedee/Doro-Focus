@@ -99,12 +99,15 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                         if (log.reason?.includes('Resting')) displayType = 'Resting';
 
                         return (
-                            <div key={i} className="px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 flex justify-between items-center text-xs">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-purple-400/50" />
-                                    <span className="text-purple-200 font-medium">Grace: {displayType}</span>
+                            <div key={i} className="px-4 py-3 rounded-xl bg-[#1a1523] border border-purple-500/30 flex justify-between items-center text-xs group hover:border-purple-500/50 transition-colors">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_10px_rgba(192,132,252,0.5)]" />
+                                    <div className="flex flex-col">
+                                        <span className="text-purple-200 font-bold tracking-wide uppercase text-[10px]">Grace Period</span>
+                                        <span className="text-white/60 text-xs">{displayType}</span>
+                                    </div>
                                 </div>
-                                <span className="font-mono text-purple-200/60">{formatDur(log.duration)}</span>
+                                <span className="font-mono font-bold text-purple-200/80 bg-purple-500/10 px-2 py-1 rounded">{formatDur(log.duration)}</span>
                             </div>
                         );
                     }
@@ -112,42 +115,58 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                     let borderColor = 'border-white/10';
                     let bgColor = 'bg-white/5';
                     let textColor = 'text-white/80';
+                    let iconColor = 'bg-white/20';
 
                     if (log.type === 'work') {
                         const c = log.color || '#BA4949';
                         borderColor = `border-[${c}]`; 
-                        bgColor = ''; 
+                        // Use inline style for border to support dynamic task colors
+                        bgColor = 'bg-[#1c1c1e]'; 
                         textColor = 'text-white';
+                        iconColor = c;
                     } else if (log.type === 'break') {
                         borderColor = 'border-teal-500/30';
-                        bgColor = 'bg-teal-500/10';
+                        bgColor = 'bg-[#132020]';
                         textColor = 'text-teal-100';
+                        iconColor = '#2dd4bf';
                     } else if (log.type === 'allpause') {
                         borderColor = 'border-white/10';
-                        bgColor = 'bg-black/20';
+                        bgColor = 'bg-[#18181a]';
                         textColor = 'text-white/50';
+                        iconColor = '#555';
                     }
 
                     return (
                       <div 
                         key={i} 
-                        className={`p-4 rounded-2xl border-l-4 backdrop-blur-sm flex flex-col gap-1 transition-all hover:bg-white/10 ${borderColor} ${bgColor}`}
-                        style={log.type === 'work' ? { borderColor: log.color || '#BA4949', backgroundColor: `${log.color}15` || '#BA494915' } : {}}
+                        className={`p-4 rounded-2xl border-l-[6px] backdrop-blur-sm flex flex-col gap-2 transition-all hover:bg-white/10 ${borderColor} ${bgColor}`}
+                        style={log.type === 'work' ? { borderLeftColor: log.color || '#BA4949' } : {}}
                       >
                         <div className="flex justify-between items-center">
-                          <span className={`capitalize font-bold text-sm tracking-wide ${textColor}`}>
-                             {log.type === 'allpause' ? 'Paused' : log.type}
-                          </span>
-                          <span className="font-mono text-xs opacity-70">{formatDur(log.duration)}</span>
+                          <div className="flex items-center gap-2">
+                              <span className={`uppercase font-bold text-[10px] tracking-widest opacity-70 ${textColor}`}>
+                                {log.type === 'allpause' ? 'PAUSED' : log.type}
+                              </span>
+                          </div>
+                          <span className="font-mono text-xs font-bold opacity-70 bg-black/20 px-2 py-1 rounded">{formatDur(log.duration)}</span>
                         </div>
                         
                         <div className="flex justify-between items-end">
-                           <div className="flex flex-col gap-0.5">
-                              {log.task && <span className="text-sm font-medium text-white">{log.task.name}</span>}
-                              {log.reason && <span className="text-xs text-white/60 italic">"{log.reason}"</span>}
-                              <span className="text-[10px] text-white/30 uppercase tracking-wider mt-1">
-                                {formatTime(log.start)} - {formatTime(log.end)}
-                              </span>
+                           <div className="flex flex-col gap-1">
+                              {log.task ? (
+                                  <span className="text-sm font-bold text-white tracking-tight">{log.task.name}</span>
+                              ) : (
+                                  <span className="text-sm font-medium text-white/40 italic">No active task</span>
+                              )}
+                              
+                              {log.reason && <span className="text-xs text-white/50 italic">"{log.reason}"</span>}
+                              
+                              <div className="flex items-center gap-2 mt-1">
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/30"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                  <span className="text-[10px] text-white/30 font-mono uppercase tracking-wider">
+                                    {formatTime(log.start)} - {formatTime(log.end)}
+                                  </span>
+                              </div>
                            </div>
                         </div>
                       </div>

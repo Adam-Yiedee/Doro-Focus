@@ -56,11 +56,17 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      // Work fills UP as time counts DOWN
-      const ratio = time / Math.max(1, maxTime);
-      fillPercent = 1 - ratio;
-      
-      if (fillPercent <= 0.001) showLiquid = false;
+      // Work fills UP as time counts DOWN, but ONLY in the last 30 seconds
+      if (time > 30) {
+          fillPercent = 0;
+          showLiquid = false;
+      } else {
+          // Map 30s -> 0%, 0s -> 100%
+          // Avoid divide by zero if time is 0
+          const ratio = time / 30;
+          fillPercent = 1 - Math.max(0, Math.min(1, ratio));
+          showLiquid = true;
+      }
   } else {
       // Break Logic
       if (time < 0) {
