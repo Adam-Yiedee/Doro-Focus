@@ -81,6 +81,7 @@ interface TimerContextType {
   updateSettings: (newSettings: TimerSettings) => void;
   clearLogs: () => void;
   resetTimers: () => void;
+  setPomodoroCount: (count: number) => void;
   addScheduleBreak: (brk: ScheduleBreak) => void;
   deleteScheduleBreak: (id: string) => void;
   setScheduleStartTime: (time: string) => void;
@@ -349,8 +350,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const handleWorkLoopComplete = useCallback(() => {
     playAlarm(settings.alarmSound);
-    setBreakTime(prev => prev + settings.shortBreakDuration);
-    setPomodoroCount(prev => prev + 1);
+    
+    // Calculate Reward based on completed Pomos
+    const nextPomoCount = pomodoroCount + 1;
+    const isLongBreak = nextPomoCount % settings.longBreakInterval === 0;
+    const reward = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
+
+    setBreakTime(prev => prev + reward);
+    setPomodoroCount(nextPomoCount);
 
     if (currentActivityStartRef.current) {
       logActivity('work', currentActivityStartRef.current, settings.workDuration, 'Pomodoro Complete');
@@ -380,12 +387,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return updatedTasks;
     });
 
-    sendNotification("Focus Session Complete", "5 minutes added to break bank.");
+    sendNotification(
+      isLongBreak ? "Long Break Earned!" : "Focus Session Complete", 
+      `${Math.floor(reward/60)} minutes added to break bank.`
+    );
     setTimerStarted(false);
     setGraceContext('afterWork');
     setGraceTotal(0);
     setGraceOpen(true);
-  }, [settings, logActivity, sendNotification]);
+  }, [settings, logActivity, sendNotification, pomodoroCount]);
 
   const handleBreakLoopComplete = useCallback(() => {
     playAlarm(settings.alarmSound);
@@ -544,7 +554,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (options.logGraceAs === 'work' && activeTask) {
             taskOverride = activeTask;
         }
-        logActivity(options.logGraceAs, graceStart, graceTotal, 'Grace Period', taskOverride);
+
+        let reason = 'Grace Period';
+        if (options.logGraceAs === 'work') reason = 'Grace Period (Working)';
+        else if (options.logGraceAs === 'break') reason = 'Grace Period (Resting)';
+
+        logActivity(options.logGraceAs, graceStart, graceTotal, reason, taskOverride);
     }
     setGraceOpen(false);
     setGraceContext(null);
@@ -778,7 +793,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
-      updateSettings, clearLogs, resetTimers
+      updateSettings, clearLogs, resetTimers, setPomodoroCount
     }}>
       {children}
     </TimerContext.Provider>

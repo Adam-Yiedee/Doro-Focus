@@ -6,7 +6,7 @@ import { AlarmSound } from '../../types';
 import { playAlarm } from '../../utils/sound';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset } = useTimer();
+  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount } = useTimer();
   const [tab, setTab] = useState<'log' | 'history' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [pixelsPerMin, setPixelsPerMin] = useState(2);
@@ -133,6 +133,24 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               ) : (
                 <div className="space-y-3">
                   {logs.map((log, i) => {
+                    const isGrace = log.type === 'grace' || (log.reason && log.reason.startsWith('Grace Period'));
+
+                    if (isGrace) {
+                        let displayType = 'Unmarked';
+                        if (log.reason?.includes('Working')) displayType = 'Working';
+                        if (log.reason?.includes('Resting')) displayType = 'Resting';
+
+                        return (
+                            <div key={i} className="px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 flex justify-between items-center text-xs">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-purple-400/50" />
+                                    <span className="text-purple-200 font-medium">Grace: {displayType}</span>
+                                </div>
+                                <span className="font-mono text-purple-200/60">{formatDur(log.duration)}</span>
+                            </div>
+                        );
+                    }
+
                     let borderColor = 'border-white/10';
                     let bgColor = 'bg-white/5';
                     let textColor = 'text-white/80';
@@ -150,10 +168,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                         borderColor = 'border-white/10';
                         bgColor = 'bg-black/20';
                         textColor = 'text-white/50';
-                    } else if (log.type === 'grace') {
-                        borderColor = 'border-purple-500/30';
-                        bgColor = 'bg-purple-500/10';
-                        textColor = 'text-purple-200';
                     }
 
                     return (
@@ -236,6 +250,23 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
             <div className="p-8 space-y-8 pb-16">
               <h3 className="font-bold text-white text-lg tracking-tight">Timer Configuration</h3>
               <div className="space-y-6">
+                
+                {/* Manual Pomo Count */}
+                <div>
+                   <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-2">Current Session Pomos</label>
+                   <div className="flex items-center gap-3">
+                       <input 
+                           type="number" 
+                           min="0"
+                           value={pomodoroCount}
+                           onChange={e => setPomodoroCount(Math.max(0, parseInt(e.target.value) || 0))}
+                           className="w-full p-4 bg-white/5 rounded-xl border border-white/10 text-white font-mono focus:border-white/30 outline-none transition-colors"
+                       />
+                       <span className="text-white/30 font-bold text-sm">pomos</span>
+                   </div>
+                   <p className="text-[10px] text-white/30 mt-1">Adjusts "until long break" calculation.</p>
+                </div>
+
                 {[
                     { label: 'Work Duration', val: settings.workDuration, key: 'workDuration', unit: 'min' },
                     { label: 'Short Break Reward', val: settings.shortBreakDuration, key: 'shortBreakDuration', unit: 'min' },

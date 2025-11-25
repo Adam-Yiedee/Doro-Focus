@@ -411,7 +411,23 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                     </div>
                     {/* Task List */}
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-2 relative">
-                        {tasks.filter(t => !t.checked).map((task, index) => {
+                        {tasks.map((task, index) => {
+                            if (task.checked) {
+                                return (
+                                    <div key={task.id} className="relative rounded-xl border border-white/5 bg-black/20 p-3 opacity-40 group">
+                                        <div className="flex justify-between items-center">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-sm font-bold text-white line-through truncate">{task.name}</div>
+                                                <div className="text-[10px] text-white/40 font-mono flex items-center gap-2 mt-0.5">
+                                                    <span>Completed</span>
+                                                </div>
+                                            </div>
+                                             <button onClick={() => deleteTask(task.id)} className="p-1.5 text-white/30 hover:text-red-400 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                                        </div>
+                                    </div>
+                                );
+                            }
+
                             const isSplitting = splittingTaskId === task.id;
                             const isDragged = draggedId?.type === 'task' && draggedId.id === task.id;
                             const isDropTarget = dropTargetId?.type === 'task' && dropTargetId.id === task.id;
@@ -443,12 +459,12 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                                         <div 
                                                             key={sub.id} 
                                                             className={`pl-2 py-1 rounded text-xs text-white/60 hover:bg-white/5 cursor-grab flex justify-between group/sub transition-all duration-200 ${(dropTargetId?.id === sub.id) ? 'bg-white/10' : ''}`} 
-                                                            draggable 
-                                                            onDragStart={(e) => onDragStart(e, 'subtask', sub.id, task.id)} 
-                                                            onDragOver={(e) => onDragOver(e, sub.id, 'subtask', task.id)} 
+                                                            draggable={!sub.checked}
+                                                            onDragStart={(e) => !sub.checked && onDragStart(e, 'subtask', sub.id, task.id)} 
+                                                            onDragOver={(e) => !sub.checked && onDragOver(e, sub.id, 'subtask', task.id)} 
                                                             onDrop={onDrop}
                                                         >
-                                                            <span>{sub.name} ({sub.estimated})</span>
+                                                            <span className={sub.checked ? "line-through opacity-50" : ""}>{sub.name} ({sub.estimated})</span>
                                                         </div>
                                                      ))}
                                                 </div>

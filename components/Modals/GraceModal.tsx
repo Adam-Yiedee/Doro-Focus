@@ -21,7 +21,7 @@ const GraceModal: React.FC = () => {
 
   // Reveal options after delay
   useEffect(() => {
-    if (graceOpen && graceTotal > 5 && !showOptions) {
+    if (graceOpen && graceTotal > 30 && !showOptions) {
         setShowOptions(true);
     }
   }, [graceTotal, graceOpen, showOptions]);
