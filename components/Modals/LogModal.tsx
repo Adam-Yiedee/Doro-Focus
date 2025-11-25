@@ -6,10 +6,11 @@ import { AlarmSound } from '../../types';
 import { playAlarm } from '../../utils/sound';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings } = useTimer();
+  const { logs, clearLogs, settings, updateSettings, hardReset } = useTimer();
   const [tab, setTab] = useState<'log' | 'history' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [pixelsPerMin, setPixelsPerMin] = useState(2);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const formatDur = (sec: number) => {
@@ -232,7 +233,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           )}
 
           {tab === 'settings' && (
-            <div className="p-8 space-y-8">
+            <div className="p-8 space-y-8 pb-16">
               <h3 className="font-bold text-white text-lg tracking-tight">Timer Configuration</h3>
               <div className="space-y-6">
                 {[
@@ -289,6 +290,37 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                     >
                         <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${settings.disableBlur ? 'translate-x-6' : ''}`} />
                     </button>
+                </div>
+
+                {/* Danger Zone */}
+                <div className="pt-8 mt-8 border-t border-white/10">
+                    <h4 className="text-red-400 font-bold text-xs uppercase tracking-widest mb-4">Danger Zone</h4>
+                    {!showResetConfirm ? (
+                        <button 
+                            onClick={() => setShowResetConfirm(true)}
+                            className="w-full py-4 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold text-xs uppercase tracking-widest transition-all"
+                        >
+                            Reset App Data
+                        </button>
+                    ) : (
+                        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center space-y-4 animate-fade-in">
+                            <p className="text-red-200 text-sm font-medium">Are you sure? This will delete all tasks and history.</p>
+                            <div className="flex gap-3">
+                                <button 
+                                    onClick={() => setShowResetConfirm(false)}
+                                    className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white rounded-lg text-xs font-bold uppercase tracking-wide"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    onClick={() => { hardReset(); onClose(); }}
+                                    className="flex-1 py-3 bg-red-500 text-white hover:bg-red-600 rounded-lg text-xs font-bold uppercase tracking-wide shadow-lg"
+                                >
+                                    Confirm Reset
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
               </div>

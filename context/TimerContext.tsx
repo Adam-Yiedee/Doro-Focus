@@ -61,6 +61,7 @@ interface TimerContextType {
   resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => void;
   endSession: () => void;
   closeSummary: () => void;
+  hardReset: () => void;
   
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
@@ -601,6 +602,36 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setSessionStats(null);
   };
 
+  const hardReset = () => {
+      localStorage.removeItem(STORAGE_KEY);
+      setSettings(DEFAULT_SETTINGS);
+      setTasks([]);
+      setCategories([]);
+      setLogs([]);
+      setPomodoroCount(0);
+      setWorkTime(DEFAULT_SETTINGS.workDuration);
+      setBreakTime(0);
+      setActiveMode('work');
+      setTimerStarted(false);
+      setIsIdle(true);
+      setAllPauseActive(false);
+      setGraceOpen(false);
+      setGraceContext(null);
+      setSessionStartTime(null);
+      setScheduleBreaks([]);
+      setSessionStats(null);
+      setShowSummary(false);
+      
+      const now = new Date();
+      const h = now.getHours().toString().padStart(2, '0');
+      const m = now.getMinutes().toString().padStart(2, '0');
+      setScheduleStartTime(`${h}:${m}`);
+      
+      currentActivityStartRef.current = null;
+      lastTickRef.current = null;
+      workerRef.current?.postMessage('stop');
+  };
+
   const addTask = (name: string, estimated: number, categoryId: number | null, parentId?: number, color?: string) => {
     const newTask: Task = {
       id: Date.now(), name, estimated, completed: 0, checked: false,
@@ -743,7 +774,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
-      startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary,
+      startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
