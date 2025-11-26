@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound } from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
@@ -374,19 +375,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
   }, [groupSessionId, getCurrentState]);
 
-  // Trigger broadcast on significant state changes
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
-     
-     // Debounce the broadcast slightly
      const t = setTimeout(() => {
          broadcastState();
      }, 100);
      return () => clearTimeout(t);
   }, [
-      // We listen to major state changes. 
-      // Note: We do NOT listen to workTime/breakTime tick-by-tick to avoid network flooding.
-      // Time sync happens on pause/start/reset events mostly.
       tasks, settings, activeMode, timerStarted, 
       scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, 
       graceOpen, groupSessionId, broadcastState
@@ -396,8 +391,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setUserName(name);
       return new Promise((resolve, reject) => {
           try {
-            // @ts-ignore - PeerJS import
-            const peer = new Peer();
+            // Generate Short ID (6 chars)
+            const shortId = Math.random().toString(36).substring(2, 8).toUpperCase();
+            
+            // @ts-ignore
+            const peer = new Peer(shortId); // Try to use shortId as Peer ID
             peerRef.current = peer;
 
             peer.on('open', (id: string) => {
@@ -409,21 +407,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
             peer.on('connection', (conn: DataConnection) => {
                 connectionsRef.current.push(conn);
-                
                 conn.on('open', () => {
-                    // Send full state to new peer
                     conn.send({ type: 'STATE_UPDATE', state: getCurrentState() });
                 });
-
                 conn.on('data', (data: any) => {
                     if (data.type === 'STATE_UPDATE') {
-                        // Host received update from client (e.g. client checked a task)
                         applyRemoteState(data.state);
-                        // Host propagates to all OTHER clients
                         broadcastState(conn.peer);
                     }
                 });
-
                 conn.on('close', () => {
                     connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
                 });
@@ -431,7 +423,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
             peer.on('error', (err: any) => {
                 console.error("PeerJS Error:", err);
-                setPeerError("Connection Error: " + err.type);
+                // Retry with random ID if short ID taken (unlikely but possible)
+                if (err.type === 'unavailable-id') {
+                     reject(new Error("Session ID collision, please try again."));
+                } else {
+                     setPeerError("Connection Error: " + err.type);
+                     reject(err);
+                }
             });
           } catch (e) {
               reject(e);
@@ -475,6 +473,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                  console.error(err);
                  setPeerError("Connection Failed. Check ID.");
                  setGroupSessionId(null);
+                 reject(err);
             });
           } catch (e) {
               reject(e);
@@ -491,7 +490,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setGroupSessionId(null);
       setIsHost(false);
       setPeerError(null);
-      // We keep the state as is when leaving, so user can continue independently
   };
   // ---- END PEERJS LOGIC ----
 
@@ -649,12 +647,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startTimer = () => {
     if (!timerStarted) {
-      // First start of session logic
       if (!sessionStartTime) {
           const now = new Date();
           const startStr = now.toISOString();
           setSessionStartTime(startStr);
-          // Auto-adjust schedule start to now when session starts
           const h = now.getHours().toString().padStart(2, '0');
           const m = now.getMinutes().toString().padStart(2, '0');
           setScheduleStartTime(`${h}:${m}`);
@@ -760,9 +756,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setActiveMode(nextMode);
     setIsIdle(false);
     
-    // Crucial Fix: Explicitly check if adjustment is defined before applying.
-    // If undefined (neutral "Continue Focus"), do NOT modify break balance.
-    // The '|| 0' ensures we don't pass undefined to the setter, but the 'if' ensures we only call it if adjustment is intended.
     if (options && options.adjustBreakBalance !== undefined) {
         setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
     }
@@ -777,7 +770,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     stopTimer();
     setAllPauseActive(false);
 
-    // Calculate Stats for Summary
     const workLogs = logs.filter(l => l.type === 'work' && l.start > (sessionStartTime || ''));
     const breakLogs = logs.filter(l => l.type === 'break' && l.start > (sessionStartTime || ''));
     const totalWork = workLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
@@ -792,8 +784,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         pomosCompleted: pomodoroCount
     });
 
-    // Reset App State (Keep Logs)
-    setTasks(prev => removeCompletedTasks(prev)); // Remove completed
+    setTasks(prev => removeCompletedTasks(prev)); 
     setPomodoroCount(0);
     setWorkTime(settings.workDuration);
     setBreakTime(0);
@@ -804,7 +795,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSessionStartTime(null);
     currentActivityStartRef.current = null;
     
-    // Reset Schedule to Now
     const now = new Date();
     const h = now.getHours().toString().padStart(2, '0');
     const m = now.getMinutes().toString().padStart(2, '0');
@@ -891,11 +881,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const newTasks = [...prev];
         const fromIndex = newTasks.findIndex(t => t.id === fromId);
         if (fromIndex === -1) return prev;
-        
-        // Remove 'from'
         const [moved] = newTasks.splice(fromIndex, 1);
-        
-        // Find 'to' index in the array *after* removal
         const toIndex = newTasks.findIndex(t => t.id === toId);
         if (toIndex === -1) {
             newTasks.push(moved);

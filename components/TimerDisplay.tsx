@@ -1,3 +1,4 @@
+
 import React, { useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
@@ -12,14 +13,12 @@ const formatTime = (seconds: number) => {
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
   // Calculate bottom position to transition from -300% (Empty/Low) to -185% (Full/High)
-  // Increased size to 300% to ensure corners are filled and liquid spans full width properly
   const safePercent = Math.max(0, Math.min(1.1, percent));
   const bottomVal = -295 + (safePercent * 115);
 
   const primaryClass = colorMode === 'red' ? 'bg-red-500/20' : 'bg-white/5';
   const secondaryClass = colorMode === 'red' ? 'bg-red-500/10' : 'bg-white/3';
 
-  // Rounded 48% makes it much flatter (closer to circle) than 45% or 40%
   return (
     <div className={`absolute inset-0 z-0 transition-opacity duration-700 pointer-events-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
        <div 
@@ -56,22 +55,23 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      // Work fills UP as time counts DOWN, but ONLY in the last 30 seconds
-      if (time > 30) {
-          fillPercent = 0;
-          showLiquid = false;
+      // Work fills UP as time counts DOWN.
+      // Reaches 100% fullness when time reaches 30 seconds remaining.
+      // Formula: 1 - ((time - 30) / (maxTime - 30))
+      // Clamped between 0 and 1.
+      const denominator = Math.max(1, maxTime - 30);
+      const numerator = Math.max(0, time - 30);
+      
+      if (time <= 30) {
+          fillPercent = 1; // Full for the last 30s
       } else {
-          // Map 30s -> 0%, 0s -> 100%
-          // Avoid divide by zero if time is 0
-          const ratio = time / 30;
-          fillPercent = 1 - Math.max(0, Math.min(1, ratio));
-          showLiquid = true;
+          fillPercent = 1 - (numerator / denominator);
       }
+      showLiquid = true;
   } else {
       // Break Logic
       if (time < 0) {
           // NEGATIVE BREAK (Red Liquid)
-          // User logic: Empty at -5s, Full at -10:00 (-600s)
           const absTime = Math.abs(time);
           if (absTime < 5) {
               fillPercent = 0;

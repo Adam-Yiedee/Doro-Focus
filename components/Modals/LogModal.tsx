@@ -1,14 +1,17 @@
+
 import React, { useState, useMemo } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import TaskViewModal from './TaskViewModal';
 import { AlarmSound } from '../../types';
 import { playAlarm } from '../../utils/sound';
+import { QRCodeSVG } from 'qrcode.react';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
   const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError } = useTimer();
   const [tab, setTab] = useState<'log' | 'group' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showQR, setShowQR] = useState(false);
   
   // Group Study Form State
   const [inputName, setInputName] = useState(userName || '');
@@ -54,6 +57,24 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   };
 
   if (!isOpen) return null;
+
+  if (showQR && groupSessionId) {
+      return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={() => setShowQR(false)}>
+              <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center gap-6 animate-slide-up" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-black font-bold text-xl tracking-tight">Join Session</h3>
+                  <div className="p-2 bg-white border-2 border-black rounded-xl">
+                      <QRCodeSVG value={groupSessionId} size={256} level="H" />
+                  </div>
+                  <div className="text-center">
+                      <div className="text-black/40 text-xs font-bold uppercase tracking-widest mb-1">Session ID</div>
+                      <div className="text-3xl font-mono font-bold text-black">{groupSessionId}</div>
+                  </div>
+                  <button onClick={() => setShowQR(false)} className="text-black/50 hover:text-black text-sm font-bold uppercase tracking-wide">Close</button>
+              </div>
+          </div>
+      );
+  }
 
   return (
     <>
@@ -258,10 +279,13 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4 backdrop-blur-md">
                               {isHost && (
                                   <div>
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Session ID (Share This)</label>
+                                      <div className="flex justify-between items-center mb-2">
+                                          <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Session ID</label>
+                                          <button onClick={() => setShowQR(true)} className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest flex items-center gap-1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Show QR</button>
+                                      </div>
                                       <div 
                                           onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
-                                          className="text-sm font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/40 p-4 rounded-xl break-all border border-white/5 shadow-inner text-center"
+                                          className="text-2xl font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/40 p-4 rounded-xl break-all border border-white/5 shadow-inner text-center"
                                       >
                                           {groupSessionId}
                                       </div>
