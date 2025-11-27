@@ -1,13 +1,14 @@
 
+
 import React, { useState, useMemo } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import TaskViewModal from './TaskViewModal';
-import { AlarmSound } from '../../types';
+import { AlarmSound, GroupSyncConfig } from '../../types';
 import { playAlarm } from '../../utils/sound';
 import { QRCodeSVG } from 'qrcode.react';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError } = useTimer();
+  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, clientSyncConfig, updateHostSyncConfig } = useTimer();
   const [tab, setTab] = useState<'log' | 'group' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -17,6 +18,15 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const [inputName, setInputName] = useState(userName || '');
   const [inputSessionId, setInputSessionId] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+
+  // Sync Options State for New Session
+  const [tempSyncConfig, setTempSyncConfig] = useState<GroupSyncConfig>({
+      syncTimers: true,
+      syncTasks: true,
+      syncSchedule: true,
+      syncHistory: false,
+      syncSettings: true
+  });
 
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const formatDur = (sec: number) => {
@@ -37,7 +47,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       if(!inputName.trim()) return;
       setIsConnecting(true);
       try {
-        await createGroupSession(inputName);
+        await createGroupSession(inputName, tempSyncConfig);
       } catch (e) {
           console.error(e);
       }
@@ -48,7 +58,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       if(!inputName.trim() || !inputSessionId.trim()) return;
       setIsConnecting(true);
       try {
-        await joinGroupSession(inputSessionId.trim(), inputName);
+        await joinGroupSession(inputSessionId.trim(), inputName, tempSyncConfig);
       } catch(e) {
           console.error(e);
       }
@@ -56,19 +66,28 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       setIsConnecting(false);
   };
 
+  const toggleTempSync = (key: keyof GroupSyncConfig) => {
+      setTempSyncConfig(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+  
+  const toggleHostSync = (key: keyof GroupSyncConfig) => {
+      if (!isHost) return;
+      updateHostSyncConfig({ ...hostSyncConfig, [key]: !hostSyncConfig[key] });
+  };
+
   if (!isOpen) return null;
 
   if (showQR && groupSessionId) {
       return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={() => setShowQR(false)}>
-              <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center gap-6 animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center gap-6 animate-slide-up max-w-sm w-full" onClick={e => e.stopPropagation()}>
                   <h3 className="text-black font-bold text-xl tracking-tight">Join Session</h3>
                   <div className="p-2 bg-white border-2 border-black rounded-xl">
-                      <QRCodeSVG value={groupSessionId} size={256} level="H" />
+                      <QRCodeSVG value={groupSessionId} size={200} level="H" />
                   </div>
-                  <div className="text-center">
+                  <div className="text-center w-full">
                       <div className="text-black/40 text-xs font-bold uppercase tracking-widest mb-1">Session ID</div>
-                      <div className="text-3xl font-mono font-bold text-black">{groupSessionId}</div>
+                      <div className="text-2xl md:text-3xl font-mono font-bold text-black break-all">{groupSessionId}</div>
                   </div>
                   <button onClick={() => setShowQR(false)} className="text-black/50 hover:text-black text-sm font-bold uppercase tracking-wide">Close</button>
               </div>
@@ -76,12 +95,24 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       );
   }
 
+  const SyncOptionToggle = ({ label, checked, onChange, disabled = false }: { label: string, checked: boolean, onChange: () => void, disabled?: boolean }) => (
+      <div className={`flex items-center justify-between p-3 rounded-lg border ${checked ? 'bg-white/10 border-white/20' : 'bg-black/20 border-white/5'} ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
+          <span className="text-xs text-white/80 font-medium">{label}</span>
+          <button 
+            onClick={onChange}
+            className={`w-10 h-5 rounded-full p-0.5 transition-colors ${checked ? 'bg-green-500' : 'bg-white/10'}`}
+          >
+             <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${checked ? 'translate-x-5' : ''}`} />
+          </button>
+      </div>
+  );
+
   return (
     <>
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xl animate-fade-in" onClick={onClose}>
-      <div className="w-full max-w-3xl bg-white/10 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4 bg-black/60 backdrop-blur-xl animate-fade-in" onClick={onClose}>
+      <div className="w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]" onClick={e => e.stopPropagation()}>
         
-        <div className="flex border-b border-white/10 overflow-x-auto shrink-0">
+        <div className="flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
           {['log', 'schedule', 'group', 'settings'].map(t => (
             <button 
               key={t}
@@ -92,7 +123,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                     setTab(t as any);
                   }
               }}
-              className={`flex-1 py-5 px-4 font-bold text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
+              className={`flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
             >
               {t === 'group' ? 'Group Study' : (t === 'schedule' ? 'Schedule' : t)}
             </button>
@@ -101,7 +132,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
         <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">
           {tab === 'log' && (
-            <div className="p-8 space-y-4">
+            <div className="p-4 md:p-8 space-y-4">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="font-bold text-white text-lg tracking-tight">Activity Log</h3>
                 <button onClick={clearLogs} className="text-[10px] uppercase tracking-widest text-red-300 hover:text-red-200 font-bold border border-red-500/30 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors">Clear</button>
@@ -136,25 +167,20 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                     let borderColor = 'border-white/10';
                     let bgColor = 'bg-white/5';
                     let textColor = 'text-white/80';
-                    let iconColor = 'bg-white/20';
-
+                    
                     if (log.type === 'work') {
                         const c = log.color || '#BA4949';
                         borderColor = `border-[${c}]`; 
-                        // Use inline style for border to support dynamic task colors
                         bgColor = 'bg-[#1c1c1e]'; 
                         textColor = 'text-white';
-                        iconColor = c;
                     } else if (log.type === 'break') {
                         borderColor = 'border-teal-500/30';
                         bgColor = 'bg-[#132020]';
                         textColor = 'text-teal-100';
-                        iconColor = '#2dd4bf';
                     } else if (log.type === 'allpause') {
                         borderColor = 'border-white/10';
                         bgColor = 'bg-[#18181a]';
                         textColor = 'text-white/50';
-                        iconColor = '#555';
                     }
 
                     return (
@@ -199,7 +225,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           )}
 
           {tab === 'group' && (
-              <div className="p-8 flex flex-col items-center justify-center min-h-[500px]">
+              <div className="p-4 md:p-8 flex flex-col items-center justify-center min-h-[500px]">
                   {isConnecting ? (
                       <div className="flex flex-col items-center justify-center gap-4">
                           <div className="w-12 h-12 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
@@ -230,13 +256,21 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                   />
                               </div>
 
+                              <div className="bg-white/5 rounded-xl border border-white/10 p-4 space-y-2">
+                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Sync Options</label>
+                                  <SyncOptionToggle label="Sync Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
+                                  <SyncOptionToggle label="Sync Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
+                                  <SyncOptionToggle label="Sync Future Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
+                                  <SyncOptionToggle label="Full Sync (Overwrite History)" checked={tempSyncConfig.syncHistory} onChange={() => toggleTempSync('syncHistory')} />
+                              </div>
+
                               <div className="pt-4 flex flex-col gap-4">
                                   <button 
                                       onClick={handleStartGroup}
                                       disabled={!inputName.trim()}
                                       className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
                                   >
-                                      Start Group Study
+                                      Start New Session
                                   </button>
                                   
                                   <div className="relative flex items-center py-2">
@@ -265,42 +299,60 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           </div>
                       </div>
                   ) : (
-                      <div className="w-full max-w-sm flex flex-col items-center gap-8 animate-fade-in">
-                          <div className="w-24 h-24 rounded-full bg-blue-500/10 border border-blue-400/30 flex items-center justify-center mb-2 animate-pulse relative overflow-hidden">
-                              <div className="absolute inset-0 bg-blue-500/20 blur-xl"></div>
-                              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-300 relative z-10"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-                          </div>
-                          
+                      <div className="w-full flex flex-col items-center gap-8 animate-fade-in max-w-lg">
                           <div className="text-center space-y-1">
                               <h2 className="text-2xl font-bold text-white tracking-tight">Group Study Active</h2>
                               <p className="text-blue-300 text-xs uppercase tracking-widest font-bold">Live Synchronized</p>
                           </div>
                           
-                          <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4 backdrop-blur-md">
-                              {isHost && (
-                                  <div>
-                                      <div className="flex justify-between items-center mb-2">
-                                          <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Session ID</label>
-                                          <button onClick={() => setShowQR(true)} className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest flex items-center gap-1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Show QR</button>
-                                      </div>
-                                      <div 
-                                          onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
-                                          className="text-2xl font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/40 p-4 rounded-xl break-all border border-white/5 shadow-inner text-center"
-                                      >
-                                          {groupSessionId}
-                                      </div>
+                          <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6 backdrop-blur-md">
+                              {/* Session Info */}
+                              <div>
+                                  <div className="flex justify-between items-center mb-2">
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Session ID</label>
+                                      <button onClick={() => setShowQR(true)} className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest flex items-center gap-1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Show QR</button>
                                   </div>
-                              )}
-                              <div className="flex justify-between items-center pt-2 border-t border-white/5">
-                                  <div>
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Username</label>
-                                      <div className="text-sm font-bold text-white">{userName}</div>
-                                  </div>
-                                  <div className="text-right">
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Role</label>
-                                      <div className="text-sm font-bold text-white">{isHost ? 'Host' : 'Member'}</div>
+                                  <div 
+                                      onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
+                                      className="text-xl md:text-2xl font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/40 p-4 rounded-xl break-all border border-white/5 shadow-inner text-center"
+                                  >
+                                      {groupSessionId}
                                   </div>
                               </div>
+
+                              {/* Members List */}
+                              <div>
+                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Members ({members.length})</label>
+                                  <div className="flex flex-wrap gap-2">
+                                      {members.map(m => (
+                                          <div key={m.id} className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${m.isHost ? 'bg-blue-500/20 border-blue-400/30 text-blue-100' : 'bg-white/5 border-white/10 text-white/80'}`}>
+                                              <div className={`w-2 h-2 rounded-full ${m.isHost ? 'bg-blue-400' : 'bg-white/40'}`} />
+                                              <span className="text-xs font-bold">{m.name} {m.id === 'host' || m.isHost ? '(Host)' : ''}</span>
+                                          </div>
+                                      ))}
+                                  </div>
+                              </div>
+                              
+                              {/* Host Controls */}
+                              {isHost ? (
+                                  <div>
+                                     <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Host Controls (Shared Data)</label>
+                                     <div className="space-y-2">
+                                        <SyncOptionToggle label="Sync Timers" checked={hostSyncConfig.syncTimers} onChange={() => toggleHostSync('syncTimers')} />
+                                        <SyncOptionToggle label="Sync Tasks" checked={hostSyncConfig.syncTasks} onChange={() => toggleHostSync('syncTasks')} />
+                                        <SyncOptionToggle label="Sync Schedule" checked={hostSyncConfig.syncSchedule} onChange={() => toggleHostSync('syncSchedule')} />
+                                     </div>
+                                  </div>
+                              ) : (
+                                  <div>
+                                     <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Client Preferences (Accept Data)</label>
+                                     <div className="space-y-2">
+                                        <div className="p-3 bg-white/5 rounded-lg border border-white/5 text-center text-xs text-white/50 italic">
+                                            Controlled by initial join settings. Rejoin to change.
+                                        </div>
+                                     </div>
+                                  </div>
+                              )}
                           </div>
 
                           <button 
@@ -315,7 +367,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           )}
 
           {tab === 'settings' && (
-            <div className="p-8 space-y-8 pb-16">
+            <div className="p-4 md:p-8 space-y-8 pb-16">
               <h3 className="font-bold text-white text-lg tracking-tight">Configuration</h3>
               <div className="space-y-6">
                 

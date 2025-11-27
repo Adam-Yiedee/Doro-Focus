@@ -1,4 +1,5 @@
 
+
 import React, { useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
@@ -19,14 +20,23 @@ const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { p
   const primaryClass = colorMode === 'red' ? 'bg-red-500/20' : 'bg-white/5';
   const secondaryClass = colorMode === 'red' ? 'bg-red-500/10' : 'bg-white/3';
 
+  // Faster spins, flatter rounded edges for "flat water" look
+  const spinSpeed1 = isActive ? 'animate-spin-fast' : 'animate-spin-slow';
+  const spinSpeed2 = isActive ? 'animate-spin-fast-reverse' : 'animate-spin-slow-reverse';
+
+  // When inactive, we can reduce the roundedness to make it look flatter, 
+  // but keeping it spinning slowly preserves the "liquid" feel. 
+  // The request for "flat when no waves" implies the circle should be less jagged.
+  // Increasing size slightly and changing border radius helps.
+  
   return (
     <div className={`absolute inset-0 z-0 transition-opacity duration-700 pointer-events-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${primaryClass} rounded-[48%] transition-all duration-1000 ease-in-out ${isActive ? 'animate-spin-slow' : ''}`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${primaryClass} rounded-[42%] transition-all duration-1000 ease-in-out ${spinSpeed1}`}
          style={{ bottom: `${bottomVal}%` }}
        />
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${secondaryClass} rounded-[47%] transition-all duration-1000 ease-in-out ${isActive ? 'animate-spin-slower' : ''}`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${secondaryClass} rounded-[40%] transition-all duration-1000 ease-in-out ${spinSpeed2}`}
          style={{ bottom: `${bottomVal}%` }}
        />
     </div>
@@ -55,10 +65,6 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      // Work fills UP as time counts DOWN.
-      // Reaches 100% fullness when time reaches 30 seconds remaining.
-      // Formula: 1 - ((time - 30) / (maxTime - 30))
-      // Clamped between 0 and 1.
       const denominator = Math.max(1, maxTime - 30);
       const numerator = Math.max(0, time - 30);
       
@@ -71,22 +77,18 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   } else {
       // Break Logic
       if (time < 0) {
-          // NEGATIVE BREAK (Red Liquid)
           const absTime = Math.abs(time);
           if (absTime < 5) {
               fillPercent = 0;
               showLiquid = false;
           } else {
-              // Scale from 5s to 600s
               const range = 600 - 5;
               fillPercent = Math.min(1, (absTime - 5) / range);
               showLiquid = true;
           }
           liquidColor = 'red';
       } else {
-          // POSITIVE BREAK (White Liquid)
           fillPercent = Math.max(0, time) / Math.max(1, maxTime);
-          // If less than 5 seconds left (and positive), hide liquid
           if (time <= 5) showLiquid = false;
       }
   }
@@ -119,7 +121,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   return (
     <div
       className={`
-        relative w-72 h-72 md:w-96 md:h-96 flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
+        relative w-full aspect-square max-w-[18rem] md:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
         transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
@@ -136,7 +138,6 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       {/* Liquid Animation Background */}
       <LiquidWave 
         percent={fillPercent} 
-        // Ensure liquid is hidden unless Active or Hovered, even for negative break time
         isVisible={(isActive || isHovered) && showLiquid} 
         isActive={isActive} 
         colorMode={liquidColor}
@@ -153,27 +154,29 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
 
       {/* Label */}
       <div className={`
-        z-20 pointer-events-none text-xs md:text-sm font-bold uppercase tracking-[0.2em] transition-all duration-500 max-w-[80%] text-center truncate
+        z-20 pointer-events-none text-xs md:text-sm font-bold uppercase tracking-[0.2em] transition-all duration-500 max-w-[80%] text-center truncate relative
         ${labelClasses}
       `}>
-        {label || (isWork ? 'Focus' : 'Break Bank')}
+         {/* Shadow for label against liquid */}
+        <span className="relative z-10 drop-shadow-md">{label || (isWork ? 'Focus' : 'Break Bank')}</span>
       </div>
 
       {/* Time Display */}
       <div className={`
-        z-20 pointer-events-none font-sans tabular-nums font-bold tracking-tighter transition-all duration-500 leading-none
-        text-7xl md:text-9xl
+        z-20 pointer-events-none font-sans tabular-nums font-bold tracking-tighter transition-all duration-500 leading-none relative
+        text-6xl md:text-8xl lg:text-9xl
         ${textClasses}
         ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}
       `}>
-        {formatTime(time)}
+        {/* Added subtle shadow to text for readability over liquid */}
+        <span className="drop-shadow-lg filter">{formatTime(time)}</span>
       </div>
 
       {/* Action Hint */}
       {!isActive && (
         <div className={`
            z-20 absolute bottom-8 text-[10px] text-white/80 uppercase tracking-widest 
-           transition-all duration-300 transform
+           transition-all duration-300 transform drop-shadow-md
            ${isHovered ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
         `}>
            Click to {isWork ? 'Focus' : 'Switch'}
@@ -225,7 +228,14 @@ const TimerDisplay: React.FC = () => {
   };
 
   return (
-    <div className="relative w-full flex flex-col items-center py-4">
+    <div className="relative w-full flex flex-col items-center py-4 px-2">
+      <style>{`
+        @keyframes spin-fast { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes spin-fast-reverse { 0% { transform: rotate(360deg); } 100% { transform: rotate(0deg); } }
+        .animate-spin-fast { animation: spin-fast 4s linear infinite; }
+        .animate-spin-fast-reverse { animation: spin-fast-reverse 6s linear infinite; }
+      `}</style>
+      
       {/* Edit Modal */}
       {isEditing && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in" onClick={() => setIsEditing(false)}>
@@ -264,7 +274,7 @@ const TimerDisplay: React.FC = () => {
             onMouseLeave={handleResetUp}
             onTouchStart={handleResetDown}
             onTouchEnd={handleResetUp}
-            className={`absolute -top-6 md:-top-12 z-50 flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white/40 hover:text-white transition-all duration-500 group active:scale-95 select-none opacity-50 hover:opacity-100 ${settings.disableBlur ? '' : 'backdrop-blur-md blur-[2px] hover:blur-0'}`}
+            className={`absolute top-0 md:-top-12 z-50 flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white/40 hover:text-white transition-all duration-500 group active:scale-95 select-none opacity-50 hover:opacity-100 ${settings.disableBlur ? '' : 'backdrop-blur-md blur-[2px] hover:blur-0'}`}
         >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-[-180deg] transition-transform duration-500"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
             <div className="flex flex-col items-start leading-none">
@@ -275,7 +285,7 @@ const TimerDisplay: React.FC = () => {
       )}
 
       {/* Timer Container */}
-      <div className="flex flex-col md:flex-row items-center justify-center gap-8 md:gap-24 w-full px-4">
+      <div className="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-24 w-full mt-8 md:mt-0">
         <TimerSquare 
             type="work" 
             time={workTime}

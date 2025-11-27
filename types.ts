@@ -1,4 +1,5 @@
 
+
 export type TimerMode = 'work' | 'break';
 
 export interface Category {
@@ -53,4 +54,19 @@ export interface TimerState {
   graceContext: 'afterWork' | 'afterBreak' | null;
   pendingBreakChunk: number;
   sessionEndTimestamp: number | null;
+}
+
+// Group Study Types
+export interface GroupSyncConfig {
+  syncTimers: boolean;
+  syncTasks: boolean;
+  syncSchedule: boolean; // Future schedule only
+  syncHistory: boolean;  // Full history sync
+  syncSettings: boolean;
+}
+
+export interface GroupMember {
+  id: string;
+  name: string;
+  isHost: boolean;
 }

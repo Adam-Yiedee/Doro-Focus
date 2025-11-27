@@ -1,6 +1,7 @@
 
+
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound } from '../types';
+import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound, GroupSyncConfig, GroupMember } from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
 
@@ -52,7 +53,10 @@ interface TimerContextType {
   groupSessionId: string | null;
   userName: string;
   isHost: boolean;
+  members: GroupMember[];
   peerError: string | null;
+  hostSyncConfig: GroupSyncConfig;
+  clientSyncConfig: GroupSyncConfig; // What the joiner chooses to accept
 
   // Actions
   startTimer: () => void;
@@ -71,9 +75,10 @@ interface TimerContextType {
   hardReset: () => void;
   
   // Group Actions
-  createGroupSession: (name: string) => Promise<string>;
-  joinGroupSession: (id: string, name: string) => Promise<void>;
+  createGroupSession: (name: string, config: GroupSyncConfig) => Promise<string>;
+  joinGroupSession: (id: string, name: string, config: GroupSyncConfig) => Promise<void>;
   leaveGroupSession: () => void;
+  updateHostSyncConfig: (config: GroupSyncConfig) => void;
 
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
@@ -110,6 +115,14 @@ const DEFAULT_SETTINGS: TimerSettings = {
   longBreakInterval: 4, 
   disableBlur: false,
   alarmSound: 'bell'
+};
+
+const DEFAULT_SYNC_CONFIG: GroupSyncConfig = {
+    syncTimers: true,
+    syncTasks: true,
+    syncSchedule: true,
+    syncHistory: false,
+    syncSettings: true
 };
 
 // Recursive Helpers for Tasks
@@ -272,6 +285,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [userName, setUserName] = useState<string>('');
   const [isHost, setIsHost] = useState(false);
   const [peerError, setPeerError] = useState<string | null>(null);
+  const [members, setMembers] = useState<GroupMember[]>([]);
+  const [hostSyncConfig, setHostSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const [clientSyncConfig, setClientSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   
   const isRemoteUpdate = useRef(false);
   const peerRef = useRef<Peer | null>(null);
@@ -280,13 +296,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const lastTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const currentActivityStartRef = useRef<Date | null>(null);
+  const lastLoopTimeRef = useRef<number>(0);
+  const isProcessingRef = useRef(false);
+
+  // Auto-detect mobile and disable blur
+  useEffect(() => {
+    const checkMobile = () => {
+        const isMobile = window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (isMobile) {
+            setSettings(prev => ({ ...prev, disableBlur: true }));
+        }
+    };
+    checkMobile();
+  }, []);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setSettings({ ...DEFAULT_SETTINGS, ...parsed.settings });
+        setSettings(prev => ({ ...prev, ...parsed.settings }));
         setTasks(parsed.tasks || []);
         setCategories(parsed.categories || []);
         setLogs(parsed.logs || []);
@@ -328,52 +357,105 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
        settings, tasks, categories, logs, activeMode, timerStarted,
        workTime, breakTime, pomodoroCount, scheduleBreaks,
        scheduleStartTime, sessionStartTime, allPauseActive,
-       allPauseReason, graceOpen, graceContext
+       allPauseReason, graceOpen, graceContext,
+       // Include host info
+       hostConfig: hostSyncConfig
     };
-  }, [settings, tasks, categories, logs, activeMode, timerStarted, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext]);
+  }, [settings, tasks, categories, logs, activeMode, timerStarted, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext, hostSyncConfig]);
 
   const applyRemoteState = useCallback((remote: any) => {
+      // Glitch Prevention: Only update if strictly necessary or significant drift
       isRemoteUpdate.current = true;
       
-      setSettings(remote.settings);
-      setTasks(remote.tasks);
-      setCategories(remote.categories);
-      setLogs(remote.logs);
-      setActiveMode(remote.activeMode);
-      setTimerStarted(remote.timerStarted);
-      setWorkTime(remote.workTime);
-      setBreakTime(remote.breakTime);
-      setPomodoroCount(remote.pomodoroCount);
-      setScheduleBreaks(remote.scheduleBreaks);
-      setScheduleStartTime(remote.scheduleStartTime);
-      setSessionStartTime(remote.sessionStartTime);
-      setAllPauseActive(remote.allPauseActive);
-      setAllPauseReason(remote.allPauseReason || '');
-      setGraceOpen(remote.graceOpen || false);
-      setGraceContext(remote.graceContext || null);
+      const config = isHost ? DEFAULT_SYNC_CONFIG : clientSyncConfig;
+      
+      if (config.syncSettings && remote.settings) setSettings(remote.settings);
+      
+      if (config.syncTasks && remote.tasks) {
+          setTasks(remote.tasks);
+          setCategories(remote.categories);
+      }
+      
+      if (config.syncHistory && remote.logs) setLogs(remote.logs);
 
-      if (remote.timerStarted) {
-          workerRef.current?.postMessage('start');
-          lastTickRef.current = Date.now();
-          currentActivityStartRef.current = new Date(); 
-      } else {
-          workerRef.current?.postMessage('stop');
+      if (config.syncSchedule) {
+          if (remote.scheduleBreaks) setScheduleBreaks(remote.scheduleBreaks);
+          if (remote.scheduleStartTime) setScheduleStartTime(remote.scheduleStartTime);
+          if (remote.sessionStartTime) setSessionStartTime(remote.sessionStartTime);
       }
 
-      // Short timeout to allow state to settle before enabling broadcast again
+      if (config.syncTimers) {
+          // Soft sync: Only update if deviation > 1s or mode changed
+          // This prevents jitter
+          const timerDrift = Math.abs(remote.workTime - workTime);
+          if (remote.activeMode !== activeMode || timerDrift > 1.5 || !timerStarted) {
+               setWorkTime(remote.workTime);
+               setBreakTime(remote.breakTime);
+               setActiveMode(remote.activeMode);
+               setTimerStarted(remote.timerStarted);
+          }
+          
+          setPomodoroCount(remote.pomodoroCount);
+          setAllPauseActive(remote.allPauseActive);
+          setAllPauseReason(remote.allPauseReason || '');
+          setGraceOpen(remote.graceOpen || false);
+          setGraceContext(remote.graceContext || null);
+
+          if (remote.timerStarted) {
+              workerRef.current?.postMessage('start');
+              // Don't reset tick ref if just a minor adjustment to avoid jumps
+              if (lastTickRef.current === null) {
+                  lastTickRef.current = Date.now();
+                  currentActivityStartRef.current = new Date(); 
+              }
+          } else {
+              workerRef.current?.postMessage('stop');
+          }
+      }
+
+      // Update Host Config if we are client
+      if (!isHost && remote.hostConfig) {
+          setHostSyncConfig(remote.hostConfig);
+      }
+
       setTimeout(() => { isRemoteUpdate.current = false; }, 300);
-  }, []);
+  }, [workTime, activeMode, timerStarted, isHost, clientSyncConfig]);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
       if (!groupSessionId || connectionsRef.current.length === 0) return;
-      const state = getCurrentState();
       
+      const fullState = getCurrentState();
+      
+      // Filter based on Host Config
+      const filteredState: any = { ...fullState };
+      
+      if (!hostSyncConfig.syncTimers) {
+          delete filteredState.workTime;
+          delete filteredState.breakTime;
+          delete filteredState.activeMode;
+          delete filteredState.timerStarted;
+      }
+      if (!hostSyncConfig.syncTasks) {
+          delete filteredState.tasks;
+          delete filteredState.categories;
+      }
+      if (!hostSyncConfig.syncHistory) {
+          delete filteredState.logs;
+      }
+      if (!hostSyncConfig.syncSchedule) {
+          delete filteredState.scheduleBreaks;
+          delete filteredState.scheduleStartTime;
+      }
+      if (!hostSyncConfig.syncSettings) {
+          delete filteredState.settings;
+      }
+
       connectionsRef.current.forEach(conn => {
           if (conn.open && conn.peer !== excludeConnId) {
-              conn.send({ type: 'STATE_UPDATE', state });
+              conn.send({ type: 'STATE_UPDATE', state: filteredState });
           }
       });
-  }, [groupSessionId, getCurrentState]);
+  }, [groupSessionId, getCurrentState, hostSyncConfig]);
 
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
@@ -384,46 +466,61 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [
       tasks, settings, activeMode, timerStarted, 
       scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, 
-      graceOpen, groupSessionId, broadcastState
+      graceOpen, groupSessionId, broadcastState, hostSyncConfig
   ]);
 
-  const createGroupSession = async (name: string): Promise<string> => {
+  const updateMembersList = useCallback(() => {
+      if (isHost) {
+           const memberList: GroupMember[] = [
+               { id: 'host', name: userName, isHost: true },
+               ...connectionsRef.current.map(c => ({ id: c.peer, name: (c.metadata as any)?.name || 'Member', isHost: false }))
+           ];
+           setMembers(memberList);
+           // Broadcast members
+           connectionsRef.current.forEach(c => {
+               if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList });
+           });
+      }
+  }, [isHost, userName]);
+
+  const createGroupSession = async (name: string, config: GroupSyncConfig): Promise<string> => {
       setUserName(name);
+      setHostSyncConfig(config);
       return new Promise((resolve, reject) => {
           try {
-            // Generate Short ID (6 chars)
             const shortId = Math.random().toString(36).substring(2, 8).toUpperCase();
-            
             // @ts-ignore
-            const peer = new Peer(shortId); // Try to use shortId as Peer ID
+            const peer = new Peer(shortId); 
             peerRef.current = peer;
 
             peer.on('open', (id: string) => {
                 setGroupSessionId(id);
                 setIsHost(true);
                 setPeerError(null);
+                setMembers([{ id, name, isHost: true }]);
                 resolve(id);
             });
 
             peer.on('connection', (conn: DataConnection) => {
                 connectionsRef.current.push(conn);
                 conn.on('open', () => {
+                    // Send full initial state + members
                     conn.send({ type: 'STATE_UPDATE', state: getCurrentState() });
+                    updateMembersList();
                 });
                 conn.on('data', (data: any) => {
                     if (data.type === 'STATE_UPDATE') {
-                        applyRemoteState(data.state);
-                        broadcastState(conn.peer);
+                        // Clients don't typically push state to host in this mode, 
+                        // but if we added bidirectional, we'd handle it here.
                     }
                 });
                 conn.on('close', () => {
                     connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+                    updateMembersList();
                 });
             });
 
             peer.on('error', (err: any) => {
-                console.error("PeerJS Error:", err);
-                // Retry with random ID if short ID taken (unlikely but possible)
                 if (err.type === 'unavailable-id') {
                      reject(new Error("Session ID collision, please try again."));
                 } else {
@@ -437,8 +534,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
   };
 
-  const joinGroupSession = async (hostId: string, name: string): Promise<void> => {
+  const joinGroupSession = async (hostId: string, name: string, config: GroupSyncConfig): Promise<void> => {
       setUserName(name);
+      setClientSyncConfig(config);
       return new Promise((resolve, reject) => {
           try {
             // @ts-ignore
@@ -446,11 +544,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             peerRef.current = peer;
 
             peer.on('open', (id: string) => {
-                setGroupSessionId(hostId); // Track Host ID
+                setGroupSessionId(hostId);
                 setIsHost(false);
                 setPeerError(null);
                 
-                const conn = peer.connect(hostId);
+                const conn = peer.connect(hostId, { metadata: { name } });
                 connectionsRef.current = [conn];
 
                 conn.on('open', () => {
@@ -460,6 +558,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 conn.on('data', (data: any) => {
                     if (data.type === 'STATE_UPDATE') {
                         applyRemoteState(data.state);
+                    } else if (data.type === 'MEMBERS_UPDATE') {
+                        setMembers(data.members);
                     }
                 });
                 
@@ -470,7 +570,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             });
             
             peer.on('error', (err: any) => {
-                 console.error(err);
                  setPeerError("Connection Failed. Check ID.");
                  setGroupSessionId(null);
                  reject(err);
@@ -490,7 +589,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setGroupSessionId(null);
       setIsHost(false);
       setPeerError(null);
+      setMembers([]);
   };
+
+  const updateHostSyncConfig = (config: GroupSyncConfig) => {
+      setHostSyncConfig(config);
+      broadcastState(); // Trigger update with new filters
+  };
+
   // ---- END PEERJS LOGIC ----
 
   useEffect(() => {
@@ -541,9 +647,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const handleWorkLoopComplete = useCallback(() => {
+    if (isProcessingRef.current) return;
+    const now = Date.now();
+    if (now - lastLoopTimeRef.current < 2000) return; // Increased debounce for safety
+    
+    isProcessingRef.current = true;
+    lastLoopTimeRef.current = now;
+
     playAlarm(settings.alarmSound);
     
-    // Calculate Reward based on completed Pomos
     const nextPomoCount = pomodoroCount + 1;
     const isLongBreak = nextPomoCount % settings.longBreakInterval === 0;
     const reward = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
@@ -587,9 +699,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceContext('afterWork');
     setGraceTotal(0);
     setGraceOpen(true);
+    
+    setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [settings, logActivity, sendNotification, pomodoroCount]);
 
   const handleBreakLoopComplete = useCallback(() => {
+    if (isProcessingRef.current) return;
+    const now = Date.now();
+    if (now - lastLoopTimeRef.current < 2000) return;
+    
+    isProcessingRef.current = true;
+    lastLoopTimeRef.current = now;
+
     playAlarm(settings.alarmSound);
     if (currentActivityStartRef.current) {
       const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
@@ -601,6 +722,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceTotal(0);
     setGraceOpen(true);
     sendNotification("Break Time's Up!", "Back to work!");
+    
+    setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [logActivity, sendNotification, settings.alarmSound]);
 
   const tick = useCallback(() => {
@@ -615,15 +738,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (timerStarted && !isIdle) {
       if (activeMode === 'work') {
         setWorkTime(prev => {
+          if (prev <= 0) return 0;
           const next = prev - delta;
-          if (next <= 0) return 0; 
+          if (next <= 0) {
+            handleWorkLoopComplete(); 
+            return 0; 
+          }
           return next;
         });
-        setWorkTime(prev => { if (prev <= 0) { handleWorkLoopComplete(); return 0; } return prev; });
       } else {
         setBreakTime(prev => {
           const next = prev - delta;
-          if (prev > 0 && next <= 0) { handleBreakLoopComplete(); return 0; }
+          if (prev > 0 && next <= 0) { 
+             handleBreakLoopComplete(); 
+             return 0; 
+          }
           return next;
         });
       }
@@ -738,6 +867,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
+    // GUARD: Prevent double firing
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
     if (graceOpen && options?.logGraceAs) {
         const graceStart = new Date(Date.now() - graceTotal * 1000);
         let taskOverride: Task | undefined = undefined;
@@ -751,6 +884,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         logActivity(options.logGraceAs, graceStart, graceTotal, reason, taskOverride);
     }
+    
     setGraceOpen(false);
     setGraceContext(null);
     setActiveMode(nextMode);
@@ -760,10 +894,36 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
     }
     
-    if (nextMode === 'work') setWorkTime(Math.max(0, settings.workDuration - (options?.adjustWorkStart || 0)));
-    else setWorkTime(settings.workDuration); 
+    if (nextMode === 'work') {
+        // RESET LOGIC
+        // Only reset to full work duration if:
+        // 1. We just finished a work session (graceContext == 'afterWork')
+        // 2. OR the current work timer is exhausted (<= 1s)
+        // Otherwise (coming from break), preserve the remaining time.
+        const shouldReset = graceContext === 'afterWork' || workTime <= 1;
+
+        setWorkTime(prev => {
+            let base = prev;
+            if (shouldReset) base = settings.workDuration;
+            
+            if (options?.adjustWorkStart) {
+                base = Math.max(0, base - options.adjustWorkStart);
+            }
+            return base;
+        });
+    } else {
+        // If we just finished work and are going to break,
+        // we should reset work timer for the NEXT time we return to work.
+        if (graceContext === 'afterWork') {
+             setWorkTime(settings.workDuration);
+        }
+    }
+
     currentActivityStartRef.current = new Date();
     startTimer();
+    
+    // Release guard after short delay
+    setTimeout(() => { isProcessingRef.current = false; }, 500);
   };
 
   const endSession = () => {
@@ -976,10 +1136,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost, peerError,
+      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
-      createGroupSession, joinGroupSession, leaveGroupSession,
+      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
