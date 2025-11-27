@@ -698,7 +698,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const handleWorkLoopComplete = useCallback(() => {
     if (isProcessingRef.current) return;
     const now = Date.now();
-    if (now - lastLoopTimeRef.current < 2000) return; // Increased debounce for safety
+    // Increase debounce to 5 seconds to absolutely prevent double-reporting if state updates trigger re-renders
+    if (now - lastLoopTimeRef.current < 5000) return; 
     
     isProcessingRef.current = true;
     lastLoopTimeRef.current = now;
@@ -755,7 +756,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const handleBreakLoopComplete = useCallback(() => {
     if (isProcessingRef.current) return;
     const now = Date.now();
-    if (now - lastLoopTimeRef.current < 2000) return;
+    if (now - lastLoopTimeRef.current < 5000) return;
     
     isProcessingRef.current = true;
     lastLoopTimeRef.current = now;
@@ -965,7 +966,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // 1. We just finished a work session (graceContext == 'afterWork')
         // 2. OR the current work timer is exhausted (<= 1s)
         // Otherwise (coming from break), preserve the remaining time.
-        const shouldReset = graceContext === 'afterWork' || workTime <= 1;
+        // We added `settings.workDuration > 0` as a sanity check.
+        const shouldReset = graceContext === 'afterWork' || (workTime <= 1 && settings.workDuration > 0);
 
         setWorkTime(prev => {
             let base = prev;

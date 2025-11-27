@@ -34,12 +34,12 @@ const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { p
        {/* Wave 2 (Mid) */}
        <div 
          className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[47%] transition-all duration-[3000ms] ease-in-out animate-wave-med`}
-         style={{ bottom: `${bottomVal - 5}%`, animationDelay: '-8s' }}
+         style={{ bottom: `${bottomVal - 1.5}%`, animationDelay: '-8s' }}
        />
        {/* Wave 3 (Front) */}
        <div 
          className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[46%] transition-all duration-[3000ms] ease-in-out animate-wave-fast`}
-         style={{ bottom: `${bottomVal - 10}%`, animationDelay: '-3s' }}
+         style={{ bottom: `${bottomVal - 3}%`, animationDelay: '-3s' }}
        />
     </div>
   );
@@ -68,24 +68,21 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
 
   if (type === 'work') {
       // WORK LOGIC: Start Empty (0%), Rise to Full (100%)
-      // Formula: 1 - (Remaining / Max)
-      // Example: 25min / 25min = 1. Result 0.
-      // Example: 0min / 25min = 0. Result 1.
       const ratio = Math.max(0, Math.min(1, time / Math.max(1, maxTime)));
       fillPercent = 1 - ratio;
       showLiquid = true;
   } else {
-      // BREAK LOGIC: Start Full (100%), Drain to Empty (0%)
+      // BREAK LOGIC
       if (time < 0) {
-          // Negative break (debt) -> Keep empty, but red text
-          fillPercent = 0;
-          showLiquid = false;
+          // Negative break (debt) -> Rise red liquid
+          // Visual cap: 10 minutes (600s) of debt fills the container
+          fillPercent = Math.min(1, Math.abs(time) / 600);
+          showLiquid = true;
           liquidColor = 'red';
       } else {
-          // Normal break
-          // If bank is huge, cap at 1.
+          // Normal break: Start Full (100%), Drain to Empty (0%)
           fillPercent = Math.min(1, time / Math.max(1, 600)); // Visual cap at 10 mins for fullness
-          if (time <= 5) showLiquid = false;
+          if (time <= 5) showLiquid = false; // Hide sliver when nearly empty
       }
   }
 

@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import TaskViewModal from './TaskViewModal';
@@ -14,7 +13,8 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showQR, setShowQR] = useState(false);
   
-  // Group Study Form State
+  // Group Study Flow State: 'menu' | 'host' | 'join'
+  const [groupMode, setGroupMode] = useState<'menu' | 'host' | 'join'>('menu');
   const [inputName, setInputName] = useState(userName || '');
   const [inputSessionId, setInputSessionId] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
@@ -23,9 +23,15 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   useEffect(() => {
     if (isOpen && pendingJoinId && !groupSessionId) {
         setTab('group');
+        setGroupMode('join');
         setInputSessionId(pendingJoinId);
     }
   }, [isOpen, pendingJoinId, groupSessionId]);
+
+  // Reset internal state when tab or modal closes
+  useEffect(() => {
+      if(!isOpen) setGroupMode('menu');
+  }, [isOpen]);
 
   // Sync Options State for New Session
   const [tempSyncConfig, setTempSyncConfig] = useState<GroupSyncConfig>({
@@ -239,74 +245,8 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           <div className="w-12 h-12 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
                           <span className="text-white/50 text-xs font-bold uppercase tracking-widest">Connecting...</span>
                       </div>
-                  ) : !groupSessionId ? (
-                      <div className="w-full max-w-sm space-y-8 animate-slide-up">
-                          <div className="text-center space-y-2">
-                              <h2 className="text-3xl font-bold text-white tracking-tight">Group Study</h2>
-                              <p className="text-white/40 text-xs uppercase tracking-widest">Sync Timers & Tasks</p>
-                          </div>
-                          
-                          {peerError && (
-                              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-200 text-xs text-center font-bold">
-                                  {peerError}
-                              </div>
-                          )}
-
-                          <div className="space-y-4">
-                              <div>
-                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
-                                  <input 
-                                      type="text" 
-                                      placeholder="Your Name"
-                                      className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 focus:bg-white/10 transition-all placeholder-white/20"
-                                      value={inputName}
-                                      onChange={e => setInputName(e.target.value)}
-                                  />
-                              </div>
-
-                              <div className="bg-white/5 rounded-xl border border-white/10 p-4 space-y-2">
-                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Sync Options</label>
-                                  <SyncOptionToggle label="Sync Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
-                                  <SyncOptionToggle label="Sync Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
-                                  <SyncOptionToggle label="Sync Future Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
-                                  <SyncOptionToggle label="Full Sync (Overwrite History)" checked={tempSyncConfig.syncHistory} onChange={() => toggleTempSync('syncHistory')} />
-                              </div>
-
-                              <div className="pt-4 flex flex-col gap-4">
-                                  <button 
-                                      onClick={handleStartGroup}
-                                      disabled={!inputName.trim()}
-                                      className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
-                                  >
-                                      Start New Session
-                                  </button>
-                                  
-                                  <div className="relative flex items-center py-2">
-                                      <div className="flex-grow border-t border-white/10"></div>
-                                      <span className="flex-shrink-0 mx-4 text-white/20 text-[10px] uppercase font-bold">Or Join Existing</span>
-                                      <div className="flex-grow border-t border-white/10"></div>
-                                  </div>
-
-                                  <div className="flex gap-2">
-                                      <input 
-                                          type="text" 
-                                          placeholder="Enter Host ID"
-                                          className="flex-1 p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 font-mono text-sm"
-                                          value={inputSessionId}
-                                          onChange={e => setInputSessionId(e.target.value)}
-                                      />
-                                      <button 
-                                          onClick={handleJoinGroup}
-                                          disabled={!inputName.trim() || !inputSessionId.trim()}
-                                          className="px-6 bg-white/10 hover:bg-white/20 text-white font-bold uppercase text-xs tracking-widest rounded-xl transition-all disabled:opacity-50 border border-white/5"
-                                      >
-                                          Join
-                                      </button>
-                                  </div>
-                              </div>
-                          </div>
-                      </div>
-                  ) : (
+                  ) : groupSessionId ? (
+                      // ACTIVE SESSION VIEW
                       <div className="w-full flex flex-col items-center gap-8 animate-fade-in max-w-lg">
                           <div className="text-center space-y-1">
                               <h2 className="text-2xl font-bold text-white tracking-tight">Group Study Active</h2>
@@ -364,11 +304,121 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           </div>
 
                           <button 
-                              onClick={leaveGroupSession}
+                              onClick={() => { leaveGroupSession(); setGroupMode('menu'); }}
                               className="w-full py-4 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
                           >
                               Leave Session
                           </button>
+                      </div>
+                  ) : (
+                      // NOT CONNECTED - FLOW
+                      <div className="w-full max-w-sm space-y-8 animate-slide-up">
+                          <div className="text-center space-y-2">
+                              <h2 className="text-3xl font-bold text-white tracking-tight">Group Study</h2>
+                              <p className="text-white/40 text-xs uppercase tracking-widest">Sync Timers & Tasks</p>
+                          </div>
+
+                          {peerError && (
+                              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-200 text-xs text-center font-bold">
+                                  {peerError}
+                              </div>
+                          )}
+
+                          {groupMode === 'menu' && (
+                              <div className="space-y-4">
+                                  <div>
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
+                                      <input 
+                                          type="text" 
+                                          placeholder="Enter Your Name"
+                                          className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 focus:bg-white/10 transition-all placeholder-white/20 text-center font-bold"
+                                          value={inputName}
+                                          onChange={e => setInputName(e.target.value)}
+                                      />
+                                  </div>
+                                  
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
+                                      <button 
+                                          onClick={() => setGroupMode('host')}
+                                          disabled={!inputName.trim()}
+                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02]"
+                                      >
+                                          <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-200">
+                                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                          </div>
+                                          <span className="font-bold text-white">Host Session</span>
+                                          <span className="text-[10px] text-white/40 uppercase tracking-widest">Create New</span>
+                                      </button>
+
+                                      <button 
+                                          onClick={() => setGroupMode('join')}
+                                          disabled={!inputName.trim()}
+                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02]"
+                                      >
+                                          <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center text-green-200">
+                                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                          </div>
+                                          <span className="font-bold text-white">Join Session</span>
+                                          <span className="text-[10px] text-white/40 uppercase tracking-widest">Enter ID</span>
+                                      </button>
+                                  </div>
+                              </div>
+                          )}
+
+                          {groupMode === 'host' && (
+                              <div className="space-y-4 animate-slide-up">
+                                  <div className="bg-white/5 rounded-xl border border-white/10 p-4 space-y-2">
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Host Configuration</label>
+                                      <SyncOptionToggle label="Sync Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
+                                      <SyncOptionToggle label="Sync Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
+                                      <SyncOptionToggle label="Sync Future Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
+                                      <SyncOptionToggle label="Full Sync (Overwrite History)" checked={tempSyncConfig.syncHistory} onChange={() => toggleTempSync('syncHistory')} />
+                                  </div>
+
+                                  <div className="flex gap-2">
+                                      <button onClick={() => setGroupMode('menu')} className="px-4 py-4 bg-white/5 hover:bg-white/10 rounded-xl text-white/60 hover:text-white font-bold text-xs uppercase tracking-wider">Back</button>
+                                      <button 
+                                          onClick={handleStartGroup}
+                                          className="flex-1 py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg"
+                                      >
+                                          Start Session
+                                      </button>
+                                  </div>
+                              </div>
+                          )}
+
+                          {groupMode === 'join' && (
+                              <div className="space-y-4 animate-slide-up">
+                                   <div>
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Session ID</label>
+                                      <input 
+                                          type="text" 
+                                          placeholder="Enter Host ID"
+                                          className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 font-mono text-sm text-center"
+                                          value={inputSessionId}
+                                          onChange={e => setInputSessionId(e.target.value)}
+                                      />
+                                  </div>
+
+                                  <div className="bg-white/5 rounded-xl border border-white/10 p-4 space-y-2">
+                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Sync Preferences (What to accept)</label>
+                                      <SyncOptionToggle label="Accept Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
+                                      <SyncOptionToggle label="Accept Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
+                                      <SyncOptionToggle label="Accept Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
+                                  </div>
+
+                                  <div className="flex gap-2">
+                                      <button onClick={() => setGroupMode('menu')} className="px-4 py-4 bg-white/5 hover:bg-white/10 rounded-xl text-white/60 hover:text-white font-bold text-xs uppercase tracking-wider">Back</button>
+                                      <button 
+                                          onClick={handleJoinGroup}
+                                          disabled={!inputSessionId.trim()}
+                                          className="flex-1 py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg disabled:opacity-50"
+                                      >
+                                          Join Session
+                                      </button>
+                                  </div>
+                              </div>
+                          )}
                       </div>
                   )}
               </div>

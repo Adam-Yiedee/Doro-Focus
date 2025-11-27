@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTimer, ScheduleBreak } from '../../context/TimerContext';
 import { Task } from '../../types';
@@ -44,6 +45,9 @@ const GripIcon = () => (
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
     const { tasks, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode } = useTimer();
     
+    // UI State
+    const [mobileTab, setMobileTab] = useState<'queue' | 'schedule'>('schedule');
+
     // Start Time State
     const [stHourStr, setStHourStr] = useState('08');
     const [stMinStr, setStMinStr] = useState('00');
@@ -349,9 +353,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const onDragStart = (e: React.DragEvent, type: 'task' | 'subtask', id: number, parentId?: number) => {
         e.dataTransfer.effectAllowed = "move";
         setDragState({ type, id, parentId });
-        
-        // Hide default drag image if possible for cleaner look, or let it be
-        // e.dataTransfer.setDragImage(new Image(), 0, 0); 
     };
 
     const onDragOver = (e: React.DragEvent, id: number, type: 'task' | 'subtask', parentId?: number) => {
@@ -448,11 +449,29 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={onClose}>
-             <div className="w-full max-w-7xl h-[90vh] bg-[#0F0F11] rounded-[2.5rem] shadow-2xl border border-white/10 flex flex-col md:flex-row overflow-hidden relative" onClick={e => e.stopPropagation()}>
-                {/* Priority Queue (Left) */}
-                <div className="w-full md:w-4/12 bg-[#141416] border-r border-white/5 flex flex-col relative z-10">
-                    <div className="h-16 px-6 border-b border-white/5 flex items-center justify-between bg-[#18181a] shrink-0">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 md:p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={onClose}>
+             <div className="w-full max-w-7xl h-[95vh] md:h-[90vh] bg-[#0F0F11] rounded-2xl md:rounded-[2.5rem] shadow-2xl border border-white/10 flex flex-col md:flex-row overflow-hidden relative" onClick={e => e.stopPropagation()}>
+                
+                {/* Mobile Tab Switcher */}
+                <div className="md:hidden shrink-0 flex border-b border-white/10">
+                     <button 
+                        onClick={() => setMobileTab('schedule')} 
+                        className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest ${mobileTab === 'schedule' ? 'bg-[#18181a] text-white' : 'text-white/40'}`}
+                     >
+                         Schedule
+                     </button>
+                     <button 
+                        onClick={() => setMobileTab('queue')} 
+                        className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest ${mobileTab === 'queue' ? 'bg-[#18181a] text-white' : 'text-white/40'}`}
+                     >
+                         Queue
+                     </button>
+                     <button onClick={onClose} className="px-4 text-white/40 hover:text-white">✕</button>
+                </div>
+
+                {/* Priority Queue (Left) - Hidden on Mobile unless tab selected */}
+                <div className={`w-full md:w-4/12 bg-[#141416] border-r border-white/5 flex flex-col relative z-10 ${mobileTab === 'queue' ? 'flex' : 'hidden md:flex'}`}>
+                    <div className="h-14 md:h-16 px-4 md:px-6 border-b border-white/5 flex items-center justify-between bg-[#18181a] shrink-0">
                         <h2 className="text-white/80 font-bold uppercase tracking-widest text-xs">Priority Queue</h2>
                         <button onClick={() => setIsCreating(!isCreating)} className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 border border-transparent ${isCreating ? 'bg-red-500/20 text-red-200' : 'bg-white/10 text-white'}`}>{isCreating ? 'Cancel' : '+ Task'}</button>
                     </div>
@@ -581,11 +600,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                     </div>
                 </div>
 
-                {/* Schedule (Right) */}
-                <div className="flex-1 flex flex-col bg-[#0F0F11] relative z-0">
-                    <div className="h-16 px-8 border-b border-white/5 flex items-center justify-between bg-[#141416] shadow-xl shrink-0">
-                        <div className="flex items-center gap-4">
-                            <h2 className="text-lg font-bold text-white tracking-tight">Schedule</h2>
+                {/* Schedule (Right) - Hidden on Mobile unless tab selected */}
+                <div className={`flex-1 flex-col bg-[#0F0F11] relative z-0 ${mobileTab === 'schedule' ? 'flex' : 'hidden md:flex'}`}>
+                    <div className="h-auto md:h-16 py-2 px-4 md:px-8 border-b border-white/5 flex flex-wrap md:flex-nowrap items-center justify-between bg-[#141416] shadow-xl shrink-0 gap-2">
+                        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
+                            <h2 className="text-lg font-bold text-white tracking-tight mr-2">Schedule</h2>
                             
                             {/* Start Time Input */}
                             <div className={`flex items-center gap-1 bg-black/30 border border-white/5 rounded px-2 py-1 ${sessionStartTime ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -596,22 +615,25 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                 <button onClick={() => setStAmPm(p => p === 'AM' ? 'PM' : 'AM')} className="ml-1 px-1 py-0.5 rounded bg-white/10 text-[9px] font-bold text-white hover:bg-white/20">{stAmPm}</button>
                             </div>
                             
-                            {/* Zoom Slider */}
-                             <div className="flex items-center gap-2 ml-4">
+                            {/* Zoom Slider - Hidden on small screens */}
+                             <div className="hidden md:flex items-center gap-2 ml-4">
                                 <span className="text-[9px] font-bold text-white/30 uppercase">Zoom</span>
                                 <input type="range" min="1" max="12" step="0.5" value={pixelsPerMin} onChange={e => setPixelsPerMin(Number(e.target.value))} className="w-20 accent-white/50 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
                              </div>
                         </div>
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2 md:gap-4 ml-auto">
                             <button onClick={centerView} className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/40 hover:text-white flex items-center justify-center transition-all" title="Recenter View">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/></svg>
                             </button>
-                            <button onClick={() => setIsAddingBreak(!isAddingBreak)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors ${isAddingBreak ? 'bg-white/10 text-white' : ''}`}>+ Add Break</button>
-                            <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/40 hover:text-white flex items-center justify-center transition-all">✕</button>
+                            <button onClick={() => setIsAddingBreak(!isAddingBreak)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors ${isAddingBreak ? 'bg-white/10 text-white' : ''}`}>
+                                <span className="md:hidden">+</span>
+                                <span className="hidden md:inline">+ Add Break</span>
+                            </button>
+                            <button onClick={onClose} className="hidden md:flex w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/40 hover:text-white items-center justify-center transition-all">✕</button>
                         </div>
                     </div>
                     {isAddingBreak && (
-                        <div className="absolute top-16 left-0 right-0 z-20 bg-[#1c1c1e] border-b border-white/10 p-4 flex items-center justify-center gap-4 animate-slide-up shadow-2xl">
+                        <div className="absolute top-16 left-0 right-0 z-20 bg-[#1c1c1e] border-b border-white/10 p-4 flex flex-wrap items-center justify-center gap-4 animate-slide-up shadow-2xl">
                             <input autoFocus value={breakLabel} onChange={e => setBreakLabel(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none w-32 focus:border-white/40" placeholder="Label" />
                             <div className="flex items-center gap-1 bg-black/30 border border-white/10 rounded px-2 py-1">
                                 <input type="text" maxLength={2} value={breakHourStr} onChange={e => setBreakHourStr(e.target.value.replace(/\D/g,''))} className="bg-transparent text-sm text-white outline-none w-8 text-center" placeholder="HH" />
