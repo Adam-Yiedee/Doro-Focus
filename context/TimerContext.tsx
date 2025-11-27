@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound, GroupSyncConfig, GroupMember } from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
@@ -299,6 +300,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
+  const breakZeroTriggeredRef = useRef(false);
 
   // Auto-detect mobile and disable blur
   useEffect(() => {
@@ -779,8 +781,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (timerStarted && !isIdle) {
        if (activeMode === 'work' && workTime <= 0) {
            handleWorkLoopComplete();
-       } else if (activeMode === 'break' && breakTime <= 0) {
-           handleBreakLoopComplete();
+       } else if (activeMode === 'break') {
+           // Break Logic:
+           // If we have time (positive), ensure trigger is reset
+           if (breakTime > 1) {
+               breakZeroTriggeredRef.current = false;
+           }
+           // If we hit zero (or go negative) AND we haven't already triggered completion for this session
+           else if (breakTime <= 0 && !breakZeroTriggeredRef.current) {
+               breakZeroTriggeredRef.current = true;
+               handleBreakLoopComplete();
+           }
        }
     }
   }, [workTime, breakTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, handleBreakLoopComplete]);
@@ -801,10 +812,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return Math.max(0, prev - delta);
         });
       } else {
-        setBreakTime(prev => {
-          if (prev <= 0) return 0;
-          return Math.max(0, prev - delta);
-        });
+        // BREAK MODE
+        // Allow negative time (debt) if user continues past zero
+        setBreakTime(prev => prev - delta);
       }
     }
   }, [activeMode, timerStarted, isIdle, allPauseActive, graceOpen]);

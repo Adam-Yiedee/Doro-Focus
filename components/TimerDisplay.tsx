@@ -1,5 +1,4 @@
 
-
 import React, { useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
@@ -13,35 +12,34 @@ const formatTime = (seconds: number) => {
 
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
-  // Calculate bottom position. Range -300% (empty) to -180% (full) roughly.
-  // We need to cover the container. The waves are 300% width/height.
+  // Range: Start (-300%) to End (-160%). 
+  // -300% is completely below the viewport. -160% covers the viewport with the wave crests.
   const safePercent = Math.max(0, Math.min(1.1, percent));
-  // Interpolate: 0% -> -280%, 100% -> -190%
-  const bottomVal = -280 + (safePercent * 90);
+  const bottomVal = -300 + (safePercent * 140);
 
   const waveBase = colorMode === 'red' ? 'bg-red-500' : 'bg-white';
   
-  // Opacities for layers - Creating depth
+  // Opacities
   const op1 = colorMode === 'red' ? 'opacity-20' : 'opacity-10'; // Back
   const op2 = colorMode === 'red' ? 'opacity-30' : 'opacity-20'; // Mid
-  const op3 = colorMode === 'red' ? 'opacity-40' : 'opacity-30'; // Front (Brightest)
+  const op3 = colorMode === 'red' ? 'opacity-40' : 'opacity-30'; // Front
 
   return (
     <div className={`absolute inset-0 z-0 transition-opacity duration-1000 pointer-events-none overflow-hidden rounded-[3rem] ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
        {/* Wave 1 (Back) - Slowest */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op1} rounded-[40%] transition-all duration-[2000ms] ease-in-out animate-wave-slow`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op1} rounded-[45%] transition-all duration-[3000ms] ease-in-out animate-wave-slow`}
          style={{ bottom: `${bottomVal}%` }}
        />
-       {/* Wave 2 (Mid) - Counter rotation or different timing */}
+       {/* Wave 2 (Mid) */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[43%] transition-all duration-[2000ms] ease-in-out animate-wave-med`}
-         style={{ bottom: `${bottomVal - 2}%`, animationDelay: '-5s' }}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[47%] transition-all duration-[3000ms] ease-in-out animate-wave-med`}
+         style={{ bottom: `${bottomVal - 5}%`, animationDelay: '-8s' }}
        />
-       {/* Wave 3 (Front) - Fastest relative to others, but still slow & vivid */}
+       {/* Wave 3 (Front) */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[38%] transition-all duration-[2000ms] ease-in-out animate-wave-fast`}
-         style={{ bottom: `${bottomVal - 5}%`, animationDelay: '-2s' }}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[46%] transition-all duration-[3000ms] ease-in-out animate-wave-fast`}
+         style={{ bottom: `${bottomVal - 10}%`, animationDelay: '-3s' }}
        />
     </div>
   );
@@ -69,30 +67,24 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      const denominator = Math.max(1, maxTime - 30);
-      const numerator = Math.max(0, time - 30);
-      
-      if (time <= 30) {
-          fillPercent = 1; // Full for the last 30s
-      } else {
-          fillPercent = 1 - (numerator / denominator);
-      }
+      // WORK LOGIC: Start Empty (0%), Rise to Full (100%)
+      // Formula: 1 - (Remaining / Max)
+      // Example: 25min / 25min = 1. Result 0.
+      // Example: 0min / 25min = 0. Result 1.
+      const ratio = Math.max(0, Math.min(1, time / Math.max(1, maxTime)));
+      fillPercent = 1 - ratio;
       showLiquid = true;
   } else {
-      // Break Logic
+      // BREAK LOGIC: Start Full (100%), Drain to Empty (0%)
       if (time < 0) {
-          const absTime = Math.abs(time);
-          if (absTime < 5) {
-              fillPercent = 0;
-              showLiquid = false;
-          } else {
-              const range = 600 - 5;
-              fillPercent = Math.min(1, (absTime - 5) / range);
-              showLiquid = true;
-          }
+          // Negative break (debt) -> Keep empty, but red text
+          fillPercent = 0;
+          showLiquid = false;
           liquidColor = 'red';
       } else {
-          fillPercent = Math.max(0, time) / Math.max(1, maxTime);
+          // Normal break
+          // If bank is huge, cap at 1.
+          fillPercent = Math.min(1, time / Math.max(1, 600)); // Visual cap at 10 mins for fullness
           if (time <= 5) showLiquid = false;
       }
   }
@@ -106,17 +98,14 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   const hoverBlurEffect = disableBlur ? '' : 'backdrop-blur-md';
 
   if (isActive) {
-    // ACTIVE STATE
     containerClasses = `z-20 scale-100 opacity-100 blur-0 bg-white/10 border-white/20 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] ring-1 ring-white/30 border ${blurEffect}`;
     textClasses = "scale-100 text-white drop-shadow-2xl";
     labelClasses = "text-white/90 translate-y-0";
   } else if (isHovered) {
-    // HOVERED STATE
     containerClasses = `z-30 scale-[1.02] opacity-90 blur-0 grayscale-0 bg-white/10 border-white/20 shadow-[0_20px_40px_-5px_rgba(0,0,0,0.2)] -translate-y-2 cursor-pointer border ${hoverBlurEffect}`;
     textClasses = "scale-95 text-white/90";
     labelClasses = "text-white/80 translate-y-0";
   } else {
-    // IDLE STATE
     containerClasses = "z-10 scale-90 opacity-60 bg-transparent border-transparent shadow-none";
     textClasses = `scale-90 text-white/50 saturate-50 ${disableBlur ? '' : 'blur-[3px]'}`; 
     labelClasses = `text-white/40 ${disableBlur ? '' : 'blur-[3px]'}`;
@@ -162,7 +151,6 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
         z-20 pointer-events-none text-xs md:text-sm font-bold uppercase tracking-[0.2em] transition-all duration-500 max-w-[80%] text-center truncate relative
         ${labelClasses}
       `}>
-         {/* Shadow for label against liquid */}
         <span className="relative z-10 drop-shadow-md">{label || (isWork ? 'Focus' : 'Break Bank')}</span>
       </div>
 
@@ -173,7 +161,6 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
         ${textClasses}
         ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}
       `}>
-        {/* Added subtle shadow to text for readability over liquid */}
         <span className="drop-shadow-lg filter">{formatTime(time)}</span>
       </div>
 
@@ -236,9 +223,10 @@ const TimerDisplay: React.FC = () => {
     <div className="relative w-full flex flex-col items-center py-4 px-2">
       <style>{`
         @keyframes wave-rotate { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .animate-wave-slow { animation: wave-rotate 25s linear infinite; }
-        .animate-wave-med { animation: wave-rotate 18s linear infinite reverse; }
-        .animate-wave-fast { animation: wave-rotate 12s linear infinite; }
+        /* Slower animations for more satisfying, less chaotic feel */
+        .animate-wave-slow { animation: wave-rotate 40s linear infinite; }
+        .animate-wave-med { animation: wave-rotate 32s linear infinite reverse; }
+        .animate-wave-fast { animation: wave-rotate 25s linear infinite; }
       `}</style>
       
       {/* Edit Modal */}
