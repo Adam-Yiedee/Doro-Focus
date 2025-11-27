@@ -57,6 +57,7 @@ interface TimerContextType {
   peerError: string | null;
   hostSyncConfig: GroupSyncConfig;
   clientSyncConfig: GroupSyncConfig; // What the joiner chooses to accept
+  pendingJoinId: string | null;
 
   // Actions
   startTimer: () => void;
@@ -79,6 +80,7 @@ interface TimerContextType {
   joinGroupSession: (id: string, name: string, config: GroupSyncConfig) => Promise<void>;
   leaveGroupSession: () => void;
   updateHostSyncConfig: (config: GroupSyncConfig) => void;
+  setPendingJoinId: (id: string | null) => void;
 
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
@@ -288,6 +290,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [members, setMembers] = useState<GroupMember[]>([]);
   const [hostSyncConfig, setHostSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [clientSyncConfig, setClientSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const [pendingJoinId, setPendingJoinId] = useState<string | null>(null);
   
   const isRemoteUpdate = useRef(false);
   const peerRef = useRef<Peer | null>(null);
@@ -308,6 +311,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
     };
     checkMobile();
+  }, []);
+
+  // Parse URL Params for Session Join
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionParam = params.get('session');
+    if (sessionParam) {
+        setPendingJoinId(sessionParam);
+        // Clean URL to prevent re-join on refresh (optional, but good UX)
+        window.history.replaceState({}, '', window.location.pathname);
+    }
   }, []);
 
   useEffect(() => {
@@ -1136,10 +1150,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig,
+      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
-      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig,
+      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, setPendingJoinId,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,

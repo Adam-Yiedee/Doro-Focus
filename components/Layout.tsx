@@ -1,5 +1,6 @@
 
-import React, { useState } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
@@ -10,9 +11,15 @@ import TaskViewModal from './Modals/TaskViewModal';
 import SummaryView from './SummaryView';
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings } = useTimer();
+  const { activeMode, activeColor, settings, pendingJoinId } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
+
+  useEffect(() => {
+    if (pendingJoinId) {
+        setShowLogModal(true);
+    }
+  }, [pendingJoinId]);
 
   // Use Inherited activeColor from context, or default
   const containerStyle: React.CSSProperties = {

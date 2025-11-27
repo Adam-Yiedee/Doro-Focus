@@ -1,6 +1,6 @@
 
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import TaskViewModal from './TaskViewModal';
 import { AlarmSound, GroupSyncConfig } from '../../types';
@@ -8,7 +8,7 @@ import { playAlarm } from '../../utils/sound';
 import { QRCodeSVG } from 'qrcode.react';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, clientSyncConfig, updateHostSyncConfig } = useTimer();
+  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, clientSyncConfig, updateHostSyncConfig, pendingJoinId } = useTimer();
   const [tab, setTab] = useState<'log' | 'group' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -18,6 +18,14 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const [inputName, setInputName] = useState(userName || '');
   const [inputSessionId, setInputSessionId] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+
+  // Auto-fill from URL
+  useEffect(() => {
+    if (isOpen && pendingJoinId && !groupSessionId) {
+        setTab('group');
+        setInputSessionId(pendingJoinId);
+    }
+  }, [isOpen, pendingJoinId, groupSessionId]);
 
   // Sync Options State for New Session
   const [tempSyncConfig, setTempSyncConfig] = useState<GroupSyncConfig>({
@@ -83,7 +91,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center gap-6 animate-slide-up max-w-sm w-full" onClick={e => e.stopPropagation()}>
                   <h3 className="text-black font-bold text-xl tracking-tight">Join Session</h3>
                   <div className="p-2 bg-white border-2 border-black rounded-xl">
-                      <QRCodeSVG value={groupSessionId} size={200} level="H" />
+                      <QRCodeSVG value={`https://dorofocus.netlify.app/?session=${groupSessionId}`} size={200} level="H" />
                   </div>
                   <div className="text-center w-full">
                       <div className="text-black/40 text-xs font-bold uppercase tracking-widest mb-1">Session ID</div>
