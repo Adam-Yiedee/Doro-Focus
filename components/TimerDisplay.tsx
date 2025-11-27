@@ -13,31 +13,35 @@ const formatTime = (seconds: number) => {
 
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
-  // Calculate bottom position to transition from -300% (Empty/Low) to -185% (Full/High)
+  // Calculate bottom position. Range -300% (empty) to -180% (full) roughly.
+  // We need to cover the container. The waves are 300% width/height.
   const safePercent = Math.max(0, Math.min(1.1, percent));
-  const bottomVal = -295 + (safePercent * 115);
+  // Interpolate: 0% -> -280%, 100% -> -190%
+  const bottomVal = -280 + (safePercent * 90);
 
-  const primaryClass = colorMode === 'red' ? 'bg-red-500/20' : 'bg-white/5';
-  const secondaryClass = colorMode === 'red' ? 'bg-red-500/10' : 'bg-white/3';
-
-  // Faster spins, flatter rounded edges for "flat water" look
-  const spinSpeed1 = isActive ? 'animate-spin-fast' : 'animate-spin-slow';
-  const spinSpeed2 = isActive ? 'animate-spin-fast-reverse' : 'animate-spin-slow-reverse';
-
-  // When inactive, we can reduce the roundedness to make it look flatter, 
-  // but keeping it spinning slowly preserves the "liquid" feel. 
-  // The request for "flat when no waves" implies the circle should be less jagged.
-  // Increasing size slightly and changing border radius helps.
+  const waveBase = colorMode === 'red' ? 'bg-red-500' : 'bg-white';
   
+  // Opacities for layers - Creating depth
+  const op1 = colorMode === 'red' ? 'opacity-20' : 'opacity-10'; // Back
+  const op2 = colorMode === 'red' ? 'opacity-30' : 'opacity-20'; // Mid
+  const op3 = colorMode === 'red' ? 'opacity-40' : 'opacity-30'; // Front (Brightest)
+
   return (
-    <div className={`absolute inset-0 z-0 transition-opacity duration-700 pointer-events-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
+    <div className={`absolute inset-0 z-0 transition-opacity duration-1000 pointer-events-none overflow-hidden rounded-[3rem] ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
+       {/* Wave 1 (Back) - Slowest */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${primaryClass} rounded-[42%] transition-all duration-1000 ease-in-out ${spinSpeed1}`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op1} rounded-[40%] transition-all duration-[2000ms] ease-in-out animate-wave-slow`}
          style={{ bottom: `${bottomVal}%` }}
        />
+       {/* Wave 2 (Mid) - Counter rotation or different timing */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${secondaryClass} rounded-[40%] transition-all duration-1000 ease-in-out ${spinSpeed2}`}
-         style={{ bottom: `${bottomVal}%` }}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[43%] transition-all duration-[2000ms] ease-in-out animate-wave-med`}
+         style={{ bottom: `${bottomVal - 2}%`, animationDelay: '-5s' }}
+       />
+       {/* Wave 3 (Front) - Fastest relative to others, but still slow & vivid */}
+       <div 
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[38%] transition-all duration-[2000ms] ease-in-out animate-wave-fast`}
+         style={{ bottom: `${bottomVal - 5}%`, animationDelay: '-2s' }}
        />
     </div>
   );
@@ -125,6 +129,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
         transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
+        group
       `}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -230,10 +235,10 @@ const TimerDisplay: React.FC = () => {
   return (
     <div className="relative w-full flex flex-col items-center py-4 px-2">
       <style>{`
-        @keyframes spin-fast { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        @keyframes spin-fast-reverse { 0% { transform: rotate(360deg); } 100% { transform: rotate(0deg); } }
-        .animate-spin-fast { animation: spin-fast 4s linear infinite; }
-        .animate-spin-fast-reverse { animation: spin-fast-reverse 6s linear infinite; }
+        @keyframes wave-rotate { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .animate-wave-slow { animation: wave-rotate 25s linear infinite; }
+        .animate-wave-med { animation: wave-rotate 18s linear infinite reverse; }
+        .animate-wave-fast { animation: wave-rotate 12s linear infinite; }
       `}</style>
       
       {/* Edit Modal */}

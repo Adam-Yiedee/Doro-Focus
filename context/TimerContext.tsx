@@ -1,5 +1,3 @@
-
-
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound, GroupSyncConfig, GroupMember } from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
@@ -368,14 +366,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // ---- PEERJS SYNC LOGIC ----
   const getCurrentState = useCallback(() => {
     return {
-       settings, tasks, categories, logs, activeMode, timerStarted,
+       settings, tasks, categories, logs, activeMode, timerStarted, isIdle,
        workTime, breakTime, pomodoroCount, scheduleBreaks,
        scheduleStartTime, sessionStartTime, allPauseActive,
        allPauseReason, graceOpen, graceContext,
        // Include host info
        hostConfig: hostSyncConfig
     };
-  }, [settings, tasks, categories, logs, activeMode, timerStarted, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext, hostSyncConfig]);
+  }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext, hostSyncConfig]);
 
   const applyRemoteState = useCallback((remote: any) => {
       // Glitch Prevention: Only update if strictly necessary or significant drift
@@ -383,7 +381,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       
       const config = isHost ? DEFAULT_SYNC_CONFIG : clientSyncConfig;
       
-      if (config.syncSettings && remote.settings) setSettings(remote.settings);
+      if (config.syncSettings && remote.settings) {
+          setSettings(prev => ({
+              ...remote.settings,
+              disableBlur: prev.disableBlur // IMPORTANT: Never sync disableBlur setting
+          }));
+      }
       
       if (config.syncTasks && remote.tasks) {
           setTasks(remote.tasks);
@@ -407,6 +410,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                setBreakTime(remote.breakTime);
                setActiveMode(remote.activeMode);
                setTimerStarted(remote.timerStarted);
+          }
+          
+          // CRITICAL: Sync Visual State
+          // If the remote timer is running, or explicitly not idle, update isIdle
+          if (remote.timerStarted) {
+              setIsIdle(false);
+          } else if (remote.isIdle !== undefined) {
+              setIsIdle(remote.isIdle);
           }
           
           setPomodoroCount(remote.pomodoroCount);
@@ -448,6 +459,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           delete filteredState.breakTime;
           delete filteredState.activeMode;
           delete filteredState.timerStarted;
+          delete filteredState.isIdle;
       }
       if (!hostSyncConfig.syncTasks) {
           delete filteredState.tasks;
@@ -478,7 +490,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
      }, 100);
      return () => clearTimeout(t);
   }, [
-      tasks, settings, activeMode, timerStarted, 
+      tasks, settings, activeMode, timerStarted, isIdle,
       scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, 
       graceOpen, groupSessionId, broadcastState, hostSyncConfig
   ]);
@@ -654,10 +666,31 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [tasks]);
 
   const sendNotification = useCallback((title: string, body: string) => {
-    if (!("Notification" in window)) return;
-    const trigger = () => { new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer', requireInteraction: true }); };
-    if (Notification.permission === "granted") trigger();
-    else if (Notification.permission !== "denied") Notification.requestPermission().then(p => { if (p === "granted") trigger(); });
+    // Desktop / Web Standard
+    if ("Notification" in window) {
+       if (Notification.permission === "granted") {
+           try {
+             // Request Interaction keeps it visible longer on desktop
+             new Notification(title, { 
+                body, 
+                icon: '/favicon.ico', 
+                tag: 'lumina-timer', 
+                requireInteraction: true,
+                vibrate: [200, 100, 200]
+             } as any);
+           } catch(e) { console.error(e); }
+       } else if (Notification.permission !== "denied") {
+           Notification.requestPermission().then(p => {
+               if (p === "granted") {
+                   new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer' });
+               }
+           });
+       }
+    }
+    // Mobile Vibration (Android)
+    if (typeof navigator !== 'undefined' && "vibrate" in navigator) {
+        navigator.vibrate([200, 100, 200, 100, 200]);
+    }
   }, []);
 
   const handleWorkLoopComplete = useCallback(() => {
@@ -740,6 +773,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [logActivity, sendNotification, settings.alarmSound]);
 
+  // CRITICAL FIX: Monitor timer completion in Effect instead of inside setState updater
+  // This prevents double-firing in StrictMode or during rapid updates
+  useEffect(() => {
+    if (timerStarted && !isIdle) {
+       if (activeMode === 'work' && workTime <= 0) {
+           handleWorkLoopComplete();
+       } else if (activeMode === 'break' && breakTime <= 0) {
+           handleBreakLoopComplete();
+       }
+    }
+  }, [workTime, breakTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, handleBreakLoopComplete]);
+
   const tick = useCallback(() => {
     const now = Date.now();
     if (!lastTickRef.current) { lastTickRef.current = now; return; }
@@ -753,25 +798,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (activeMode === 'work') {
         setWorkTime(prev => {
           if (prev <= 0) return 0;
-          const next = prev - delta;
-          if (next <= 0) {
-            handleWorkLoopComplete(); 
-            return 0; 
-          }
-          return next;
+          return Math.max(0, prev - delta);
         });
       } else {
         setBreakTime(prev => {
-          const next = prev - delta;
-          if (prev > 0 && next <= 0) { 
-             handleBreakLoopComplete(); 
-             return 0; 
-          }
-          return next;
+          if (prev <= 0) return 0;
+          return Math.max(0, prev - delta);
         });
       }
     }
-  }, [activeMode, timerStarted, isIdle, allPauseActive, graceOpen, handleWorkLoopComplete, handleBreakLoopComplete]);
+  }, [activeMode, timerStarted, isIdle, allPauseActive, graceOpen]);
 
   useEffect(() => {
     if (!workerRef.current) return;
@@ -790,6 +826,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startTimer = () => {
     if (!timerStarted) {
+      // Ensure we have notification permissions on first interaction
+      if ("Notification" in window && Notification.permission === "default") {
+          Notification.requestPermission();
+      }
+
       if (!sessionStartTime) {
           const now = new Date();
           const startStr = now.toISOString();
