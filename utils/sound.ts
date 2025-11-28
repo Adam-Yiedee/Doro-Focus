@@ -1,4 +1,5 @@
 
+
 import { AlarmSound } from '../types';
 
 export const resumeAudioContext = async () => {
@@ -92,6 +93,77 @@ export const playAlarm = async (soundType: AlarmSound) => {
                 playOscillator(ctx, 'sine', 800, now, 0.05, 0.4);
                 playOscillator(ctx, 'sine', 1200, now + 0.1, 0.05, 0.2);
                 break;
+            case 'marimba':
+                [440, 554, 659, 880].forEach((freq, i) => {
+                    playOscillator(ctx, 'triangle', freq, now + i * 0.08, 0.4, 0.3);
+                });
+                break;
+            case 'crystal':
+                [523.25, 783.99, 1046.50].forEach((freq, i) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, now);
+                    gain.gain.setValueAtTime(0.1, now);
+                    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.1);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 2.5);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(now + i*0.2);
+                    osc.stop(now + 3);
+                });
+                break;
+            case 'blade':
+                const bOsc = ctx.createOscillator();
+                const bGain = ctx.createGain();
+                bOsc.type = 'sawtooth';
+                bOsc.frequency.setValueAtTime(110, now);
+                bOsc.frequency.linearRampToValueAtTime(440, now + 0.5);
+                bGain.gain.setValueAtTime(0.1, now);
+                bGain.gain.exponentialRampToValueAtTime(0.001, now + 1);
+                const bFilter = ctx.createBiquadFilter();
+                bFilter.type = 'lowpass';
+                bFilter.frequency.setValueAtTime(200, now);
+                bFilter.frequency.linearRampToValueAtTime(2000, now + 0.2);
+                bOsc.connect(bFilter);
+                bFilter.connect(bGain);
+                bGain.connect(ctx.destination);
+                bOsc.start(now);
+                bOsc.stop(now + 1);
+                break;
+            case 'cosmic':
+                const cOsc = ctx.createOscillator();
+                const cGain = ctx.createGain();
+                cOsc.type = 'sine';
+                cOsc.frequency.setValueAtTime(300, now);
+                cOsc.frequency.exponentialRampToValueAtTime(1000, now + 0.5);
+                cOsc.frequency.exponentialRampToValueAtTime(200, now + 1.5);
+                cGain.gain.setValueAtTime(0.2, now);
+                cGain.gain.exponentialRampToValueAtTime(0.001, now + 1.5);
+                const delay = ctx.createDelay();
+                delay.delayTime.value = 0.2;
+                const feedback = ctx.createGain();
+                feedback.gain.value = 0.4;
+                cOsc.connect(cGain);
+                cGain.connect(ctx.destination);
+                cGain.connect(delay);
+                delay.connect(feedback);
+                feedback.connect(delay);
+                delay.connect(ctx.destination);
+                cOsc.start(now);
+                cOsc.stop(now + 1.5);
+                break;
+            case 'ripple':
+                for(let i=0; i<5; i++) {
+                     playOscillator(ctx, 'sine', 600 + (i * 50), now + (i * 0.1), 0.5, 0.2 - (i*0.03));
+                }
+                break;
+            case 'news':
+                 [500, 750, 1000, 500, 750, 1000].forEach((freq, i) => {
+                     playOscillator(ctx, 'square', freq, now + i * 0.08, 0.05, 0.05);
+                 });
+                 playOscillator(ctx, 'square', 1500, now + 0.5, 0.3, 0.05);
+                 break;
         }
     } catch(e) { console.error(e); }
 };

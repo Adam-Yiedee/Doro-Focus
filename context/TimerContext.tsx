@@ -1,6 +1,7 @@
 
+
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound, GroupSyncConfig, GroupMember } from '../types';
+import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound, GroupSyncConfig, GroupMember, User, SessionRecord } from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
 
@@ -20,6 +21,7 @@ export interface SessionStats {
 
 interface TimerContextType {
   // State
+  user: User | null;
   workTime: number;
   breakTime: number;
   activeMode: TimerMode;
@@ -35,6 +37,7 @@ interface TimerContextType {
   graceTotal: number;
 
   tasks: Task[];
+  pastSessions: SessionRecord[];
   categories: Category[];
   logs: LogEntry[];
   settings: TimerSettings;
@@ -59,6 +62,14 @@ interface TimerContextType {
   pendingJoinId: string | null;
 
   // Actions
+  login: (username: string, password?: string) => boolean;
+  register: (username: string, password?: string) => boolean;
+  logout: () => void;
+  exportData: () => string;
+  importData: (jsonStr: string) => boolean;
+  startMigrationHost: () => Promise<string>;
+  joinMigration: (code: string) => Promise<void>;
+  
   startTimer: () => void;
   stopTimer: () => void;
   toggleTimer: () => void;
@@ -82,7 +93,7 @@ interface TimerContextType {
   setPendingJoinId: (id: string | null) => void;
 
   // Data Management
-  addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string) => void;
+  addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string) => void;
   addDetailedTask: (task: Partial<Task> & { name: string, estimated: number }) => void;
   addSubtasksToTask: (parentId: number, subtasks: { name: string, est: number }[]) => void;
   updateTask: (task: Task) => void;
@@ -92,6 +103,9 @@ interface TimerContextType {
   moveTask: (fromId: number, toId: number) => void;
   moveSubtask: (fromParentId: number, toParentId: number, subId: number, targetSubId: number | null) => void;
   splitTask: (taskId: number, splitAt: number) => void;
+  toggleTaskFuture: (taskId: number) => void;
+  setTaskSchedule: (taskId: number, scheduledStart: string | undefined) => void;
+  
   addCategory: (name: string, color: string) => void;
   updateCategory: (cat: Category) => void;
   deleteCategory: (id: number) => void;
@@ -107,7 +121,10 @@ interface TimerContextType {
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'lumina_focus_v8_cal'; 
+// Storage Logic
+const getGuestKey = () => 'doro_guest_data';
+const getUserKey = (username: string) => `doro_user_${username}`;
+const getUsersIndexKey = () => 'doro_users_index';
 
 const DEFAULT_SETTINGS: TimerSettings = {
   workDuration: 1500, 
@@ -253,6 +270,8 @@ const removeCompletedTasks = (tasks: Task[]): Task[] => {
 };
 
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [workTime, setWorkTime] = useState(1500);
   const [breakTime, setBreakTime] = useState(0); 
@@ -271,6 +290,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [graceTotal, setGraceTotal] = useState(0);
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [pastSessions, setPastSessions] = useState<SessionRecord[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
@@ -294,6 +314,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const isRemoteUpdate = useRef(false);
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<DataConnection[]>([]);
+  const migrationPeerRef = useRef<Peer | null>(null);
 
   const lastTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -301,6 +322,271 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const lastLoopTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
   const breakZeroTriggeredRef = useRef(false);
+  const skipSaveRef = useRef(false);
+
+  // Load Data Helper
+  const loadData = useCallback((username?: string) => {
+      skipSaveRef.current = true; // Prevent save effect triggering during load
+      const key = username ? getUserKey(username) : getGuestKey();
+      const saved = localStorage.getItem(key);
+      
+      if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            setSettings(prev => ({ ...prev, ...(parsed.settings || {}) }));
+            setTasks(parsed.tasks || []);
+            setPastSessions(parsed.pastSessions || []);
+            setCategories(parsed.categories || []);
+            setLogs(parsed.logs || []);
+            setPomodoroCount(parsed.pomodoroCount || 0);
+            setScheduleBreaks(parsed.scheduleBreaks || []);
+            if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
+            if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
+            
+            if (username && parsed.user) {
+                // Ensure streak properties exist for older accounts
+                const u = parsed.user;
+                if (!u.lifetimeStats.currentStreak) u.lifetimeStats.currentStreak = 0;
+                if (!u.lifetimeStats.bestStreak) u.lifetimeStats.bestStreak = 0;
+                setUser(u);
+            } else if (username) {
+                 // Recover user structure if missing but authenticated
+                 setUser({ 
+                     username, 
+                     joinedAt: new Date().toISOString(), 
+                     lifetimeStats: { totalFocusHours: 0, totalPomos: 0, totalSessions: 0, currentStreak: 0, bestStreak: 0, lastActiveDate: null } 
+                 });
+            } else {
+                setUser(null);
+            }
+            
+            if (parsed.userName) setUserName(parsed.userName);
+            
+            if (parsed.sessionStartTime) {
+                setSessionStartTime(parsed.sessionStartTime);
+                if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
+            } else {
+                 const now = new Date();
+                 const h = now.getHours().toString().padStart(2, '0');
+                 const m = now.getMinutes().toString().padStart(2, '0');
+                 setScheduleStartTime(`${h}:${m}`);
+            }
+        } catch (e) { console.error("Failed to load", e); }
+      } else {
+          // Defaults for new user or guest
+          setSettings(DEFAULT_SETTINGS);
+          setTasks([]);
+          setPastSessions([]);
+          setLogs([]);
+          setCategories([]);
+          setPomodoroCount(0);
+          const now = new Date();
+          const h = now.getHours().toString().padStart(2, '0');
+          const m = now.getMinutes().toString().padStart(2, '0');
+          setScheduleStartTime(`${h}:${m}`);
+          if (username) {
+              setUser({ 
+                  username, 
+                  joinedAt: new Date().toISOString(), 
+                  lifetimeStats: { totalFocusHours: 0, totalPomos: 0, totalSessions: 0, currentStreak: 0, bestStreak: 0, lastActiveDate: null } 
+              });
+          } else {
+              setUser(null);
+          }
+      }
+      setTimeout(() => { skipSaveRef.current = false; }, 100);
+  }, []);
+
+  // Initial Load
+  useEffect(() => {
+      const lastUser = localStorage.getItem('doro_last_user');
+      if (lastUser) {
+          loadData(lastUser);
+      } else {
+          loadData();
+      }
+  }, [loadData]);
+
+  // Auth Methods
+  const getUsersIndex = (): string[] => {
+      try {
+          return JSON.parse(localStorage.getItem(getUsersIndexKey()) || '[]');
+      } catch { return []; }
+  };
+
+  const register = (username: string, password?: string): boolean => {
+      const users = getUsersIndex();
+      if (users.includes(username)) return false; // Already exists
+      
+      const newUser: User = {
+          username,
+          password, 
+          joinedAt: new Date().toISOString(),
+          lifetimeStats: { totalFocusHours: 0, totalPomos: 0, totalSessions: 0, currentStreak: 1, bestStreak: 1, lastActiveDate: new Date().toISOString().split('T')[0] }
+      };
+      
+      users.push(username);
+      localStorage.setItem(getUsersIndexKey(), JSON.stringify(users));
+      
+      // Init user data
+      const key = getUserKey(username);
+      const initData = { user: newUser, settings: DEFAULT_SETTINGS, tasks: [], logs: [], pastSessions: [] };
+      localStorage.setItem(key, JSON.stringify(initData));
+
+      // Login immediately
+      login(username, password);
+      return true;
+  };
+
+  const login = (username: string, password?: string): boolean => {
+      const users = getUsersIndex();
+      if (!users.includes(username)) return false;
+      
+      const key = getUserKey(username);
+      const dataStr = localStorage.getItem(key);
+      if (!dataStr) return false;
+      
+      const data = JSON.parse(dataStr);
+      // Basic simulation check
+      if (data.user?.password && data.user.password !== password) {
+          return false;
+      }
+
+      localStorage.setItem('doro_last_user', username);
+      setUserName(username);
+      loadData(username);
+      return true;
+  };
+
+  const logout = () => {
+      setUser(null);
+      setUserName('');
+      localStorage.removeItem('doro_last_user');
+      loadData(); // Load Guest Data
+  };
+
+  // Cloud Export / Import
+  const exportData = (): string => {
+      const key = user ? getUserKey(user.username) : getGuestKey();
+      const userDataToSave = user ? { ...user } : null;
+      const dataToSave = {
+        settings, tasks, pastSessions, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName, user: userDataToSave
+      };
+      return btoa(JSON.stringify(dataToSave));
+  };
+
+  const importData = (encodedData: string): boolean => {
+      try {
+          const jsonStr = atob(encodedData);
+          const parsed = JSON.parse(jsonStr);
+          
+          if (parsed.user && parsed.user.username) {
+             // If importing user data, create user record if needed
+             const users = getUsersIndex();
+             if (!users.includes(parsed.user.username)) {
+                 users.push(parsed.user.username);
+                 localStorage.setItem(getUsersIndexKey(), JSON.stringify(users));
+             }
+             const key = getUserKey(parsed.user.username);
+             localStorage.setItem(key, JSON.stringify(parsed));
+             
+             // Switch to this user
+             localStorage.setItem('doro_last_user', parsed.user.username);
+             setUserName(parsed.user.username);
+             loadData(parsed.user.username);
+             return true;
+          } else {
+              // Guest import
+              localStorage.setItem(getGuestKey(), JSON.stringify(parsed));
+              loadData();
+              return true;
+          }
+      } catch (e) {
+          console.error("Import failed", e);
+          return false;
+      }
+  };
+
+  // ---- DEVICE SYNC (MIGRATION) LOGIC ----
+  const startMigrationHost = async (): Promise<string> => {
+      const dataStr = exportData();
+      return new Promise((resolve, reject) => {
+          try {
+              const shortId = Math.random().toString(36).substring(2, 8).toUpperCase();
+              // @ts-ignore
+              const peer = new Peer(shortId);
+              migrationPeerRef.current = peer;
+              
+              peer.on('open', (id) => {
+                  resolve(id);
+              });
+              
+              peer.on('connection', (conn) => {
+                  conn.on('open', () => {
+                      // Send data immediately upon connection
+                      conn.send({ type: 'MIGRATION_DATA', data: dataStr });
+                      // Close after sending
+                      setTimeout(() => {
+                          conn.close();
+                          peer.destroy();
+                          migrationPeerRef.current = null;
+                      }, 2000);
+                  });
+              });
+
+              peer.on('error', (err) => reject(err));
+          } catch (e) { reject(e); }
+      });
+  };
+
+  const joinMigration = async (code: string): Promise<void> => {
+      return new Promise((resolve, reject) => {
+          try {
+              // @ts-ignore
+              const peer = new Peer();
+              migrationPeerRef.current = peer;
+              
+              peer.on('open', () => {
+                  const conn = peer.connect(code);
+                  
+                  conn.on('open', () => {
+                      console.log("Connected to migration host");
+                  });
+
+                  conn.on('data', (msg: any) => {
+                      if (msg.type === 'MIGRATION_DATA' && msg.data) {
+                          const success = importData(msg.data);
+                          if (success) resolve();
+                          else reject(new Error("Data corruption during sync"));
+                          conn.close();
+                          peer.destroy();
+                          migrationPeerRef.current = null;
+                      }
+                  });
+                  
+                  conn.on('close', () => {
+                      // If closed without data, might be an error or done
+                  });
+              });
+              
+              peer.on('error', (err) => {
+                  reject(err);
+              });
+          } catch(e) { reject(e); }
+      });
+  };
+  // ---------------------------------------
+
+  // Save Effect
+  useEffect(() => {
+    if (skipSaveRef.current) return;
+    const key = user ? getUserKey(user.username) : getGuestKey();
+    const userDataToSave = user ? { ...user } : null;
+    const dataToSave = {
+      settings, tasks, pastSessions, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName, user: userDataToSave
+    };
+    localStorage.setItem(key, JSON.stringify(dataToSave));
+  }, [settings, tasks, pastSessions, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName, user]);
 
   // Auto-detect mobile and disable blur
   useEffect(() => {
@@ -319,93 +605,39 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const sessionParam = params.get('session');
     if (sessionParam) {
         setPendingJoinId(sessionParam);
-        // Clean URL to prevent re-join on refresh (optional, but good UX)
         window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
 
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setSettings(prev => ({ ...prev, ...parsed.settings }));
-        setTasks(parsed.tasks || []);
-        setCategories(parsed.categories || []);
-        setLogs(parsed.logs || []);
-        setPomodoroCount(parsed.pomodoroCount || 0);
-        setScheduleBreaks(parsed.scheduleBreaks || []);
-        if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
-        if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
-        if (parsed.userName) setUserName(parsed.userName); 
-        
-        if (parsed.sessionStartTime) {
-            setSessionStartTime(parsed.sessionStartTime);
-            if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
-        } else {
-             const now = new Date();
-             const h = now.getHours().toString().padStart(2, '0');
-             const m = now.getMinutes().toString().padStart(2, '0');
-             setScheduleStartTime(`${h}:${m}`);
-        }
-      } catch (e) {
-        console.error("Failed to load state", e);
-      }
-    } else {
-         const now = new Date();
-         const h = now.getHours().toString().padStart(2, '0');
-         const m = now.getMinutes().toString().padStart(2, '0');
-         setScheduleStartTime(`${h}:${m}`);
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName
-    }));
-  }, [settings, tasks, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName]);
-
-  // ---- PEERJS SYNC LOGIC ----
+  // ---- PEERJS GROUP SYNC LOGIC ----
   const getCurrentState = useCallback(() => {
     return {
        settings, tasks, categories, logs, activeMode, timerStarted, isIdle,
        workTime, breakTime, pomodoroCount, scheduleBreaks,
        scheduleStartTime, sessionStartTime, allPauseActive,
        allPauseReason, graceOpen, graceContext,
-       // Include host info
        hostConfig: hostSyncConfig
     };
   }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext, hostSyncConfig]);
 
   const applyRemoteState = useCallback((remote: any) => {
-      // Glitch Prevention: Only update if strictly necessary or significant drift
       isRemoteUpdate.current = true;
-      
       const config = isHost ? DEFAULT_SYNC_CONFIG : clientSyncConfig;
       
       if (config.syncSettings && remote.settings) {
-          setSettings(prev => ({
-              ...remote.settings,
-              disableBlur: prev.disableBlur // IMPORTANT: Never sync disableBlur setting
-          }));
+          setSettings(prev => ({ ...remote.settings, disableBlur: prev.disableBlur }));
       }
-      
       if (config.syncTasks && remote.tasks) {
           setTasks(remote.tasks);
           setCategories(remote.categories);
       }
-      
       if (config.syncHistory && remote.logs) setLogs(remote.logs);
-
       if (config.syncSchedule) {
           if (remote.scheduleBreaks) setScheduleBreaks(remote.scheduleBreaks);
           if (remote.scheduleStartTime) setScheduleStartTime(remote.scheduleStartTime);
           if (remote.sessionStartTime) setSessionStartTime(remote.sessionStartTime);
       }
-
       if (config.syncTimers) {
-          // Soft sync: Only update if deviation > 1s or mode changed
-          // This prevents jitter
           const timerDrift = Math.abs(remote.workTime - workTime);
           if (remote.activeMode !== activeMode || timerDrift > 1.5 || !timerStarted) {
                setWorkTime(remote.workTime);
@@ -413,14 +645,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                setActiveMode(remote.activeMode);
                setTimerStarted(remote.timerStarted);
           }
-          
-          // CRITICAL: Sync Visual State
-          // If the remote timer is running, or explicitly not idle, update isIdle
-          if (remote.timerStarted) {
-              setIsIdle(false);
-          } else if (remote.isIdle !== undefined) {
-              setIsIdle(remote.isIdle);
-          }
+          if (remote.timerStarted) setIsIdle(false);
+          else if (remote.isIdle !== undefined) setIsIdle(remote.isIdle);
           
           setPomodoroCount(remote.pomodoroCount);
           setAllPauseActive(remote.allPauseActive);
@@ -430,7 +656,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
           if (remote.timerStarted) {
               workerRef.current?.postMessage('start');
-              // Don't reset tick ref if just a minor adjustment to avoid jumps
               if (lastTickRef.current === null) {
                   lastTickRef.current = Date.now();
                   currentActivityStartRef.current = new Date(); 
@@ -439,44 +664,23 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               workerRef.current?.postMessage('stop');
           }
       }
-
-      // Update Host Config if we are client
-      if (!isHost && remote.hostConfig) {
-          setHostSyncConfig(remote.hostConfig);
-      }
-
+      if (!isHost && remote.hostConfig) setHostSyncConfig(remote.hostConfig);
       setTimeout(() => { isRemoteUpdate.current = false; }, 300);
   }, [workTime, activeMode, timerStarted, isHost, clientSyncConfig]);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
       if (!groupSessionId || connectionsRef.current.length === 0) return;
-      
       const fullState = getCurrentState();
-      
-      // Filter based on Host Config
       const filteredState: any = { ...fullState };
       
       if (!hostSyncConfig.syncTimers) {
-          delete filteredState.workTime;
-          delete filteredState.breakTime;
-          delete filteredState.activeMode;
-          delete filteredState.timerStarted;
-          delete filteredState.isIdle;
+          delete filteredState.workTime; delete filteredState.breakTime; delete filteredState.activeMode;
+          delete filteredState.timerStarted; delete filteredState.isIdle;
       }
-      if (!hostSyncConfig.syncTasks) {
-          delete filteredState.tasks;
-          delete filteredState.categories;
-      }
-      if (!hostSyncConfig.syncHistory) {
-          delete filteredState.logs;
-      }
-      if (!hostSyncConfig.syncSchedule) {
-          delete filteredState.scheduleBreaks;
-          delete filteredState.scheduleStartTime;
-      }
-      if (!hostSyncConfig.syncSettings) {
-          delete filteredState.settings;
-      }
+      if (!hostSyncConfig.syncTasks) { delete filteredState.tasks; delete filteredState.categories; }
+      if (!hostSyncConfig.syncHistory) { delete filteredState.logs; }
+      if (!hostSyncConfig.syncSchedule) { delete filteredState.scheduleBreaks; delete filteredState.scheduleStartTime; }
+      if (!hostSyncConfig.syncSettings) { delete filteredState.settings; }
 
       connectionsRef.current.forEach(conn => {
           if (conn.open && conn.peer !== excludeConnId) {
@@ -487,15 +691,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
-     const t = setTimeout(() => {
-         broadcastState();
-     }, 100);
+     const t = setTimeout(() => { broadcastState(); }, 100);
      return () => clearTimeout(t);
-  }, [
-      tasks, settings, activeMode, timerStarted, isIdle,
-      scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, 
-      graceOpen, groupSessionId, broadcastState, hostSyncConfig
-  ]);
+  }, [tasks, settings, activeMode, timerStarted, isIdle, scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, graceOpen, groupSessionId, broadcastState, hostSyncConfig]);
 
   const updateMembersList = useCallback(() => {
       if (isHost) {
@@ -504,10 +702,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                ...connectionsRef.current.map(c => ({ id: c.peer, name: (c.metadata as any)?.name || 'Member', isHost: false }))
            ];
            setMembers(memberList);
-           // Broadcast members
-           connectionsRef.current.forEach(c => {
-               if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList });
-           });
+           connectionsRef.current.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
       }
   }, [isHost, userName]);
 
@@ -520,45 +715,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             // @ts-ignore
             const peer = new Peer(shortId); 
             peerRef.current = peer;
-
             peer.on('open', (id: string) => {
-                setGroupSessionId(id);
-                setIsHost(true);
-                setPeerError(null);
-                setMembers([{ id, name, isHost: true }]);
-                resolve(id);
+                setGroupSessionId(id); setIsHost(true); setPeerError(null);
+                setMembers([{ id, name, isHost: true }]); resolve(id);
             });
-
             peer.on('connection', (conn: DataConnection) => {
                 connectionsRef.current.push(conn);
-                conn.on('open', () => {
-                    // Send full initial state + members
-                    conn.send({ type: 'STATE_UPDATE', state: getCurrentState() });
-                    updateMembersList();
-                });
-                conn.on('data', (data: any) => {
-                    if (data.type === 'STATE_UPDATE') {
-                        // Clients don't typically push state to host in this mode, 
-                        // but if we added bidirectional, we'd handle it here.
-                    }
-                });
-                conn.on('close', () => {
-                    connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
-                    updateMembersList();
-                });
+                conn.on('open', () => { conn.send({ type: 'STATE_UPDATE', state: getCurrentState() }); updateMembersList(); });
+                conn.on('close', () => { connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer); updateMembersList(); });
             });
-
             peer.on('error', (err: any) => {
-                if (err.type === 'unavailable-id') {
-                     reject(new Error("Session ID collision, please try again."));
-                } else {
-                     setPeerError("Connection Error: " + err.type);
-                     reject(err);
-                }
+                if (err.type === 'unavailable-id') reject(new Error("Session ID collision."));
+                else { setPeerError("Connection Error: " + err.type); reject(err); }
             });
-          } catch (e) {
-              reject(e);
-          }
+          } catch (e) { reject(e); }
       });
   };
 
@@ -570,61 +740,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             // @ts-ignore
             const peer = new Peer();
             peerRef.current = peer;
-
             peer.on('open', (id: string) => {
-                setGroupSessionId(hostId);
-                setIsHost(false);
-                setPeerError(null);
-                
+                setGroupSessionId(hostId); setIsHost(false); setPeerError(null);
                 const conn = peer.connect(hostId, { metadata: { name } });
                 connectionsRef.current = [conn];
-
-                conn.on('open', () => {
-                    resolve();
-                });
-
+                conn.on('open', () => { resolve(); });
                 conn.on('data', (data: any) => {
-                    if (data.type === 'STATE_UPDATE') {
-                        applyRemoteState(data.state);
-                    } else if (data.type === 'MEMBERS_UPDATE') {
-                        setMembers(data.members);
-                    }
+                    if (data.type === 'STATE_UPDATE') applyRemoteState(data.state);
+                    else if (data.type === 'MEMBERS_UPDATE') setMembers(data.members);
                 });
-                
-                conn.on('close', () => {
-                    setPeerError("Disconnected from Host");
-                    leaveGroupSession();
-                });
+                conn.on('close', () => { setPeerError("Disconnected from Host"); leaveGroupSession(); });
             });
-            
-            peer.on('error', (err: any) => {
-                 setPeerError("Connection Failed. Check ID.");
-                 setGroupSessionId(null);
-                 reject(err);
-            });
-          } catch (e) {
-              reject(e);
-          }
+            peer.on('error', (err: any) => { setPeerError("Connection Failed. Check ID."); setGroupSessionId(null); reject(err); });
+          } catch (e) { reject(e); }
       });
   };
 
   const leaveGroupSession = () => {
-      if (peerRef.current) {
-          peerRef.current.destroy();
-          peerRef.current = null;
-      }
+      if (peerRef.current) { peerRef.current.destroy(); peerRef.current = null; }
       connectionsRef.current = [];
-      setGroupSessionId(null);
-      setIsHost(false);
-      setPeerError(null);
-      setMembers([]);
+      setGroupSessionId(null); setIsHost(false); setPeerError(null); setMembers([]);
   };
 
-  const updateHostSyncConfig = (config: GroupSyncConfig) => {
-      setHostSyncConfig(config);
-      broadcastState(); // Trigger update with new filters
-  };
-
+  const updateHostSyncConfig = (config: GroupSyncConfig) => { setHostSyncConfig(config); broadcastState(); };
   // ---- END PEERJS LOGIC ----
 
   useEffect(() => {
@@ -633,9 +771,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       self.onmessage = function(e) {
         if (e.data === 'start') {
           if (intervalId) clearInterval(intervalId);
-          intervalId = setInterval(() => {
-            self.postMessage('tick');
-          }, 250);
+          intervalId = setInterval(() => { self.postMessage('tick'); }, 250);
         } else if (e.data === 'stop') {
           if (intervalId) clearInterval(intervalId);
           intervalId = null;
@@ -654,56 +790,34 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
-    
     const entry: LogEntry = {
-      type,
-      start: start.toISOString(),
-      end: new Date().toISOString(),
-      duration,
-      reason,
-      task: selectedTask ? { id: selectedTask.id, name: selectedTask.name } : null,
+      type, start: start.toISOString(), end: new Date().toISOString(),
+      duration, reason, task: selectedTask ? { id: selectedTask.id, name: selectedTask.name } : null,
       color: currentContext.color 
     };
     setLogs(prev => [entry, ...prev]);
   }, [tasks]);
 
   const sendNotification = useCallback((title: string, body: string) => {
-    // Desktop / Web Standard
     if ("Notification" in window) {
        if (Notification.permission === "granted") {
            try {
-             // Request Interaction keeps it visible longer on desktop
-             new Notification(title, { 
-                body, 
-                icon: '/favicon.ico', 
-                tag: 'lumina-timer', 
-                requireInteraction: true,
-                vibrate: [200, 100, 200]
-             } as any);
+             new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer', requireInteraction: true, vibrate: [200, 100, 200] } as any);
            } catch(e) { console.error(e); }
        } else if (Notification.permission !== "denied") {
-           Notification.requestPermission().then(p => {
-               if (p === "granted") {
-                   new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer' });
-               }
-           });
+           Notification.requestPermission().then(p => { if (p === "granted") new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer' }); });
        }
     }
-    // Mobile Vibration (Android)
-    if (typeof navigator !== 'undefined' && "vibrate" in navigator) {
-        navigator.vibrate([200, 100, 200, 100, 200]);
-    }
+    if (typeof navigator !== 'undefined' && "vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
   }, []);
 
   const handleWorkLoopComplete = useCallback(() => {
     if (isProcessingRef.current) return;
     const now = Date.now();
-    // Increase debounce to 5 seconds to absolutely prevent double-reporting if state updates trigger re-renders
     if (now - lastLoopTimeRef.current < 5000) return; 
     
     isProcessingRef.current = true;
     lastLoopTimeRef.current = now;
-
     playAlarm(settings.alarmSound);
     
     const nextPomoCount = pomodoroCount + 1;
@@ -721,35 +835,27 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTasks(prevTasks => {
         const selected = findSelectedTask(prevTasks);
         if (!selected) return prevTasks;
-        const updatedTasks = incrementCompletedInTree(prevTasks, selected.id);
+        
+        let updatedTasks = incrementCompletedInTree(prevTasks, selected.id);
+        
+        // Check if goal reached
         const updatedSelected = findSelectedTask(updatedTasks);
-        if (updatedSelected && updatedSelected.completed >= updatedSelected.estimated) {
-             const flat = flattenTasks(updatedTasks);
-             const currentIdx = flat.findIndex(t => t.id === updatedSelected.id);
-             if (currentIdx !== -1) {
-                 let nextId: number | null = null;
-                 for (let i = currentIdx + 1; i < flat.length; i++) {
-                     const t = flat[i];
-                     if (!t.checked && t.completed < t.estimated && t.subtasks.length === 0) {
-                          nextId = t.id;
-                          break;
-                     }
-                 }
-                 if (nextId) return selectTaskInTree(updatedTasks, nextId);
+        if (updatedSelected) {
+             if (updatedSelected.completed === updatedSelected.estimated) {
+                 updatedTasks = updateTaskInTree(updatedTasks, { ...updatedSelected, checked: true });
+                 sendNotification("Goal Reached", `${updatedSelected.name} goal met. Continuing...`);
+                 // We do not auto-switch selection, allowing user to over-work if desired.
              }
         }
+        
         return updatedTasks;
     });
 
-    sendNotification(
-      isLongBreak ? "Long Break Earned!" : "Focus Session Complete", 
-      `${Math.floor(reward/60)} minutes added to break bank.`
-    );
+    sendNotification(isLongBreak ? "Long Break Earned!" : "Focus Session Complete", `${Math.floor(reward/60)} minutes added to break bank.`);
     setTimerStarted(false);
     setGraceContext('afterWork');
     setGraceTotal(0);
     setGraceOpen(true);
-    
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [settings, logActivity, sendNotification, pomodoroCount]);
 
@@ -760,7 +866,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     
     isProcessingRef.current = true;
     lastLoopTimeRef.current = now;
-
     playAlarm(settings.alarmSound);
     if (currentActivityStartRef.current) {
       const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
@@ -772,24 +877,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceTotal(0);
     setGraceOpen(true);
     sendNotification("Break Time's Up!", "Back to work!");
-    
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [logActivity, sendNotification, settings.alarmSound]);
 
-  // CRITICAL FIX: Monitor timer completion in Effect instead of inside setState updater
-  // This prevents double-firing in StrictMode or during rapid updates
   useEffect(() => {
     if (timerStarted && !isIdle) {
        if (activeMode === 'work' && workTime <= 0) {
            handleWorkLoopComplete();
        } else if (activeMode === 'break') {
-           // Break Logic:
-           // If we have time (positive), ensure trigger is reset
            if (breakTime > 1) {
                breakZeroTriggeredRef.current = false;
-           }
-           // If we hit zero (or go negative) AND we haven't already triggered completion for this session
-           else if (breakTime <= 0 && !breakZeroTriggeredRef.current) {
+           } else if (breakTime <= 0 && !breakZeroTriggeredRef.current) {
                breakZeroTriggeredRef.current = true;
                handleBreakLoopComplete();
            }
@@ -813,8 +911,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return Math.max(0, prev - delta);
         });
       } else {
-        // BREAK MODE
-        // Allow negative time (debt) if user continues past zero
         setBreakTime(prev => prev - delta);
       }
     }
@@ -837,20 +933,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startTimer = () => {
     if (!timerStarted) {
-      // Ensure we have notification permissions on first interaction
-      if ("Notification" in window && Notification.permission === "default") {
-          Notification.requestPermission();
-      }
-
+      if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
       if (!sessionStartTime) {
           const now = new Date();
-          const startStr = now.toISOString();
-          setSessionStartTime(startStr);
+          setSessionStartTime(now.toISOString());
           const h = now.getHours().toString().padStart(2, '0');
           const m = now.getMinutes().toString().padStart(2, '0');
           setScheduleStartTime(`${h}:${m}`);
       }
-
       if (isIdle) { setIsIdle(false); currentActivityStartRef.current = new Date(); }
       setTimerStarted(true);
       lastTickRef.current = Date.now(); 
@@ -919,9 +1009,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
        let taskOverride: Task | undefined = undefined;
-       if (logPauseAs === 'work' && activeTask) {
-           taskOverride = activeTask;
-       }
+       if (logPauseAs === 'work' && activeTask) taskOverride = activeTask;
        logActivity(logPauseAs || 'allpause', start, allPauseTime, allPauseReason || 'Paused', taskOverride);
     }
     setActiveMode(action);
@@ -933,21 +1021,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
-    // GUARD: Prevent double firing
     if (isProcessingRef.current) return;
     isProcessingRef.current = true;
 
     if (graceOpen && options?.logGraceAs) {
         const graceStart = new Date(Date.now() - graceTotal * 1000);
         let taskOverride: Task | undefined = undefined;
-        if (options.logGraceAs === 'work' && activeTask) {
-            taskOverride = activeTask;
-        }
-
+        if (options.logGraceAs === 'work' && activeTask) taskOverride = activeTask;
         let reason = 'Grace Period';
         if (options.logGraceAs === 'work') reason = 'Grace Period (Working)';
         else if (options.logGraceAs === 'break') reason = 'Grace Period (Resting)';
-
         logActivity(options.logGraceAs, graceStart, graceTotal, reason, taskOverride);
     }
     
@@ -955,60 +1038,91 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceContext(null);
     setActiveMode(nextMode);
     setIsIdle(false);
-    
-    if (options && options.adjustBreakBalance !== undefined) {
-        setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
-    }
+    if (options && options.adjustBreakBalance !== undefined) setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
     
     if (nextMode === 'work') {
-        // RESET LOGIC
-        // Only reset to full work duration if:
-        // 1. We just finished a work session (graceContext == 'afterWork')
-        // 2. OR the current work timer is exhausted (<= 1s)
-        // Otherwise (coming from break), preserve the remaining time.
-        // We added `settings.workDuration > 0` as a sanity check.
         const shouldReset = graceContext === 'afterWork' || (workTime <= 1 && settings.workDuration > 0);
-
         setWorkTime(prev => {
             let base = prev;
             if (shouldReset) base = settings.workDuration;
-            
-            if (options?.adjustWorkStart) {
-                base = Math.max(0, base - options.adjustWorkStart);
-            }
+            if (options?.adjustWorkStart) base = Math.max(0, base - options.adjustWorkStart);
             return base;
         });
     } else {
-        // If we just finished work and are going to break,
-        // we should reset work timer for the NEXT time we return to work.
-        if (graceContext === 'afterWork') {
-             setWorkTime(settings.workDuration);
-        }
+        if (graceContext === 'afterWork') setWorkTime(settings.workDuration);
     }
 
     currentActivityStartRef.current = new Date();
     startTimer();
-    
-    // Release guard after short delay
     setTimeout(() => { isProcessingRef.current = false; }, 500);
   };
 
   const endSession = () => {
     stopTimer();
     setAllPauseActive(false);
-
     const workLogs = logs.filter(l => l.type === 'work' && l.start > (sessionStartTime || ''));
     const breakLogs = logs.filter(l => l.type === 'break' && l.start > (sessionStartTime || ''));
     const totalWork = workLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
     const totalBreak = breakLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
-    
     const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
     
+    // Archive Session
+    if (sessionStartTime) {
+        const record: SessionRecord = {
+            id: Date.now().toString(),
+            startTime: sessionStartTime,
+            endTime: new Date().toISOString(),
+            stats: {
+                totalWorkMinutes: totalWork,
+                totalBreakMinutes: totalBreak,
+                pomosCompleted: pomodoroCount,
+                tasksCompleted: completedTasksCount
+            }
+        };
+        
+        setPastSessions(prev => {
+            const updated = [record, ...prev];
+            return updated;
+        });
+
+        // Update User Lifetime Stats & Streak
+        if (user) {
+            setUser(prev => {
+                if (!prev) return null;
+                const stats = { ...prev.lifetimeStats };
+                
+                stats.totalFocusHours += (totalWork / 60);
+                stats.totalPomos += pomodoroCount;
+                stats.totalSessions += 1;
+
+                // Streak Calculation
+                const today = new Date().toISOString().split('T')[0];
+                const lastActive = stats.lastActiveDate;
+                
+                if (lastActive !== today) {
+                    const yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const yesterdayStr = yesterday.toISOString().split('T')[0];
+                    
+                    if (lastActive === yesterdayStr) {
+                        stats.currentStreak += 1;
+                    } else {
+                        stats.currentStreak = 1;
+                    }
+                    if (stats.currentStreak > stats.bestStreak) {
+                        stats.bestStreak = stats.currentStreak;
+                    }
+                    stats.lastActiveDate = today;
+                }
+
+                return { ...prev, lifetimeStats: stats };
+            });
+        }
+    }
+
     setSessionStats({
-        totalWorkMinutes: totalWork,
-        totalBreakMinutes: totalBreak,
-        tasksCompleted: completedTasksCount,
-        pomosCompleted: pomodoroCount
+        totalWorkMinutes: totalWork, totalBreakMinutes: totalBreak,
+        tasksCompleted: completedTasksCount, pomosCompleted: pomodoroCount
     });
 
     setTasks(prev => removeCompletedTasks(prev)); 
@@ -1030,15 +1144,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setShowSummary(true);
   };
 
-  const closeSummary = () => {
-      setShowSummary(false);
-      setSessionStats(null);
-  };
+  const closeSummary = () => { setShowSummary(false); setSessionStats(null); };
 
   const hardReset = () => {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(getUserKey(user?.username || ''));
+      localStorage.removeItem(getGuestKey());
+      if (user) {
+         // Optionally remove user from index if you want "delete account" behavior,
+         // but "Reset App Data" usually implies resetting current progress.
+         // For now we just reset the current data key.
+      }
       setSettings(DEFAULT_SETTINGS);
       setTasks([]);
+      setPastSessions([]);
       setCategories([]);
       setLogs([]);
       setPomodoroCount(0);
@@ -1055,21 +1173,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setSessionStats(null);
       setShowSummary(false);
       leaveGroupSession();
-      
       const now = new Date();
       const h = now.getHours().toString().padStart(2, '0');
       const m = now.getMinutes().toString().padStart(2, '0');
       setScheduleStartTime(`${h}:${m}`);
-      
       currentActivityStartRef.current = null;
       lastTickRef.current = null;
       workerRef.current?.postMessage('stop');
   };
 
-  const addTask = (name: string, estimated: number, categoryId: number | null, parentId?: number, color?: string) => {
+  const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string) => {
     const newTask: Task = {
       id: Date.now(), name, estimated, completed: 0, checked: false,
-      selected: tasks.length === 0 && !parentId, categoryId, subtasks: [], isExpanded: true, color: color || undefined
+      selected: tasks.length === 0 && !parentId && !isFuture, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart
     };
     if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
     else setTasks(prev => [...prev, newTask]);
@@ -1078,7 +1194,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const addDetailedTask = (taskProps: Partial<Task> & { name: string, estimated: number }) => {
       const newTask: Task = {
         id: Date.now(), name: taskProps.name, estimated: taskProps.estimated, completed: 0, checked: false,
-        selected: tasks.length === 0, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color
+        selected: tasks.length === 0 && !taskProps.isFuture, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
+        isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart
       };
       setTasks(prev => [...prev, newTask]);
   };
@@ -1137,10 +1254,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 return t;
             });
         };
-
         const tempTasks = tasksWithoutSub(prev);
         if (!movedSub) return prev;
-
         const insertSub = (list: Task[]): Task[] => {
             return list.map(t => {
                 if (t.id === toParentId) {
@@ -1158,7 +1273,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 return t;
             });
         };
-
         return insertSub(tempTasks);
     });
   };
@@ -1177,6 +1291,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         newTasks.splice(index + 1, 0, part2);
         return newTasks;
     });
+  };
+
+  const toggleTaskFuture = (taskId: number) => {
+    const task = findTask(tasks, taskId);
+    if (!task) return;
+    updateTask({ ...task, isFuture: !task.isFuture, scheduledStart: undefined });
+  };
+
+  const setTaskSchedule = (taskId: number, scheduledStart: string | undefined) => {
+      const task = findTask(tasks, taskId);
+      if (!task) return;
+      updateTask({ ...task, scheduledStart, isFuture: true });
   };
 
   const addCategory = (name: string, color: string) => setCategories(prev => [...prev, { id: Date.now(), name, color }]);
@@ -1199,15 +1325,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   return (
     <TimerContext.Provider value={{
-      workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
+      user, workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
-      tasks, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
+      tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       activeTask, activeColor, showSummary, sessionStats,
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId,
+      login, logout, register, exportData, importData, startMigrationHost, joinMigration,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, setPendingJoinId,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
+      toggleTaskFuture, setTaskSchedule,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
       updateSettings, clearLogs, resetTimers, setPomodoroCount

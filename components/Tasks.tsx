@@ -1,4 +1,5 @@
 
+
 import React, { useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
@@ -189,9 +190,10 @@ const Tasks: React.FC = () => {
   const [isHovered, setIsHovered] = useState(false);
   const [showTaskView, setShowTaskView] = useState(false);
 
-  const filteredTasks = selectedCategoryId 
-    ? tasks.filter(t => t.categoryId === selectedCategoryId)
-    : tasks;
+  // Filter Tasks: Hide scheduled/future tasks from main list
+  const filteredTasks = tasks.filter(t => 
+    !t.isFuture && (selectedCategoryId ? t.categoryId === selectedCategoryId : true)
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -207,9 +209,7 @@ const Tasks: React.FC = () => {
   
   // Pomo Counter Logic
   const pomosPerSet = settings.longBreakInterval || 4;
-  // How many pomos completed in current set
   const currentInSet = pomodoroCount % pomosPerSet;
-  // Pomos remaining until long break (if 0, next is long break)
   const untilLongBreak = pomosPerSet - currentInSet;
 
   return (
@@ -264,7 +264,7 @@ const Tasks: React.FC = () => {
                         onClick={() => setShowTaskView(true)}
                         className="mr-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-transparent hover:border-white/10"
                     >
-                        Task View
+                        Schedule
                     </button>
                  )}
             </div>
@@ -305,7 +305,7 @@ const Tasks: React.FC = () => {
                         onClick={() => setShowTaskView(true)}
                         className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
                     >
-                        Task View
+                        Schedule
                     </button>
                     <button 
                         type="submit"

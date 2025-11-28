@@ -19,6 +19,9 @@ export interface Task {
   subtasks: Task[];
   isExpanded?: boolean;
   color?: string;
+  // New Scheduling Fields
+  isFuture?: boolean;
+  scheduledStart?: string; // ISO Date String or "HH:MM"
 }
 
 export interface LogEntry {
@@ -31,7 +34,7 @@ export interface LogEntry {
   color?: string; 
 }
 
-export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood';
+export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood' | 'marimba' | 'crystal' | 'blade' | 'cosmic' | 'ripple' | 'news';
 
 export interface TimerSettings {
   workDuration: number;
@@ -40,6 +43,32 @@ export interface TimerSettings {
   longBreakInterval: number; // Pomodoros before a long break
   disableBlur: boolean;
   alarmSound: AlarmSound;
+}
+
+export interface SessionRecord {
+    id: string;
+    startTime: string;
+    endTime: string;
+    stats: {
+        totalWorkMinutes: number;
+        totalBreakMinutes: number;
+        pomosCompleted: number;
+        tasksCompleted: number;
+    };
+}
+
+export interface User {
+    username: string;
+    password?: string; // Stored locally
+    joinedAt: string;
+    lifetimeStats: {
+        totalFocusHours: number;
+        totalSessions: number;
+        totalPomos: number;
+        currentStreak: number;
+        bestStreak: number;
+        lastActiveDate: string | null; // "YYYY-MM-DD"
+    }
 }
 
 export interface TimerState {

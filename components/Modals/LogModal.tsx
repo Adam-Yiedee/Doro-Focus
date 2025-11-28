@@ -1,18 +1,35 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { useTimer } from '../../context/TimerContext';
-import TaskViewModal from './TaskViewModal';
 import { AlarmSound, GroupSyncConfig } from '../../types';
 import { playAlarm } from '../../utils/sound';
 import { QRCodeSVG } from 'qrcode.react';
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, pomodoroCount, setPomodoroCount, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, clientSyncConfig, updateHostSyncConfig, pendingJoinId } = useTimer();
-  const [tab, setTab] = useState<'log' | 'group' | 'settings'>('log');
+  const { logs, clearLogs, settings, updateSettings, hardReset, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, updateHostSyncConfig, pendingJoinId, user, login, register, logout, exportData, importData, startMigrationHost, joinMigration } = useTimer();
+  const [tab, setTab] = useState<'log' | 'schedule' | 'group' | 'account' | 'settings'>('log');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showQR, setShowQR] = useState(false);
   
+  // Auth Form State
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+
+  // Cloud/Export State
+  const [exportString, setExportString] = useState('');
+  const [importString, setImportString] = useState('');
+  const [importStatus, setImportStatus] = useState<string>('');
+  
+  // Migration Sync State
+  const [migrationCode, setMigrationCode] = useState<string | null>(null);
+  const [migrationInput, setMigrationInput] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('');
+
   // Group Study Flow State: 'menu' | 'host' | 'join'
   const [groupMode, setGroupMode] = useState<'menu' | 'host' | 'join'>('menu');
   const [inputName, setInputName] = useState(userName || '');
@@ -30,7 +47,11 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
   // Reset internal state when tab or modal closes
   useEffect(() => {
-      if(!isOpen) setGroupMode('menu');
+      if(!isOpen) {
+          setGroupMode('menu');
+          setMigrationCode(null);
+          setIsSyncing(false);
+      }
   }, [isOpen]);
 
   // Sync Options State for New Session
@@ -54,7 +75,13 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       { val: 'chime', label: 'Soft Chime' },
       { val: 'gong', label: 'Zen Gong' },
       { val: 'pop', label: 'Pop' },
-      { val: 'wood', label: 'Woodblock' }
+      { val: 'wood', label: 'Woodblock' },
+      { val: 'marimba', label: 'Marimba' },
+      { val: 'crystal', label: 'Crystal' },
+      { val: 'blade', label: 'Blade Runner' },
+      { val: 'cosmic', label: 'Cosmic Echo' },
+      { val: 'ripple', label: 'Water Ripple' },
+      { val: 'news', label: 'Breaking News' }
   ];
   
   const handleStartGroup = async () => {
@@ -78,6 +105,71 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       }
       setInputSessionId('');
       setIsConnecting(false);
+  };
+
+  const handleAuthSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      setAuthError('');
+      if (!authUsername.trim() || !authPassword.trim()) {
+          setAuthError('Username and password required');
+          return;
+      }
+      
+      let success = false;
+      if (isRegistering) {
+          success = register(authUsername, authPassword);
+          if (!success) setAuthError('Username already taken');
+      } else {
+          success = login(authUsername, authPassword);
+          if (!success) setAuthError('Invalid username or password');
+      }
+
+      if (success) {
+          setAuthUsername('');
+          setAuthPassword('');
+      }
+  };
+
+  const handleExport = () => {
+      const data = exportData();
+      setExportString(data);
+  };
+
+  const handleImport = () => {
+      if (!importString) return;
+      const success = importData(importString);
+      if (success) {
+          setImportStatus('Data imported successfully!');
+          setImportString('');
+      } else {
+          setImportStatus('Invalid Data String.');
+      }
+      setTimeout(() => setImportStatus(''), 3000);
+  };
+
+  const handleStartMigration = async () => {
+      setIsSyncing(true);
+      try {
+          const code = await startMigrationHost();
+          setMigrationCode(code);
+      } catch (e) {
+          setSyncStatus('Error starting sync.');
+          setIsSyncing(false);
+      }
+  };
+
+  const handleJoinMigration = async () => {
+      if (!migrationInput.trim()) return;
+      setIsSyncing(true);
+      setSyncStatus('Connecting...');
+      try {
+          await joinMigration(migrationInput.trim());
+          setSyncStatus('Sync Complete!');
+          setTimeout(() => setIsSyncing(false), 2000);
+      } catch (e) {
+          setSyncStatus('Failed to sync. Check code.');
+          setTimeout(() => setIsSyncing(false), 3000);
+      }
   };
 
   const toggleTempSync = (key: keyof GroupSyncConfig) => {
@@ -127,7 +219,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       <div className="w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]" onClick={e => e.stopPropagation()}>
         
         <div className="flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
-          {['log', 'schedule', 'group', 'settings'].map(t => (
+          {['log', 'schedule', 'group', 'account', 'settings'].map(t => (
             <button 
               key={t}
               onClick={() => {
@@ -238,6 +330,183 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
             </div>
           )}
 
+          {tab === 'account' && (
+              <div className="p-4 md:p-8 flex flex-col items-center min-h-[500px]">
+                  {user ? (
+                      <div className="w-full max-w-lg space-y-8 animate-slide-up">
+                          <div className="flex flex-col items-center gap-4">
+                              <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-blue-500 to-purple-600 flex items-center justify-center text-3xl font-bold text-white shadow-xl">
+                                  {user.username.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="text-center">
+                                  <h2 className="text-2xl font-bold text-white tracking-tight">{user.username}</h2>
+                                  <p className="text-white/40 text-xs uppercase tracking-widest">Premium Member</p>
+                              </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 w-full">
+                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
+                                  <div className="text-2xl font-mono font-bold text-white">{Math.floor(user.lifetimeStats.totalFocusHours)}<span className="text-sm opacity-50">h</span></div>
+                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Total Focus</div>
+                              </div>
+                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
+                                  <div className="text-2xl font-mono font-bold text-teal-200">{user.lifetimeStats.totalPomos}</div>
+                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Pomos</div>
+                              </div>
+                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1 col-span-2 md:col-span-1">
+                                  <div className="text-2xl font-mono font-bold text-blue-200">{user.lifetimeStats.totalSessions}</div>
+                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Sessions</div>
+                              </div>
+                              
+                              {/* New Stats */}
+                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
+                                  <div className="text-2xl font-mono font-bold text-orange-200">{user.lifetimeStats.currentStreak} <span className="text-sm">days</span></div>
+                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Current Streak</div>
+                              </div>
+                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
+                                  <div className="text-2xl font-mono font-bold text-yellow-200">{user.lifetimeStats.bestStreak} <span className="text-sm">days</span></div>
+                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Best Streak</div>
+                              </div>
+                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
+                                  <div className="text-2xl font-mono font-bold text-purple-200">
+                                      {(user.lifetimeStats.totalFocusHours / Math.max(1, (new Date().getTime() - new Date(user.joinedAt).getTime()) / (1000 * 3600 * 24))).toFixed(1)}h
+                                  </div>
+                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Daily Avg</div>
+                              </div>
+                          </div>
+
+                          <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-6">
+                              <div>
+                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60 mb-2">Device Sync</h3>
+                                  <p className="text-xs text-white/50 leading-relaxed mb-4">
+                                      Link your account to another device wirelessly to transfer all data instantly.
+                                  </p>
+                                  
+                                  {isSyncing ? (
+                                      <div className="p-6 bg-black/40 rounded-xl border border-white/10 flex flex-col items-center gap-4 text-center">
+                                           {migrationCode ? (
+                                               <>
+                                                  <div className="text-3xl font-mono font-bold text-blue-400 tracking-widest bg-white/5 px-4 py-2 rounded-lg">{migrationCode}</div>
+                                                  <p className="text-xs text-white/50">Enter this code on your new device</p>
+                                                  <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
+                                               </>
+                                           ) : (
+                                               <span className="text-white/70 text-sm">{syncStatus || 'Initializing...'}</span>
+                                           )}
+                                      </div>
+                                  ) : (
+                                      <div className="flex gap-4">
+                                          <button onClick={handleStartMigration} className="flex-1 py-3 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 rounded-xl text-blue-100 font-bold uppercase text-[10px] tracking-widest transition-all">
+                                              Sync to New Device
+                                          </button>
+                                          <button onClick={() => { setIsSyncing(true); setMigrationCode(null); }} className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-white font-bold uppercase text-[10px] tracking-widest transition-all">
+                                              Sync From Old Device
+                                          </button>
+                                      </div>
+                                  )}
+                              </div>
+
+                              <div className="pt-4 border-t border-white/5">
+                                  <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Manual Backup (Legacy)</p>
+                                  <button onClick={handleExport} className="w-full py-2 bg-white/5 hover:bg-white/10 text-white/40 hover:text-white rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all">
+                                      Show Data Key
+                                  </button>
+                                  {exportString && (
+                                      <div className="mt-2 bg-black/40 p-4 rounded-xl border border-white/10 relative">
+                                          <textarea readOnly value={exportString} className="w-full bg-transparent text-[10px] font-mono text-white/60 h-24 outline-none resize-none" onClick={e => e.currentTarget.select()} />
+                                          <div className="absolute top-2 right-2 text-[10px] bg-white/10 px-2 py-1 rounded text-white/40">Copy</div>
+                                      </div>
+                                  )}
+                              </div>
+                          </div>
+
+                          <button onClick={logout} className="w-full py-4 bg-white/5 hover:bg-white/10 border border-white/5 text-red-300 rounded-xl font-bold uppercase text-xs tracking-widest transition-all">
+                              Sign Out
+                          </button>
+                      </div>
+                  ) : (
+                      <div className="w-full max-w-sm space-y-8 animate-slide-up my-auto">
+                          <div className="text-center space-y-2">
+                              <h2 className="text-3xl font-bold text-white tracking-tight">{isRegistering ? 'Create Account' : 'Welcome Back'}</h2>
+                              <p className="text-white/40 text-xs uppercase tracking-widest">Sign in to sync your progress</p>
+                          </div>
+
+                          {isSyncing ? (
+                               <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
+                                   <div className="text-center">
+                                       <h3 className="text-white font-bold text-sm uppercase tracking-widest mb-1">Enter Sync Code</h3>
+                                       <p className="text-[10px] text-white/40">From your other device</p>
+                                   </div>
+                                   <input 
+                                      autoFocus
+                                      type="text" 
+                                      className="w-full bg-black/20 border border-white/10 rounded-xl p-4 text-center text-xl font-mono text-white outline-none focus:border-white/30 uppercase"
+                                      placeholder="XXXXXX"
+                                      value={migrationInput}
+                                      onChange={e => setMigrationInput(e.target.value.toUpperCase())}
+                                   />
+                                   <div className="flex gap-2">
+                                       <button onClick={() => setIsSyncing(false)} className="flex-1 py-3 text-white/40 hover:text-white text-xs font-bold uppercase tracking-widest">Cancel</button>
+                                       <button onClick={handleJoinMigration} className="flex-1 py-3 bg-blue-500/20 text-blue-100 rounded-xl text-xs font-bold uppercase tracking-widest">Connect</button>
+                                   </div>
+                                   {syncStatus && <div className="text-center text-xs text-blue-300 font-bold">{syncStatus}</div>}
+                               </div>
+                          ) : (
+                            <>
+                                <form onSubmit={handleAuthSubmit} className="space-y-4">
+                                    {authError && (
+                                        <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
+                                            {authError}
+                                        </div>
+                                    )}
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
+                                        <input 
+                                            type="text" 
+                                            autoFocus
+                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20"
+                                            placeholder="Enter username"
+                                            value={authUsername}
+                                            onChange={e => setAuthUsername(e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Password</label>
+                                        <input 
+                                            type="password" 
+                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20"
+                                            placeholder="Enter password"
+                                            value={authPassword}
+                                            onChange={e => setAuthPassword(e.target.value)}
+                                        />
+                                    </div>
+
+                                    <button type="submit" className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg mt-4">
+                                        {isRegistering ? 'Create Account' : 'Sign In'}
+                                    </button>
+                                </form>
+
+                                <div className="text-center space-y-4">
+                                    <button 
+                                        onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
+                                        className="text-xs text-white/40 hover:text-white transition-colors uppercase tracking-wider font-bold block w-full"
+                                    >
+                                        {isRegistering ? 'Already have an account? Sign In' : 'New here? Create Account'}
+                                    </button>
+
+                                    <div className="pt-4 border-t border-white/10">
+                                        <button onClick={() => setIsSyncing(true)} className="text-xs text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest">
+                                            Sync from existing device?
+                                        </button>
+                                    </div>
+                                </div>
+                            </>
+                          )}
+                      </div>
+                  )}
+              </div>
+          )}
+
           {tab === 'group' && (
               <div className="p-4 md:p-8 flex flex-col items-center justify-center min-h-[500px]">
                   {isConnecting ? (
@@ -246,7 +515,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           <span className="text-white/50 text-xs font-bold uppercase tracking-widest">Connecting...</span>
                       </div>
                   ) : groupSessionId ? (
-                      // ACTIVE SESSION VIEW
                       <div className="w-full flex flex-col items-center gap-8 animate-fade-in max-w-lg">
                           <div className="text-center space-y-1">
                               <h2 className="text-2xl font-bold text-white tracking-tight">Group Study Active</h2>
@@ -254,7 +522,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           </div>
                           
                           <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6 backdrop-blur-md">
-                              {/* Session Info */}
                               <div>
                                   <div className="flex justify-between items-center mb-2">
                                       <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Session ID</label>
@@ -268,7 +535,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                   </div>
                               </div>
 
-                              {/* Members List */}
                               <div>
                                   <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Members ({members.length})</label>
                                   <div className="flex flex-wrap gap-2">
@@ -281,7 +547,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                   </div>
                               </div>
                               
-                              {/* Host Controls */}
                               {isHost ? (
                                   <div>
                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Host Controls (Shared Data)</label>
@@ -311,7 +576,6 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                           </button>
                       </div>
                   ) : (
-                      // NOT CONNECTED - FLOW
                       <div className="w-full max-w-sm space-y-8 animate-slide-up">
                           <div className="text-center space-y-2">
                               <h2 className="text-3xl font-bold text-white tracking-tight">Group Study</h2>
@@ -341,82 +605,85 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                       <button 
                                           onClick={() => setGroupMode('host')}
                                           disabled={!inputName.trim()}
-                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02]"
+                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98]"
                                       >
-                                          <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-200">
-                                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                          <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-200">
+                                              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                                           </div>
-                                          <span className="font-bold text-white">Host Session</span>
-                                          <span className="text-[10px] text-white/40 uppercase tracking-widest">Create New</span>
+                                          <div className="text-center">
+                                              <div className="text-sm font-bold text-white uppercase tracking-wider">Host Session</div>
+                                              <div className="text-[10px] text-white/40 mt-1">Create a room & sync data</div>
+                                          </div>
                                       </button>
 
                                       <button 
                                           onClick={() => setGroupMode('join')}
                                           disabled={!inputName.trim()}
-                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02]"
+                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98]"
                                       >
-                                          <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center text-green-200">
-                                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                          <div className="w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center text-purple-200">
+                                              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                                           </div>
-                                          <span className="font-bold text-white">Join Session</span>
-                                          <span className="text-[10px] text-white/40 uppercase tracking-widest">Enter ID</span>
+                                          <div className="text-center">
+                                              <div className="text-sm font-bold text-white uppercase tracking-wider">Join Session</div>
+                                              <div className="text-[10px] text-white/40 mt-1">Connect via ID or Code</div>
+                                          </div>
                                       </button>
                                   </div>
                               </div>
                           )}
 
                           {groupMode === 'host' && (
-                              <div className="space-y-4 animate-slide-up">
-                                  <div className="bg-white/5 rounded-xl border border-white/10 p-4 space-y-2">
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Host Configuration</label>
-                                      <SyncOptionToggle label="Sync Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
-                                      <SyncOptionToggle label="Sync Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
-                                      <SyncOptionToggle label="Sync Future Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
-                                      <SyncOptionToggle label="Full Sync (Overwrite History)" checked={tempSyncConfig.syncHistory} onChange={() => toggleTempSync('syncHistory')} />
+                              <div className="space-y-6">
+                                  <div className="flex items-center gap-2 mb-4">
+                                      <button onClick={() => setGroupMode('menu')} className="text-white/40 hover:text-white text-xs uppercase font-bold tracking-widest">Back</button>
+                                      <span className="text-white/20">/</span>
+                                      <span className="text-white text-xs uppercase font-bold tracking-widest">Host Settings</span>
                                   </div>
 
-                                  <div className="flex gap-2">
-                                      <button onClick={() => setGroupMode('menu')} className="px-4 py-4 bg-white/5 hover:bg-white/10 rounded-xl text-white/60 hover:text-white font-bold text-xs uppercase tracking-wider">Back</button>
-                                      <button 
-                                          onClick={handleStartGroup}
-                                          className="flex-1 py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg"
-                                      >
-                                          Start Session
-                                      </button>
+                                  <div className="space-y-3">
+                                      <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Data to Sync</p>
+                                      <SyncOptionToggle label="Sync Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
+                                      <SyncOptionToggle label="Sync Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
+                                      <SyncOptionToggle label="Sync Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
+                                      <SyncOptionToggle label="Sync Settings" checked={tempSyncConfig.syncSettings} onChange={() => toggleTempSync('syncSettings')} />
                                   </div>
+
+                                  <button onClick={handleStartGroup} className="w-full py-4 bg-blue-500/20 hover:bg-blue-500/30 text-blue-100 font-bold uppercase text-xs tracking-widest rounded-xl border border-blue-500/30 transition-all">
+                                      Start Session
+                                  </button>
                               </div>
                           )}
 
                           {groupMode === 'join' && (
-                              <div className="space-y-4 animate-slide-up">
-                                   <div>
+                              <div className="space-y-6">
+                                   <div className="flex items-center gap-2 mb-4">
+                                      <button onClick={() => setGroupMode('menu')} className="text-white/40 hover:text-white text-xs uppercase font-bold tracking-widest">Back</button>
+                                      <span className="text-white/20">/</span>
+                                      <span className="text-white text-xs uppercase font-bold tracking-widest">Join Session</span>
+                                  </div>
+
+                                  <div>
                                       <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Session ID</label>
                                       <input 
                                           type="text" 
-                                          placeholder="Enter Host ID"
-                                          className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 font-mono text-sm text-center"
+                                          autoFocus
+                                          placeholder="e.g. A1B2C3"
+                                          className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 text-center font-mono font-bold uppercase"
                                           value={inputSessionId}
-                                          onChange={e => setInputSessionId(e.target.value)}
+                                          onChange={e => setInputSessionId(e.target.value.toUpperCase())}
                                       />
                                   </div>
 
-                                  <div className="bg-white/5 rounded-xl border border-white/10 p-4 space-y-2">
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Sync Preferences (What to accept)</label>
-                                      <SyncOptionToggle label="Accept Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
-                                      <SyncOptionToggle label="Accept Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
-                                      <SyncOptionToggle label="Accept Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
+                                  <div className="space-y-3">
+                                      <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Accept Data</p>
+                                      <SyncOptionToggle label="Accept Timer Sync" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
+                                      <SyncOptionToggle label="Accept Task Sync" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
                                   </div>
 
-                                  <div className="flex gap-2">
-                                      <button onClick={() => setGroupMode('menu')} className="px-4 py-4 bg-white/5 hover:bg-white/10 rounded-xl text-white/60 hover:text-white font-bold text-xs uppercase tracking-wider">Back</button>
-                                      <button 
-                                          onClick={handleJoinGroup}
-                                          disabled={!inputSessionId.trim()}
-                                          className="flex-1 py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg disabled:opacity-50"
-                                      >
-                                          Join Session
-                                      </button>
-                                  </div>
+                                  <button onClick={handleJoinGroup} disabled={!inputSessionId.trim()} className="w-full py-4 bg-purple-500/20 hover:bg-purple-500/30 text-purple-100 font-bold uppercase text-xs tracking-widest rounded-xl border border-purple-500/30 transition-all disabled:opacity-50">
+                                      Connect
+                                  </button>
                               </div>
                           )}
                       </div>
@@ -425,125 +692,83 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           )}
 
           {tab === 'settings' && (
-            <div className="p-4 md:p-8 space-y-8 pb-16">
-              <h3 className="font-bold text-white text-lg tracking-tight">Configuration</h3>
-              <div className="space-y-6">
-                
-                {/* Manual Pomo Count */}
-                <div>
-                   <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-2">Current Session Pomos</label>
-                   <div className="flex items-center gap-3">
-                       <input 
-                           type="number" 
-                           min="0"
-                           value={pomodoroCount}
-                           onChange={e => setPomodoroCount(Math.max(0, parseInt(e.target.value) || 0))}
-                           className="w-full p-4 bg-white/5 rounded-xl border border-white/10 text-white font-mono focus:border-white/30 outline-none transition-colors"
-                       />
-                       <span className="text-white/30 font-bold text-sm">pomos</span>
-                   </div>
-                   <p className="text-[10px] text-white/30 mt-1">Adjusts "until long break" calculation.</p>
-                </div>
+              <div className="p-4 md:p-8 space-y-8 animate-slide-up max-w-2xl mx-auto">
+                  <div className="flex justify-between items-center border-b border-white/10 pb-4">
+                      <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
+                      <button onClick={() => updateSettings({ ...settings, workDuration: 1500, shortBreakDuration: 300, longBreakDuration: 900 })} className="hidden text-xs text-white/50 hover:text-white uppercase font-bold tracking-widest">Reset Defaults</button>
+                  </div>
 
-                {[
-                    { label: 'Work Duration', val: settings.workDuration, key: 'workDuration', unit: 'min' },
-                    { label: 'Short Break Reward', val: settings.shortBreakDuration, key: 'shortBreakDuration', unit: 'min' },
-                    { label: 'Break Bank Cap', val: settings.longBreakDuration, key: 'longBreakDuration', unit: 'min' },
-                    { label: 'Long Break Interval', val: settings.longBreakInterval, key: 'longBreakInterval', unit: 'pomos' }
-                ].map((item) => (
-                    <div key={item.key}>
-                      <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-2">{item.label}</label>
-                      <div className="flex items-center gap-3">
-                        <input 
-                            type="number" 
-                            value={item.unit === 'min' ? item.val / 60 : item.val}
-                            onChange={e => updateSettings({ 
-                                ...settings, 
-                                [item.key]: item.unit === 'min' ? Number(e.target.value) * 60 : Number(e.target.value)
-                            })}
-                            className="w-full p-4 bg-white/5 rounded-xl border border-white/10 text-white font-mono focus:border-white/30 outline-none transition-colors"
-                        />
-                        <span className="text-white/30 font-bold text-sm">{item.unit}</span>
+                  <div className="space-y-6">
+                      <div className="grid grid-cols-3 gap-4">
+                           <div className="space-y-2">
+                               <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Work</label>
+                               <input type="number" value={settings.workDuration / 60} onChange={e => updateSettings({...settings, workDuration: Number(e.target.value) * 60})} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                           </div>
+                           <div className="space-y-2">
+                               <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Short Break</label>
+                               <input type="number" value={settings.shortBreakDuration / 60} onChange={e => updateSettings({...settings, shortBreakDuration: Number(e.target.value) * 60})} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                           </div>
+                           <div className="space-y-2">
+                               <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Long Break</label>
+                               <input type="number" value={settings.longBreakDuration / 60} onChange={e => updateSettings({...settings, longBreakDuration: Number(e.target.value) * 60})} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                           </div>
                       </div>
-                    </div>
-                ))}
 
-                {/* Alarm Sound */}
-                <div>
-                   <label className="block text-[10px] font-bold text-white/50 uppercase tracking-widest mb-2">Alarm Sound</label>
-                   <div className="grid grid-cols-2 gap-2">
-                       {SOUND_OPTIONS.map(opt => (
-                           <button 
-                             key={opt.val}
-                             onClick={() => {
-                                updateSettings({ ...settings, alarmSound: opt.val });
-                                playAlarm(opt.val);
-                             }}
-                             className={`p-3 rounded-lg text-xs font-bold text-left transition-colors border ${settings.alarmSound === opt.val ? 'bg-white text-black border-white' : 'bg-white/5 text-white/60 border-transparent hover:bg-white/10'}`}
-                           >
-                               {opt.label}
-                           </button>
-                       ))}
-                   </div>
-                </div>
+                      <div className="space-y-3 pt-4 border-t border-white/5">
+                           <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Alarm Sound</label>
+                           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                               {SOUND_OPTIONS.map(opt => (
+                                   <button 
+                                     key={opt.val}
+                                     onClick={() => { updateSettings({...settings, alarmSound: opt.val}); playAlarm(opt.val); }}
+                                     className={`p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all truncate ${settings.alarmSound === opt.val ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
+                                   >
+                                       {opt.label}
+                                   </button>
+                               ))}
+                           </div>
+                      </div>
+                      
+                      <div className="pt-4 border-t border-white/5">
+                           <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/5">
+                               <div>
+                                   <div className="text-sm font-bold text-white">Disable Blur Effects</div>
+                                   <div className="text-xs text-white/40">Improves performance on older devices</div>
+                               </div>
+                               <button 
+                                onClick={() => updateSettings({...settings, disableBlur: !settings.disableBlur})}
+                                className={`w-12 h-6 rounded-full p-1 transition-colors relative ${settings.disableBlur ? 'bg-green-500' : 'bg-white/10'}`}
+                               >
+                                  <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${settings.disableBlur ? 'translate-x-6' : ''}`} />
+                               </button>
+                           </div>
+                      </div>
 
-                {/* Disable Blur */}
-                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
-                    <div>
-                        <div className="text-sm font-bold text-white">Disable Blur Effects</div>
-                        <div className="text-[10px] text-white/40">Improves performance on older devices</div>
-                    </div>
-                    <button 
-                        onClick={() => updateSettings({ ...settings, disableBlur: !settings.disableBlur })}
-                        className={`w-12 h-6 rounded-full p-1 transition-colors ${settings.disableBlur ? 'bg-green-500' : 'bg-white/10'}`}
-                    >
-                        <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${settings.disableBlur ? 'translate-x-6' : ''}`} />
-                    </button>
-                </div>
-
-                {/* Danger Zone */}
-                <div className="pt-8 mt-8 border-t border-white/10">
-                    <h4 className="text-red-400 font-bold text-xs uppercase tracking-widest mb-4">Danger Zone</h4>
-                    {!showResetConfirm ? (
-                        <button 
-                            onClick={() => setShowResetConfirm(true)}
-                            className="w-full py-4 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold text-xs uppercase tracking-widest transition-all"
-                        >
-                            Reset App Data
-                        </button>
-                    ) : (
-                        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center space-y-4 animate-fade-in">
-                            <p className="text-red-200 text-sm font-medium">Are you sure? This will delete all tasks and history.</p>
-                            <div className="flex gap-3">
-                                <button 
-                                    onClick={() => setShowResetConfirm(false)}
-                                    className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white rounded-lg text-xs font-bold uppercase tracking-wide"
-                                >
-                                    Cancel
-                                </button>
-                                <button 
-                                    onClick={() => { hardReset(); onClose(); }}
-                                    className="flex-1 py-3 bg-red-500 text-white hover:bg-red-600 rounded-lg text-xs font-bold uppercase tracking-wide shadow-lg"
-                                >
-                                    Confirm Reset
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
+                      <div className="pt-8 border-t border-white/5">
+                           <div className="bg-red-500/5 border border-red-500/10 rounded-xl p-4 flex flex-col gap-4">
+                               <div>
+                                   <div className="text-sm font-bold text-red-200">Danger Zone</div>
+                                   <div className="text-xs text-red-200/50">Irreversible actions</div>
+                               </div>
+                               {!showResetConfirm ? (
+                                   <button onClick={() => setShowResetConfirm(true)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-300 font-bold uppercase text-xs tracking-widest rounded-lg transition-all">
+                                       Reset App Data
+                                   </button>
+                               ) : (
+                                   <div className="flex gap-2">
+                                       <button onClick={() => setShowResetConfirm(false)} className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white/60 font-bold uppercase text-xs tracking-widest rounded-lg transition-all">Cancel</button>
+                                       <button onClick={() => { hardReset(); onClose(); }} className="flex-1 py-3 bg-red-500 text-white font-bold uppercase text-xs tracking-widest rounded-lg transition-all hover:bg-red-600">Confirm Reset</button>
+                                   </div>
+                               )}
+                           </div>
+                      </div>
+                  </div>
               </div>
-            </div>
           )}
-        </div>
 
-        <div className="p-6 border-t border-white/10 bg-white/5 flex justify-end">
-          <button onClick={onClose} className="px-8 py-3 bg-white text-black rounded-2xl font-bold tracking-wide hover:bg-gray-200 transition-colors text-sm uppercase">Done</button>
         </div>
       </div>
     </div>
-    
-    <TaskViewModal isOpen={showScheduleModal} onClose={() => setShowScheduleModal(false)} />
     </>
   );
 };

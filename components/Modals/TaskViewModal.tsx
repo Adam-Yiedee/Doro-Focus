@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTimer, ScheduleBreak } from '../../context/TimerContext';
 import { Task } from '../../types';
@@ -15,7 +16,7 @@ interface WorkUnit {
 
 interface TimeBlock {
     id: string;
-    type: 'work' | 'break' | 'scheduled-break' | 'log-work' | 'log-break' | 'log-pause';
+    type: 'work' | 'break' | 'scheduled-break' | 'log-work' | 'log-break' | 'log-pause' | 'past-session' | 'future-task';
     startTime: Date;
     endTime: Date;
     durationMinutes: number;
@@ -25,6 +26,7 @@ interface TimeBlock {
     topPx: number;
     heightPx: number;
     isPast?: boolean;
+    taskId?: number;
 }
 
 const PRESET_COLORS = [
@@ -43,10 +45,10 @@ const GripIcon = () => (
 );
 
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
-    const { tasks, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode } = useTimer();
+    const { tasks, pastSessions, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode, toggleTaskFuture, setTaskSchedule } = useTimer();
     
     // UI State
-    const [mobileTab, setMobileTab] = useState<'queue' | 'schedule'>('schedule');
+    const [mobileTab, setMobileTab] = useState<'queue' | 'schedule' | 'backlog'>('schedule');
 
     // Start Time State
     const [stHourStr, setStHourStr] = useState('08');
@@ -54,6 +56,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const [stAmPm, setStAmPm] = useState<'AM'|'PM'>('AM');
 
     const [isCreating, setIsCreating] = useState(false);
+    const [isFuture, setIsFuture] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
     const [newTaskEst, setNewTaskEst] = useState(2);
     const [newTaskColor, setNewTaskColor] = useState(PRESET_COLORS[0]);
@@ -74,7 +77,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const [pixelsPerMin, setPixelsPerMin] = useState(3);
 
     // Drag and Drop State (Positional)
-    const [dragState, setDragState] = useState<{ type: 'task' | 'subtask', id: number, parentId?: number } | null>(null);
+    const [dragState, setDragState] = useState<{ type: 'task' | 'subtask' | 'future-task', id: number, parentId?: number } | null>(null);
     const [dropTarget, setDropTarget] = useState<{ id: number, position: 'top' | 'bottom', type: 'task' | 'subtask', parentId?: number } | null>(null);
 
     const calendarRef = useRef<HTMLDivElement>(null);
@@ -84,16 +87,13 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             // Determine Start Time: Use Session Start if active, otherwise Current Time
             let targetTime = scheduleStartTime;
             
-            // If NO session is active, we force update to NOW
-            // This ensures if they open it later, it updates to current time
             if (!sessionStartTime) {
                  const now = new Date();
                  const h = now.getHours().toString().padStart(2, '0');
                  const m = now.getMinutes().toString().padStart(2, '0');
                  targetTime = `${h}:${m}`;
-                 setScheduleStartTime(targetTime); // Update context to current time
+                 setScheduleStartTime(targetTime); 
             } else {
-                 // If session is active, ensure we use session start time
                  const d = new Date(sessionStartTime);
                  targetTime = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
             }
@@ -144,15 +144,18 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         setScheduleStartTime(`${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`);
     };
 
-    // Auto-update schedule start when inputs change (debounce?)
     useEffect(() => {
         const t = setTimeout(updateScheduleStart, 800);
         return () => clearTimeout(t);
     }, [stHourStr, stMinStr, stAmPm]);
 
+    const activeTasks = tasks.filter(t => !t.isFuture);
+    const futureTasks = tasks.filter(t => t.isFuture);
+    const scheduledFutureTasks = futureTasks.filter(t => t.scheduledStart);
+
     const flattenedWorkUnits = useMemo(() => {
         const units: WorkUnit[] = [];
-        tasks.forEach(task => {
+        activeTasks.forEach(task => {
             if (task.checked) return; 
             const taskColor = task.color || '#BA4949';
             if (task.subtasks.length > 0) {
@@ -175,7 +178,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             }
         });
         return units;
-    }, [tasks]);
+    }, [activeTasks]);
     
     const timelineData = useMemo(() => {
         const blocks: TimeBlock[] = [];
@@ -184,7 +187,25 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         let timelineStart = new Date();
         timelineStart.setHours(schH, schM, 0, 0);
         
-        // Include ALL logs for today + logs that belong to current session
+        // --- 1. Past Sessions (Background) ---
+        pastSessions.forEach(session => {
+            const start = new Date(session.startTime);
+            const end = new Date(session.endTime);
+            if (Math.abs(start.getTime() - timelineStart.getTime()) < 86400000) {
+                 const diffMins = (start.getTime() - timelineStart.getTime()) / 60000;
+                 const durMins = (end.getTime() - start.getTime()) / 60000;
+                 blocks.push({
+                     id: `past-${session.id}`,
+                     type: 'past-session',
+                     startTime: start, endTime: end, durationMinutes: durMins,
+                     label: 'Past Session', subLabel: `${session.stats.pomosCompleted} Pomos`,
+                     topPx: diffMins * pixelsPerMin, heightPx: durMins * pixelsPerMin,
+                     color: '#333'
+                 });
+            }
+        });
+
+        // --- 2. Activity Logs ---
         const relevantLogs = logs.filter(l => {
              const d = new Date(l.start);
              const today = new Date();
@@ -193,11 +214,9 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
              return isToday || isSession;
         });
         
-        // Find earliest time to adjust start of timeline if logs exist before schedule start
         if (relevantLogs.length > 0) {
             const earliestLog = relevantLogs.reduce((a, b) => new Date(a.start) < new Date(b.start) ? a : b);
             if (new Date(earliestLog.start) < timelineStart) {
-                // Adjust timeline start to fit logs, rounding down to hour
                 const newStart = new Date(earliestLog.start);
                 newStart.setMinutes(0, 0, 0);
                 timelineStart = newStart;
@@ -230,17 +249,48 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             });
         });
 
+        // --- 3. Scheduled Future Tasks ---
+        scheduledFutureTasks.forEach(t => {
+            if (!t.scheduledStart) return;
+            const [h, m] = t.scheduledStart.split(':').map(Number);
+            const start = new Date(timelineStart);
+            start.setHours(h, m, 0, 0);
+            
+            // If time is earlier than timelineStart's hour but likely meant for today (e.g. late night), adjust day? 
+            // For now assume same day or next day if past.
+            if (start < timelineStart && h < schH) start.setDate(start.getDate() + 1);
+
+            // Duration: Estimated Pomos * Work Duration + Breaks
+            const pomos = Math.max(1, t.estimated - t.completed);
+            const totalWorkMins = pomos * (settings.workDuration / 60);
+            const totalBreakMins = (pomos - 1) * (settings.shortBreakDuration / 60); // simplified
+            const totalDur = totalWorkMins + totalBreakMins;
+
+            const diffMins = (start.getTime() - timelineStart.getTime()) / 60000;
+            
+            blocks.push({
+                id: `future-${t.id}`,
+                taskId: t.id,
+                type: 'future-task',
+                startTime: start,
+                endTime: new Date(start.getTime() + totalDur * 60000),
+                durationMinutes: totalDur,
+                label: t.name,
+                subLabel: 'Scheduled Task',
+                color: t.color,
+                topPx: diffMins * pixelsPerMin,
+                heightPx: totalDur * pixelsPerMin
+            });
+        });
+
         // Projection logic
         let projectionTime = new Date();
-        // If the last log ended in the future relative to now (unlikely but possible) use that
         if (lastLogEnd > projectionTime) projectionTime = lastLogEnd;
-        // Ensure projection doesn't start before timeline
         if (projectionTime < timelineStart) projectionTime = timelineStart; 
 
         let virtualPomoCount = pomodoroCount;
         const workQueue = [...flattenedWorkUnits];
         
-        // If actively working, visualize current remaining time
         if (timerStarted && activeMode === 'work') {
             const remainingMins = workTime / 60; 
             const endTime = new Date(projectionTime.getTime() + remainingMins * 60000);
@@ -257,7 +307,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                 virtualPomoCount++;
                 projectionTime = endTime;
                 
-                // Add implicit break after current work
                 const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
                 const breakDur = isLongBreak ? (settings.longBreakDuration/60) : (settings.shortBreakDuration/60);
                 const bEnd = new Date(projectionTime.getTime() + breakDur * 60000);
@@ -289,15 +338,24 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             });
         });
 
-        const advanceTimeIfBreak = (time: Date): Date => {
+        // Function to advance projection past breaks AND scheduled future tasks
+        const advanceTimeIfBlocked = (time: Date): Date => {
             let updatedTime = new Date(time);
             let overlap = true;
             while (overlap) {
                 overlap = false;
+                // Check Schedule Breaks
                 for (const brk of dailyBreaks) {
                     if (updatedTime >= brk.start && updatedTime < brk.end) {
                         updatedTime = new Date(brk.end);
                         overlap = true;
+                    }
+                }
+                // Check Future Tasks (Treat them as blocks that push the queue)
+                for (const ft of blocks.filter(b => b.type === 'future-task')) {
+                    if (updatedTime >= ft.startTime && updatedTime < ft.endTime) {
+                         updatedTime = new Date(ft.endTime);
+                         overlap = true;
                     }
                 }
             }
@@ -306,7 +364,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
 
         // Project remaining tasks
         workQueue.forEach((unit, index) => {
-            projectionTime = advanceTimeIfBreak(projectionTime);
+            projectionTime = advanceTimeIfBlocked(projectionTime);
             const workStart = new Date(projectionTime);
             const workDuration = settings.workDuration / 60;
             const diffMins = (workStart.getTime() - timelineStart.getTime()) / 60000;
@@ -323,7 +381,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
             const breakDur = isLongBreak ? (settings.longBreakDuration / 60) : (settings.shortBreakDuration / 60);
             
-            projectionTime = advanceTimeIfBreak(projectionTime);
+            projectionTime = advanceTimeIfBlocked(projectionTime);
             const breakStart = new Date(projectionTime);
             const breakDiffMins = (breakStart.getTime() - timelineStart.getTime()) / 60000;
 
@@ -341,7 +399,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         const totalHeight = Math.max(1440, endMins + 60) * pixelsPerMin;
 
         return { blocks, totalHeight, timelineStart };
-    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime, activeMode]);
+    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime, activeMode, pastSessions, futureTasks]);
 
     useEffect(() => {
         if (isOpen && calendarRef.current) {
@@ -349,8 +407,8 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         }
     }, [isOpen]); 
 
-    // ---- DRAG AND DROP LOGIC (Positional) ----
-    const onDragStart = (e: React.DragEvent, type: 'task' | 'subtask', id: number, parentId?: number) => {
+    // ---- DRAG AND DROP LOGIC (Positional & Timeline) ----
+    const onDragStart = (e: React.DragEvent, type: 'task' | 'subtask' | 'future-task', id: number, parentId?: number) => {
         e.dataTransfer.effectAllowed = "move";
         setDragState({ type, id, parentId });
     };
@@ -370,6 +428,46 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         setDropTarget({ id, position, type, parentId });
     };
 
+    const onTimelineDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    const onTimelineDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (!dragState || !calendarRef.current) return;
+        
+        // Dropping Task onto Timeline -> Converts to Future Task with Scheduled Time
+        if (dragState.type === 'task' || dragState.type === 'future-task') {
+             const rect = calendarRef.current.getBoundingClientRect();
+             const scrollTop = calendarRef.current.scrollTop;
+             const clickY = e.clientY - rect.top + scrollTop;
+             const totalMins = clickY / pixelsPerMin;
+             
+             // Convert to Time String
+             const dropTime = new Date(timelineData.timelineStart);
+             dropTime.setMinutes(dropTime.getMinutes() + totalMins);
+             const h = dropTime.getHours().toString().padStart(2, '0');
+             const m = Math.floor(dropTime.getMinutes() / 15) * 15; // Snap to 15m
+             const mStr = m.toString().padStart(2, '0');
+             const timeStr = `${h}:${mStr}`;
+             
+             setTaskSchedule(dragState.id, timeStr);
+        }
+    };
+
+    const onQueueDrop = (e: React.DragEvent) => {
+         e.preventDefault();
+         e.stopPropagation();
+         
+         // Dropping from Timeline back to Queue
+         if (dragState && dragState.type === 'future-task') {
+             toggleTaskFuture(dragState.id); // Removes from future, adds to queue
+         }
+    };
+
     const onDrop = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
@@ -377,15 +475,12 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         if (dragState && dropTarget) {
             if (dragState.type === 'task' && dropTarget.type === 'task') {
                 if (dropTarget.position === 'top') {
-                    // Move dragged ID before dropTarget ID
                     moveTask(dragState.id, dropTarget.id);
                 } else {
-                    // Move dragged ID after dropTarget ID
                     const idx = tasks.findIndex(t => t.id === dropTarget.id);
                     if (idx !== -1 && idx < tasks.length - 1) {
                         moveTask(dragState.id, tasks[idx + 1].id);
                     } else {
-                        // End of list
                         moveTask(dragState.id, -1);
                     }
                 }
@@ -424,8 +519,8 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         const subTaskObjects = newSubtasks.map(s => ({
             id: Date.now() + Math.random(), name: s.name, estimated: s.est, completed: 0, checked: false, selected: false, categoryId: null, subtasks: [], isExpanded: false
         }));
-        addDetailedTask({ name: newTaskName, estimated: newTaskEst, color: newTaskColor, subtasks: subTaskObjects });
-        setNewTaskName(''); setNewTaskEst(2); setNewSubtasks([]); setIsCreating(false);
+        addDetailedTask({ name: newTaskName, estimated: newTaskEst, color: newTaskColor, subtasks: subTaskObjects, isFuture });
+        setNewTaskName(''); setNewTaskEst(2); setNewSubtasks([]); setIsCreating(false); setIsFuture(false);
     };
 
     const handleAddBreak = () => {
@@ -466,13 +561,26 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                      >
                          Queue
                      </button>
+                     <button 
+                        onClick={() => setMobileTab('backlog')} 
+                        className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest ${mobileTab === 'backlog' ? 'bg-[#18181a] text-white' : 'text-white/40'}`}
+                     >
+                         Backlog
+                     </button>
                      <button onClick={onClose} className="px-4 text-white/40 hover:text-white">✕</button>
                 </div>
 
                 {/* Priority Queue (Left) - Hidden on Mobile unless tab selected */}
-                <div className={`w-full md:w-4/12 bg-[#141416] border-r border-white/5 flex flex-col relative z-10 ${mobileTab === 'queue' ? 'flex' : 'hidden md:flex'}`}>
+                <div 
+                    className={`w-full md:w-4/12 bg-[#141416] border-r border-white/5 flex flex-col relative z-10 ${mobileTab !== 'schedule' ? 'flex' : 'hidden md:flex'}`}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={onQueueDrop}
+                >
                     <div className="h-14 md:h-16 px-4 md:px-6 border-b border-white/5 flex items-center justify-between bg-[#18181a] shrink-0">
-                        <h2 className="text-white/80 font-bold uppercase tracking-widest text-xs">Priority Queue</h2>
+                        <div className="flex gap-4">
+                            <button onClick={() => setMobileTab('queue')} className={`uppercase tracking-widest text-xs font-bold ${mobileTab === 'queue' || mobileTab === 'schedule' ? 'text-white' : 'text-white/40'}`}>Queue</button>
+                            <button onClick={() => setMobileTab('backlog')} className={`uppercase tracking-widest text-xs font-bold ${mobileTab === 'backlog' ? 'text-white' : 'text-white/40'}`}>Backlog ({futureTasks.length})</button>
+                        </div>
                         <button onClick={() => setIsCreating(!isCreating)} className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 border border-transparent ${isCreating ? 'bg-red-500/20 text-red-200' : 'bg-white/10 text-white'}`}>{isCreating ? 'Cancel' : '+ Task'}</button>
                     </div>
                     {/* Creator Form */}
@@ -500,12 +608,23 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                  </div>
                                  {newSubtasks.length > 0 && (<div className="space-y-1 max-h-24 overflow-y-auto custom-scrollbar">{newSubtasks.map((sub, i) => (<div key={i} className="flex justify-between items-center bg-white/5 px-2 py-1 rounded border border-white/5"><span className="text-xs text-white/70">{sub.name} ({sub.est})</span><button onClick={() => setNewSubtasks(p => p.filter((_, idx) => idx !== i))} className="text-white/20 hover:text-red-400">×</button></div>))}</div>)}
                              </div>
-                             <button onClick={handleCreateTask} className="w-full py-3 bg-white text-black text-xs font-bold uppercase tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all">Add to Queue</button>
+                             
+                             {/* Future Toggle Aesthetic */}
+                             <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                                 <span className="text-white/40 text-[10px] uppercase font-bold">Add to Backlog</span>
+                                 <button onClick={() => setIsFuture(!isFuture)} className={`w-12 h-6 rounded-full p-1 transition-colors relative ${isFuture ? 'bg-purple-500' : 'bg-white/10'}`}>
+                                     <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm absolute top-1 ${isFuture ? 'left-7' : 'left-1'}`} />
+                                 </button>
+                             </div>
+
+                             <button onClick={handleCreateTask} className="w-full py-3 bg-white text-black text-xs font-bold uppercase tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all">
+                                 {isFuture ? 'Add to Backlog' : 'Add to Queue'}
+                             </button>
                          </div>
                     </div>
                     {/* Task List */}
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4 relative">
-                        {tasks.map((task, index) => {
+                        {(mobileTab === 'backlog' ? futureTasks : activeTasks).map((task, index) => {
                             if (task.checked) {
                                 return (
                                     <div key={task.id} className="relative rounded-xl border border-white/5 bg-black/20 p-3 opacity-40 group mb-2">
@@ -537,7 +656,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                 >
                                     <div 
                                         draggable 
-                                        onDragStart={(e) => onDragStart(e, 'task', task.id)} 
+                                        onDragStart={(e) => onDragStart(e, task.isFuture ? 'future-task' : 'task', task.id)} 
                                         className={`relative rounded-xl border transition-all duration-200 group overflow-hidden bg-[#1c1c1e] flex flex-col ${isDropTarget ? 'border-blue-500/50' : 'border-white/5 hover:border-white/20'}`}
                                     >
                                         {/* Drop Indicators */}
@@ -556,9 +675,22 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                                     <div className="flex justify-between items-center">
                                                         <div className="flex-1 min-w-0">
                                                             <div className="text-sm font-bold text-white/90 truncate select-none">{task.name}</div>
-                                                            <div className="text-[10px] text-white/40 font-mono flex items-center gap-2 mt-0.5"><span>{task.estimated - task.completed} left</span>{task.subtasks.length > 0 && <span className="text-white/20">• {task.subtasks.length} sub</span>}</div>
+                                                            <div className="text-[10px] text-white/40 font-mono flex items-center gap-2 mt-0.5">
+                                                                <span>{task.estimated - task.completed} left</span>
+                                                                {task.subtasks.length > 0 && <span className="text-white/20">• {task.subtasks.length} sub</span>}
+                                                                {task.scheduledStart && <span className="ml-2 text-purple-300">{task.scheduledStart}</span>}
+                                                            </div>
                                                         </div>
                                                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                            {mobileTab === 'backlog' ? (
+                                                                <button onClick={() => toggleTaskFuture(task.id)} className="p-1.5 text-white/30 hover:text-green-400 rounded hover:bg-white/10" title="Move to Queue">
+                                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                                                                </button>
+                                                            ) : (
+                                                                <button onClick={() => toggleTaskFuture(task.id)} className="p-1.5 text-white/30 hover:text-purple-400 rounded hover:bg-white/10" title="Move to Backlog">
+                                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12h-6m-6 0H5m14-6v12M5 6l14 6-14 6"/></svg>
+                                                                </button>
+                                                            )}
                                                             {(task.estimated - task.completed > 1) && (<button onClick={() => { setSplittingTaskId(isSplitting ? null : task.id); setSplitValue(Math.floor((task.estimated - task.completed) / 2)); }} className={`p-1.5 rounded hover:bg-white/10 text-white/30 hover:text-white`}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M9 21H4v-5"/></svg></button>)}
                                                             <button onClick={() => deleteTask(task.id)} className="p-1.5 text-white/30 hover:text-red-400 rounded hover:bg-white/10"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
                                                         </div>
@@ -601,7 +733,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                 </div>
 
                 {/* Schedule (Right) - Hidden on Mobile unless tab selected */}
-                <div className={`flex-1 flex-col bg-[#0F0F11] relative z-0 ${mobileTab === 'schedule' ? 'flex' : 'hidden md:flex'}`}>
+                <div 
+                    className={`flex-1 flex-col bg-[#0F0F11] relative z-0 ${mobileTab === 'schedule' ? 'flex' : 'hidden md:flex'}`}
+                    onDragOver={onTimelineDragOver}
+                    onDrop={onTimelineDrop}
+                >
                     <div className="h-auto md:h-16 py-2 px-4 md:px-8 border-b border-white/5 flex flex-wrap md:flex-nowrap items-center justify-between bg-[#141416] shadow-xl shrink-0 gap-2">
                         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
                             <h2 className="text-lg font-bold text-white tracking-tight mr-2">Schedule</h2>
@@ -652,48 +788,61 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                 const totalMins = i * 60;
                                 const timeDate = new Date(timelineData.timelineStart);
                                 timeDate.setMinutes(timeDate.getMinutes() + totalMins);
-                                return (<div key={i} className="absolute left-0 right-0 border-t border-white/5 flex items-start pointer-events-none" style={{ top: totalMins * pixelsPerMin }}><div className="w-16 pl-4 pt-2 text-[10px] font-mono text-white/30 select-none">{formatTime12(timeDate.getHours(), timeDate.getMinutes())}</div></div>);
-                            })}
-                            
-                            {/* Now Line */}
-                            {(() => {
-                                const now = new Date();
-                                const diff = (now.getTime() - timelineData.timelineStart.getTime()) / 60000;
-                                if (diff >= 0) {
-                                    return <div className="absolute left-0 right-0 border-t-2 border-red-500 z-20 pointer-events-none" style={{ top: diff * pixelsPerMin }}><div className="absolute right-2 -top-2.5 bg-red-500 text-black text-[9px] font-bold px-1 rounded">NOW</div></div>
-                                }
-                                return null;
-                            })()}
-
-                            {/* Blocks */}
-                            {timelineData.blocks.map((block) => {
-                                const isWork = block.type === 'work' || block.type === 'log-work';
-                                const isBreak = block.type === 'break' || block.type === 'log-break' || block.type === 'log-pause';
-                                const isScheduled = block.type === 'scheduled-break';
-                                const isPast = block.isPast;
-                                
-                                let bgClass = '';
-                                let borderClass = '';
-                                if (block.type === 'log-work') { bgClass = 'bg-blue-900/30'; borderClass = 'border-blue-500/30'; }
-                                else if (block.type === 'log-break') { bgClass = 'bg-teal-900/30'; borderClass = 'border-teal-500/30'; }
-                                else if (block.type === 'log-pause') { bgClass = 'bg-gray-800/50'; borderClass = 'border-white/10'; }
-                                else if (isWork) { bgClass = 'bg-[#1c1c1e]'; borderClass = 'border-white/10'; }
-                                else if (isScheduled) { bgClass = 'bg-[#222]'; borderClass = 'border-white/5'; }
-                                else { bgClass = 'bg-[#152e2e]'; borderClass = 'border-teal-500/20'; }
-
                                 return (
-                                    <div key={block.id} className={`absolute left-16 right-4 rounded-lg border shadow-sm overflow-hidden transition-all hover:z-30 hover:shadow-lg flex flex-col justify-center px-4 ${bgClass} ${borderClass} ${isPast ? 'opacity-80 grayscale-[0.3]' : ''}`} style={{ top: block.topPx, height: Math.max(2, block.heightPx - 1), borderLeftWidth: '4px', borderLeftColor: block.color || (isBreak ? '#2dd4bf' : '#555') }}>
-                                        <div className="flex justify-between items-start">
-                                            <div className="flex flex-col overflow-hidden leading-tight">
-                                                <span className={`text-xs font-bold truncate ${isWork ? 'text-white' : 'text-white/70'} ${isPast ? 'line-through decoration-white/30' : ''}`}>{block.label}</span>
-                                                {block.subLabel && <span className="text-[9px] text-white/40 truncate">{block.subLabel}</span>}
-                                            </div>
-                                            <div className="text-[9px] font-mono text-white/30 pl-2 flex-shrink-0">{formatTime12(block.startTime.getHours(), block.startTime.getMinutes())} - {formatTime12(block.endTime.getHours(), block.endTime.getMinutes())}</div>
+                                    <div key={i} className="absolute left-0 right-0 border-t border-white/5 flex items-start pointer-events-none" style={{ top: totalMins * pixelsPerMin }}>
+                                        <div className="absolute left-2 -top-3 text-[10px] font-mono text-white/20 select-none">
+                                            {formatTime12(timeDate.getHours(), timeDate.getMinutes())}
                                         </div>
-                                        {isScheduled && (<button onClick={(e) => { e.stopPropagation(); deleteScheduleBreak(block.id); }} className="absolute top-1 right-1 p-1 text-white/20 hover:text-red-400">✕</button>)}
                                     </div>
                                 );
                             })}
+                            
+                            {/* Time Blocks */}
+                            {timelineData.blocks.map(block => (
+                                <div 
+                                    key={block.id} 
+                                    className={`
+                                        absolute left-16 right-4 rounded-lg overflow-hidden border transition-all duration-300 shadow-lg
+                                        ${block.type === 'break' ? 'border-teal-500/30 bg-teal-900/10' : ''}
+                                        ${block.type === 'work' ? 'bg-[#1c1c1e] hover:brightness-110' : ''}
+                                        ${block.type === 'log-work' ? 'border-white/10 bg-[#1c1c1e] opacity-80' : ''}
+                                        ${block.type === 'log-break' ? 'border-teal-900/30 bg-teal-900/10 opacity-80' : ''}
+                                        ${block.type === 'past-session' ? 'border-none bg-white/5 opacity-30 z-0' : 'z-10'}
+                                        ${block.type === 'future-task' ? 'border-purple-500/30 bg-purple-900/10 border-dashed cursor-grab active:cursor-grabbing hover:bg-purple-900/20' : ''}
+                                        ${block.type === 'scheduled-break' ? 'border-white/5 bg-[#1a1a1c]' : ''}
+                                    `}
+                                    style={{ 
+                                        top: block.topPx, 
+                                        height: block.heightPx, 
+                                        borderColor: block.type === 'work' ? block.color || '#333' : undefined,
+                                        borderLeftWidth: block.type === 'work' ? 4 : 1,
+                                    }}
+                                    draggable={block.type === 'future-task'}
+                                    onDragStart={(e) => block.type === 'future-task' && block.taskId && onDragStart(e, 'future-task', block.taskId)}
+                                >
+                                    <div className="p-2 h-full flex flex-col justify-center relative">
+                                        {block.type === 'scheduled-break' && (
+                                            <button 
+                                                onClick={() => deleteScheduleBreak(block.id)} 
+                                                className="absolute top-1 right-1 opacity-0 hover:opacity-100 text-white/30 hover:text-red-400 transition-opacity"
+                                            >
+                                                ×
+                                            </button>
+                                        )}
+                                        <div className="flex justify-between items-baseline">
+                                            <span className={`text-xs font-bold truncate ${block.type === 'break' || block.type === 'log-break' ? 'text-teal-200' : 'text-white'}`}>
+                                                {block.label}
+                                            </span>
+                                            <span className="text-[9px] font-mono text-white/30 ml-2 whitespace-nowrap">
+                                                {Math.round(block.durationMinutes)}m
+                                            </span>
+                                        </div>
+                                        {block.subLabel && (
+                                            <div className="text-[10px] text-white/40 truncate mt-0.5">{block.subLabel}</div>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>
