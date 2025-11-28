@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
-import TaskViewModal from './Modals/TaskViewModal';
+import { getIcon } from '../utils/icons';
 
 const PRESET_COLORS = [
   '#BA4949', // Red
@@ -15,7 +15,7 @@ const PRESET_COLORS = [
 ];
 
 const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean }> = ({ task, depth = 0, isSectionActive }) => {
-  const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask } = useTimer();
+  const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(task.name);
   const [editEst, setEditEst] = useState(task.estimated);
@@ -43,6 +43,7 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
   };
 
   const containerMargin = depth === 0 ? 'mb-3' : 'mb-2';
+  const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
 
   if (isEditing) {
     return (
@@ -117,9 +118,19 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
         </div>
         
         <div className="flex-1 min-w-0 flex flex-col justify-center">
-          <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : 'group-hover:text-white'} ${depth === 0 ? 'font-medium text-sm' : 'text-xs'}`}>
-            {task.name}
-          </div>
+            <div className="flex items-center gap-2">
+                <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : 'group-hover:text-white'} ${depth === 0 ? 'font-medium text-sm' : 'text-xs'}`}>
+                    {task.name}
+                </div>
+                {category && depth === 0 && (
+                     <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/10 border border-white/5">
+                         <div className="w-3 h-3 text-white" style={{color: category.color}}>
+                             {getIcon(category.icon)}
+                         </div>
+                         <span className="text-[9px] text-white/50 font-bold uppercase">{category.name}</span>
+                     </div>
+                )}
+            </div>
           {task.color && depth === 0 && !task.checked && (
              <div className="w-full max-w-[60px] h-[2px] mt-1.5 rounded-full opacity-60 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: task.color }} />
           )}
@@ -182,13 +193,13 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
 };
 
 const Tasks: React.FC = () => {
-  const { tasks, addTask, selectedCategoryId, pomodoroCount, settings } = useTimer();
+  const { tasks, addTask, selectedCategoryId, pomodoroCount, settings, setScheduleOpen, categories } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
+  const [newCatId, setNewCatId] = useState<number | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const [showTaskView, setShowTaskView] = useState(false);
 
   // Filter Tasks: Hide scheduled/future tasks from main list
   const filteredTasks = tasks.filter(t => 
@@ -198,7 +209,7 @@ const Tasks: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
-    addTask(newName, newEst, selectedCategoryId, undefined, newColor);
+    addTask(newName, newEst, newCatId || selectedCategoryId, undefined, newColor);
     setNewName('');
     setNewEst(1);
   };
@@ -213,7 +224,6 @@ const Tasks: React.FC = () => {
   const untilLongBreak = pomosPerSet - currentInSet;
 
   return (
-    <>
     <div 
       className="w-full max-w-lg mx-auto transition-all duration-700"
       onMouseEnter={() => setIsHovered(true)}
@@ -261,7 +271,7 @@ const Tasks: React.FC = () => {
                  {!isInputFocused && (
                     <button 
                         type="button" 
-                        onClick={() => setShowTaskView(true)}
+                        onClick={() => setScheduleOpen(true)}
                         className="mr-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-transparent hover:border-white/10"
                     >
                         Schedule
@@ -271,22 +281,41 @@ const Tasks: React.FC = () => {
             
             <div className={`
               overflow-hidden transition-all duration-300 ease-in-out border-t border-white/5
-              ${isInputFocused ? 'max-h-20 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
+              ${isInputFocused ? 'max-h-40 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
             `}>
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-4">
-                    <div className="flex gap-1.5">
-                      {PRESET_COLORS.map(c => (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setNewColor(c)}
-                          className={`w-3 h-3 rounded-full transition-transform duration-300 ${newColor === c ? 'scale-150 ring-1 ring-white/80' : 'hover:scale-125 opacity-50 hover:opacity-100'}`}
-                          style={{ backgroundColor: c }}
-                        />
-                      ))}
-                    </div>
-                    <div className="w-px h-3 bg-white/10" />
+              <div className="flex flex-col gap-3">
+                  {/* Category & Color Selection */}
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide">
+                      <div className="flex gap-1">
+                          {PRESET_COLORS.map(c => (
+                            <button
+                              key={c}
+                              type="button"
+                              onClick={() => { setNewColor(c); setNewCatId(null); }}
+                              className={`w-4 h-4 rounded-full transition-transform duration-300 ${newColor === c && !newCatId ? 'scale-125 ring-1 ring-white' : 'opacity-50 hover:opacity-100'}`}
+                              style={{ backgroundColor: c }}
+                            />
+                          ))}
+                      </div>
+                      
+                      {categories.length > 0 && <div className="w-px h-4 bg-white/10 mx-1" />}
+                      
+                      <div className="flex gap-1">
+                          {categories.map(cat => (
+                              <button
+                                key={cat.id}
+                                type="button"
+                                onClick={() => { setNewCatId(cat.id); setNewColor(cat.color); }}
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${newCatId === cat.id ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'}`}
+                              >
+                                  <div className="w-3 h-3 text-white" style={{color: cat.color}}>{getIcon(cat.icon)}</div>
+                                  <span className="text-[9px] text-white font-bold">{cat.name}</span>
+                              </button>
+                          ))}
+                      </div>
+                  </div>
+
+                  <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
                       <span className="font-bold">EST</span>
                       <input 
@@ -297,23 +326,23 @@ const Tasks: React.FC = () => {
                           onChange={e => setNewEst(Number(e.target.value))}
                       />
                     </div>
-                </div>
-                
-                <div className="flex gap-2">
-                    <button 
-                        type="button" 
-                        onClick={() => setShowTaskView(true)}
-                        className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
-                    >
-                        Schedule
-                    </button>
-                    <button 
-                        type="submit"
-                        className="px-4 py-1 bg-white text-black text-[10px] rounded-lg font-bold hover:bg-gray-200 transition-all shadow-lg active:scale-95 uppercase tracking-wider"
-                    >
-                        Add
-                    </button>
-                </div>
+                    
+                    <div className="flex gap-2">
+                        <button 
+                            type="button" 
+                            onClick={() => setScheduleOpen(true)}
+                            className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
+                        >
+                            Schedule
+                        </button>
+                        <button 
+                            type="submit"
+                            className="px-4 py-1 bg-white text-black text-[10px] rounded-lg font-bold hover:bg-gray-200 transition-all shadow-lg active:scale-95 uppercase tracking-wider"
+                        >
+                            Add
+                        </button>
+                    </div>
+                  </div>
               </div>
             </div>
           </div>
@@ -347,9 +376,6 @@ const Tasks: React.FC = () => {
 
       </div>
     </div>
-
-    <TaskViewModal isOpen={showTaskView} onClose={() => setShowTaskView(false)} />
-    </>
   );
 };
 

@@ -2,14 +2,16 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, GroupSyncConfig } from '../../types';
+import { AlarmSound, GroupSyncConfig, Category } from '../../types';
 import { playAlarm } from '../../utils/sound';
 import { QRCodeSVG } from 'qrcode.react';
+import { getIcon, CATEGORY_ICONS } from '../../utils/icons';
+
+const PRESET_COLORS = ['#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59', '#e056fd', '#f0932b'];
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, updateHostSyncConfig, pendingJoinId, user, login, register, logout, exportData, importData, startMigrationHost, joinMigration } = useTimer();
+  const { logs, clearLogs, settings, updateSettings, hardReset, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, updateHostSyncConfig, pendingJoinId, user, login, register, logout, exportData, importData, startMigrationHost, joinMigration, setScheduleOpen, categories, addCategory, deleteCategory } = useTimer();
   const [tab, setTab] = useState<'log' | 'schedule' | 'group' | 'account' | 'settings'>('log');
-  const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showQR, setShowQR] = useState(false);
   
@@ -29,6 +31,12 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const [migrationInput, setMigrationInput] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
+
+  // Category State
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatColor, setNewCatColor] = useState(PRESET_COLORS[0]);
+  const [newCatIcon, setNewCatIcon] = useState('star');
+  const [isCreatingCat, setIsCreatingCat] = useState(false);
 
   // Group Study Flow State: 'menu' | 'host' | 'join'
   const [groupMode, setGroupMode] = useState<'menu' | 'host' | 'join'>('menu');
@@ -172,6 +180,13 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       }
   };
 
+  const handleCreateCategory = () => {
+      if (!newCatName.trim()) return;
+      addCategory(newCatName, newCatColor, newCatIcon);
+      setNewCatName('');
+      setIsCreatingCat(false);
+  };
+
   const toggleTempSync = (key: keyof GroupSyncConfig) => {
       setTempSyncConfig(prev => ({ ...prev, [key]: !prev[key] }));
   };
@@ -224,7 +239,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               key={t}
               onClick={() => {
                   if (t === 'schedule') {
-                      setShowScheduleModal(true);
+                      setScheduleOpen(true);
                   } else {
                     setTab(t as any);
                   }
@@ -375,9 +390,85 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                               </div>
                           </div>
 
+                          {/* Category Stats Breakdown */}
+                          {user.lifetimeStats.categoryBreakdown && Object.keys(user.lifetimeStats.categoryBreakdown).length > 0 && (
+                              <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-4">
+                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Category Focus Time</h3>
+                                  <div className="space-y-3">
+                                      {(Object.entries(user.lifetimeStats.categoryBreakdown) as [string, number][]).sort((a, b) => b[1] - a[1]).map(([name, mins]) => (
+                                          <div key={name} className="flex justify-between items-center text-xs">
+                                              <span className="text-white/80 font-bold">{name}</span>
+                                              <div className="flex items-center gap-2">
+                                                 <div className="w-32 h-2 bg-white/10 rounded-full overflow-hidden">
+                                                     <div className="h-full bg-white/50" style={{ width: `${Math.min(100, (mins / (user.lifetimeStats.totalFocusHours * 60)) * 100)}%` }} />
+                                                 </div>
+                                                 <span className="font-mono text-white/50">{Math.round(mins / 60)}h</span>
+                                              </div>
+                                          </div>
+                                      ))}
+                                  </div>
+                              </div>
+                          )}
+
+                          {/* Category Management */}
+                          <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-6">
+                              <div className="flex justify-between items-center">
+                                  <div>
+                                      <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Categories</h3>
+                                      <p className="text-xs text-white/50">Manage your focus areas</p>
+                                  </div>
+                                  <button onClick={() => setIsCreatingCat(!isCreatingCat)} className="px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-white text-[10px] font-bold uppercase tracking-wider">{isCreatingCat ? 'Cancel' : 'New Category'}</button>
+                              </div>
+                              
+                              {isCreatingCat && (
+                                  <div className="bg-black/20 p-4 rounded-xl border border-white/10 space-y-4 animate-slide-up">
+                                      <div>
+                                          <label className="text-[10px] text-white/40 uppercase font-bold block mb-1">Name</label>
+                                          <input autoFocus type="text" value={newCatName} onChange={e => setNewCatName(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none" placeholder="e.g. Math" />
+                                      </div>
+                                      <div>
+                                          <label className="text-[10px] text-white/40 uppercase font-bold block mb-1">Color</label>
+                                          <div className="flex gap-2 flex-wrap">
+                                              {PRESET_COLORS.map(c => (
+                                                  <button key={c} onClick={() => setNewCatColor(c)} className={`w-6 h-6 rounded-full transition-transform ${newCatColor === c ? 'scale-110 ring-2 ring-white' : 'opacity-50 hover:opacity-100'}`} style={{backgroundColor: c}} />
+                                              ))}
+                                          </div>
+                                      </div>
+                                      <div>
+                                          <label className="text-[10px] text-white/40 uppercase font-bold block mb-1">Icon</label>
+                                          <div className="grid grid-cols-5 gap-2">
+                                              {Object.keys(CATEGORY_ICONS).map(k => (
+                                                  <button key={k} onClick={() => setNewCatIcon(k)} className={`p-2 rounded-lg flex items-center justify-center text-white transition-colors ${newCatIcon === k ? 'bg-white/20' : 'bg-white/5 hover:bg-white/10 opacity-50 hover:opacity-100'}`}>
+                                                      {getIcon(k)}
+                                                  </button>
+                                              ))}
+                                          </div>
+                                      </div>
+                                      <button onClick={handleCreateCategory} className="w-full py-2 bg-white text-black font-bold text-xs uppercase rounded-lg">Create Category</button>
+                                  </div>
+                              )}
+
+                              <div className="space-y-2">
+                                  {categories.length === 0 && <div className="text-center text-white/30 text-xs italic py-4">No categories created</div>}
+                                  {categories.map(cat => (
+                                      <div key={cat.id} className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/5">
+                                          <div className="flex items-center gap-3">
+                                              <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{backgroundColor: cat.color}}>
+                                                  {getIcon(cat.icon)}
+                                              </div>
+                                              <span className="text-white font-bold text-sm">{cat.name}</span>
+                                          </div>
+                                          <button onClick={() => deleteCategory(cat.id)} className="text-white/20 hover:text-red-400 p-1">
+                                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                          </button>
+                                      </div>
+                                  ))}
+                              </div>
+                          </div>
+
                           <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-6">
                               <div>
-                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60 mb-2">Device Sync</h3>
+                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Device Sync</h3>
                                   <p className="text-xs text-white/50 leading-relaxed mb-4">
                                       Link your account to another device wirelessly to transfer all data instantly.
                                   </p>

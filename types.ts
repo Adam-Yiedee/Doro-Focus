@@ -6,6 +6,7 @@ export interface Category {
   id: number;
   name: string;
   color: string;
+  icon: string; // Icon key
 }
 
 export interface Task {
@@ -31,7 +32,8 @@ export interface LogEntry {
   duration: number;
   reason?: string;
   task?: { id: number; name: string } | null;
-  color?: string; 
+  color?: string;
+  categoryId?: number | null;
 }
 
 export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood' | 'marimba' | 'crystal' | 'blade' | 'cosmic' | 'ripple' | 'news';
@@ -54,6 +56,7 @@ export interface SessionRecord {
         totalBreakMinutes: number;
         pomosCompleted: number;
         tasksCompleted: number;
+        categoryStats?: Record<string, number>; // Category Name -> Minutes
     };
 }
 
@@ -68,6 +71,7 @@ export interface User {
         currentStreak: number;
         bestStreak: number;
         lastActiveDate: string | null; // "YYYY-MM-DD"
+        categoryBreakdown?: Record<string, number>; // Category Name -> Minutes
     }
 }
 

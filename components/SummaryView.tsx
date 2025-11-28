@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 import { useTimer } from '../context/TimerContext';
 
@@ -41,6 +42,21 @@ const SummaryView: React.FC = () => {
                     <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Tasks Done</span>
                 </div>
             </div>
+
+            {/* Category Breakdown */}
+            {Object.keys(sessionStats.categoryStats).length > 0 && (
+                <div className="w-full max-w-2xl">
+                     <h3 className="text-white/40 uppercase tracking-widest text-xs font-bold text-center mb-4">Focus Distribution</h3>
+                     <div className="flex gap-4 flex-wrap justify-center">
+                         {Object.entries(sessionStats.categoryStats).map(([name, mins]) => (
+                             <div key={name} className="bg-white/10 rounded-xl px-4 py-2 border border-white/5">
+                                 <span className="text-white font-bold">{name}</span>
+                                 <span className="text-white/50 ml-2 text-sm">{Math.round(mins as number)}m</span>
+                             </div>
+                         ))}
+                     </div>
+                </div>
+            )}
 
             <button 
                 onClick={closeSummary}

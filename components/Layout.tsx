@@ -11,7 +11,7 @@ import TaskViewModal from './Modals/TaskViewModal';
 import SummaryView from './SummaryView';
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, pendingJoinId } = useTimer();
+  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
 
@@ -82,6 +82,7 @@ const Layout: React.FC = () => {
       <ResumeModal />
       <GraceModal />
       <LogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
+      <TaskViewModal isOpen={isScheduleOpen} onClose={() => setScheduleOpen(false)} />
       <SummaryView />
     </div>
   );
