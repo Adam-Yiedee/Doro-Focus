@@ -62,8 +62,8 @@ interface TimerContextType {
   pendingJoinId: string | null;
 
   // Actions
-  login: (username: string, password?: string) => boolean;
-  register: (username: string, password?: string) => boolean;
+  login: (username: string, password?: string) => Promise<boolean>;
+  register: (username: string, password?: string) => Promise<boolean>;
   logout: () => void;
   exportData: () => string;
   importData: (jsonStr: string) => boolean;
@@ -125,7 +125,18 @@ const TimerContext = createContext<TimerContextType | undefined>(undefined);
 // Storage Logic
 const getGuestKey = () => 'doro_guest_data';
 const getUserKey = (username: string) => `doro_user_${username}`;
-const getUsersIndexKey = () => 'doro_users_index';
+const MOCK_CLOUD_DB_KEY = 'doro_mock_cloud_db';
+
+// Mock Cloud Helpers
+const getCloudDB = () => {
+    try {
+        return JSON.parse(localStorage.getItem(MOCK_CLOUD_DB_KEY) || '{}');
+    } catch { return {}; }
+};
+
+const saveCloudDB = (db: any) => {
+    localStorage.setItem(MOCK_CLOUD_DB_KEY, JSON.stringify(db));
+};
 
 const DEFAULT_SETTINGS: TimerSettings = {
   workDuration: 1500, 
@@ -410,54 +421,193 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
   }, [loadData]);
 
-  // Auth Methods
-  const getUsersIndex = (): string[] => {
-      try {
-          return JSON.parse(localStorage.getItem(getUsersIndexKey()) || '[]');
-      } catch { return []; }
+  // Auth Methods with Sync Logic
+  const calculateLifetimeStats = (sessions: SessionRecord[], currentLogs: LogEntry[], joinedAt: string) => {
+       const totalWorkMins = currentLogs.filter(l => l.type === 'work').reduce((acc, l) => acc + (l.duration / 60), 0);
+       const totalSessions = sessions.length;
+       const totalPomos = sessions.reduce((acc, s) => acc + (s.stats?.pomosCompleted || 0), 0);
+       
+       // Calculate Categories
+       const catStats: Record<string, number> = {};
+       sessions.forEach(s => {
+           if (s.stats?.categoryStats) {
+               Object.entries(s.stats.categoryStats).forEach(([k, v]) => {
+                   catStats[k] = (catStats[k] || 0) + v;
+               });
+           }
+       });
+
+       // Calculate Streak
+       let currentStreak = 0;
+       let bestStreak = 0;
+       const dates = new Set(sessions.map(s => s.startTime.split('T')[0]).concat(currentLogs.map(l => l.start.split('T')[0])));
+       const sortedDates = Array.from(dates).sort();
+       
+       // Simple streak calc for demo
+       if (sortedDates.length > 0) {
+           currentStreak = 1;
+           bestStreak = 1;
+           let tempStreak = 1;
+           for (let i = 1; i < sortedDates.length; i++) {
+               const prev = new Date(sortedDates[i-1]);
+               const curr = new Date(sortedDates[i]);
+               const diffDays = (curr.getTime() - prev.getTime()) / (1000 * 3600 * 24);
+               if (Math.round(diffDays) === 1) {
+                   tempStreak++;
+               } else {
+                   tempStreak = 1;
+               }
+               if (tempStreak > bestStreak) bestStreak = tempStreak;
+           }
+           // Check if current streak is active (today or yesterday)
+           const today = new Date().toISOString().split('T')[0];
+           const lastDate = sortedDates[sortedDates.length - 1];
+           const diffToToday = (new Date(today).getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
+           if (diffToToday <= 1) currentStreak = tempStreak;
+           else currentStreak = 0;
+       }
+
+       return {
+           totalFocusHours: totalWorkMins / 60,
+           totalPomos,
+           totalSessions,
+           currentStreak,
+           bestStreak,
+           lastActiveDate: sortedDates.pop() || null,
+           categoryBreakdown: catStats
+       };
   };
 
-  const register = (username: string, password?: string): boolean => {
-      const users = getUsersIndex();
-      if (users.includes(username)) return false; // Already exists
+  const mergeData = (localData: any, remoteData: any) => {
+      // 1. Logs: Union by start time + type
+      const logMap = new Map();
+      remoteData.logs?.forEach((l: LogEntry) => logMap.set(l.start + l.type, l));
+      localData.logs?.forEach((l: LogEntry) => logMap.set(l.start + l.type, l));
+      const mergedLogs = Array.from(logMap.values()).sort((a: any, b: any) => new Date(b.start).getTime() - new Date(a.start).getTime());
+
+      // 2. Tasks: Union by ID (Local wins if collision to preserve recent edits)
+      const taskMap = new Map();
+      const flatten = (arr: Task[]) => {
+          arr.forEach(t => {
+              taskMap.set(t.id, t);
+              if (t.subtasks && t.subtasks.length > 0) flatten(t.subtasks);
+          });
+      }
+      // Simple merge: Just top level lists, assuming tasks don't move deep in hierarchy often for this use case
+      // A better approach for this simplified mock:
+      const mergedTaskMap = new Map();
+      remoteData.tasks?.forEach((t: Task) => mergedTaskMap.set(t.id, t));
+      localData.tasks?.forEach((t: Task) => mergedTaskMap.set(t.id, t));
+      const mergedTasks = Array.from(mergedTaskMap.values());
+
+      // 3. Sessions: Union by ID
+      const sessionMap = new Map();
+      remoteData.pastSessions?.forEach((s: SessionRecord) => sessionMap.set(s.id, s));
+      localData.pastSessions?.forEach((s: SessionRecord) => sessionMap.set(s.id, s));
+      const mergedSessions = Array.from(sessionMap.values()).sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+
+      // 4. Categories
+      const catMap = new Map();
+      remoteData.categories?.forEach((c: Category) => catMap.set(c.id, c));
+      localData.categories?.forEach((c: Category) => catMap.set(c.id, c));
+      const mergedCategories = Array.from(catMap.values());
+
+      // 5. Settings: Local takes precedence for user comfort on this device
+      const mergedSettings = { ...remoteData.settings, ...localData.settings };
+
+      return {
+          logs: mergedLogs,
+          tasks: mergedTasks,
+          pastSessions: mergedSessions,
+          categories: mergedCategories,
+          settings: mergedSettings
+      };
+  };
+
+  const register = async (username: string, password?: string): Promise<boolean> => {
+      // Simulate Network Delay
+      await new Promise(r => setTimeout(r, 800));
       
+      const db = getCloudDB();
+      if (db[username]) return false; // Already exists
+
+      // Grab current Guest Data to merge/push
+      const guestKey = getGuestKey();
+      const guestData = JSON.parse(localStorage.getItem(guestKey) || '{}');
+
+      // Create new user record
+      const joinedAt = new Date().toISOString();
+      const initialStats = calculateLifetimeStats(guestData.pastSessions || [], guestData.logs || [], joinedAt);
+
       const newUser: User = {
           username,
           password, 
-          joinedAt: new Date().toISOString(),
-          lifetimeStats: { totalFocusHours: 0, totalPomos: 0, totalSessions: 0, currentStreak: 1, bestStreak: 1, lastActiveDate: new Date().toISOString().split('T')[0], categoryBreakdown: {} }
+          joinedAt,
+          lifetimeStats: initialStats
       };
+
+      const accountData = {
+          user: newUser,
+          settings: guestData.settings || DEFAULT_SETTINGS,
+          tasks: guestData.tasks || [],
+          logs: guestData.logs || [],
+          pastSessions: guestData.pastSessions || [],
+          categories: guestData.categories || []
+      };
+
+      // Save to Cloud
+      db[username] = accountData;
+      saveCloudDB(db);
       
-      users.push(username);
-      localStorage.setItem(getUsersIndexKey(), JSON.stringify(users));
-      
-      // Init user data
+      // Save to Local User Cache
       const key = getUserKey(username);
-      const initData = { user: newUser, settings: DEFAULT_SETTINGS, tasks: [], logs: [], pastSessions: [], categories: [] };
-      localStorage.setItem(key, JSON.stringify(initData));
+      localStorage.setItem(key, JSON.stringify(accountData));
 
-      // Login immediately
-      login(username, password);
-      return true;
-  };
-
-  const login = (username: string, password?: string): boolean => {
-      const users = getUsersIndex();
-      if (!users.includes(username)) return false;
-      
-      const key = getUserKey(username);
-      const dataStr = localStorage.getItem(key);
-      if (!dataStr) return false;
-      
-      const data = JSON.parse(dataStr);
-      // Basic simulation check
-      if (data.user?.password && data.user.password !== password) {
-          return false;
-      }
-
+      // Set Active
       localStorage.setItem('doro_last_user', username);
       setUserName(username);
       loadData(username);
+      
+      return true;
+  };
+
+  const login = async (username: string, password?: string): Promise<boolean> => {
+      // Simulate Network
+      await new Promise(r => setTimeout(r, 800));
+
+      const db = getCloudDB();
+      const remoteAccount = db[username];
+      
+      if (!remoteAccount) return false;
+      if (remoteAccount.user?.password && remoteAccount.user.password !== password) return false;
+
+      // Get Local Guest Data (to merge)
+      const guestData = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
+
+      // Merge Guest Data into Account
+      const merged = mergeData(guestData, remoteAccount);
+      
+      // Recalculate User Stats based on merged data
+      const newStats = calculateLifetimeStats(merged.pastSessions, merged.logs, remoteAccount.user.joinedAt);
+      
+      const updatedAccount = {
+          ...remoteAccount,
+          ...merged,
+          user: { ...remoteAccount.user, lifetimeStats: newStats }
+      };
+
+      // Push merged state back to cloud
+      db[username] = updatedAccount;
+      saveCloudDB(db);
+
+      // Save to Local User Cache
+      localStorage.setItem(getUserKey(username), JSON.stringify(updatedAccount));
+
+      // Switch context
+      localStorage.setItem('doro_last_user', username);
+      setUserName(username);
+      loadData(username);
+
       return true;
   };
 
@@ -467,6 +617,22 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       localStorage.removeItem('doro_last_user');
       loadData(); // Load Guest Data
   };
+
+  // Sync Effect: Periodically sync local user data to cloud if logged in
+  useEffect(() => {
+      if (!user) return;
+      const interval = setInterval(() => {
+          const db = getCloudDB();
+          const localStr = localStorage.getItem(getUserKey(user.username));
+          if (localStr) {
+              const localData = JSON.parse(localStr);
+              // Optimistic update to cloud
+              db[user.username] = localData;
+              saveCloudDB(db);
+          }
+      }, 10000); // 10 seconds auto-sync
+      return () => clearInterval(interval);
+  }, [user]);
 
   // Cloud Export / Import
   const exportData = (): string => {
@@ -484,11 +650,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const parsed = JSON.parse(jsonStr);
           
           if (parsed.user && parsed.user.username) {
-             const users = getUsersIndex();
-             if (!users.includes(parsed.user.username)) {
-                 users.push(parsed.user.username);
-                 localStorage.setItem(getUsersIndexKey(), JSON.stringify(users));
-             }
              const key = getUserKey(parsed.user.username);
              
              // Merge Strategy: Don't overwrite if existing data is present, merge logs and sessions

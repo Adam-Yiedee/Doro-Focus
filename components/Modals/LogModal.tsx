@@ -19,6 +19,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
 
   // Cloud/Export State
@@ -59,6 +60,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           setGroupMode('menu');
           setMigrationCode(null);
           setIsSyncing(false);
+          setAuthError('');
       }
   }, [isOpen]);
 
@@ -115,23 +117,29 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
       setIsConnecting(false);
   };
 
-  const handleAuthSubmit = (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
       setAuthError('');
       if (!authUsername.trim() || !authPassword.trim()) {
           setAuthError('Username and password required');
           return;
       }
+      setAuthLoading(true);
       
       let success = false;
-      if (isRegistering) {
-          success = register(authUsername, authPassword);
-          if (!success) setAuthError('Username already taken');
-      } else {
-          success = login(authUsername, authPassword);
-          if (!success) setAuthError('Invalid username or password');
+      try {
+        if (isRegistering) {
+            success = await register(authUsername, authPassword);
+            if (!success) setAuthError('Username already taken');
+        } else {
+            success = await login(authUsername, authPassword);
+            if (!success) setAuthError('Invalid username or password');
+        }
+      } catch (e) {
+          setAuthError("Connection error");
       }
 
+      setAuthLoading(false);
       if (success) {
           setAuthUsername('');
           setAuthPassword('');
@@ -356,6 +364,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                               <div className="text-center">
                                   <h2 className="text-2xl font-bold text-white tracking-tight">{user.username}</h2>
                                   <p className="text-white/40 text-xs uppercase tracking-widest">Premium Member</p>
+                                  <p className="text-green-400 text-[10px] uppercase tracking-widest font-bold mt-1">● Cloud Sync Active</p>
                               </div>
                           </div>
 
@@ -468,37 +477,13 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
                           <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-6">
                               <div>
-                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Device Sync</h3>
+                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Manual Backup (Legacy)</h3>
                                   <p className="text-xs text-white/50 leading-relaxed mb-4">
-                                      Link your account to another device wirelessly to transfer all data instantly.
+                                      Since you are logged in, data is automatically synced. Use this to export a snapshot.
                                   </p>
-                                  
-                                  {isSyncing ? (
-                                      <div className="p-6 bg-black/40 rounded-xl border border-white/10 flex flex-col items-center gap-4 text-center">
-                                           {migrationCode ? (
-                                               <>
-                                                  <div className="text-3xl font-mono font-bold text-blue-400 tracking-widest bg-white/5 px-4 py-2 rounded-lg">{migrationCode}</div>
-                                                  <p className="text-xs text-white/50">Enter this code on your new device</p>
-                                                  <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
-                                               </>
-                                           ) : (
-                                               <span className="text-white/70 text-sm">{syncStatus || 'Initializing...'}</span>
-                                           )}
-                                      </div>
-                                  ) : (
-                                      <div className="flex gap-4">
-                                          <button onClick={handleStartMigration} className="flex-1 py-3 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 rounded-xl text-blue-100 font-bold uppercase text-[10px] tracking-widest transition-all">
-                                              Sync to New Device
-                                          </button>
-                                          <button onClick={() => { setIsSyncing(true); setMigrationCode(null); }} className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-white font-bold uppercase text-[10px] tracking-widest transition-all">
-                                              Sync From Old Device
-                                          </button>
-                                      </div>
-                                  )}
                               </div>
 
                               <div className="pt-4 border-t border-white/5">
-                                  <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Manual Backup (Legacy)</p>
                                   <button onClick={handleExport} className="w-full py-2 bg-white/5 hover:bg-white/10 text-white/40 hover:text-white rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all">
                                       Show Data Key
                                   </button>
@@ -546,7 +531,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                             <>
                                 <form onSubmit={handleAuthSubmit} className="space-y-4">
                                     {authError && (
-                                        <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
+                                        <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold animate-pulse">
                                             {authError}
                                         </div>
                                     )}
@@ -555,25 +540,27 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                         <input 
                                             type="text" 
                                             autoFocus
-                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20"
+                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 disabled:opacity-50"
                                             placeholder="Enter username"
                                             value={authUsername}
                                             onChange={e => setAuthUsername(e.target.value)}
+                                            disabled={authLoading}
                                         />
                                     </div>
                                     <div>
                                         <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Password</label>
                                         <input 
                                             type="password" 
-                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20"
+                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 disabled:opacity-50"
                                             placeholder="Enter password"
                                             value={authPassword}
                                             onChange={e => setAuthPassword(e.target.value)}
+                                            disabled={authLoading}
                                         />
                                     </div>
 
-                                    <button type="submit" className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg mt-4">
-                                        {isRegistering ? 'Create Account' : 'Sign In'}
+                                    <button type="submit" disabled={authLoading} className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg mt-4 disabled:opacity-50 flex items-center justify-center">
+                                        {authLoading ? <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" /> : (isRegistering ? 'Create Account' : 'Sign In')}
                                     </button>
                                 </form>
 
@@ -581,15 +568,18 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                     <button 
                                         onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
                                         className="text-xs text-white/40 hover:text-white transition-colors uppercase tracking-wider font-bold block w-full"
+                                        disabled={authLoading}
                                     >
                                         {isRegistering ? 'Already have an account? Sign In' : 'New here? Create Account'}
                                     </button>
 
-                                    <div className="pt-4 border-t border-white/10">
-                                        <button onClick={() => setIsSyncing(true)} className="text-xs text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest">
-                                            Sync from existing device?
-                                        </button>
-                                    </div>
+                                    {!isRegistering && (
+                                        <div className="pt-4 border-t border-white/10">
+                                            <button onClick={() => setIsSyncing(true)} className="text-xs text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest">
+                                                Manual Sync from old device?
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </>
                           )}
