@@ -9,15 +9,135 @@ const formatDuration = (seconds: number) => {
   return `(${m}:${rem.toString().padStart(2, '0')})`;
 };
 
+const WORK_COMPLETE_MESSAGES = [
+  'Good job. Keep going.',
+  'Nice focus block. Stay on the roll.',
+  'Strong session. Keep the rhythm.',
+  'You finished that round cleanly.',
+  'Great work pace. Keep moving.',
+  'That was sharp focus. Continue.',
+  'Another pomodoro down. Nice.',
+  'Good momentum. Carry it forward.',
+  'Solid effort. One more step.',
+  'You are locked in. Keep going.',
+  'Great execution. Keep stacking wins.',
+  'Focused and done. Next one.',
+  'You handled that perfectly.',
+  'Clean finish. Keep the streak alive.',
+  'Strong discipline. Continue forward.',
+  'Excellent progress. Keep it steady.',
+  'You are building serious momentum.',
+  'Great push. Stay in motion.',
+  'Focus level was high. Nice.',
+  'Another strong interval complete.',
+  'Work block complete. Keep climbing.',
+  'You showed up and delivered.',
+  'Great consistency. Keep pressing.',
+  'That was productive. Continue.',
+  'Nice commitment. Keep going.',
+  'Strong concentration. Next round.',
+  'Progress is compounding. Keep at it.',
+  'Well done. Maintain the pace.',
+  'Great depth of focus there.',
+  'You crushed that session.',
+  'Excellent finish. Keep the flow.',
+  'Another quality block in the books.',
+  'Good control. Stay focused.',
+  'You are moving the needle.',
+  'Great follow-through. Next up.',
+  'Locked in and completed. Nice.',
+  'Strong output. Keep it coming.',
+  'That block was efficient.',
+  'Great focus, no drift. Keep going.',
+  'You completed it with intention.',
+  'Consistent effort pays off. Continue.',
+  'Great job staying on task.',
+  'One more done. Keep building.',
+  'Nice form. Keep the engine running.',
+  'You are doing this right.',
+  'Focused work complete. Keep pushing.',
+  'That was clean and productive.',
+  'Excellent rep. Start the next one.',
+  'Steady progress. Keep moving forward.',
+  'Great work session complete.',
+];
+
+const BREAK_COMPLETE_MESSAGES = [
+  'Time to get back at it. Break is over.',
+  'Break done. Refocus now.',
+  'Rest complete. Back to deep work.',
+  'Recovery finished. Let us lock in.',
+  'Break ended. Time to move.',
+  'Back on track. Focus starts now.',
+  'Reset complete. Start the next block.',
+  'Break complete. Re-enter focus mode.',
+  'Pause is over. Let us go again.',
+  'Ready to work. Start strong.',
+  'Done resting. Time to execute.',
+  'Break has ended. Back to progress.',
+  'You are recharged. Get after it.',
+  'Rest period finished. Continue.',
+  'Back to your plan. Start now.',
+  'Break is up. Focus in.',
+  'Recovered and ready. Go.',
+  'Break complete. Build momentum again.',
+  'Time to lock back in.',
+  'Break over. Resume your flow.',
+];
+
+const shuffleMessages = (messages: string[]) => {
+  const next = [...messages];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+};
+
 const GraceModal: React.FC = () => {
-  const { graceOpen, graceTotal, graceContext, resolveGrace } = useTimer();
+  const { graceOpen, graceTotal, graceContext, resolveGrace, sessionStartTime } = useTimer();
   const [showOptions, setShowOptions] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [sessionKey, setSessionKey] = useState<string | null>(sessionStartTime);
+  const [workMessageQueue, setWorkMessageQueue] = useState<string[]>(() => shuffleMessages(WORK_COMPLETE_MESSAGES));
+  const [breakMessageQueue, setBreakMessageQueue] = useState<string[]>(() => shuffleMessages(BREAK_COMPLETE_MESSAGES));
+
+  const consumeMessage = (isAfterWork: boolean) => {
+    if (isAfterWork) {
+      setWorkMessageQueue(prev => {
+        const queue = prev.length === 0 ? shuffleMessages(WORK_COMPLETE_MESSAGES) : prev;
+        const [nextMessage, ...rest] = queue;
+        setStatusMessage(nextMessage || WORK_COMPLETE_MESSAGES[0]);
+        return rest;
+      });
+      return;
+    }
+    setBreakMessageQueue(prev => {
+      const queue = prev.length === 0 ? shuffleMessages(BREAK_COMPLETE_MESSAGES) : prev;
+      const [nextMessage, ...rest] = queue;
+      setStatusMessage(nextMessage || BREAK_COMPLETE_MESSAGES[0]);
+      return rest;
+    });
+  };
 
   useEffect(() => {
     if (graceOpen) {
-        setShowOptions(false);
+      setShowOptions(false);
     }
   }, [graceOpen]);
+
+  useEffect(() => {
+    if (sessionStartTime !== sessionKey) {
+      setSessionKey(sessionStartTime);
+      setWorkMessageQueue(shuffleMessages(WORK_COMPLETE_MESSAGES));
+      setBreakMessageQueue(shuffleMessages(BREAK_COMPLETE_MESSAGES));
+    }
+  }, [sessionStartTime, sessionKey]);
+
+  useEffect(() => {
+    if (!graceOpen) return;
+    consumeMessage(graceContext === 'afterWork');
+  }, [graceOpen, graceContext]);
 
   // Reveal options after delay
   useEffect(() => {
@@ -66,8 +186,8 @@ const GraceModal: React.FC = () => {
            <h2 className="text-3xl font-bold text-white/90 tracking-tight drop-shadow-lg">
              {isAfterWork ? "Session Complete" : "Break Complete"}
            </h2>
-           <p className="text-[10px] uppercase tracking-[0.25em] text-white/40 font-bold">
-              Waiting for input
+           <p className="text-[11px] tracking-[0.06em] text-white/50 font-semibold">
+              {statusMessage}
            </p>
         </div>
 

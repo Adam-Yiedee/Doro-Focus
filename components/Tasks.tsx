@@ -1,6 +1,6 @@
 
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
 import { getIcon } from '../utils/icons';
@@ -14,23 +14,88 @@ const PRESET_COLORS = [
   '#547a59', // Green
 ];
 
-const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean }> = ({ task, depth = 0, isSectionActive }) => {
+const clampPomoEstimate = (value: number) => {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(99, Math.max(1, Math.floor(value)));
+};
+
+const clampSubEstimate = (value: number) => {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(10, Math.max(0, Math.floor(value)));
+};
+
+const getRemainingPomosForTask = (task: Task): number => {
+  if (task.checked) return 0;
+  if (task.subtasks.length > 0) {
+    return task.subtasks.reduce((acc, sub) => acc + getRemainingPomosForTask(sub), 0);
+  }
+  return Math.max(0, task.estimated - task.completed);
+};
+
+const formatFinishTime = (date: Date) => {
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+
+const getDateKey = (date: Date) => {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getColorSwatchClass = (selected: boolean, size: 'sm' | 'md' = 'md') => {
+  const baseSize = size === 'sm' ? 'w-4 h-4' : 'w-5 h-5';
+  return `${baseSize} rounded-full transform-gpu transition-all duration-300 ease-out ${
+    selected
+      ? 'ring-2 ring-white ring-offset-1 ring-offset-transparent shadow-[0_0_12px_rgba(255,255,255,0.25)] scale-105'
+      : 'opacity-75 hover:opacity-100 hover:-translate-y-[1px] hover:scale-110 hover:shadow-[0_0_10px_rgba(255,255,255,0.18)] active:scale-95'
+  }`;
+};
+
+const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean, isEntering?: boolean }> = ({ task, depth = 0, isSectionActive, isEntering = false }) => {
   const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(task.name);
   const [editEst, setEditEst] = useState(task.estimated);
+  const [editColor, setEditColor] = useState(task.color || PRESET_COLORS[0]);
   const [isAddingSub, setIsAddingSub] = useState(false);
   const [subName, setSubName] = useState('');
   const [subEst, setSubEst] = useState(1);
+  const [isRemoving, setIsRemoving] = useState(false);
+  const [isCheckAnimating, setIsCheckAnimating] = useState(false);
+  const removeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const checkAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (removeTimeoutRef.current) clearTimeout(removeTimeoutRef.current);
+      if (checkAnimTimeoutRef.current) clearTimeout(checkAnimTimeoutRef.current);
+    };
+  }, []);
 
   const handleCheck = (e: React.MouseEvent) => {
     e.stopPropagation();
-    updateTask({ ...task, checked: !task.checked });
+    const nextChecked = !task.checked;
+    if (nextChecked) {
+      setIsCheckAnimating(true);
+      if (checkAnimTimeoutRef.current) clearTimeout(checkAnimTimeoutRef.current);
+      checkAnimTimeoutRef.current = setTimeout(() => setIsCheckAnimating(false), 460);
+    }
+    updateTask({ ...task, checked: nextChecked });
   };
 
   const handleSave = () => {
-    updateTask({ ...task, name: editName, estimated: editEst });
+    const safeEst = clampPomoEstimate(editEst);
+    updateTask({ ...task, name: editName.trim() || task.name, estimated: safeEst, color: editColor });
     setIsEditing(false);
+  };
+
+  const startEditing = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditName(task.name);
+    setEditEst(task.estimated);
+    setEditColor(task.color || PRESET_COLORS[0]);
+    setIsEditing(true);
   };
 
   const handleAddSubtask = (e: React.FormEvent) => {
@@ -42,32 +107,110 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
     setIsAddingSub(false);
   };
 
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isRemoving) return;
+    setIsRemoving(true);
+    removeTimeoutRef.current = setTimeout(() => {
+      deleteTask(task.id);
+    }, 280);
+  };
+
   const containerMargin = depth === 0 ? 'mb-3' : 'mb-2';
   const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
 
   if (isEditing) {
     return (
-      <div className={`p-2 bg-white/10 rounded-lg ${containerMargin} flex gap-2 items-center animate-fade-in backdrop-blur-md border border-white/20`} style={{ marginLeft: depth * 16 }}>
-        <input 
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSave();
+        }}
+        className={`doro-soft-expand p-3 bg-white/10 rounded-xl ${containerMargin} flex flex-col gap-3 backdrop-blur-md border border-white/20`}
+        style={{ marginLeft: depth * 16 }}
+      >
+        <input
           autoFocus
-          value={editName} 
+          value={editName}
           onChange={e => setEditName(e.target.value)}
-          className="flex-1 bg-transparent border-b border-white/30 px-2 py-1 text-glass-text outline-none focus:border-white text-sm" 
+          className="w-full bg-transparent border-b border-white/30 px-2 py-1 text-glass-text outline-none focus:border-white text-sm"
         />
-        <input 
-          type="number" 
-          value={editEst} 
-          onChange={e => setEditEst(Number(e.target.value))}
-          className="w-10 bg-transparent border-b border-white/30 px-1 py-1 text-glass-text text-center outline-none focus:border-white font-mono text-sm"
-          min="0" max="99"
-        />
-        <button onClick={handleSave} className="p-1.5 bg-white/10 rounded text-green-400 hover:bg-green-500/20 transition-colors">✓</button>
-      </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/50 font-bold">
+            <span>Est</span>
+            <div className="flex items-center rounded-lg border border-white/20 bg-black/20 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setEditEst(prev => clampPomoEstimate(prev - 1))}
+                className="px-2.5 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                aria-label="Decrease estimate"
+              >
+                -
+              </button>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={editEst}
+                onChange={e => {
+                  const next = Number(e.target.value.replace(/[^\d]/g, ''));
+                  if (!Number.isNaN(next)) setEditEst(clampPomoEstimate(next));
+                }}
+                className="w-10 bg-transparent text-center text-white font-mono font-bold text-xs outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setEditEst(prev => clampPomoEstimate(prev + 1))}
+                className="px-2.5 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                aria-label="Increase estimate"
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {PRESET_COLORS.map(c => (
+              <button
+                key={`edit-${task.id}-${c}`}
+                type="button"
+                onClick={() => setEditColor(c)}
+                className={getColorSwatchClass(editColor === c, 'sm')}
+                style={{ backgroundColor: c }}
+                aria-label={`Set color ${c}`}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setIsEditing(false)}
+            className="px-3.5 py-1.5 rounded-lg bg-black/25 hover:bg-black/35 border border-white/20 text-[10px] uppercase tracking-widest font-bold text-white/75 hover:text-white transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_8px_16px_rgba(0,0,0,0.22)] active:translate-y-0 active:scale-95"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-3.5 py-1.5 rounded-lg bg-teal-400/20 hover:bg-teal-300/30 border border-teal-100/35 hover:border-teal-100/60 text-[10px] uppercase tracking-widest font-bold text-teal-50 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_10px_20px_rgba(45,212,191,0.22)] active:translate-y-0 active:scale-95"
+          >
+            Save
+          </button>
+        </div>
+      </form>
     );
   }
 
   return (
-    <div className={`flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2' : ''} relative`}>
+    <div
+      className={`
+        flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2' : ''} relative
+        transition-all duration-300 ease-out
+        ${isEntering ? 'doro-task-enter' : ''}
+        ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 blur-[2px] pointer-events-none' : 'opacity-100 scale-100 translate-x-0 blur-0'}
+      `}
+    >
       <div 
         onClick={() => selectTask(task.id)}
         className={`
@@ -83,6 +226,7 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
             : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/10 hover:shadow-md opacity-80 hover:opacity-100')
           }
           ${task.checked ? 'opacity-40' : ''}
+          ${isCheckAnimating ? 'scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
         `}
       >
         {task.selected && isSectionActive && <div className="absolute left-0 inset-y-2 w-1 bg-white rounded-r-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" />}
@@ -106,7 +250,7 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
         <div 
           onClick={handleCheck}
           className={`
-            rounded-full border flex items-center justify-center transition-all duration-300 shrink-0 z-20
+            rounded-full border relative flex items-center justify-center transition-all duration-300 shrink-0 z-20
             ${depth === 0 ? 'w-5 h-5 border-[1.5px]' : 'w-4 h-4 border'}
             ${task.checked 
               ? 'bg-white border-white' 
@@ -114,6 +258,9 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
             }
           `}
         >
+          {isCheckAnimating && (
+            <span className="absolute inset-[-2px] rounded-full border border-emerald-200/80 animate-ping" />
+          )}
           {task.checked && <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
         </div>
         
@@ -149,10 +296,10 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
            >
              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
            </button>
-          <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Edit">
+          <button onClick={startEditing} className="p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Edit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
-          <button onClick={(e) => { e.stopPropagation(); deleteTask(task.id); }} className="p-1.5 text-glass-text hover:text-red-300 hover:bg-red-500/20 rounded transition-colors" title="Delete">
+          <button onClick={handleDelete} className="p-1.5 text-glass-text hover:text-red-300 hover:bg-red-500/20 rounded transition-colors" title="Delete">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -160,7 +307,7 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
 
       <div className="pl-6 md:pl-8">
         {isAddingSub && (
-          <form onSubmit={handleAddSubtask} className="flex gap-2 p-2 mb-2 bg-white/5 rounded-lg border border-white/10 animate-slide-up backdrop-blur-sm">
+          <form onSubmit={handleAddSubtask} className="doro-soft-expand flex gap-2 p-2 mb-2 bg-white/5 rounded-lg border border-white/10 backdrop-blur-sm">
             <input 
               autoFocus
               type="text" 
@@ -169,19 +316,44 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
               value={subName}
               onChange={e => setSubName(e.target.value)}
             />
-            <input 
-              type="number" 
-              min="0" max="10"
-              className="w-8 bg-transparent text-center text-xs text-glass-text font-mono outline-none border-l border-white/10"
-              value={subEst}
-              onChange={e => setSubEst(Number(e.target.value))}
-            />
-            <button type="submit" className="text-green-400 px-1 hover:scale-110 transition-transform">✓</button>
+            <div className="flex items-center rounded-lg border border-white/15 bg-black/20 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSubEst(prev => clampSubEstimate(prev - 1))}
+                className="px-1.5 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                aria-label="Decrease subtask estimate"
+              >
+                -
+              </button>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={subEst}
+                onChange={e => {
+                  const next = Number(e.target.value.replace(/[^\d]/g, ''));
+                  if (!Number.isNaN(next)) setSubEst(clampSubEstimate(next));
+                }}
+                className="w-8 bg-transparent text-center text-xs text-glass-text font-mono font-bold outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setSubEst(prev => clampSubEstimate(prev + 1))}
+                className="px-1.5 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                aria-label="Increase subtask estimate"
+              >
+                +
+              </button>
+            </div>
+            <button type="submit" className="text-green-400 px-1 hover:scale-110 transition-transform" aria-label="Save subtask">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </button>
           </form>
         )}
 
         {task.isExpanded && task.subtasks.length > 0 && (
-          <div className="animate-slide-up relative border-l border-white/10 pl-4 mt-1 space-y-1">
+          <div className="doro-soft-expand relative border-l border-white/10 pl-4 mt-1 space-y-1">
             {task.subtasks.map(sub => (
               <TaskItem key={sub.id} task={sub} depth={depth + 1} isSectionActive={isSectionActive} />
             ))}
@@ -193,23 +365,50 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean 
 };
 
 const Tasks: React.FC = () => {
-  const { tasks, addTask, selectedCategoryId, pomodoroCount, settings, setScheduleOpen, categories } = useTimer();
+  const { tasks, addTask, selectedCategoryId, pomodoroCount, settings, setWeeklyScheduleOpen, categories } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
   const [newCatId, setNewCatId] = useState<number | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
+  const didInitTaskIdsRef = useRef(false);
+  const prevTaskIdsRef = useRef<number[]>([]);
+
+  const todayKey = getDateKey(new Date());
 
   // Filter Tasks: Hide scheduled/future tasks from main list
   const filteredTasks = tasks.filter(t => 
-    !t.isFuture && (selectedCategoryId ? t.categoryId === selectedCategoryId : true)
+    !t.isFuture
+    && (!t.scheduledDate || t.scheduledDate <= todayKey)
+    && (selectedCategoryId ? t.categoryId === selectedCategoryId : true)
   );
+
+  useEffect(() => {
+    const currentIds = filteredTasks.map(task => task.id);
+    if (!didInitTaskIdsRef.current) {
+      didInitTaskIdsRef.current = true;
+      prevTaskIdsRef.current = currentIds;
+      return;
+    }
+
+    const previous = new Set(prevTaskIdsRef.current);
+    const addedIds = currentIds.filter(id => !previous.has(id));
+    prevTaskIdsRef.current = currentIds;
+    if (addedIds.length === 0) return;
+
+    setEnteringTaskIds(prev => Array.from(new Set([...prev, ...addedIds])));
+    const timeoutId = setTimeout(() => {
+      setEnteringTaskIds(prev => prev.filter(id => !addedIds.includes(id)));
+    }, 650);
+    return () => clearTimeout(timeoutId);
+  }, [filteredTasks]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
-    addTask(newName, newEst, newCatId || selectedCategoryId, undefined, newColor);
+    addTask(newName, clampPomoEstimate(newEst), newCatId || selectedCategoryId, undefined, newColor);
     setNewName('');
     setNewEst(1);
   };
@@ -222,13 +421,70 @@ const Tasks: React.FC = () => {
   const pomosPerSet = settings.longBreakInterval || 4;
   const currentInSet = pomodoroCount % pomosPerSet;
   const untilLongBreak = pomosPerSet - currentInSet;
+  const remainingTaskPomos = useMemo(
+    () => filteredTasks.reduce((acc, task) => acc + getRemainingPomosForTask(task), 0),
+    [filteredTasks]
+  );
+  const predictedFinishTime = useMemo(() => {
+    if (remainingTaskPomos <= 0) return '--';
+
+    let totalSeconds = remainingTaskPomos * settings.workDuration;
+    for (let i = 1; i < remainingTaskPomos; i++) {
+      const completionCount = pomodoroCount + i;
+      const breakSeconds = completionCount % pomosPerSet === 0 ? settings.longBreakDuration : settings.shortBreakDuration;
+      totalSeconds += breakSeconds;
+    }
+    return formatFinishTime(new Date(Date.now() + totalSeconds * 1000));
+  }, [remainingTaskPomos, settings.workDuration, settings.shortBreakDuration, settings.longBreakDuration, pomodoroCount, pomosPerSet]);
 
   return (
-    <div 
-      className="w-full max-w-lg mx-auto transition-all duration-700"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
+    <>
+      <style>{`
+        @keyframes doro-soft-expand {
+          0% {
+            opacity: 0;
+            transform: translateY(6px) scale(0.975);
+          }
+          62% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.015);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-soft-expand {
+          animation: doro-soft-expand 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+          transform-origin: top center;
+        }
+        @keyframes doro-task-enter {
+          0% {
+            opacity: 0;
+            transform: translateY(12px) scale(0.96);
+            filter: blur(2px);
+          }
+          62% {
+            opacity: 1;
+            transform: translateY(-2px) scale(1.012);
+            filter: blur(0);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0);
+          }
+        }
+        .doro-task-enter {
+          animation: doro-task-enter 540ms cubic-bezier(0.16, 0.88, 0.3, 1.12);
+          transform-origin: top center;
+        }
+      `}</style>
+      <div 
+        className="w-full max-w-lg mx-auto transition-all duration-700"
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
       <div className="relative flex flex-col">
         {/* Header */}
         <div className={`flex justify-between items-center mb-4 px-2 transition-all duration-500 ${blurClass}`}>
@@ -271,7 +527,11 @@ const Tasks: React.FC = () => {
                  {!isInputFocused && (
                     <button 
                         type="button" 
-                        onClick={() => setScheduleOpen(true)}
+                        onPointerDown={(e) => {
+                            e.preventDefault();
+                            setWeeklyScheduleOpen(true);
+                        }}
+                        onClick={() => setWeeklyScheduleOpen(true)}
                         className="mr-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-transparent hover:border-white/10"
                     >
                         Schedule
@@ -281,18 +541,18 @@ const Tasks: React.FC = () => {
             
             <div className={`
               overflow-hidden transition-all duration-300 ease-in-out border-t border-white/5
-              ${isInputFocused ? 'max-h-40 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
+              ${isInputFocused ? 'doro-soft-expand max-h-40 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
             `}>
               <div className="flex flex-col gap-3">
                   {/* Category & Color Selection */}
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide">
-                      <div className="flex gap-1">
+                  <div className="flex items-center gap-2 overflow-x-auto px-1 py-1 scrollbar-hide">
+                      <div className="flex gap-1.5">
                           {PRESET_COLORS.map(c => (
                             <button
                               key={c}
                               type="button"
                               onClick={() => { setNewColor(c); setNewCatId(null); }}
-                              className={`w-4 h-4 rounded-full transition-transform duration-300 ${newColor === c && !newCatId ? 'scale-125 ring-1 ring-white' : 'opacity-50 hover:opacity-100'}`}
+                              className={getColorSwatchClass(newColor === c && !newCatId)}
                               style={{ backgroundColor: c }}
                             />
                           ))}
@@ -318,19 +578,40 @@ const Tasks: React.FC = () => {
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
                       <span className="font-bold">EST</span>
-                      <input 
-                          type="number" 
-                          min="1" max="10"
-                          className="w-8 py-0.5 bg-white/10 rounded text-center text-white outline-none focus:bg-white/20 border border-white/5 focus:border-white/30 transition-colors"
-                          value={newEst}
-                          onChange={e => setNewEst(Number(e.target.value))}
-                      />
+                      <div className="flex items-center rounded-lg border border-white/20 bg-black/20 overflow-hidden">
+                          <button
+                              type="button"
+                              onClick={() => setNewEst(prev => clampPomoEstimate(prev - 1))}
+                              className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                              aria-label="Decrease new task estimate"
+                          >
+                              -
+                          </button>
+                          <input
+                              type="text"
+                              inputMode="numeric"
+                              value={newEst}
+                              onChange={e => {
+                                  const next = Number(e.target.value.replace(/[^\d]/g, ''));
+                                  if (!Number.isNaN(next)) setNewEst(clampPomoEstimate(next));
+                              }}
+                              className="w-8 bg-transparent text-center text-white font-mono font-bold text-xs outline-none"
+                          />
+                          <button
+                              type="button"
+                              onClick={() => setNewEst(prev => clampPomoEstimate(prev + 1))}
+                              className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                              aria-label="Increase new task estimate"
+                          >
+                              +
+                          </button>
+                      </div>
                     </div>
                     
                     <div className="flex gap-2">
                         <button 
                             type="button" 
-                            onClick={() => setScheduleOpen(true)}
+                            onClick={() => setWeeklyScheduleOpen(true)}
                             className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
                         >
                             Schedule
@@ -351,7 +632,7 @@ const Tasks: React.FC = () => {
         {/* Task List */}
         <div className={`space-y-1 pb-8 min-h-[100px] transition-all duration-500 ${blurClass}`}>
           {filteredTasks.map(task => (
-            <TaskItem key={task.id} task={task} isSectionActive={isSectionActive} />
+            <TaskItem key={task.id} task={task} isSectionActive={isSectionActive} isEntering={enteringTaskIds.includes(task.id)} />
           ))}
           {filteredTasks.length === 0 && (
             <div className="flex items-center justify-center h-24 opacity-0" />
@@ -360,22 +641,27 @@ const Tasks: React.FC = () => {
         
         {/* Permanent Pomo Counter Footer */}
         <div className={`
-            mt-auto pt-6 pb-2 border-t border-white/5 flex justify-between items-center 
-            text-[10px] uppercase tracking-[0.2em] font-bold text-white/40
+            mt-auto pt-3 pb-1 border-t border-white/5 grid grid-cols-3 items-center gap-1
+            text-center whitespace-nowrap [font-size:clamp(7px,1.8vw,10px)] uppercase tracking-[0.13em] font-bold text-white/45
             transition-all duration-500 ${blurClass}
         `}>
-            <div className="flex items-center gap-2">
-                 <span className={`text-lg font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>
+            <div className="flex min-w-0 items-center justify-center gap-1">
+                 <span className={`leading-none font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>
                  <span>until long break</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center justify-center gap-1">
+                <span>time finished</span>
+                <span className="leading-none font-mono font-bold text-white/80">{predictedFinishTime}</span>
+            </div>
+            <div className="flex min-w-0 items-center justify-center gap-1">
                 <span>total pomos</span>
-                <span className="text-lg font-mono font-bold text-white/80">{pomodoroCount}</span>
+                <span className="leading-none font-mono font-bold text-white/80">{pomodoroCount}</span>
             </div>
         </div>
 
       </div>
-    </div>
+      </div>
+    </>
   );
 };
 

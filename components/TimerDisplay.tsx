@@ -1,5 +1,5 @@
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
 const formatTime = (seconds: number) => {
@@ -12,9 +12,41 @@ const formatTime = (seconds: number) => {
 
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
+  const [smoothedPercent, setSmoothedPercent] = useState(percent);
+  const targetPercentRef = useRef(percent);
+
+  useEffect(() => {
+    targetPercentRef.current = percent;
+  }, [percent]);
+
+  useEffect(() => {
+    let rafId = 0;
+    let lastTs = performance.now();
+
+    const animate = (ts: number) => {
+      const dt = Math.min(0.05, Math.max(0, (ts - lastTs) / 1000));
+      lastTs = ts;
+
+      setSmoothedPercent(prev => {
+        const target = targetPercentRef.current;
+        const diff = target - prev;
+        if (Math.abs(diff) < 0.0005) return target;
+
+        // Critically damped-like smoothing for fluid level shifts, including large catch-up jumps.
+        const blend = 1 - Math.exp(-dt * 10);
+        return prev + (diff * blend);
+      });
+
+      rafId = requestAnimationFrame(animate);
+    };
+
+    rafId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
   // Range: Start (-300%) to End (-160%). 
   // -300% is completely below the viewport. -160% covers the viewport with the wave crests.
-  const safePercent = Math.max(0, Math.min(1.1, percent));
+  const safePercent = Math.max(0, Math.min(1.1, smoothedPercent));
   const bottomVal = -300 + (safePercent * 140);
 
   const waveBase = colorMode === 'red' ? 'bg-red-500' : 'bg-white';
@@ -28,17 +60,17 @@ const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { p
     <div className={`absolute inset-0 z-0 transition-opacity duration-1000 pointer-events-none overflow-hidden rounded-[3rem] ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
        {/* Wave 1 (Back) - Slowest */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op1} rounded-[45%] transition-all duration-[3000ms] ease-in-out animate-wave-slow`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op1} rounded-[45%] animate-wave-slow`}
          style={{ bottom: `${bottomVal}%` }}
        />
        {/* Wave 2 (Mid) */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[47%] transition-all duration-[3000ms] ease-in-out animate-wave-med`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[47%] animate-wave-med`}
          style={{ bottom: `${bottomVal - 1.5}%`, animationDelay: '-8s' }}
        />
        {/* Wave 3 (Front) */}
        <div 
-         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[46%] transition-all duration-[3000ms] ease-in-out animate-wave-fast`}
+         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[46%] animate-wave-fast`}
          style={{ bottom: `${bottomVal - 3}%`, animationDelay: '-3s' }}
        />
     </div>
@@ -67,9 +99,15 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      // WORK LOGIC: Start Empty (0%), Rise to Full (100%)
-      const ratio = Math.max(0, Math.min(1, time / Math.max(1, maxTime)));
-      fillPercent = 1 - ratio;
+      // WORK LOGIC: Start empty, and only reach "full" at 1 minute remaining.
+      const safeMax = Math.max(1, maxTime);
+      if (safeMax <= 60) {
+        const ratio = Math.max(0, Math.min(1, time / safeMax));
+        fillPercent = 1 - ratio;
+      } else {
+        const scaled = (safeMax - time) / (safeMax - 60);
+        fillPercent = Math.max(0, Math.min(1, scaled));
+      }
       showLiquid = true;
   } else {
       // BREAK LOGIC
@@ -182,23 +220,40 @@ const TimerDisplay: React.FC = () => {
   
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLongPressRef = useRef(false);
+  const isPressingResetRef = useRef(false);
+
+  const clearResetTimeout = () => {
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+      resetTimeoutRef.current = null;
+    }
+  };
 
   const handleResetDown = () => {
+    isPressingResetRef.current = true;
     isLongPressRef.current = false;
+    clearResetTimeout();
     resetTimeoutRef.current = setTimeout(() => {
+      if (!isPressingResetRef.current) return;
       isLongPressRef.current = true;
+      isPressingResetRef.current = false;
       openEdit();
     }, 500);
   };
 
   const handleResetUp = () => {
-    if (resetTimeoutRef.current) {
-      clearTimeout(resetTimeoutRef.current);
-      resetTimeoutRef.current = null;
-    }
+    if (!isPressingResetRef.current) return;
+    isPressingResetRef.current = false;
+    clearResetTimeout();
     if (!isLongPressRef.current) {
       restartActiveTimer();
     }
+  };
+
+  const handleResetLeave = () => {
+    if (!isPressingResetRef.current) return;
+    isPressingResetRef.current = false;
+    clearResetTimeout();
   };
 
   const handleTimeSubmit = (e?: React.FormEvent) => {
@@ -224,6 +279,15 @@ const TimerDisplay: React.FC = () => {
         .animate-wave-slow { animation: wave-rotate 40s linear infinite; }
         .animate-wave-med { animation: wave-rotate 32s linear infinite reverse; }
         .animate-wave-fast { animation: wave-rotate 25s linear infinite; }
+        .doro-no-spin::-webkit-outer-spin-button,
+        .doro-no-spin::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        .doro-no-spin[type='number'] {
+          -moz-appearance: textfield;
+          appearance: textfield;
+        }
       `}</style>
       
       {/* Edit Modal */}
@@ -243,7 +307,7 @@ const TimerDisplay: React.FC = () => {
                     step="1"
                     value={editValue}
                     onChange={e => setEditValue(e.target.value)}
-                    className="w-48 bg-transparent text-8xl text-white font-sans tabular-nums font-bold text-center outline-none border-b border-white/10 focus:border-white/50 transition-colors pb-2 placeholder-white/10"
+                    className="doro-no-spin w-48 bg-transparent text-8xl text-white font-sans tabular-nums font-bold text-center outline-none border-b border-white/10 focus:border-white/50 transition-colors pb-2 placeholder-white/10"
                     placeholder="0"
                     />
                     <span className="text-xl text-white/40 font-medium">min</span>
@@ -261,9 +325,10 @@ const TimerDisplay: React.FC = () => {
         <button 
             onMouseDown={handleResetDown}
             onMouseUp={handleResetUp}
-            onMouseLeave={handleResetUp}
+            onMouseLeave={handleResetLeave}
             onTouchStart={handleResetDown}
             onTouchEnd={handleResetUp}
+            onTouchCancel={handleResetLeave}
             className={`absolute top-0 md:-top-12 z-50 flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white/40 hover:text-white transition-all duration-500 group active:scale-95 select-none opacity-50 hover:opacity-100 ${settings.disableBlur ? '' : 'backdrop-blur-md blur-[2px] hover:blur-0'}`}
         >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-hover:rotate-[-180deg] transition-transform duration-500"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>

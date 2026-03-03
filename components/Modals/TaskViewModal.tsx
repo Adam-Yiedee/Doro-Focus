@@ -46,6 +46,7 @@ const GripIcon = () => (
 
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
     const { tasks, pastSessions, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode, toggleTaskFuture, setTaskSchedule } = useTimer();
+    const isLightTheme = settings.themeMode !== 'dark';
     
     // UI State
     const [mobileTab, setMobileTab] = useState<'queue' | 'schedule' | 'backlog'>('schedule');
@@ -544,8 +545,34 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     if (!isOpen) return null;
 
     return (
+        <>
+        <style>{`
+            .doro-schedule-shell.theme-light {
+                background: linear-gradient(165deg, #f7f9fc 0%, #eef3f9 54%, #ebf1f8 100%) !important;
+                border-color: #d5dee9 !important;
+                box-shadow: 0 30px 70px -24px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.88) !important;
+            }
+            .doro-schedule-shell.theme-light [class*="bg-[#"] {
+                background-color: rgba(255, 255, 255, 0.78) !important;
+            }
+            .doro-schedule-shell.theme-light [class*="bg-white/"] {
+                background-color: rgba(255, 255, 255, 0.72) !important;
+            }
+            .doro-schedule-shell.theme-light [class*="bg-black/"] {
+                background-color: rgba(226, 234, 245, 0.72) !important;
+            }
+            .doro-schedule-shell.theme-light [class*="border-white/"] {
+                border-color: rgba(15, 23, 42, 0.12) !important;
+            }
+            .doro-schedule-shell.theme-light [class*="text-white"] {
+                color: #0d1a2c !important;
+            }
+            .doro-schedule-shell.theme-light [class*="text-white/"] {
+                color: #607086 !important;
+            }
+        `}</style>
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 md:p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={onClose}>
-             <div className="w-full max-w-7xl h-[95vh] md:h-[90vh] bg-[#0F0F11] rounded-2xl md:rounded-[2.5rem] shadow-2xl border border-white/10 flex flex-col md:flex-row overflow-hidden relative" onClick={e => e.stopPropagation()}>
+             <div className={`doro-schedule-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} w-full max-w-7xl h-[95vh] md:h-[90vh] bg-[#0F0F11] rounded-2xl md:rounded-[2.5rem] shadow-2xl border border-white/10 flex flex-col md:flex-row overflow-hidden relative`} onClick={e => e.stopPropagation()}>
                 
                 {/* Mobile Tab Switcher */}
                 <div className="md:hidden shrink-0 flex border-b border-white/10">
@@ -848,6 +875,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                 </div>
              </div>
         </div>
+        </>
     );
 };
 

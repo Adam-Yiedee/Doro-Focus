@@ -23,6 +23,7 @@ export interface Task {
   // New Scheduling Fields
   isFuture?: boolean;
   scheduledStart?: string; // ISO Date String or "HH:MM"
+  scheduledDate?: string; // "YYYY-MM-DD" for weekly planner
 }
 
 export interface LogEntry {
@@ -45,6 +46,7 @@ export interface TimerSettings {
   longBreakInterval: number; // Pomodoros before a long break
   disableBlur: boolean;
   alarmSound: AlarmSound;
+  themeMode: 'light' | 'dark';
 }
 
 export interface SessionRecord {
@@ -87,6 +89,21 @@ export interface TimerState {
   graceContext: 'afterWork' | 'afterBreak' | null;
   pendingBreakChunk: number;
   sessionEndTimestamp: number | null;
+}
+
+export type TimerRuntimePhase = 'idle' | 'running-work' | 'running-break' | 'all-pause' | 'grace';
+
+export interface TimerRuntimeSnapshot {
+  version: 2;
+  updatedAtMs: number;
+  sourceTabId: string;
+  phase: TimerRuntimePhase;
+  phaseStartedAtMs: number | null;
+  phaseStartWorkTime: number;
+  phaseStartBreakTime: number;
+  phaseStartAllPauseTime: number;
+  phaseStartGraceTotal: number;
+  activityStartIso: string | null;
 }
 
 // Group Study Types

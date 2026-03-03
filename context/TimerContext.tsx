@@ -1,7 +1,27 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { TimerMode, Task, Category, LogEntry, TimerSettings, AlarmSound, GroupSyncConfig, GroupMember, User, SessionRecord } from '../types';
+import {
+  TimerMode,
+  Task,
+  Category,
+  LogEntry,
+  TimerSettings,
+  AlarmSound,
+  GroupSyncConfig,
+  GroupMember,
+  User,
+  SessionRecord,
+  TimerRuntimePhase,
+  TimerRuntimeSnapshot,
+} from '../types';
 import { playAlarm, playSwitch } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
+import {
+  TIMER_RUNTIME_VERSION,
+  computeWorkCompletion,
+  createRuntimeSnapshot,
+  deriveRuntimeValues,
+  detectRuntimeBoundaryCrossing,
+} from '../utils/timerRuntime';
 
 export interface ScheduleBreak {
   id: string;
@@ -47,6 +67,7 @@ interface TimerContextType {
   scheduleStartTime: string;
   sessionStartTime: string | null;
   isScheduleOpen: boolean;
+  isWeeklyScheduleOpen: boolean;
 
   showSummary: boolean;
   sessionStats: SessionStats | null;
@@ -93,7 +114,7 @@ interface TimerContextType {
   setPendingJoinId: (id: string | null) => void;
 
   // Data Management
-  addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string) => void;
+  addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => void;
   addDetailedTask: (task: Partial<Task> & { name: string, estimated: number }) => void;
   addSubtasksToTask: (parentId: number, subtasks: { name: string, est: number }[]) => void;
   updateTask: (task: Task) => void;
@@ -118,6 +139,7 @@ interface TimerContextType {
   deleteScheduleBreak: (id: string) => void;
   setScheduleStartTime: (time: string) => void;
   setScheduleOpen: (isOpen: boolean) => void;
+  setWeeklyScheduleOpen: (isOpen: boolean) => void;
 }
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
@@ -144,7 +166,8 @@ const DEFAULT_SETTINGS: TimerSettings = {
   longBreakDuration: 900,
   longBreakInterval: 4, 
   disableBlur: false,
-  alarmSound: 'bell'
+  alarmSound: 'bell',
+  themeMode: 'dark'
 };
 
 const DEFAULT_SYNC_CONFIG: GroupSyncConfig = {
@@ -154,6 +177,10 @@ const DEFAULT_SYNC_CONFIG: GroupSyncConfig = {
     syncHistory: false,
     syncSettings: true
 };
+
+const DATA_SCHEMA_VERSION = 2;
+const LEGACY_RUNTIME_FLAG = 'doro_use_legacy_tick';
+const CROSS_TAB_CHANNEL = 'doro_timer_sync';
 
 // Recursive Helpers for Tasks
 const recalculateStats = (task: Task): Task => {
@@ -281,7 +308,40 @@ const removeCompletedTasks = (tasks: Task[]): Task[] => {
         }));
 };
 
+interface TimerPersistencePayload {
+  schemaVersion?: number;
+  runtime?: TimerRuntimeSnapshot;
+  settings?: TimerSettings;
+  tasks?: Task[];
+  pastSessions?: SessionRecord[];
+  categories?: Category[];
+  logs?: LogEntry[];
+  pomodoroCount?: number;
+  workTime?: number;
+  breakTime?: number;
+  activeMode?: TimerMode;
+  timerStarted?: boolean;
+  isIdle?: boolean;
+  allPauseActive?: boolean;
+  allPauseTime?: number;
+  allPauseReason?: string;
+  allPauseStartTime?: number | null;
+  graceOpen?: boolean;
+  graceContext?: 'afterWork' | 'afterBreak' | null;
+  graceTotal?: number;
+  scheduleBreaks?: ScheduleBreak[];
+  scheduleStartTime?: string;
+  sessionStartTime?: string | null;
+  userName?: string;
+  user?: User | null;
+}
+
+const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
+  return !!value && typeof value === 'object' && value.version === TIMER_RUNTIME_VERSION && typeof value.updatedAtMs === 'number' && typeof value.phase === 'string';
+};
+
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const isDevMode = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const [user, setUser] = useState<User | null>(null);
   
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
@@ -310,6 +370,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [scheduleStartTime, setScheduleStartTime] = useState<string>('08:00');
   const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
   const [isScheduleOpen, setScheduleOpen] = useState(false);
+  const [isWeeklyScheduleOpen, setWeeklyScheduleOpen] = useState(false);
 
   const [showSummary, setShowSummary] = useState(false);
   const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
@@ -330,12 +391,125 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const migrationPeerRef = useRef<Peer | null>(null);
 
   const lastTickRef = useRef<number | null>(null);
+  const shadowTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
-  const breakZeroTriggeredRef = useRef(false);
   const skipSaveRef = useRef(false);
+  const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
+  const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
+    sourceTabId: tabIdRef.current,
+    phase: 'idle',
+    nowMs: Date.now(),
+    workTime: DEFAULT_SETTINGS.workDuration,
+    breakTime: 0,
+    allPauseTime: 0,
+    graceTotal: 0,
+    activityStartIso: null,
+  }));
+  const lastRuntimeAppliedRef = useRef<number>(runtimeRef.current.updatedAtMs);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const pendingPostLoadReconcileRef = useRef(false);
+  const pendingRuntimeMigrationRef = useRef(false);
+  const isCrossTabApplyingRef = useRef(false);
+  const [legacyRuntimeMode, setLegacyRuntimeMode] = useState(() => {
+    try {
+      return localStorage.getItem(LEGACY_RUNTIME_FLAG) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const getActiveStorageKey = useCallback(() => {
+    return user ? getUserKey(user.username) : getGuestKey();
+  }, [user]);
+
+  const persistRuntimeSnapshot = useCallback((snapshot: TimerRuntimeSnapshot, overrideKey?: string) => {
+    const key = overrideKey || getActiveStorageKey();
+    const runtimeRunning = snapshot.phase === 'running-work' || snapshot.phase === 'running-break';
+    const runtimeMode: TimerMode = snapshot.phase === 'running-break' ? 'break' : activeMode;
+    try {
+      const existingRaw = localStorage.getItem(key);
+      const existing: TimerPersistencePayload = existingRaw ? JSON.parse(existingRaw) : {};
+      const merged: TimerPersistencePayload = {
+        ...existing,
+        schemaVersion: DATA_SCHEMA_VERSION,
+        runtime: snapshot,
+        activeMode: runtimeMode,
+        timerStarted: runtimeRunning,
+        isIdle: snapshot.phase === 'idle' ? isIdle : false,
+        allPauseActive: snapshot.phase === 'all-pause',
+        allPauseTime,
+        allPauseReason,
+        allPauseStartTime,
+        graceOpen: snapshot.phase === 'grace',
+        graceContext,
+        graceTotal,
+      };
+      localStorage.setItem(key, JSON.stringify(merged));
+    } catch (error) {
+      console.error('Failed to persist runtime snapshot', error);
+    }
+  }, [
+    getActiveStorageKey,
+    activeMode,
+    timerStarted,
+    isIdle,
+    allPauseActive,
+    allPauseTime,
+    allPauseReason,
+    allPauseStartTime,
+    graceOpen,
+    graceContext,
+    graceTotal,
+  ]);
+
+  const anchorRuntimePhase = useCallback((phase: TimerRuntimePhase, overrides?: Partial<Pick<TimerRuntimeSnapshot, 'phaseStartWorkTime' | 'phaseStartBreakTime' | 'phaseStartAllPauseTime' | 'phaseStartGraceTotal' | 'activityStartIso'>>) => {
+    const phaseWorkTime = overrides?.phaseStartWorkTime ?? workTime;
+    const phaseBreakTime = overrides?.phaseStartBreakTime ?? breakTime;
+    const phaseAllPause = overrides?.phaseStartAllPauseTime ?? allPauseTime;
+    const phaseGrace = overrides?.phaseStartGraceTotal ?? graceTotal;
+    const phaseImpliesRunning = phase === 'running-work' || phase === 'running-break';
+    const phaseMode: TimerMode = phase === 'running-break' ? 'break' : activeMode;
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: tabIdRef.current,
+      phase,
+      nowMs: Date.now(),
+      workTime: phaseWorkTime,
+      breakTime: phaseBreakTime,
+      allPauseTime: phaseAllPause,
+      graceTotal: phaseGrace,
+      activityStartIso: overrides?.activityStartIso ?? (currentActivityStartRef.current ? currentActivityStartRef.current.toISOString() : null),
+    });
+    runtimeRef.current = snapshot;
+    lastRuntimeAppliedRef.current = snapshot.updatedAtMs;
+    persistRuntimeSnapshot(snapshot);
+    if (broadcastChannelRef.current) {
+      broadcastChannelRef.current.postMessage({
+        type: 'RUNTIME_SYNC',
+        key: getActiveStorageKey(),
+        runtime: snapshot,
+        timer: {
+          activeMode: phaseMode,
+          timerStarted: phaseImpliesRunning,
+          isIdle: phase === 'idle' ? isIdle : false,
+          allPauseActive: phase === 'all-pause',
+          allPauseTime: phaseAllPause,
+          allPauseReason,
+          allPauseStartTime,
+          graceOpen: phase === 'grace',
+          graceContext,
+          graceTotal: phaseGrace,
+          workTime: phaseWorkTime,
+          breakTime: phaseBreakTime,
+          pomodoroCount,
+          sessionStartTime,
+          scheduleStartTime,
+        },
+      });
+    }
+  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, timerStarted, isIdle, allPauseActive, allPauseReason, allPauseStartTime, graceOpen, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
 
   // Load Data Helper
   const loadData = useCallback((username?: string) => {
@@ -345,16 +519,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       
       if (saved) {
         try {
-            const parsed = JSON.parse(saved);
-            setSettings(prev => ({ ...prev, ...(parsed.settings || {}) }));
+            const parsed: TimerPersistencePayload = JSON.parse(saved);
+            setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
             setTasks(parsed.tasks || []);
             setPastSessions(parsed.pastSessions || []);
             setCategories(parsed.categories || []);
             setLogs(parsed.logs || []);
             setPomodoroCount(parsed.pomodoroCount || 0);
             setScheduleBreaks(parsed.scheduleBreaks || []);
-            if (parsed.breakTime !== undefined) setBreakTime(parsed.breakTime);
-            if (parsed.workTime !== undefined) setWorkTime(parsed.workTime);
+            const nextBreakTime = parsed.breakTime !== undefined ? parsed.breakTime : 0;
+            const nextWorkTime = parsed.workTime !== undefined ? parsed.workTime : DEFAULT_SETTINGS.workDuration;
+            setBreakTime(nextBreakTime);
+            setWorkTime(nextWorkTime);
+            setActiveMode(parsed.activeMode || 'work');
+            setIsIdle(parsed.isIdle !== undefined ? parsed.isIdle : true);
             
             if (username && parsed.user) {
                 // Ensure streak properties exist
@@ -385,6 +563,49 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                  const m = now.getMinutes().toString().padStart(2, '0');
                  setScheduleStartTime(`${h}:${m}`);
             }
+
+            const hasRuntime = parsed.schemaVersion === DATA_SCHEMA_VERSION && isRuntimeSnapshot(parsed.runtime);
+            if (hasRuntime && parsed.runtime) {
+                runtimeRef.current = parsed.runtime;
+                lastRuntimeAppliedRef.current = parsed.runtime.updatedAtMs;
+                const runtimeRunning = parsed.runtime.phase === 'running-work' || parsed.runtime.phase === 'running-break';
+                setTimerStarted(parsed.timerStarted !== undefined ? Boolean(parsed.timerStarted) : runtimeRunning);
+                setAllPauseActive(parsed.allPauseActive !== undefined ? Boolean(parsed.allPauseActive) : parsed.runtime.phase === 'all-pause');
+                setAllPauseTime(parsed.allPauseTime || 0);
+                setAllPauseReason(parsed.allPauseReason || '');
+                setAllPauseStartTime(parsed.allPauseStartTime ?? null);
+                setGraceOpen(parsed.graceOpen !== undefined ? Boolean(parsed.graceOpen) : parsed.runtime.phase === 'grace');
+                setGraceContext(parsed.graceContext || null);
+                setGraceTotal(parsed.graceTotal || 0);
+                if (parsed.runtime.phase === 'running-break') setActiveMode('break');
+                if (parsed.runtime.phase === 'running-work') setActiveMode('work');
+                if (parsed.isIdle === undefined) setIsIdle(parsed.runtime.phase === 'idle');
+                currentActivityStartRef.current = parsed.runtime.activityStartIso ? new Date(parsed.runtime.activityStartIso) : null;
+            } else {
+                // Legacy migration: keep remaining times but force a safe stopped state.
+                setTimerStarted(false);
+                setIsIdle(true);
+                setAllPauseActive(false);
+                setAllPauseTime(0);
+                setAllPauseReason('');
+                setAllPauseStartTime(null);
+                setGraceOpen(false);
+                setGraceContext(null);
+                setGraceTotal(0);
+                currentActivityStartRef.current = null;
+                runtimeRef.current = createRuntimeSnapshot({
+                    sourceTabId: tabIdRef.current,
+                    phase: 'idle',
+                    nowMs: Date.now(),
+                    workTime: nextWorkTime,
+                    breakTime: nextBreakTime,
+                    allPauseTime: 0,
+                    graceTotal: 0,
+                    activityStartIso: null,
+                });
+                lastRuntimeAppliedRef.current = runtimeRef.current.updatedAtMs;
+                pendingRuntimeMigrationRef.current = true;
+            }
         } catch (e) { console.error("Failed to load", e); }
       } else {
           // Defaults for new user or guest
@@ -394,6 +615,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setLogs([]);
           setCategories([]);
           setPomodoroCount(0);
+          setBreakTime(0);
+          setWorkTime(DEFAULT_SETTINGS.workDuration);
+          setActiveMode('work');
+          setTimerStarted(false);
+          setIsIdle(true);
+          setAllPauseActive(false);
+          setAllPauseTime(0);
+          setAllPauseReason('');
+          setAllPauseStartTime(null);
+          setGraceOpen(false);
+          setGraceContext(null);
+          setGraceTotal(0);
           const now = new Date();
           const h = now.getHours().toString().padStart(2, '0');
           const m = now.getMinutes().toString().padStart(2, '0');
@@ -407,7 +640,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           } else {
               setUser(null);
           }
+          currentActivityStartRef.current = null;
+          runtimeRef.current = createRuntimeSnapshot({
+            sourceTabId: tabIdRef.current,
+            phase: 'idle',
+            nowMs: Date.now(),
+            workTime: DEFAULT_SETTINGS.workDuration,
+            breakTime: 0,
+            allPauseTime: 0,
+            graceTotal: 0,
+            activityStartIso: null,
+          });
+          lastRuntimeAppliedRef.current = runtimeRef.current.updatedAtMs;
+          pendingRuntimeMigrationRef.current = true;
       }
+      pendingPostLoadReconcileRef.current = true;
       setTimeout(() => { skipSaveRef.current = false; }, 100);
   }, []);
 
@@ -513,7 +760,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const mergedCategories = Array.from(catMap.values());
 
       // 5. Settings: Local takes precedence for user comfort on this device
-      const mergedSettings = { ...remoteData.settings, ...localData.settings };
+      const mergedSettings = { ...DEFAULT_SETTINGS, ...remoteData.settings, ...localData.settings };
 
       return {
           logs: mergedLogs,
@@ -546,13 +793,38 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           lifetimeStats: initialStats
       };
 
+      const seedWorkTime = guestData.workTime ?? DEFAULT_SETTINGS.workDuration;
+      const seedBreakTime = guestData.breakTime ?? 0;
+      const seedRuntime = createRuntimeSnapshot({
+        sourceTabId: tabIdRef.current,
+        phase: 'idle',
+        nowMs: Date.now(),
+        workTime: seedWorkTime,
+        breakTime: seedBreakTime,
+        allPauseTime: 0,
+        graceTotal: 0,
+        activityStartIso: null,
+      });
+
       const accountData = {
+          schemaVersion: DATA_SCHEMA_VERSION,
+          runtime: seedRuntime,
           user: newUser,
-          settings: guestData.settings || DEFAULT_SETTINGS,
+          settings: { ...DEFAULT_SETTINGS, ...(guestData.settings || {}) },
           tasks: guestData.tasks || [],
           logs: guestData.logs || [],
           pastSessions: guestData.pastSessions || [],
-          categories: guestData.categories || []
+          categories: guestData.categories || [],
+          workTime: seedWorkTime,
+          breakTime: seedBreakTime,
+          activeMode: 'work',
+          timerStarted: false,
+          isIdle: true,
+          allPauseActive: false,
+          allPauseTime: 0,
+          graceOpen: false,
+          graceContext: null,
+          graceTotal: 0
       };
 
       // Save to Cloud
@@ -593,7 +865,28 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const updatedAccount = {
           ...remoteAccount,
           ...merged,
-          user: { ...remoteAccount.user, lifetimeStats: newStats }
+          user: { ...remoteAccount.user, lifetimeStats: newStats },
+          schemaVersion: DATA_SCHEMA_VERSION,
+          runtime: isRuntimeSnapshot(remoteAccount.runtime)
+            ? remoteAccount.runtime
+            : createRuntimeSnapshot({
+                sourceTabId: tabIdRef.current,
+                phase: 'idle',
+                nowMs: Date.now(),
+                workTime: remoteAccount.workTime ?? merged.settings?.workDuration ?? DEFAULT_SETTINGS.workDuration,
+                breakTime: remoteAccount.breakTime ?? 0,
+                allPauseTime: 0,
+                graceTotal: 0,
+                activityStartIso: null,
+              }),
+          activeMode: remoteAccount.activeMode || 'work',
+          timerStarted: false,
+          isIdle: true,
+          allPauseActive: false,
+          allPauseTime: 0,
+          graceOpen: false,
+          graceContext: null,
+          graceTotal: 0
       };
 
       // Push merged state back to cloud
@@ -636,10 +929,33 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Cloud Export / Import
   const exportData = (): string => {
-      const key = user ? getUserKey(user.username) : getGuestKey();
       const userDataToSave = user ? { ...user } : null;
       const dataToSave = {
-        settings, tasks, pastSessions, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName, user: userDataToSave
+        schemaVersion: DATA_SCHEMA_VERSION,
+        runtime: runtimeRef.current,
+        settings,
+        tasks,
+        pastSessions,
+        categories,
+        logs,
+        pomodoroCount,
+        workTime,
+        breakTime,
+        activeMode,
+        timerStarted,
+        isIdle,
+        allPauseActive,
+        allPauseTime,
+        allPauseReason,
+        allPauseStartTime,
+        graceOpen,
+        graceContext,
+        graceTotal,
+        scheduleBreaks,
+        scheduleStartTime,
+        sessionStartTime,
+        userName,
+        user: userDataToSave
       };
       return btoa(JSON.stringify(dataToSave));
   };
@@ -679,6 +995,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                      logs: Array.from(logMap.values()),
                      user: { ...parsed.user, lifetimeStats: newStats }
                  };
+             }
+
+             if (!isRuntimeSnapshot((dataToStore as TimerPersistencePayload).runtime)) {
+                const safeWork = (dataToStore as TimerPersistencePayload).workTime ?? parsed.settings?.workDuration ?? DEFAULT_SETTINGS.workDuration;
+                const safeBreak = (dataToStore as TimerPersistencePayload).breakTime ?? 0;
+                (dataToStore as any).schemaVersion = DATA_SCHEMA_VERSION;
+                (dataToStore as any).runtime = createRuntimeSnapshot({
+                  sourceTabId: tabIdRef.current,
+                  phase: 'idle',
+                  nowMs: Date.now(),
+                  workTime: safeWork,
+                  breakTime: safeBreak,
+                  allPauseTime: 0,
+                  graceTotal: 0,
+                  activityStartIso: null,
+                });
+                (dataToStore as any).timerStarted = false;
+                (dataToStore as any).isIdle = true;
+                (dataToStore as any).allPauseActive = false;
+                (dataToStore as any).allPauseTime = 0;
+                (dataToStore as any).graceOpen = false;
+                (dataToStore as any).graceContext = null;
+                (dataToStore as any).graceTotal = 0;
              }
 
              localStorage.setItem(key, JSON.stringify(dataToStore));
@@ -763,14 +1102,63 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Save Effect
   useEffect(() => {
-    if (skipSaveRef.current) return;
-    const key = user ? getUserKey(user.username) : getGuestKey();
+    if (skipSaveRef.current || isCrossTabApplyingRef.current) return;
+    const key = getActiveStorageKey();
     const userDataToSave = user ? { ...user } : null;
-    const dataToSave = {
-      settings, tasks, pastSessions, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName, user: userDataToSave
+    const dataToSave: TimerPersistencePayload = {
+      schemaVersion: DATA_SCHEMA_VERSION,
+      runtime: runtimeRef.current,
+      settings,
+      tasks,
+      pastSessions,
+      categories,
+      logs,
+      pomodoroCount,
+      workTime,
+      breakTime,
+      activeMode,
+      timerStarted,
+      isIdle,
+      allPauseActive,
+      allPauseTime,
+      allPauseReason,
+      allPauseStartTime,
+      graceOpen,
+      graceContext,
+      graceTotal,
+      scheduleBreaks,
+      scheduleStartTime,
+      sessionStartTime,
+      userName,
+      user: userDataToSave
     };
     localStorage.setItem(key, JSON.stringify(dataToSave));
-  }, [settings, tasks, pastSessions, categories, logs, pomodoroCount, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, userName, user]);
+  }, [
+    settings,
+    tasks,
+    pastSessions,
+    categories,
+    logs,
+    pomodoroCount,
+    workTime,
+    breakTime,
+    activeMode,
+    timerStarted,
+    isIdle,
+    allPauseActive,
+    allPauseTime,
+    allPauseReason,
+    allPauseStartTime,
+    graceOpen,
+    graceContext,
+    graceTotal,
+    scheduleBreaks,
+    scheduleStartTime,
+    sessionStartTime,
+    userName,
+    user,
+    getActiveStorageKey,
+  ]);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -796,18 +1184,24 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return {
        settings, tasks, categories, logs, activeMode, timerStarted, isIdle,
        workTime, breakTime, pomodoroCount, scheduleBreaks,
-       scheduleStartTime, sessionStartTime, allPauseActive,
-       allPauseReason, graceOpen, graceContext,
+       scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime,
+       allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal,
+       runtime: runtimeRef.current,
        hostConfig: hostSyncConfig
     };
-  }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseReason, graceOpen, graceContext, hostSyncConfig]);
+  }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, hostSyncConfig]);
 
   const applyRemoteState = useCallback((remote: any) => {
       isRemoteUpdate.current = true;
       const config = isHost ? DEFAULT_SYNC_CONFIG : clientSyncConfig;
       
       if (config.syncSettings && remote.settings) {
-          setSettings(prev => ({ ...remote.settings, disableBlur: prev.disableBlur }));
+          setSettings(prev => ({
+            ...DEFAULT_SETTINGS,
+            ...remote.settings,
+            disableBlur: prev.disableBlur,
+            themeMode: prev.themeMode,
+          }));
       }
       if (config.syncTasks && remote.tasks) {
           setTasks(remote.tasks);
@@ -820,35 +1214,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (remote.sessionStartTime) setSessionStartTime(remote.sessionStartTime);
       }
       if (config.syncTimers) {
-          const timerDrift = Math.abs(remote.workTime - workTime);
-          if (remote.activeMode !== activeMode || timerDrift > 1.5 || !timerStarted) {
-               setWorkTime(remote.workTime);
-               setBreakTime(remote.breakTime);
-               setActiveMode(remote.activeMode);
-               setTimerStarted(remote.timerStarted);
-          }
-          if (remote.timerStarted) setIsIdle(false);
-          else if (remote.isIdle !== undefined) setIsIdle(remote.isIdle);
-          
-          setPomodoroCount(remote.pomodoroCount);
-          setAllPauseActive(remote.allPauseActive);
-          setAllPauseReason(remote.allPauseReason || '');
-          setGraceOpen(remote.graceOpen || false);
-          setGraceContext(remote.graceContext || null);
+          if (typeof remote.workTime === 'number') setWorkTime(remote.workTime);
+          if (typeof remote.breakTime === 'number') setBreakTime(remote.breakTime);
+          if (remote.activeMode === 'work' || remote.activeMode === 'break') setActiveMode(remote.activeMode);
+          if (typeof remote.timerStarted === 'boolean') setTimerStarted(remote.timerStarted);
+          if (typeof remote.isIdle === 'boolean') setIsIdle(remote.isIdle);
+          if (typeof remote.pomodoroCount === 'number') setPomodoroCount(remote.pomodoroCount);
+          if (typeof remote.allPauseActive === 'boolean') setAllPauseActive(remote.allPauseActive);
+          if (typeof remote.allPauseTime === 'number') setAllPauseTime(remote.allPauseTime);
+          if (typeof remote.allPauseReason === 'string') setAllPauseReason(remote.allPauseReason);
+          if (remote.allPauseStartTime === null || typeof remote.allPauseStartTime === 'number') setAllPauseStartTime(remote.allPauseStartTime ?? null);
+          if (typeof remote.graceOpen === 'boolean') setGraceOpen(remote.graceOpen);
+          if (remote.graceContext === 'afterWork' || remote.graceContext === 'afterBreak' || remote.graceContext === null) setGraceContext(remote.graceContext);
+          if (typeof remote.graceTotal === 'number') setGraceTotal(remote.graceTotal);
 
-          if (remote.timerStarted) {
-              workerRef.current?.postMessage('start');
-              if (lastTickRef.current === null) {
-                  lastTickRef.current = Date.now();
-                  currentActivityStartRef.current = new Date(); 
-              }
-          } else {
-              workerRef.current?.postMessage('stop');
+          if (isRuntimeSnapshot(remote.runtime) && remote.runtime.updatedAtMs > lastRuntimeAppliedRef.current) {
+              runtimeRef.current = remote.runtime;
+              lastRuntimeAppliedRef.current = remote.runtime.updatedAtMs;
+              currentActivityStartRef.current = remote.runtime.activityStartIso ? new Date(remote.runtime.activityStartIso) : null;
           }
       }
       if (!isHost && remote.hostConfig) setHostSyncConfig(remote.hostConfig);
       setTimeout(() => { isRemoteUpdate.current = false; }, 300);
-  }, [workTime, activeMode, timerStarted, isHost, clientSyncConfig]);
+  }, [isHost, clientSyncConfig]);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
       if (!groupSessionId || connectionsRef.current.length === 0) return;
@@ -858,6 +1246,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!hostSyncConfig.syncTimers) {
           delete filteredState.workTime; delete filteredState.breakTime; delete filteredState.activeMode;
           delete filteredState.timerStarted; delete filteredState.isIdle;
+          delete filteredState.allPauseActive; delete filteredState.allPauseTime; delete filteredState.allPauseReason;
+          delete filteredState.allPauseStartTime; delete filteredState.graceOpen; delete filteredState.graceContext;
+          delete filteredState.graceTotal; delete filteredState.runtime;
       }
       if (!hostSyncConfig.syncTasks) { delete filteredState.tasks; delete filteredState.categories; }
       if (!hostSyncConfig.syncHistory) { delete filteredState.logs; }
@@ -875,7 +1266,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
      if(!groupSessionId || isRemoteUpdate.current) return;
      const t = setTimeout(() => { broadcastState(); }, 100);
      return () => clearTimeout(t);
-  }, [tasks, settings, activeMode, timerStarted, isIdle, scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, graceOpen, groupSessionId, broadcastState, hostSyncConfig]);
+  }, [tasks, settings, activeMode, timerStarted, isIdle, scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseStartTime, graceOpen, graceTotal, groupSessionId, broadcastState, hostSyncConfig]);
 
   const updateMembersList = useCallback(() => {
       if (isHost) {
@@ -952,7 +1343,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       self.onmessage = function(e) {
         if (e.data === 'start') {
           if (intervalId) clearInterval(intervalId);
-          intervalId = setInterval(() => { self.postMessage('tick'); }, 250);
+          intervalId = setInterval(() => { self.postMessage('tick'); }, 500);
         } else if (e.data === 'stop') {
           if (intervalId) clearInterval(intervalId);
           intervalId = null;
@@ -993,7 +1384,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof navigator !== 'undefined' && "vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
   }, []);
 
-  const handleWorkLoopComplete = useCallback(() => {
+  const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
     const now = Date.now();
     if (now - lastLoopTimeRef.current < 5000) return; 
@@ -1002,12 +1393,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     lastLoopTimeRef.current = now;
     playAlarm(settings.alarmSound);
     
-    const nextPomoCount = pomodoroCount + 1;
-    const isLongBreak = nextPomoCount % settings.longBreakInterval === 0;
-    const reward = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
+    const completion = computeWorkCompletion(pomodoroCount, breakTime, settings);
 
-    setBreakTime(prev => prev + reward);
-    setPomodoroCount(nextPomoCount);
+    setBreakTime(completion.nextBreakTime);
+    setPomodoroCount(completion.nextPomoCount);
+    setWorkTime(0);
 
     if (currentActivityStartRef.current) {
       logActivity('work', currentActivityStartRef.current, settings.workDuration, 'Pomodoro Complete');
@@ -1031,15 +1421,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return updatedTasks;
     });
 
-    sendNotification(isLongBreak ? "Long Break Earned!" : "Focus Session Complete", `${Math.floor(reward/60)} minutes added to break bank.`);
+    sendNotification(completion.isLongBreak ? "Long Break Earned!" : "Focus Session Complete", `${Math.floor(completion.reward/60)} minutes added to break bank.`);
     setTimerStarted(false);
     setGraceContext('afterWork');
-    setGraceTotal(0);
+    setGraceTotal(initialGraceSeconds);
     setGraceOpen(true);
+    anchorRuntimePhase('grace', {
+      phaseStartWorkTime: 0,
+      phaseStartBreakTime: completion.nextBreakTime,
+      phaseStartGraceTotal: initialGraceSeconds,
+      activityStartIso: null,
+    });
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
-  }, [settings, logActivity, sendNotification, pomodoroCount]);
+  }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase]);
 
-  const handleBreakLoopComplete = useCallback(() => {
+  const handleBreakLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
     const now = Date.now();
     if (now - lastLoopTimeRef.current < 5000) return;
@@ -1052,49 +1448,175 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       logActivity('break', currentActivityStartRef.current, duration, 'Break Bank Depleted');
       currentActivityStartRef.current = null;
     }
+    setBreakTime(0);
     setTimerStarted(false);
     setGraceContext('afterBreak');
-    setGraceTotal(0);
+    setGraceTotal(initialGraceSeconds);
     setGraceOpen(true);
     sendNotification("Break Time's Up!", "Back to work!");
+    anchorRuntimePhase('grace', {
+      phaseStartBreakTime: 0,
+      phaseStartGraceTotal: initialGraceSeconds,
+      activityStartIso: null,
+    });
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
-  }, [logActivity, sendNotification, settings.alarmSound]);
+  }, [logActivity, sendNotification, settings.alarmSound, anchorRuntimePhase]);
 
   useEffect(() => {
+    if (!legacyRuntimeMode) return;
     if (timerStarted && !isIdle) {
        if (activeMode === 'work' && workTime <= 0) {
-           handleWorkLoopComplete();
+           handleWorkLoopComplete(0);
        } else if (activeMode === 'break') {
-           if (breakTime > 1) {
-               breakZeroTriggeredRef.current = false;
-           } else if (breakTime <= 0 && !breakZeroTriggeredRef.current) {
-               breakZeroTriggeredRef.current = true;
-               handleBreakLoopComplete();
-           }
+           if (breakTime <= 0) handleBreakLoopComplete(0);
        }
     }
-  }, [workTime, breakTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, handleBreakLoopComplete]);
+  }, [workTime, breakTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, handleBreakLoopComplete, legacyRuntimeMode]);
 
-  const tick = useCallback(() => {
-    const now = Date.now();
+  const legacyTick = useCallback((now: number) => {
     if (!lastTickRef.current) { lastTickRef.current = now; return; }
     const delta = (now - lastTickRef.current) / 1000;
     lastTickRef.current = now;
 
-    if (allPauseActive) { setAllPauseTime(prev => prev + delta); return; }
-    if (graceOpen) { setGraceTotal(prev => prev + delta); return; }
+    if (allPauseActive) {
+      setAllPauseTime(prev => prev + delta);
+      return;
+    }
+    if (graceOpen) {
+      setGraceTotal(prev => prev + delta);
+      return;
+    }
 
     if (timerStarted && !isIdle) {
       if (activeMode === 'work') {
-        setWorkTime(prev => {
-          if (prev <= 0) return 0;
-          return Math.max(0, prev - delta);
-        });
+        setWorkTime(prev => Math.max(0, prev - delta));
       } else {
         setBreakTime(prev => prev - delta);
       }
     }
   }, [activeMode, timerStarted, isIdle, allPauseActive, graceOpen]);
+
+  const reconcileFromRuntime = useCallback((now: number) => {
+    const runtime = runtimeRef.current;
+    const derived = deriveRuntimeValues(runtime, now);
+
+    if (runtime.phase === 'running-work') {
+      if (Math.abs(derived.workTime - workTime) > 0.05) setWorkTime(derived.workTime);
+      if (Math.abs(derived.breakTime - breakTime) > 0.05) setBreakTime(derived.breakTime);
+      const boundary = detectRuntimeBoundaryCrossing(runtime, now);
+      if (boundary?.mode === 'work') {
+        handleWorkLoopComplete(boundary.overflowSeconds);
+      }
+      return;
+    }
+
+    if (runtime.phase === 'running-break') {
+      if (Math.abs(derived.workTime - workTime) > 0.05) setWorkTime(derived.workTime);
+      if (Math.abs(derived.breakTime - breakTime) > 0.05) setBreakTime(derived.breakTime);
+      const boundary = detectRuntimeBoundaryCrossing(runtime, now);
+      if (boundary?.mode === 'break') {
+        handleBreakLoopComplete(boundary.overflowSeconds);
+      }
+      return;
+    }
+
+    if (runtime.phase === 'all-pause') {
+      if (Math.abs(derived.allPauseTime - allPauseTime) > 0.05) setAllPauseTime(derived.allPauseTime);
+      return;
+    }
+
+    if (runtime.phase === 'grace') {
+      if (Math.abs(derived.graceTotal - graceTotal) > 0.05) setGraceTotal(derived.graceTotal);
+      return;
+    }
+
+    if (Math.abs(workTime - derived.workTime) > 0.05) setWorkTime(derived.workTime);
+    if (Math.abs(breakTime - derived.breakTime) > 0.05) setBreakTime(derived.breakTime);
+  }, [
+    workTime,
+    breakTime,
+    allPauseTime,
+    graceTotal,
+    handleWorkLoopComplete,
+    handleBreakLoopComplete,
+  ]);
+
+  const tick = useCallback(() => {
+    const now = Date.now();
+    if (legacyRuntimeMode) {
+      legacyTick(now);
+      return;
+    }
+
+    if (isDevMode) {
+      const runtime = runtimeRef.current;
+      if (timerStarted && !isIdle && runtime.phase !== 'running-work' && runtime.phase !== 'running-break') {
+        console.error('Timer runtime invariant failed: running timer has non-running runtime phase', runtime);
+      }
+      if (localStorage.getItem('doro_shadow_runtime') === '1') {
+        if (!shadowTickRef.current) {
+          shadowTickRef.current = now;
+        } else {
+          const delta = (now - shadowTickRef.current) / 1000;
+          shadowTickRef.current = now;
+          const derived = deriveRuntimeValues(runtime, now);
+          if (runtime.phase === 'running-work') {
+            const projected = Math.max(0, workTime - delta);
+            const drift = Math.abs(projected - derived.workTime);
+            if (drift > 1) {
+              console.warn('Runtime shadow drift detected for work timer', { projected, derived: derived.workTime, drift });
+            }
+          }
+          if (runtime.phase === 'running-break') {
+            const projected = breakTime - delta;
+            const drift = Math.abs(projected - derived.breakTime);
+            if (drift > 1) {
+              console.warn('Runtime shadow drift detected for break timer', { projected, derived: derived.breakTime, drift });
+            }
+          }
+        }
+      }
+    }
+    reconcileFromRuntime(now);
+  }, [legacyRuntimeMode, legacyTick, reconcileFromRuntime, timerStarted, isIdle, isDevMode]);
+
+  const applyExternalTimerState = useCallback((payload: Partial<TimerPersistencePayload>, runtime: TimerRuntimeSnapshot) => {
+    if (!isRuntimeSnapshot(runtime)) return;
+    if (runtime.sourceTabId === tabIdRef.current) return;
+    if (runtime.updatedAtMs <= lastRuntimeAppliedRef.current) return;
+
+    isCrossTabApplyingRef.current = true;
+    runtimeRef.current = runtime;
+    lastRuntimeAppliedRef.current = runtime.updatedAtMs;
+
+    const runtimeMode = runtime.phase === 'running-break' ? 'break' : 'work';
+    const runtimeRunning = runtime.phase === 'running-work' || runtime.phase === 'running-break';
+
+    if (typeof payload.workTime === 'number') setWorkTime(payload.workTime);
+    if (typeof payload.breakTime === 'number') setBreakTime(payload.breakTime);
+    if (payload.activeMode === 'work' || payload.activeMode === 'break') setActiveMode(payload.activeMode);
+    else setActiveMode(runtimeMode);
+    if (typeof payload.timerStarted === 'boolean') setTimerStarted(payload.timerStarted);
+    else setTimerStarted(runtimeRunning);
+    if (typeof payload.isIdle === 'boolean') setIsIdle(payload.isIdle);
+    else setIsIdle(runtime.phase === 'idle');
+    if (typeof payload.pomodoroCount === 'number') setPomodoroCount(payload.pomodoroCount);
+    if (typeof payload.allPauseActive === 'boolean') setAllPauseActive(payload.allPauseActive);
+    else setAllPauseActive(runtime.phase === 'all-pause');
+    if (typeof payload.allPauseTime === 'number') setAllPauseTime(payload.allPauseTime);
+    if (typeof payload.allPauseReason === 'string') setAllPauseReason(payload.allPauseReason);
+    if (payload.allPauseStartTime === null || typeof payload.allPauseStartTime === 'number') setAllPauseStartTime(payload.allPauseStartTime ?? null);
+    if (typeof payload.graceOpen === 'boolean') setGraceOpen(payload.graceOpen);
+    else setGraceOpen(runtime.phase === 'grace');
+    if (payload.graceContext === 'afterWork' || payload.graceContext === 'afterBreak' || payload.graceContext === null) setGraceContext(payload.graceContext);
+    if (typeof payload.graceTotal === 'number') setGraceTotal(payload.graceTotal);
+    if (typeof payload.sessionStartTime === 'string' || payload.sessionStartTime === null) setSessionStartTime(payload.sessionStartTime ?? null);
+    if (typeof payload.scheduleStartTime === 'string') setScheduleStartTime(payload.scheduleStartTime);
+
+    currentActivityStartRef.current = runtime.activityStartIso ? new Date(runtime.activityStartIso) : null;
+    reconcileFromRuntime(Date.now());
+    setTimeout(() => { isCrossTabApplyingRef.current = false; }, 0);
+  }, [reconcileFromRuntime]);
 
   useEffect(() => {
     if (!workerRef.current) return;
@@ -1104,32 +1626,111 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     if (timerStarted || allPauseActive || graceOpen) {
       if (!lastTickRef.current) lastTickRef.current = Date.now();
+      if (!shadowTickRef.current) shadowTickRef.current = Date.now();
       workerRef.current?.postMessage('start');
     } else {
       workerRef.current?.postMessage('stop');
       lastTickRef.current = null;
+      shadowTickRef.current = null;
     }
   }, [timerStarted, allPauseActive, graceOpen]);
 
-  const startTimer = () => {
-    if (!timerStarted) {
-      if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
-      if (!sessionStartTime) {
-          const now = new Date();
-          setSessionStartTime(now.toISOString());
-          const h = now.getHours().toString().padStart(2, '0');
-          const m = now.getMinutes().toString().padStart(2, '0');
-          setScheduleStartTime(`${h}:${m}`);
-      }
-      if (isIdle) { setIsIdle(false); currentActivityStartRef.current = new Date(); }
-      setTimerStarted(true);
-      lastTickRef.current = Date.now(); 
-      if (!currentActivityStartRef.current) currentActivityStartRef.current = new Date();
-      playSwitch(); 
+  useEffect(() => {
+    if (!pendingPostLoadReconcileRef.current) return;
+    pendingPostLoadReconcileRef.current = false;
+    reconcileFromRuntime(Date.now());
+    if (pendingRuntimeMigrationRef.current) {
+      pendingRuntimeMigrationRef.current = false;
+      persistRuntimeSnapshot(runtimeRef.current);
     }
+  }, [reconcileFromRuntime, persistRuntimeSnapshot]);
+
+  useEffect(() => {
+    const onVisibleOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        reconcileFromRuntime(Date.now());
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibleOrFocus);
+    window.addEventListener('focus', onVisibleOrFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibleOrFocus);
+      window.removeEventListener('focus', onVisibleOrFocus);
+    };
+  }, [reconcileFromRuntime]);
+
+  useEffect(() => {
+    const onStorageFlagChange = (e: StorageEvent) => {
+      if (e.key === LEGACY_RUNTIME_FLAG) {
+        setLegacyRuntimeMode(e.newValue === '1');
+      }
+    };
+    window.addEventListener('storage', onStorageFlagChange);
+    return () => window.removeEventListener('storage', onStorageFlagChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(CROSS_TAB_CHANNEL);
+    broadcastChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== 'RUNTIME_SYNC') return;
+      if (data.key !== getActiveStorageKey()) return;
+      if (!isRuntimeSnapshot(data.runtime)) return;
+      applyExternalTimerState((data.timer || {}) as Partial<TimerPersistencePayload>, data.runtime);
+    };
+    return () => {
+      channel.close();
+      broadcastChannelRef.current = null;
+    };
+  }, [applyExternalTimerState, getActiveStorageKey]);
+
+  useEffect(() => {
+    const key = getActiveStorageKey();
+    const onStorageSync = (event: StorageEvent) => {
+      if (event.key !== key || !event.newValue) return;
+      try {
+        const parsed: TimerPersistencePayload = JSON.parse(event.newValue);
+        if (!isRuntimeSnapshot(parsed.runtime)) return;
+        applyExternalTimerState(parsed, parsed.runtime);
+      } catch {
+        // Ignore invalid payloads.
+      }
+    };
+    window.addEventListener('storage', onStorageSync);
+    return () => window.removeEventListener('storage', onStorageSync);
+  }, [getActiveStorageKey, applyExternalTimerState]);
+
+  const startTimerInternal = (opts?: { mode?: TimerMode, workOverride?: number, breakOverride?: number, forceActivityStart?: Date, playSound?: boolean }) => {
+    if (timerStarted) return;
+    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+    if (!sessionStartTime) {
+        const now = new Date();
+        setSessionStartTime(now.toISOString());
+        const h = now.getHours().toString().padStart(2, '0');
+        const m = now.getMinutes().toString().padStart(2, '0');
+        setScheduleStartTime(`${h}:${m}`);
+    }
+    if (isIdle) setIsIdle(false);
+    const activityStart = opts?.forceActivityStart || currentActivityStartRef.current || new Date();
+    currentActivityStartRef.current = activityStart;
+    setTimerStarted(true);
+    lastTickRef.current = Date.now();
+    anchorRuntimePhase((opts?.mode || activeMode) === 'work' ? 'running-work' : 'running-break', {
+      phaseStartWorkTime: opts?.workOverride ?? workTime,
+      phaseStartBreakTime: opts?.breakOverride ?? breakTime,
+      activityStartIso: activityStart.toISOString(),
+    });
+    if (opts?.playSound !== false) playSwitch();
   };
 
-  const stopTimer = () => { setTimerStarted(false); };
+  const startTimer = () => startTimerInternal();
+
+  const stopTimer = () => {
+    setTimerStarted(false);
+    anchorRuntimePhase('idle');
+  };
   const toggleTimer = () => timerStarted ? stopTimer() : startTimer();
 
   const performSwitch = (targetMode: TimerMode) => {
@@ -1145,6 +1746,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     currentActivityStartRef.current = new Date();
     setTimerStarted(true);
     lastTickRef.current = Date.now();
+    anchorRuntimePhase(targetMode === 'work' ? 'running-work' : 'running-break', {
+      activityStartIso: currentActivityStartRef.current.toISOString(),
+    });
   };
 
   const activateMode = (mode: TimerMode) => {
@@ -1157,22 +1761,35 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const restartActiveTimer = (customSeconds?: number) => {
     stopTimer();
-    if (activeMode === 'work') setWorkTime(customSeconds !== undefined ? customSeconds : settings.workDuration);
-    else setBreakTime(prev => customSeconds !== undefined ? customSeconds : (prev < 0 ? 0 : prev));
+    const nextWorkTime = activeMode === 'work' ? (customSeconds !== undefined ? customSeconds : settings.workDuration) : workTime;
+    const nextBreakTime = activeMode === 'break' ? (customSeconds !== undefined ? customSeconds : (breakTime < 0 ? 0 : breakTime)) : breakTime;
+    if (activeMode === 'work') setWorkTime(nextWorkTime);
+    else setBreakTime(nextBreakTime);
     setGraceOpen(false);
     setIsIdle(false);
-    currentActivityStartRef.current = new Date();
+    const now = new Date();
+    currentActivityStartRef.current = now;
     setTimerStarted(true);
-    lastTickRef.current = Date.now();
+    lastTickRef.current = now.getTime();
+    anchorRuntimePhase(activeMode === 'work' ? 'running-work' : 'running-break', {
+      phaseStartWorkTime: nextWorkTime,
+      phaseStartBreakTime: nextBreakTime,
+      activityStartIso: now.toISOString(),
+    });
   };
 
   const startAllPause = () => {};
   const confirmAllPause = (reason: string) => {
     stopTimer();
+    const pauseStart = Date.now();
     setAllPauseReason(reason);
-    setAllPauseStartTime(Date.now());
+    setAllPauseStartTime(pauseStart);
     setAllPauseTime(0);
     setAllPauseActive(true);
+    anchorRuntimePhase('all-pause', {
+      phaseStartAllPauseTime: 0,
+      activityStartIso: null,
+    });
   };
 
   const endAllPause = () => {
@@ -1182,6 +1799,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       logActivity('allpause', start, allPauseTime, allPauseReason);
     }
     currentActivityStartRef.current = new Date();
+    anchorRuntimePhase('idle', {
+      activityStartIso: currentActivityStartRef.current.toISOString(),
+    });
   };
 
   const resumeFromPause = (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => {
@@ -1194,10 +1814,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     setActiveMode(action);
     setIsIdle(false);
-    if (action === 'work') setWorkTime(prev => Math.max(0, prev - adjustAmount));
-    else setBreakTime(prev => prev - adjustAmount);
-    currentActivityStartRef.current = new Date();
-    startTimer();
+    const nextWorkTime = action === 'work' ? Math.max(0, workTime - adjustAmount) : workTime;
+    const nextBreakTime = action === 'break' ? breakTime - adjustAmount : breakTime;
+    if (action === 'work') setWorkTime(nextWorkTime);
+    else setBreakTime(nextBreakTime);
+    const now = new Date();
+    currentActivityStartRef.current = now;
+    startTimerInternal({
+      mode: action,
+      workOverride: nextWorkTime,
+      breakOverride: nextBreakTime,
+      forceActivityStart: now,
+      playSound: true,
+    });
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
@@ -1218,22 +1847,36 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceContext(null);
     setActiveMode(nextMode);
     setIsIdle(false);
-    if (options && options.adjustBreakBalance !== undefined) setBreakTime(prev => prev - (options.adjustBreakBalance || 0));
+    let nextBreakTime = breakTime;
+    if (options && options.adjustBreakBalance !== undefined) {
+      nextBreakTime = breakTime - (options.adjustBreakBalance || 0);
+      setBreakTime(nextBreakTime);
+    }
     
+    let nextWorkTime = workTime;
     if (nextMode === 'work') {
         const shouldReset = graceContext === 'afterWork' || (workTime <= 1 && settings.workDuration > 0);
-        setWorkTime(prev => {
-            let base = prev;
-            if (shouldReset) base = settings.workDuration;
-            if (options?.adjustWorkStart) base = Math.max(0, base - options.adjustWorkStart);
-            return base;
-        });
+        let base = workTime;
+        if (shouldReset) base = settings.workDuration;
+        if (options?.adjustWorkStart) base = Math.max(0, base - options.adjustWorkStart);
+        nextWorkTime = base;
+        setWorkTime(nextWorkTime);
     } else {
-        if (graceContext === 'afterWork') setWorkTime(settings.workDuration);
+        if (graceContext === 'afterWork') {
+          nextWorkTime = settings.workDuration;
+          setWorkTime(settings.workDuration);
+        }
     }
 
-    currentActivityStartRef.current = new Date();
-    startTimer();
+    const now = new Date();
+    currentActivityStartRef.current = now;
+    startTimerInternal({
+      mode: nextMode,
+      workOverride: nextWorkTime,
+      breakOverride: nextBreakTime,
+      forceActivityStart: now,
+      playSound: true,
+    });
     setTimeout(() => { isProcessingRef.current = false; }, 500);
   };
 
@@ -1337,6 +1980,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const h = now.getHours().toString().padStart(2, '0');
     const m = now.getMinutes().toString().padStart(2, '0');
     setScheduleStartTime(`${h}:${m}`);
+    anchorRuntimePhase('idle', {
+      phaseStartWorkTime: settings.workDuration,
+      phaseStartBreakTime: 0,
+      phaseStartAllPauseTime: 0,
+      phaseStartGraceTotal: 0,
+      activityStartIso: null,
+    });
     
     setShowSummary(true);
   };
@@ -1372,12 +2022,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       currentActivityStartRef.current = null;
       lastTickRef.current = null;
       workerRef.current?.postMessage('stop');
+      anchorRuntimePhase('idle', {
+        phaseStartWorkTime: DEFAULT_SETTINGS.workDuration,
+        phaseStartBreakTime: 0,
+        phaseStartAllPauseTime: 0,
+        phaseStartGraceTotal: 0,
+        activityStartIso: null,
+      });
   };
 
-  const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string) => {
+  const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => {
     const newTask: Task = {
       id: Date.now(), name, estimated, completed: 0, checked: false,
-      selected: tasks.length === 0 && !parentId && !isFuture, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart
+      selected: tasks.length === 0 && !parentId && !isFuture, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
     };
     if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
     else setTasks(prev => [...prev, newTask]);
@@ -1387,7 +2044,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const newTask: Task = {
         id: Date.now(), name: taskProps.name, estimated: taskProps.estimated, completed: 0, checked: false,
         selected: tasks.length === 0 && !taskProps.isFuture, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
-        isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart
+        isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
       setTasks(prev => [...prev, newTask]);
   };
@@ -1509,7 +2166,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateSettings = (newSettings: TimerSettings) => {
     setSettings(newSettings);
-    if (!timerStarted && activeMode === 'work') setWorkTime(newSettings.workDuration);
+    if (!timerStarted && activeMode === 'work') {
+      setWorkTime(newSettings.workDuration);
+      if (!allPauseActive && !graceOpen) {
+        anchorRuntimePhase('idle', { phaseStartWorkTime: newSettings.workDuration });
+      }
+    }
   };
 
   const clearLogs = () => { setLogs([]); setPomodoroCount(0); };
@@ -1520,7 +2182,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       user, workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
-      isScheduleOpen, setScheduleOpen,
+      isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen,
       activeTask, activeColor, showSummary, sessionStats,
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId,
       login, logout, register, exportData, importData, startMigrationHost, joinMigration,

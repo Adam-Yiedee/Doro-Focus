@@ -205,6 +205,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
   };
 
   if (!isOpen) return null;
+  const isLightTheme = settings.themeMode !== 'dark';
 
   if (showQR && groupSessionId) {
       return (
@@ -238,10 +239,65 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
 
   return (
     <>
+    <style>{`
+      .settings-option-btn {
+        transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+      }
+      .settings-option-btn:hover {
+        transform: translateY(-1px) scale(1.01);
+        box-shadow: 0 10px 20px -14px rgba(15, 23, 42, 0.55);
+      }
+      .settings-option-btn:active {
+        transform: translateY(0) scale(0.985);
+      }
+      .doro-no-spin::-webkit-outer-spin-button,
+      .doro-no-spin::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      .doro-no-spin[type='number'] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+      }
+      .doro-settings-shell.theme-light {
+        background: linear-gradient(160deg, #f7f9fc 0%, #eef3f9 52%, #ebf1f8 100%) !important;
+        border-color: #d4dde9 !important;
+        box-shadow: 0 30px 70px -26px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
+      }
+      .doro-settings-shell.theme-light .settings-tabbar {
+        border-color: rgba(15, 23, 42, 0.1) !important;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.75)) !important;
+        backdrop-filter: blur(14px);
+      }
+      .doro-settings-shell.theme-light .settings-body {
+        background: radial-gradient(circle at 12% -10%, rgba(86, 148, 255, 0.12), transparent 38%), radial-gradient(circle at 95% 0%, rgba(95, 198, 255, 0.08), transparent 35%), #f2f6fb !important;
+      }
+      .doro-settings-shell.theme-light [class*="bg-white/"] {
+        background-color: rgba(255, 255, 255, 0.7) !important;
+      }
+      .doro-settings-shell.theme-light [class*="bg-black/"] {
+        background-color: rgba(225, 233, 244, 0.72) !important;
+      }
+      .doro-settings-shell.theme-light [class*="border-white/"] {
+        border-color: rgba(15, 23, 42, 0.12) !important;
+      }
+      .doro-settings-shell.theme-light [class*="text-white"] {
+        color: #0b1526 !important;
+      }
+      .doro-settings-shell.theme-light [class*="text-white/"] {
+        color: #5f6f85 !important;
+      }
+      .doro-settings-shell.theme-light .theme-accent {
+        color: #0a64ec !important;
+      }
+      .doro-settings-shell.theme-light .settings-option-btn:hover {
+        box-shadow: 0 12px 24px -14px rgba(10, 100, 236, 0.35);
+      }
+    `}</style>
     <div className="fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4 bg-black/60 backdrop-blur-xl animate-fade-in" onClick={onClose}>
-      <div className="w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]" onClick={e => e.stopPropagation()}>
+      <div className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`} onClick={e => e.stopPropagation()}>
         
-        <div className="flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
+        <div className="settings-tabbar flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
           {['log', 'schedule', 'group', 'account', 'settings'].map(t => (
             <button 
               key={t}
@@ -259,7 +315,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">
+        <div className="settings-body flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">
           {tab === 'log' && (
             <div className="p-4 md:p-8 space-y-4">
               <div className="flex justify-between items-center mb-6">
@@ -776,22 +832,40 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
               <div className="p-4 md:p-8 space-y-8 animate-slide-up max-w-2xl mx-auto">
                   <div className="flex justify-between items-center border-b border-white/10 pb-4">
                       <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
-                      <button onClick={() => updateSettings({ ...settings, workDuration: 1500, shortBreakDuration: 300, longBreakDuration: 900 })} className="hidden text-xs text-white/50 hover:text-white uppercase font-bold tracking-widest">Reset Defaults</button>
+                      <button onClick={() => updateSettings({ ...settings, workDuration: 1500, shortBreakDuration: 300, longBreakDuration: 900, themeMode: 'dark' })} className="hidden text-xs text-white/50 hover:text-white uppercase font-bold tracking-widest">Reset Defaults</button>
                   </div>
 
                   <div className="space-y-6">
                       <div className="grid grid-cols-3 gap-4">
                            <div className="space-y-2">
                                <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Work</label>
-                               <input type="number" value={settings.workDuration / 60} onChange={e => updateSettings({...settings, workDuration: Number(e.target.value) * 60})} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                               <input type="number" value={settings.workDuration / 60} onChange={e => updateSettings({...settings, workDuration: Number(e.target.value) * 60})} className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
                            </div>
                            <div className="space-y-2">
                                <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Short Break</label>
-                               <input type="number" value={settings.shortBreakDuration / 60} onChange={e => updateSettings({...settings, shortBreakDuration: Number(e.target.value) * 60})} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                               <input type="number" value={settings.shortBreakDuration / 60} onChange={e => updateSettings({...settings, shortBreakDuration: Number(e.target.value) * 60})} className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
                            </div>
                            <div className="space-y-2">
                                <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Long Break</label>
-                               <input type="number" value={settings.longBreakDuration / 60} onChange={e => updateSettings({...settings, longBreakDuration: Number(e.target.value) * 60})} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                               <input type="number" value={settings.longBreakDuration / 60} onChange={e => updateSettings({...settings, longBreakDuration: Number(e.target.value) * 60})} className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
+                           </div>
+                      </div>
+
+                      <div className="pt-4 border-t border-white/5">
+                           <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Appearance</label>
+                           <div className="grid grid-cols-2 gap-2">
+                               <button
+                                  onClick={() => updateSettings({ ...settings, themeMode: 'light' })}
+                                  className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all ${settings.themeMode === 'light' ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
+                               >
+                                  Light
+                               </button>
+                               <button
+                                  onClick={() => updateSettings({ ...settings, themeMode: 'dark' })}
+                                  className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all ${settings.themeMode === 'dark' ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
+                               >
+                                  Dark
+                               </button>
                            </div>
                       </div>
 
@@ -802,7 +876,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                                    <button 
                                      key={opt.val}
                                      onClick={() => { updateSettings({...settings, alarmSound: opt.val}); playAlarm(opt.val); }}
-                                     className={`p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all truncate ${settings.alarmSound === opt.val ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
+                                      className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all truncate ${settings.alarmSound === opt.val ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
                                    >
                                        {opt.label}
                                    </button>

@@ -8,10 +8,11 @@ import AllPauseModal, { ResumeModal } from './Modals/AllPauseModal';
 import LogModal from './Modals/LogModal';
 import GraceModal from './Modals/GraceModal';
 import TaskViewModal from './Modals/TaskViewModal';
+import WeeklySchedulePanel from './Modals/WeeklySchedulePanel';
 import SummaryView from './SummaryView';
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen } = useTimer();
+  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
 
@@ -26,6 +27,11 @@ const Layout: React.FC = () => {
     backgroundColor: activeMode === 'break' 
       ? '#38858a' 
       : (activeColor || '#BA4949')
+  };
+  const contentStyle: React.CSSProperties = {
+    transform: isWeeklyScheduleOpen
+      ? 'translateX(calc(-1 * min(18vw, 260px))) scale(0.99)'
+      : 'translateX(0) scale(1)',
   };
 
   const backdropClass = settings.disableBlur ? 'bg-black/40' : 'backdrop-blur-md bg-white/5';
@@ -43,37 +49,42 @@ const Layout: React.FC = () => {
         </>
       )}
 
-      {/* Top Bar */}
-      <div className="w-full max-w-4xl flex justify-end items-center z-30 mb-4">
-        <div className="flex gap-2">
-          <button 
-            onClick={() => setShowPauseModal(true)}
-            className={`p-2.5 rounded-xl text-white transition-all active:scale-95 shadow-sm hover:shadow-md border border-white/5 duration-500 ${backdropClass} opacity-50 hover:opacity-100`}
-            title="Pause All"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className="text-white/90"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          </button>
-          <button 
-            onClick={() => setShowLogModal(true)}
-            className={`p-2.5 rounded-xl text-white transition-all active:scale-95 shadow-sm hover:shadow-md border border-white/5 duration-500 ${backdropClass} opacity-50 hover:opacity-100`}
-            title="Menu"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Main Content Area */}
-      <div className="w-full max-w-5xl z-10 flex flex-col gap-12">
-        
-        {/* Timer Section */}
-        <div className="w-full flex justify-center animate-slide-up py-8">
-           <TimerDisplay />
+      <div
+        className={`w-full flex flex-col items-center transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform ${isWeeklyScheduleOpen ? 'pointer-events-none' : ''}`}
+        style={contentStyle}
+      >
+        {/* Top Bar */}
+        <div className="w-full max-w-4xl flex justify-end items-center z-30 mb-4">
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setShowPauseModal(true)}
+              className={`p-2.5 rounded-xl text-white transition-all active:scale-95 shadow-sm hover:shadow-md border border-white/5 duration-500 ${backdropClass} opacity-50 hover:opacity-100`}
+              title="Pause All"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className="text-white/90"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            </button>
+            <button 
+              onClick={() => setShowLogModal(true)}
+              className={`p-2.5 rounded-xl text-white transition-all active:scale-95 shadow-sm hover:shadow-md border border-white/5 duration-500 ${backdropClass} opacity-50 hover:opacity-100`}
+              title="Menu"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+          </div>
         </div>
 
-        {/* Tasks Section */}
-        <div className="w-full flex justify-center">
-          <Tasks />
+        {/* Main Content Area */}
+        <div className="w-full max-w-5xl z-10 flex flex-col gap-12">
+          
+          {/* Timer Section */}
+          <div className="w-full flex justify-center animate-slide-up py-8">
+             <TimerDisplay />
+          </div>
+
+          {/* Tasks Section */}
+          <div className="w-full flex justify-center">
+            <Tasks />
+          </div>
         </div>
       </div>
 
@@ -83,6 +94,7 @@ const Layout: React.FC = () => {
       <GraceModal />
       <LogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
       <TaskViewModal isOpen={isScheduleOpen} onClose={() => setScheduleOpen(false)} />
+      <WeeklySchedulePanel isOpen={isWeeklyScheduleOpen} onClose={() => setWeeklyScheduleOpen(false)} />
       <SummaryView />
     </div>
   );
