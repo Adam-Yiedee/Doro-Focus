@@ -157,9 +157,6 @@ const ScheduleTaskCard: React.FC<{
     if (settleTimeoutRef.current) clearTimeout(settleTimeoutRef.current);
     settleTimeoutRef.current = setTimeout(() => setIsSettlingAfterEdit(false), 260);
   };
-  const hoverPushClass = !isDragging && dropHint
-    ? (dropHint === 'before' ? 'translate-y-2' : '-translate-y-2')
-    : '';
 
   if (isEditing) {
     return (
@@ -247,7 +244,10 @@ const ScheduleTaskCard: React.FC<{
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
         const rect = event.currentTarget.getBoundingClientRect();
-        const position: DragInsertPosition = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        const midpoint = rect.top + rect.height / 2;
+        const deadZone = Math.max(6, rect.height * 0.18);
+        if (Math.abs(event.clientY - midpoint) <= deadZone) return;
+        const position: DragInsertPosition = event.clientY < midpoint ? 'before' : 'after';
         onDragHover(task.id, position);
       }}
       onDrop={(event) => {
@@ -255,7 +255,7 @@ const ScheduleTaskCard: React.FC<{
         onDragEnd();
       }}
       onDragEnd={onDragEnd}
-      className={`group relative rounded-xl border p-2.5 transition-[transform,opacity,filter,background-color,border-color] duration-200 cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20 ${hoverPushClass} ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
+      className={`group relative rounded-xl border p-2.5 transition-[transform,opacity,filter,background-color,border-color] duration-200 cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20 ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
       style={taskGlassStyle}
     >
       {dropHint && !isDragging && (
@@ -418,6 +418,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     }
 
     nextRects.forEach((nextRect, taskId) => {
+      if (taskId === draggingTaskId) return;
       const prevRect = previousCardRectsRef.current.get(taskId);
       const node = cardRefsRef.current.get(taskId);
       if (!prevRect || !node) return;
@@ -434,7 +435,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     });
 
     previousCardRectsRef.current = nextRects;
-  }, [isOpen, rootOpenTaskIds, rootOpenTaskLayoutKey, dayRangeKey, showUnscheduled]);
+  }, [isOpen, rootOpenTaskIds, rootOpenTaskLayoutKey, dayRangeKey, showUnscheduled, draggingTaskId]);
 
   const tasksByDate = useMemo(() => {
     const map: Record<string, Task[]> = {};

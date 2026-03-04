@@ -146,9 +146,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
   const isTopLevel = depth === 0;
   const isDraggedTask = isTopLevel && draggingTaskId === task.id;
-  const hoverPushClass = !isDraggedTask && dropHint
-    ? (dropHint === 'before' ? 'translate-y-2' : '-translate-y-2')
-    : '';
 
   if (isEditing) {
     return (
@@ -253,7 +250,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
         const rect = event.currentTarget.getBoundingClientRect();
-        const position: DragInsertPosition = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        const midpoint = rect.top + rect.height / 2;
+        const deadZone = Math.max(6, rect.height * 0.18);
+        if (Math.abs(event.clientY - midpoint) <= deadZone) return;
+        const position: DragInsertPosition = event.clientY < midpoint ? 'before' : 'after';
         onDragHoverTask(task.id, position);
       }}
       onDrop={(event) => {
@@ -288,7 +288,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
           }
           ${task.checked ? 'opacity-40' : ''}
           ${isDraggedTask ? 'opacity-45 scale-[0.985] saturate-75' : ''}
-          ${hoverPushClass}
           ${isCheckAnimating ? 'scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
         `}
       >
@@ -504,6 +503,7 @@ const Tasks: React.FC = () => {
     }
 
     nextRects.forEach((nextRect, taskId) => {
+      if (taskId === draggingTaskId) return;
       const prevRect = previousTaskRectsRef.current.get(taskId);
       const node = taskCardRefsRef.current.get(taskId);
       if (!prevRect || !node) return;
@@ -520,7 +520,7 @@ const Tasks: React.FC = () => {
     });
 
     previousTaskRectsRef.current = nextRects;
-  }, [filteredTaskOrderKey, filteredTaskIds]);
+  }, [filteredTaskOrderKey, filteredTaskIds, draggingTaskId]);
 
   const handleTaskDragStart = useCallback((taskId: number) => {
     setDraggingTaskId(taskId);
