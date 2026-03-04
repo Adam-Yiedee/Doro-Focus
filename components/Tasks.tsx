@@ -1,6 +1,6 @@
 
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
 import { getIcon } from '../utils/icons';
@@ -52,7 +52,33 @@ const getColorSwatchClass = (selected: boolean, size: 'sm' | 'md' = 'md') => {
   }`;
 };
 
-const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean, isEntering?: boolean }> = ({ task, depth = 0, isSectionActive, isEntering = false }) => {
+type DragInsertPosition = 'before' | 'after';
+
+interface TaskItemProps {
+  task: Task;
+  depth?: number;
+  isSectionActive: boolean;
+  isEntering?: boolean;
+  draggingTaskId?: number | null;
+  dropHint?: DragInsertPosition | null;
+  onDragStartTask?: (taskId: number) => void;
+  onDragHoverTask?: (taskId: number, position: DragInsertPosition) => void;
+  onDragEndTask?: () => void;
+  registerTaskRef?: (taskId: number, el: HTMLDivElement | null) => void;
+}
+
+const TaskItem: React.FC<TaskItemProps> = ({
+  task,
+  depth = 0,
+  isSectionActive,
+  isEntering = false,
+  draggingTaskId = null,
+  dropHint = null,
+  onDragStartTask,
+  onDragHoverTask,
+  onDragEndTask,
+  registerTaskRef,
+}) => {
   const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(task.name);
@@ -118,6 +144,11 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean,
 
   const containerMargin = depth === 0 ? 'mb-3' : 'mb-2';
   const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
+  const isTopLevel = depth === 0;
+  const isDraggedTask = isTopLevel && draggingTaskId === task.id;
+  const hoverPushClass = !isDraggedTask && dropHint
+    ? (dropHint === 'before' ? 'translate-y-2' : '-translate-y-2')
+    : '';
 
   if (isEditing) {
     return (
@@ -204,9 +235,39 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean,
 
   return (
     <div
+      ref={isTopLevel && registerTaskRef ? (node) => registerTaskRef(task.id, node) : undefined}
+      draggable={isTopLevel && !isRemoving}
+      onDragStart={(event) => {
+        if (!isTopLevel || !onDragStartTask) return;
+        const dragTarget = event.target as HTMLElement;
+        if (dragTarget.closest('button, input, textarea, select, a, form')) {
+          event.preventDefault();
+          return;
+        }
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', String(task.id));
+        onDragStartTask(task.id);
+      }}
+      onDragOver={(event) => {
+        if (!isTopLevel || !onDragHoverTask || !draggingTaskId || draggingTaskId === task.id) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const rect = event.currentTarget.getBoundingClientRect();
+        const position: DragInsertPosition = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        onDragHoverTask(task.id, position);
+      }}
+      onDrop={(event) => {
+        if (!isTopLevel) return;
+        event.preventDefault();
+        onDragEndTask?.();
+      }}
+      onDragEnd={() => {
+        if (!isTopLevel) return;
+        onDragEndTask?.();
+      }}
       className={`
-        flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2' : ''} relative
-        transition-all duration-300 ease-out
+        flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2 cursor-grab active:cursor-grabbing' : ''} relative
+        transition-[transform,opacity,filter] duration-300 ease-out
         ${isEntering ? 'doro-task-enter' : ''}
         ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 blur-[2px] pointer-events-none' : 'opacity-100 scale-100 translate-x-0 blur-0'}
       `}
@@ -226,9 +287,14 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean,
             : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/10 hover:shadow-md opacity-80 hover:opacity-100')
           }
           ${task.checked ? 'opacity-40' : ''}
+          ${isDraggedTask ? 'opacity-45 scale-[0.985] saturate-75' : ''}
+          ${hoverPushClass}
           ${isCheckAnimating ? 'scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
         `}
       >
+        {dropHint && !isDraggedTask && (
+          <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`} />
+        )}
         {task.selected && isSectionActive && <div className="absolute left-0 inset-y-2 w-1 bg-white rounded-r-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" />}
         
         {task.subtasks.length > 0 ? (
@@ -365,16 +431,21 @@ const TaskItem: React.FC<{ task: Task, depth?: number, isSectionActive: boolean,
 };
 
 const Tasks: React.FC = () => {
-  const { tasks, addTask, selectedCategoryId, pomodoroCount, settings, setWeeklyScheduleOpen, categories } = useTimer();
+  const { tasks, addTask, moveTask, selectedCategoryId, pomodoroCount, settings, setWeeklyScheduleOpen, categories } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
   const [newCatId, setNewCatId] = useState<number | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
+  const [hoverTarget, setHoverTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
   const didInitTaskIdsRef = useRef(false);
   const prevTaskIdsRef = useRef<number[]>([]);
+  const taskCardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
+  const previousTaskRectsRef = useRef<Map<number, DOMRect>>(new Map());
+  const lastHoverMoveKeyRef = useRef<string | null>(null);
 
   const todayKey = getDateKey(new Date());
 
@@ -384,6 +455,8 @@ const Tasks: React.FC = () => {
     && (!t.scheduledDate || t.scheduledDate <= todayKey)
     && (selectedCategoryId ? t.categoryId === selectedCategoryId : true)
   );
+  const filteredTaskIds = useMemo(() => filteredTasks.map(task => task.id), [filteredTasks]);
+  const filteredTaskOrderKey = useMemo(() => filteredTaskIds.join('|'), [filteredTaskIds]);
 
   useEffect(() => {
     const currentIds = filteredTasks.map(task => task.id);
@@ -404,6 +477,84 @@ const Tasks: React.FC = () => {
     }, 650);
     return () => clearTimeout(timeoutId);
   }, [filteredTasks]);
+
+  useEffect(() => {
+    if (draggingTaskId && !filteredTaskIds.includes(draggingTaskId)) {
+      setDraggingTaskId(null);
+      setHoverTarget(null);
+      lastHoverMoveKeyRef.current = null;
+    }
+  }, [draggingTaskId, filteredTaskIds]);
+
+  const registerTaskRef = useCallback((taskId: number, node: HTMLDivElement | null) => {
+    if (node) taskCardRefsRef.current.set(taskId, node);
+    else taskCardRefsRef.current.delete(taskId);
+  }, []);
+
+  useLayoutEffect(() => {
+    const nextRects = new Map<number, DOMRect>();
+    filteredTaskIds.forEach((taskId) => {
+      const node = taskCardRefsRef.current.get(taskId);
+      if (node) nextRects.set(taskId, node.getBoundingClientRect());
+    });
+
+    if (previousTaskRectsRef.current.size === 0) {
+      previousTaskRectsRef.current = nextRects;
+      return;
+    }
+
+    nextRects.forEach((nextRect, taskId) => {
+      const prevRect = previousTaskRectsRef.current.get(taskId);
+      const node = taskCardRefsRef.current.get(taskId);
+      if (!prevRect || !node) return;
+
+      const deltaY = prevRect.top - nextRect.top;
+      if (Math.abs(deltaY) < 0.75) return;
+
+      node.style.transition = 'transform 0s';
+      node.style.transform = `translateY(${deltaY}px)`;
+      requestAnimationFrame(() => {
+        node.style.transition = 'transform 300ms cubic-bezier(0.22, 1, 0.36, 1)';
+        node.style.transform = 'translateY(0)';
+      });
+    });
+
+    previousTaskRectsRef.current = nextRects;
+  }, [filteredTaskOrderKey, filteredTaskIds]);
+
+  const handleTaskDragStart = useCallback((taskId: number) => {
+    setDraggingTaskId(taskId);
+    setHoverTarget(null);
+    lastHoverMoveKeyRef.current = null;
+  }, []);
+
+  const clearDragState = useCallback(() => {
+    setDraggingTaskId(null);
+    setHoverTarget(null);
+    lastHoverMoveKeyRef.current = null;
+  }, []);
+
+  const handleTaskDragHover = useCallback((targetTaskId: number, position: DragInsertPosition) => {
+    if (!draggingTaskId || draggingTaskId === targetTaskId) return;
+
+    setHoverTarget(prev => (
+      prev && prev.taskId === targetTaskId && prev.position === position
+        ? prev
+        : { taskId: targetTaskId, position }
+    ));
+
+    const taskIdsWithoutDragged = filteredTaskIds.filter(id => id !== draggingTaskId);
+    const targetIndex = taskIdsWithoutDragged.indexOf(targetTaskId);
+    if (targetIndex === -1) return;
+
+    const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+    const toId = insertIndex >= taskIdsWithoutDragged.length ? -1 : taskIdsWithoutDragged[insertIndex];
+    const moveKey = `${draggingTaskId}:${toId}`;
+    if (lastHoverMoveKeyRef.current === moveKey) return;
+
+    lastHoverMoveKeyRef.current = moveKey;
+    moveTask(draggingTaskId, toId);
+  }, [draggingTaskId, filteredTaskIds, moveTask]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -478,6 +629,9 @@ const Tasks: React.FC = () => {
         .doro-task-enter {
           animation: doro-task-enter 540ms cubic-bezier(0.16, 0.88, 0.3, 1.12);
           transform-origin: top center;
+        }
+        .doro-task-list-drag-active {
+          transition: background-color 220ms ease;
         }
       `}</style>
       <div 
@@ -630,9 +784,30 @@ const Tasks: React.FC = () => {
         </form>
 
         {/* Task List */}
-        <div className={`space-y-1 pb-8 min-h-[100px] transition-all duration-500 ${blurClass}`}>
+        <div
+          onDragOver={(event) => {
+            if (!draggingTaskId) return;
+            event.preventDefault();
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            clearDragState();
+          }}
+          className={`space-y-1 pb-8 min-h-[100px] transition-all duration-500 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
+        >
           {filteredTasks.map(task => (
-            <TaskItem key={task.id} task={task} isSectionActive={isSectionActive} isEntering={enteringTaskIds.includes(task.id)} />
+            <TaskItem
+              key={task.id}
+              task={task}
+              isSectionActive={isSectionActive}
+              isEntering={enteringTaskIds.includes(task.id)}
+              draggingTaskId={draggingTaskId}
+              dropHint={draggingTaskId && hoverTarget?.taskId === task.id && draggingTaskId !== task.id ? hoverTarget.position : null}
+              onDragStartTask={handleTaskDragStart}
+              onDragHoverTask={handleTaskDragHover}
+              onDragEndTask={clearDragState}
+              registerTaskRef={registerTaskRef}
+            />
           ))}
           {filteredTasks.length === 0 && (
             <div className="flex items-center justify-center h-24 opacity-0" />

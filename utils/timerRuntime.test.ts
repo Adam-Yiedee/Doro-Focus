@@ -100,6 +100,36 @@ describe('boundary catch-up policy', () => {
     const crossing = detectRuntimeBoundaryCrossing(snapshot, BASE_NOW + 45_000);
     expect(crossing).toEqual({ mode: 'break', overflowSeconds: 35 });
   });
+
+  it('does not cross break boundary when break starts at zero', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-break',
+      nowMs: BASE_NOW,
+      workTime: 1500,
+      breakTime: 0,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    const crossing = detectRuntimeBoundaryCrossing(snapshot, BASE_NOW + 45_000);
+    expect(crossing).toBeNull();
+  });
+
+  it('does not cross break boundary when break starts in debt', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-break',
+      nowMs: BASE_NOW,
+      workTime: 1500,
+      breakTime: -30,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    const crossing = detectRuntimeBoundaryCrossing(snapshot, BASE_NOW + 45_000);
+    expect(crossing).toBeNull();
+  });
 });
 
 describe('behavior-locked transition math', () => {

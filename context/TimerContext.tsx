@@ -396,6 +396,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
+  const previousLegacyBreakTimeRef = useRef<number>(breakTime);
   const skipSaveRef = useRef(false);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
@@ -1463,14 +1464,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [logActivity, sendNotification, settings.alarmSound, anchorRuntimePhase]);
 
   useEffect(() => {
-    if (!legacyRuntimeMode) return;
+    const previousBreakTime = previousLegacyBreakTimeRef.current;
+    if (!legacyRuntimeMode) {
+      previousLegacyBreakTimeRef.current = breakTime;
+      return;
+    }
     if (timerStarted && !isIdle) {
        if (activeMode === 'work' && workTime <= 0) {
            handleWorkLoopComplete(0);
        } else if (activeMode === 'break') {
-           if (breakTime <= 0) handleBreakLoopComplete(0);
+           const crossedBreakBoundary = previousBreakTime > 0 && breakTime <= 0;
+           if (crossedBreakBoundary) handleBreakLoopComplete(0);
        }
     }
+    previousLegacyBreakTimeRef.current = breakTime;
   }, [workTime, breakTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, handleBreakLoopComplete, legacyRuntimeMode]);
 
   const legacyTick = useCallback((now: number) => {

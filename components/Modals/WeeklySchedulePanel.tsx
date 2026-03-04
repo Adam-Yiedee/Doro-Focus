@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import { Task } from '../../types';
 
@@ -65,6 +65,7 @@ const buildDayRange = (start: Date, end: Date, todayKey: string) => {
 
 const getPredictedPomos = (task: Task) => Math.max(1, task.estimated - task.completed);
 const formatPomoLabel = (count: number) => `${count} POMO${count === 1 ? '' : 'S'}`;
+type DragInsertPosition = 'before' | 'after';
 
 const colorToRgba = (color: string, alpha: number) => {
   const safeAlpha = Math.max(0, Math.min(1, alpha));
@@ -102,11 +103,24 @@ const colorToRgba = (color: string, alpha: number) => {
 const ScheduleTaskCard: React.FC<{
   task: Task;
   onDragStart: (taskId: number) => void;
+  onDragHover: (taskId: number, position: DragInsertPosition) => void;
   onDragEnd: () => void;
   onSave: (task: Task) => void;
   isDragging?: boolean;
+  dropHint?: DragInsertPosition | null;
   isDropAnimating?: boolean;
-}> = ({ task, onDragStart, onDragEnd, onSave, isDragging = false, isDropAnimating = false }) => {
+  registerCardRef?: (taskId: number, node: HTMLDivElement | null) => void;
+}> = ({
+  task,
+  onDragStart,
+  onDragHover,
+  onDragEnd,
+  onSave,
+  isDragging = false,
+  dropHint = null,
+  isDropAnimating = false,
+  registerCardRef,
+}) => {
   const [isEditing, setIsEditing] = useState(false);
   const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
   const [name, setName] = useState(task.name);
@@ -143,6 +157,9 @@ const ScheduleTaskCard: React.FC<{
     if (settleTimeoutRef.current) clearTimeout(settleTimeoutRef.current);
     settleTimeoutRef.current = setTimeout(() => setIsSettlingAfterEdit(false), 260);
   };
+  const hoverPushClass = !isDragging && dropHint
+    ? (dropHint === 'before' ? 'translate-y-2' : '-translate-y-2')
+    : '';
 
   if (isEditing) {
     return (
@@ -213,16 +230,37 @@ const ScheduleTaskCard: React.FC<{
 
   return (
     <div
+      ref={registerCardRef ? (node) => registerCardRef(task.id, node) : undefined}
       draggable
       onDragStart={(event) => {
+        const dragTarget = event.target as HTMLElement;
+        if (dragTarget.closest('button, input, textarea, select, a, form')) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData('text/plain', String(task.id));
         event.dataTransfer.effectAllowed = 'move';
         onDragStart(task.id);
       }}
+      onDragOver={(event) => {
+        if (isDragging) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const rect = event.currentTarget.getBoundingClientRect();
+        const position: DragInsertPosition = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        onDragHover(task.id, position);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDragEnd();
+      }}
       onDragEnd={onDragEnd}
-      className={`group relative rounded-xl border p-2.5 transition-all duration-200 cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20 ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
+      className={`group relative rounded-xl border p-2.5 transition-[transform,opacity,filter,background-color,border-color] duration-200 cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20 ${hoverPushClass} ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
       style={taskGlassStyle}
     >
+      {dropHint && !isDragging && (
+        <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.55)]`} />
+      )}
       <div className="pointer-events-none absolute inset-0 rounded-xl bg-[linear-gradient(160deg,rgba(255,255,255,0.35),rgba(255,255,255,0.08)_34%,rgba(255,255,255,0)_64%)] opacity-60" />
       <div className="relative z-10 pr-8">
         <div className="text-[16px] leading-tight text-white font-bold truncate">{task.name}</div>
@@ -251,9 +289,10 @@ interface WeeklySchedulePanelProps {
 }
 
 const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClose }) => {
-  const { tasks, updateTask, addDetailedTask, activeColor, settings } = useTimer();
+  const { tasks, updateTask, moveTask, addDetailedTask, activeColor, settings } = useTimer();
   const isLightTheme = settings.themeMode !== 'dark';
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
+  const [hoveredTaskTarget, setHoveredTaskTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [dropAnimatedTaskId, setDropAnimatedTaskId] = useState<number | null>(null);
   const [dropAnimatedDayKey, setDropAnimatedDayKey] = useState<string | null>(null);
   const [hoveredLane, setHoveredLane] = useState<string | null>(null);
@@ -266,6 +305,9 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const [newTaskColor, setNewTaskColor] = useState(activeColor || PRESET_COLORS[0]);
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
   const dropAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastHoverMoveKeyRef = useRef<string | null>(null);
+  const cardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
+  const previousCardRectsRef = useRef<Map<number, DOMRect>>(new Map());
   const todayKey = useMemo(() => getDateKey(new Date()), []);
   const todayDate = useMemo(() => parseDateKey(todayKey), [todayKey]);
 
@@ -288,12 +330,15 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     if (!isOpen) {
       setHoveredLane(null);
       setDraggingTaskId(null);
+      setHoveredTaskTarget(null);
       setDropAnimatedTaskId(null);
       setDropAnimatedDayKey(null);
       setAddingDate(null);
       setShowHistory(false);
       setExtendSchedule(false);
       setShowUnscheduled(false);
+      lastHoverMoveKeyRef.current = null;
+      previousCardRectsRef.current = new Map();
       return;
     }
     setNewTaskName('');
@@ -312,6 +357,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   }, [isOpen, tasks, todayKey, updateTask]);
 
   const rootOpenTasks = useMemo(() => tasks.filter((task) => !task.checked), [tasks]);
+  const rootOpenTaskIds = useMemo(() => rootOpenTasks.map((task) => task.id), [rootOpenTasks]);
+  const rootOpenTaskLayoutKey = useMemo(
+    () => rootOpenTasks.map((task) => `${task.id}:${task.scheduledDate || 'unscheduled'}`).join('|'),
+    [rootOpenTasks]
+  );
 
   const dayRange = useMemo(() => {
     const mondayOffset = (todayDate.getDay() + 6) % 7;
@@ -338,6 +388,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
 
     return buildDayRange(start, end, todayKey);
   }, [rootOpenTasks, todayKey, todayDate, showHistory, extendSchedule]);
+  const dayRangeKey = useMemo(() => dayRange.map((day) => day.key).join('|'), [dayRange]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -346,6 +397,44 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     }, 120);
     return () => clearTimeout(timeout);
   }, [isOpen, dayRange.length]);
+
+  const registerCardRef = useCallback((taskId: number, node: HTMLDivElement | null) => {
+    if (node) cardRefsRef.current.set(taskId, node);
+    else cardRefsRef.current.delete(taskId);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+
+    const nextRects = new Map<number, DOMRect>();
+    rootOpenTaskIds.forEach((taskId) => {
+      const node = cardRefsRef.current.get(taskId);
+      if (node) nextRects.set(taskId, node.getBoundingClientRect());
+    });
+
+    if (previousCardRectsRef.current.size === 0) {
+      previousCardRectsRef.current = nextRects;
+      return;
+    }
+
+    nextRects.forEach((nextRect, taskId) => {
+      const prevRect = previousCardRectsRef.current.get(taskId);
+      const node = cardRefsRef.current.get(taskId);
+      if (!prevRect || !node) return;
+
+      const deltaY = prevRect.top - nextRect.top;
+      if (Math.abs(deltaY) < 0.75) return;
+
+      node.style.transition = 'transform 0s';
+      node.style.transform = `translateY(${deltaY}px)`;
+      requestAnimationFrame(() => {
+        node.style.transition = 'transform 300ms cubic-bezier(0.22, 1, 0.36, 1)';
+        node.style.transform = 'translateY(0)';
+      });
+    });
+
+    previousCardRectsRef.current = nextRects;
+  }, [isOpen, rootOpenTaskIds, rootOpenTaskLayoutKey, dayRangeKey, showUnscheduled]);
 
   const tasksByDate = useMemo(() => {
     const map: Record<string, Task[]> = {};
@@ -379,14 +468,61 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     }, 520);
   };
 
+  const clearDragState = useCallback(() => {
+    setDraggingTaskId(null);
+    setHoveredLane(null);
+    setHoveredTaskTarget(null);
+    lastHoverMoveKeyRef.current = null;
+  }, []);
+
+  const handleCardDragStart = useCallback((taskId: number) => {
+    setDraggingTaskId(taskId);
+    setHoveredTaskTarget(null);
+    lastHoverMoveKeyRef.current = null;
+  }, []);
+
+  const handleCardDragHover = useCallback((targetTaskId: number, position: DragInsertPosition) => {
+    if (!draggingTaskId || draggingTaskId === targetTaskId) return;
+    setHoveredTaskTarget((prev) => (
+      prev && prev.taskId === targetTaskId && prev.position === position
+        ? prev
+        : { taskId: targetTaskId, position }
+    ));
+
+    const globalWithoutDragged = rootOpenTaskIds.filter((id) => id !== draggingTaskId);
+    const targetIndex = globalWithoutDragged.indexOf(targetTaskId);
+    if (targetIndex === -1) return;
+
+    const insertionIndex = position === 'before' ? targetIndex : targetIndex + 1;
+    const toId = insertionIndex >= globalWithoutDragged.length ? -1 : globalWithoutDragged[insertionIndex];
+    const moveKey = `${draggingTaskId}:${toId}`;
+    if (lastHoverMoveKeyRef.current === moveKey) return;
+
+    const draggedTask = tasks.find((item) => item.id === draggingTaskId);
+    const targetTask = tasks.find((item) => item.id === targetTaskId);
+    if (!draggedTask || !targetTask) return;
+
+    const targetDate = targetTask.scheduledDate;
+    const normalizedTargetDate = !targetDate && !draggedTask.isFuture ? todayKey : targetDate;
+    if ((draggedTask.scheduledDate || undefined) !== normalizedTargetDate) {
+      updateTask({ ...draggedTask, scheduledDate: normalizedTargetDate });
+    }
+
+    lastHoverMoveKeyRef.current = moveKey;
+    moveTask(draggingTaskId, toId);
+    setHoveredLane(targetDate || 'unscheduled');
+  }, [draggingTaskId, moveTask, rootOpenTaskIds, tasks, todayKey, updateTask]);
+
   const dropToLane = (event: React.DragEvent<HTMLDivElement>, laneKey: string | undefined) => {
     event.preventDefault();
     const fromTransfer = Number(event.dataTransfer.getData('text/plain'));
     const targetId = Number.isFinite(fromTransfer) && fromTransfer > 0 ? fromTransfer : draggingTaskId;
-    if (!targetId) return;
+    if (!targetId) {
+      clearDragState();
+      return;
+    }
     scheduleTask(targetId, laneKey);
-    setDraggingTaskId(null);
-    setHoveredLane(null);
+    clearDragState();
   };
 
   const submitDayTask = (dateKey: string) => {
@@ -596,6 +732,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                 onDragOver={(event) => {
                   event.preventDefault();
                   setHoveredLane('unscheduled');
+                  if (event.target === event.currentTarget) setHoveredTaskTarget(null);
                 }}
                 onDragLeave={() => setHoveredLane((value) => (value === 'unscheduled' ? null : value))}
                 onDrop={(event) => dropToLane(event, undefined)}
@@ -635,12 +772,12 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         task={task}
                         onSave={updateTask}
                         isDragging={draggingTaskId === task.id}
+                        dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
                         isDropAnimating={dropAnimatedTaskId === task.id}
-                        onDragStart={(taskId) => setDraggingTaskId(taskId)}
-                        onDragEnd={() => {
-                          setDraggingTaskId(null);
-                          setHoveredLane(null);
-                        }}
+                        registerCardRef={registerCardRef}
+                        onDragStart={handleCardDragStart}
+                        onDragHover={handleCardDragHover}
+                        onDragEnd={clearDragState}
                       />
                     ))}
                   </div>
@@ -662,6 +799,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                     onDragOver={(event) => {
                       event.preventDefault();
                       setHoveredLane(day.key);
+                      if (event.target === event.currentTarget) setHoveredTaskTarget(null);
                     }}
                     onDragLeave={() => setHoveredLane((value) => (value === day.key ? null : value))}
                     onDrop={(event) => dropToLane(event, day.key)}
@@ -697,12 +835,12 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                           task={task}
                           onSave={updateTask}
                           isDragging={draggingTaskId === task.id}
+                          dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
                           isDropAnimating={dropAnimatedTaskId === task.id}
-                          onDragStart={(taskId) => setDraggingTaskId(taskId)}
-                          onDragEnd={() => {
-                            setDraggingTaskId(null);
-                            setHoveredLane(null);
-                          }}
+                          registerCardRef={registerCardRef}
+                          onDragStart={handleCardDragStart}
+                          onDragHover={handleCardDragHover}
+                          onDragEnd={clearDragState}
                         />
                       ))}
 

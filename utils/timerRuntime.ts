@@ -110,8 +110,9 @@ export const detectRuntimeBoundaryCrossing = (snapshot: TimerRuntimeSnapshot, no
   }
 
   if (snapshot.phase === 'running-break') {
-    const start = Math.max(0, snapshot.phaseStartBreakTime);
-    if (elapsedSeconds >= start) {
+    const start = snapshot.phaseStartBreakTime;
+    // Break can run in debt; only trigger depletion when crossing from a positive bank.
+    if (start > 0 && elapsedSeconds >= start) {
       return { mode: 'break', overflowSeconds: Math.max(0, elapsedSeconds - start) };
     }
   }
@@ -152,4 +153,3 @@ export const getGraceCompensation = (graceTotal: number) => ({
   addToBankAmount: graceTotal / 5,
   deductFromBankAmount: graceTotal,
 });
-
