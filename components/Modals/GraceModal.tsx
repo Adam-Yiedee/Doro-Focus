@@ -146,7 +146,7 @@ const GraceModal: React.FC = () => {
     }
   }, [graceTotal, graceOpen, showOptions]);
 
-  if (!graceOpen) return null;
+  if (!graceOpen || graceContext !== 'afterWork') return null;
 
   const isAfterWork = graceContext === 'afterWork';
   

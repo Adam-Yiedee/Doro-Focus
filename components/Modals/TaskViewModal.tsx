@@ -30,7 +30,7 @@ interface TimeBlock {
 }
 
 const PRESET_COLORS = [
-  '#FF6B6B', '#4ECDC4', '#5B8DEF', '#F4A261', '#B388EB', '#7BD389'
+  '#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59'
 ];
 
 const GripIcon = () => (
@@ -158,7 +158,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         const units: WorkUnit[] = [];
         activeTasks.forEach(task => {
             if (task.checked) return; 
-            const taskColor = task.color || '#FF6B6B';
+            const taskColor = task.color || '#BA4949';
             if (task.subtasks.length > 0) {
                 task.subtasks.forEach(sub => {
                     if (sub.checked) return;
@@ -697,7 +697,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                             </div>
 
                                             <div className="flex-1 min-w-0 relative">
-                                                <div className="absolute left-0 top-0 bottom-0 w-1 transition-colors" style={{ backgroundColor: task.color || '#FF6B6B' }} />
+                                                <div className="absolute left-0 top-0 bottom-0 w-1 transition-colors" style={{ backgroundColor: task.color || '#BA4949' }} />
                                                 <div className="pl-4 pr-3 py-3">
                                                     <div className="flex justify-between items-center">
                                                         <div className="flex-1 min-w-0">

@@ -6,12 +6,12 @@ import { Task } from '../types';
 import { getIcon } from '../utils/icons';
 
 const PRESET_COLORS = [
-  '#FF6B6B', // Coral
-  '#4ECDC4', // Turquoise
-  '#5B8DEF', // Azure
-  '#F4A261', // Apricot
-  '#B388EB', // Lavender
-  '#7BD389', // Mint
+  '#BA4949', // Red
+  '#38858a', // Teal
+  '#397097', // Blue
+  '#8c5e32', // Sienna 
+  '#7a5c87', // Purple
+  '#547a59', // Green
 ];
 
 const clampPomoEstimate = (value: number) => {

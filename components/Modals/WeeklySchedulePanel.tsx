@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTimer } from '../../context/TimerContext';
 import { Task } from '../../types';
 
-const PRESET_COLORS = ['#FF6B6B', '#4ECDC4', '#5B8DEF', '#F4A261', '#B388EB', '#7BD389'];
+const PRESET_COLORS = ['#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59'];
 
 const clampEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;

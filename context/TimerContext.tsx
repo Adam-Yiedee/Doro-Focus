@@ -396,6 +396,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
+  const isResolvingGraceRef = useRef(false);
   const skipSaveRef = useRef(false);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
@@ -574,9 +575,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 setAllPauseTime(parsed.allPauseTime || 0);
                 setAllPauseReason(parsed.allPauseReason || '');
                 setAllPauseStartTime(parsed.allPauseStartTime ?? null);
-                setGraceOpen(parsed.graceOpen !== undefined ? Boolean(parsed.graceOpen) : parsed.runtime.phase === 'grace');
-                setGraceContext(parsed.graceContext || null);
-                setGraceTotal(parsed.graceTotal || 0);
+                const parsedGraceRawContext = parsed.graceContext;
+                const parsedMode = parsed.activeMode === 'work' || parsed.activeMode === 'break' ? parsed.activeMode : 'work';
+                const parsedGraceCandidateOpen = parsed.graceOpen !== undefined ? Boolean(parsed.graceOpen) : parsed.runtime.phase === 'grace';
+                const parsedHasLegacyBreakGrace = parsedGraceRawContext === 'afterBreak' || (parsedGraceRawContext == null && parsedMode === 'break');
+                const parsedGraceOpen = parsedGraceCandidateOpen;
+                const parsedGraceContext: 'afterWork' | null = parsedGraceOpen && !parsedHasLegacyBreakGrace ? 'afterWork' : null;
+                setGraceOpen(parsedGraceOpen);
+                setGraceContext(parsedGraceContext);
+                setGraceTotal(parsedGraceOpen && !parsedHasLegacyBreakGrace ? (parsed.graceTotal || 0) : 0);
                 if (parsed.runtime.phase === 'running-break') setActiveMode('break');
                 if (parsed.runtime.phase === 'running-work') setActiveMode('work');
                 if (parsed.isIdle === undefined) setIsIdle(parsed.runtime.phase === 'idle');
@@ -1224,9 +1231,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (typeof remote.allPauseTime === 'number') setAllPauseTime(remote.allPauseTime);
           if (typeof remote.allPauseReason === 'string') setAllPauseReason(remote.allPauseReason);
           if (remote.allPauseStartTime === null || typeof remote.allPauseStartTime === 'number') setAllPauseStartTime(remote.allPauseStartTime ?? null);
-          if (typeof remote.graceOpen === 'boolean') setGraceOpen(remote.graceOpen);
-          if (remote.graceContext === 'afterWork' || remote.graceContext === 'afterBreak' || remote.graceContext === null) setGraceContext(remote.graceContext);
-          if (typeof remote.graceTotal === 'number') setGraceTotal(remote.graceTotal);
+          const remoteGraceRawContext = remote.graceContext;
+          const remoteMode = remote.activeMode === 'work' || remote.activeMode === 'break' ? remote.activeMode : activeMode;
+          const remoteGraceCandidateOpen = typeof remote.graceOpen === 'boolean' ? remote.graceOpen : false;
+          const remoteHasLegacyBreakGrace = remoteGraceRawContext === 'afterBreak' || (remoteGraceRawContext == null && remoteMode === 'break');
+          const remoteGraceOpen = remoteGraceCandidateOpen;
+          const remoteGraceContext: 'afterWork' | null = remoteGraceOpen && !remoteHasLegacyBreakGrace ? 'afterWork' : null;
+          if (typeof remote.graceOpen === 'boolean') setGraceOpen(remoteGraceOpen);
+          if (remote.graceContext === 'afterWork' || remote.graceContext === 'afterBreak' || remote.graceContext === null) setGraceContext(remoteGraceContext);
+          if (typeof remote.graceTotal === 'number') setGraceTotal(remoteGraceOpen && !remoteHasLegacyBreakGrace ? remote.graceTotal : 0);
 
           if (isRuntimeSnapshot(remote.runtime) && remote.runtime.updatedAtMs > lastRuntimeAppliedRef.current) {
               runtimeRef.current = remote.runtime;
@@ -1236,7 +1249,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
       if (!isHost && remote.hostConfig) setHostSyncConfig(remote.hostConfig);
       setTimeout(() => { isRemoteUpdate.current = false; }, 300);
-  }, [isHost, clientSyncConfig]);
+  }, [isHost, clientSyncConfig, activeMode]);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
       if (!groupSessionId || connectionsRef.current.length === 0) return;
@@ -1572,10 +1585,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof payload.allPauseTime === 'number') setAllPauseTime(payload.allPauseTime);
     if (typeof payload.allPauseReason === 'string') setAllPauseReason(payload.allPauseReason);
     if (payload.allPauseStartTime === null || typeof payload.allPauseStartTime === 'number') setAllPauseStartTime(payload.allPauseStartTime ?? null);
-    if (typeof payload.graceOpen === 'boolean') setGraceOpen(payload.graceOpen);
-    else setGraceOpen(runtime.phase === 'grace');
-    if (payload.graceContext === 'afterWork' || payload.graceContext === 'afterBreak' || payload.graceContext === null) setGraceContext(payload.graceContext);
-    if (typeof payload.graceTotal === 'number') setGraceTotal(payload.graceTotal);
+    const payloadGraceRawContext = payload.graceContext;
+    const payloadMode = payload.activeMode === 'work' || payload.activeMode === 'break' ? payload.activeMode : runtimeMode;
+    const payloadGraceCandidateOpen = typeof payload.graceOpen === 'boolean' ? payload.graceOpen : runtime.phase === 'grace';
+    const payloadHasLegacyBreakGrace = payloadGraceRawContext === 'afterBreak' || (payloadGraceRawContext == null && payloadMode === 'break');
+    const payloadGraceOpen = payloadGraceCandidateOpen;
+    const payloadGraceContext: 'afterWork' | null = payloadGraceOpen && !payloadHasLegacyBreakGrace ? 'afterWork' : null;
+    setGraceOpen(payloadGraceOpen);
+    if (payload.graceContext === 'afterWork' || payload.graceContext === 'afterBreak' || payload.graceContext === null) setGraceContext(payloadGraceContext);
+    if (typeof payload.graceTotal === 'number') setGraceTotal(payloadGraceOpen && !payloadHasLegacyBreakGrace ? payload.graceTotal : 0);
     if (typeof payload.sessionStartTime === 'string' || payload.sessionStartTime === null) setSessionStartTime(payload.sessionStartTime ?? null);
     if (typeof payload.scheduleStartTime === 'string') setScheduleStartTime(payload.scheduleStartTime);
 
@@ -1668,8 +1686,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => window.removeEventListener('storage', onStorageSync);
   }, [getActiveStorageKey, applyExternalTimerState]);
 
-  const startTimerInternal = (opts?: { mode?: TimerMode, workOverride?: number, breakOverride?: number, forceActivityStart?: Date, playSound?: boolean }) => {
-    if (timerStarted) return;
+  const startTimerInternal = (opts?: { mode?: TimerMode, workOverride?: number, breakOverride?: number, forceActivityStart?: Date, playSound?: boolean, forceStart?: boolean }) => {
+    if (timerStarted && !opts?.forceStart) return;
     if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
     if (!sessionStartTime) {
         const now = new Date();
@@ -1690,6 +1708,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
     if (opts?.playSound !== false) playSwitch();
   };
+
+  useEffect(() => {
+    // Grace is only valid after work completion; any other context is stale and should continue break immediately.
+    if (!graceOpen || graceContext === 'afterWork') return;
+    setGraceOpen(false);
+    setGraceContext(null);
+    setGraceTotal(0);
+    setActiveMode('break');
+    setIsIdle(false);
+    const now = new Date();
+    currentActivityStartRef.current = now;
+    startTimerInternal({
+      mode: 'break',
+      workOverride: workTime,
+      breakOverride: breakTime,
+      forceActivityStart: now,
+      playSound: false,
+      forceStart: true,
+    });
+  }, [graceOpen, graceContext, workTime, breakTime]);
 
   const startTimer = () => startTimerInternal();
 
@@ -1728,7 +1766,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const restartActiveTimer = (customSeconds?: number) => {
     stopTimer();
     const nextWorkTime = activeMode === 'work' ? (customSeconds !== undefined ? customSeconds : settings.workDuration) : workTime;
-    const nextBreakTime = activeMode === 'break' ? (customSeconds !== undefined ? customSeconds : (breakTime < 0 ? 0 : breakTime)) : breakTime;
+    const nextBreakTime = activeMode === 'break' ? (customSeconds !== undefined ? customSeconds : breakTime) : breakTime;
     if (activeMode === 'work') setWorkTime(nextWorkTime);
     else setBreakTime(nextBreakTime);
     setGraceOpen(false);
@@ -1796,8 +1834,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
-    if (isProcessingRef.current) return;
-    isProcessingRef.current = true;
+    if (isResolvingGraceRef.current) return;
+    isResolvingGraceRef.current = true;
 
     if (graceOpen && options?.logGraceAs) {
         const graceStart = new Date(Date.now() - graceTotal * 1000);
@@ -1811,6 +1849,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     
     setGraceOpen(false);
     setGraceContext(null);
+    setGraceTotal(0);
     setActiveMode(nextMode);
     setIsIdle(false);
     let nextBreakTime = breakTime;
@@ -1842,8 +1881,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       breakOverride: nextBreakTime,
       forceActivityStart: now,
       playSound: true,
+      forceStart: true,
     });
-    setTimeout(() => { isProcessingRef.current = false; }, 500);
+    setTimeout(() => { isResolvingGraceRef.current = false; }, 300);
   };
 
   const endSession = () => {
