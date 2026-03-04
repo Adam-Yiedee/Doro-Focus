@@ -25,8 +25,8 @@ const Layout: React.FC = () => {
   // Use Inherited activeColor from context, or default
   const containerStyle: React.CSSProperties = {
     backgroundColor: activeMode === 'break' 
-      ? '#38858a' 
-      : (activeColor || '#BA4949')
+      ? '#4ECDC4' 
+      : (activeColor || '#FF6B6B')
   };
   const contentStyle: React.CSSProperties = {
     transform: isWeeklyScheduleOpen

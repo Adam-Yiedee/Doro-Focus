@@ -7,7 +7,7 @@ import { playAlarm } from '../../utils/sound';
 import { QRCodeSVG } from 'qrcode.react';
 import { getIcon, CATEGORY_ICONS } from '../../utils/icons';
 
-const PRESET_COLORS = ['#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59', '#e056fd', '#f0932b'];
+const PRESET_COLORS = ['#FF6B6B', '#4ECDC4', '#5B8DEF', '#F4A261', '#B388EB', '#7BD389', '#F9C74F', '#F78FB3'];
 
 const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
   const { logs, clearLogs, settings, updateSettings, hardReset, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, updateHostSyncConfig, pendingJoinId, user, login, register, logout, exportData, importData, startMigrationHost, joinMigration, setScheduleOpen, categories, addCategory, deleteCategory } = useTimer();
@@ -354,7 +354,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                     let textColor = 'text-white/80';
                     
                     if (log.type === 'work') {
-                        const c = log.color || '#BA4949';
+                        const c = log.color || '#FF6B6B';
                         borderColor = `border-[${c}]`; 
                         bgColor = 'bg-[#1c1c1e]'; 
                         textColor = 'text-white';
@@ -372,7 +372,7 @@ const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose,
                       <div 
                         key={i} 
                         className={`p-4 rounded-2xl border-l-[6px] backdrop-blur-sm flex flex-col gap-2 transition-all hover:bg-white/10 ${borderColor} ${bgColor}`}
-                        style={log.type === 'work' ? { borderLeftColor: log.color || '#BA4949' } : {}}
+                        style={log.type === 'work' ? { borderLeftColor: log.color || '#FF6B6B' } : {}}
                       >
                         <div className="flex justify-between items-center">
                           <div className="flex items-center gap-2">

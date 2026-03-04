@@ -109,13 +109,7 @@ export const detectRuntimeBoundaryCrossing = (snapshot: TimerRuntimeSnapshot, no
     }
   }
 
-  if (snapshot.phase === 'running-break') {
-    const start = snapshot.phaseStartBreakTime;
-    // Break can run in debt; only trigger depletion when crossing from a positive bank.
-    if (start > 0 && elapsedSeconds >= start) {
-      return { mode: 'break', overflowSeconds: Math.max(0, elapsedSeconds - start) };
-    }
-  }
+  // Break no longer auto-crosses into grace; break bank can run indefinitely into debt.
 
   return null;
 };

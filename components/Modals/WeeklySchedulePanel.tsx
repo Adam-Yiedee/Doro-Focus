@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTimer } from '../../context/TimerContext';
 import { Task } from '../../types';
 
-const PRESET_COLORS = ['#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59'];
+const PRESET_COLORS = ['#FF6B6B', '#4ECDC4', '#5B8DEF', '#F4A261', '#B388EB', '#7BD389'];
 
 const clampEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -66,6 +66,11 @@ const buildDayRange = (start: Date, end: Date, todayKey: string) => {
 const getPredictedPomos = (task: Task) => Math.max(1, task.estimated - task.completed);
 const formatPomoLabel = (count: number) => `${count} POMO${count === 1 ? '' : 'S'}`;
 type DragInsertPosition = 'before' | 'after';
+const DRAG_DEAD_ZONE_MIN_PX = 10;
+const DRAG_DEAD_ZONE_RATIO = 0.26;
+const REORDER_MIN_INTERVAL_MS = 55;
+const FLIP_ANIMATION_DURATION_MS = 180;
+const FLIP_MAX_ITEMS = 80;
 
 const colorToRgba = (color: string, alpha: number) => {
   const safeAlpha = Math.max(0, Math.min(1, alpha));
@@ -245,7 +250,7 @@ const ScheduleTaskCard: React.FC<{
         event.dataTransfer.dropEffect = 'move';
         const rect = event.currentTarget.getBoundingClientRect();
         const midpoint = rect.top + rect.height / 2;
-        const deadZone = Math.max(6, rect.height * 0.18);
+        const deadZone = Math.max(DRAG_DEAD_ZONE_MIN_PX, rect.height * DRAG_DEAD_ZONE_RATIO);
         if (Math.abs(event.clientY - midpoint) <= deadZone) return;
         const position: DragInsertPosition = event.clientY < midpoint ? 'before' : 'after';
         onDragHover(task.id, position);
@@ -306,6 +311,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
   const dropAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastHoverMoveKeyRef = useRef<string | null>(null);
+  const lastReorderAtRef = useRef<number>(0);
   const cardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const previousCardRectsRef = useRef<Map<number, DOMRect>>(new Map());
   const todayKey = useMemo(() => getDateKey(new Date()), []);
@@ -412,6 +418,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       if (node) nextRects.set(taskId, node.getBoundingClientRect());
     });
 
+    if (rootOpenTaskIds.length > FLIP_MAX_ITEMS) {
+      previousCardRectsRef.current = nextRects;
+      return;
+    }
+
     if (previousCardRectsRef.current.size === 0) {
       previousCardRectsRef.current = nextRects;
       return;
@@ -429,7 +440,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       node.style.transition = 'transform 0s';
       node.style.transform = `translateY(${deltaY}px)`;
       requestAnimationFrame(() => {
-        node.style.transition = 'transform 300ms cubic-bezier(0.22, 1, 0.36, 1)';
+        node.style.transition = `transform ${FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
         node.style.transform = 'translateY(0)';
       });
     });
@@ -474,12 +485,14 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     setHoveredLane(null);
     setHoveredTaskTarget(null);
     lastHoverMoveKeyRef.current = null;
+    lastReorderAtRef.current = 0;
   }, []);
 
   const handleCardDragStart = useCallback((taskId: number) => {
     setDraggingTaskId(taskId);
     setHoveredTaskTarget(null);
     lastHoverMoveKeyRef.current = null;
+    lastReorderAtRef.current = 0;
   }, []);
 
   const handleCardDragHover = useCallback((targetTaskId: number, position: DragInsertPosition) => {
@@ -498,6 +511,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     const toId = insertionIndex >= globalWithoutDragged.length ? -1 : globalWithoutDragged[insertionIndex];
     const moveKey = `${draggingTaskId}:${toId}`;
     if (lastHoverMoveKeyRef.current === moveKey) return;
+    const now = performance.now();
+    if (now - lastReorderAtRef.current < REORDER_MIN_INTERVAL_MS) return;
 
     const draggedTask = tasks.find((item) => item.id === draggingTaskId);
     const targetTask = tasks.find((item) => item.id === targetTaskId);
@@ -510,6 +525,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     }
 
     lastHoverMoveKeyRef.current = moveKey;
+    lastReorderAtRef.current = now;
     moveTask(draggingTaskId, toId);
     setHoveredLane(targetDate || 'unscheduled');
   }, [draggingTaskId, moveTask, rootOpenTaskIds, tasks, todayKey, updateTask]);

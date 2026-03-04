@@ -6,12 +6,12 @@ import { Task } from '../types';
 import { getIcon } from '../utils/icons';
 
 const PRESET_COLORS = [
-  '#BA4949', // Red
-  '#38858a', // Teal
-  '#397097', // Blue
-  '#8c5e32', // Sienna 
-  '#7a5c87', // Purple
-  '#547a59', // Green
+  '#FF6B6B', // Coral
+  '#4ECDC4', // Turquoise
+  '#5B8DEF', // Azure
+  '#F4A261', // Apricot
+  '#B388EB', // Lavender
+  '#7BD389', // Mint
 ];
 
 const clampPomoEstimate = (value: number) => {
@@ -53,6 +53,11 @@ const getColorSwatchClass = (selected: boolean, size: 'sm' | 'md' = 'md') => {
 };
 
 type DragInsertPosition = 'before' | 'after';
+const DRAG_DEAD_ZONE_MIN_PX = 10;
+const DRAG_DEAD_ZONE_RATIO = 0.26;
+const REORDER_MIN_INTERVAL_MS = 55;
+const FLIP_ANIMATION_DURATION_MS = 180;
+const FLIP_MAX_ITEMS = 60;
 
 interface TaskItemProps {
   task: Task;
@@ -251,7 +256,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         event.dataTransfer.dropEffect = 'move';
         const rect = event.currentTarget.getBoundingClientRect();
         const midpoint = rect.top + rect.height / 2;
-        const deadZone = Math.max(6, rect.height * 0.18);
+        const deadZone = Math.max(DRAG_DEAD_ZONE_MIN_PX, rect.height * DRAG_DEAD_ZONE_RATIO);
         if (Math.abs(event.clientY - midpoint) <= deadZone) return;
         const position: DragInsertPosition = event.clientY < midpoint ? 'before' : 'after';
         onDragHoverTask(task.id, position);
@@ -288,9 +293,14 @@ const TaskItem: React.FC<TaskItemProps> = ({
           }
           ${task.checked ? 'opacity-40' : ''}
           ${isDraggedTask ? 'opacity-45 scale-[0.985] saturate-75' : ''}
-          ${isCheckAnimating ? 'scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
+          ${isCheckAnimating ? 'doro-check-burst scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
         `}
       >
+        {isCheckAnimating && (
+          <span className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg">
+            <span className="doro-check-sheen absolute -left-1/3 top-0 h-full w-1/2 bg-gradient-to-r from-transparent via-emerald-100/45 to-transparent" />
+          </span>
+        )}
         {dropHint && !isDraggedTask && (
           <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`} />
         )}
@@ -326,7 +336,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
           {isCheckAnimating && (
             <span className="absolute inset-[-2px] rounded-full border border-emerald-200/80 animate-ping" />
           )}
-          {task.checked && <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+          {task.checked && (
+            <svg className={`w-3 h-3 text-black ${isCheckAnimating ? 'doro-check-pop' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
         </div>
         
         <div className="flex-1 min-w-0 flex flex-col justify-center">
@@ -445,6 +459,7 @@ const Tasks: React.FC = () => {
   const taskCardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const previousTaskRectsRef = useRef<Map<number, DOMRect>>(new Map());
   const lastHoverMoveKeyRef = useRef<string | null>(null);
+  const lastReorderAtRef = useRef<number>(0);
 
   const todayKey = getDateKey(new Date());
 
@@ -497,6 +512,11 @@ const Tasks: React.FC = () => {
       if (node) nextRects.set(taskId, node.getBoundingClientRect());
     });
 
+    if (filteredTaskIds.length > FLIP_MAX_ITEMS) {
+      previousTaskRectsRef.current = nextRects;
+      return;
+    }
+
     if (previousTaskRectsRef.current.size === 0) {
       previousTaskRectsRef.current = nextRects;
       return;
@@ -514,7 +534,7 @@ const Tasks: React.FC = () => {
       node.style.transition = 'transform 0s';
       node.style.transform = `translateY(${deltaY}px)`;
       requestAnimationFrame(() => {
-        node.style.transition = 'transform 300ms cubic-bezier(0.22, 1, 0.36, 1)';
+        node.style.transition = `transform ${FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
         node.style.transform = 'translateY(0)';
       });
     });
@@ -526,12 +546,14 @@ const Tasks: React.FC = () => {
     setDraggingTaskId(taskId);
     setHoverTarget(null);
     lastHoverMoveKeyRef.current = null;
+    lastReorderAtRef.current = 0;
   }, []);
 
   const clearDragState = useCallback(() => {
     setDraggingTaskId(null);
     setHoverTarget(null);
     lastHoverMoveKeyRef.current = null;
+    lastReorderAtRef.current = 0;
   }, []);
 
   const handleTaskDragHover = useCallback((targetTaskId: number, position: DragInsertPosition) => {
@@ -551,8 +573,11 @@ const Tasks: React.FC = () => {
     const toId = insertIndex >= taskIdsWithoutDragged.length ? -1 : taskIdsWithoutDragged[insertIndex];
     const moveKey = `${draggingTaskId}:${toId}`;
     if (lastHoverMoveKeyRef.current === moveKey) return;
+    const now = performance.now();
+    if (now - lastReorderAtRef.current < REORDER_MIN_INTERVAL_MS) return;
 
     lastHoverMoveKeyRef.current = moveKey;
+    lastReorderAtRef.current = now;
     moveTask(draggingTaskId, toId);
   }, [draggingTaskId, filteredTaskIds, moveTask]);
 
@@ -629,6 +654,57 @@ const Tasks: React.FC = () => {
         .doro-task-enter {
           animation: doro-task-enter 540ms cubic-bezier(0.16, 0.88, 0.3, 1.12);
           transform-origin: top center;
+        }
+        @keyframes doro-check-burst {
+          0% {
+            transform: scale(1);
+            filter: saturate(1);
+          }
+          58% {
+            transform: scale(1.02);
+            filter: saturate(1.08);
+          }
+          100% {
+            transform: scale(1);
+            filter: saturate(1);
+          }
+        }
+        .doro-check-burst {
+          animation: doro-check-burst 420ms cubic-bezier(0.2, 0.9, 0.3, 1.08);
+        }
+        @keyframes doro-check-pop {
+          0% {
+            transform: scale(0.45);
+            opacity: 0.2;
+          }
+          62% {
+            transform: scale(1.2);
+            opacity: 1;
+          }
+          100% {
+            transform: scale(1);
+            opacity: 1;
+          }
+        }
+        .doro-check-pop {
+          animation: doro-check-pop 320ms cubic-bezier(0.17, 1, 0.3, 1);
+          transform-origin: center;
+        }
+        @keyframes doro-check-sheen {
+          0% {
+            opacity: 0;
+            transform: translateX(-120%) skewX(-18deg);
+          }
+          35% {
+            opacity: 0.45;
+          }
+          100% {
+            opacity: 0;
+            transform: translateX(200%) skewX(-18deg);
+          }
+        }
+        .doro-check-sheen {
+          animation: doro-check-sheen 380ms cubic-bezier(0.22, 1, 0.36, 1);
         }
         .doro-task-list-drag-active {
           transition: background-color 220ms ease;

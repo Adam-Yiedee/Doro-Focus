@@ -396,7 +396,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
-  const previousLegacyBreakTimeRef = useRef<number>(breakTime);
   const skipSaveRef = useRef(false);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
@@ -1436,49 +1435,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase]);
 
-  const handleBreakLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
-    if (isProcessingRef.current) return;
-    const now = Date.now();
-    if (now - lastLoopTimeRef.current < 5000) return;
-    
-    isProcessingRef.current = true;
-    lastLoopTimeRef.current = now;
-    playAlarm(settings.alarmSound);
-    if (currentActivityStartRef.current) {
-      const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
-      logActivity('break', currentActivityStartRef.current, duration, 'Break Bank Depleted');
-      currentActivityStartRef.current = null;
-    }
-    setBreakTime(0);
-    setTimerStarted(false);
-    setGraceContext('afterBreak');
-    setGraceTotal(initialGraceSeconds);
-    setGraceOpen(true);
-    sendNotification("Break Time's Up!", "Back to work!");
-    anchorRuntimePhase('grace', {
-      phaseStartBreakTime: 0,
-      phaseStartGraceTotal: initialGraceSeconds,
-      activityStartIso: null,
-    });
-    setTimeout(() => { isProcessingRef.current = false; }, 2000);
-  }, [logActivity, sendNotification, settings.alarmSound, anchorRuntimePhase]);
-
   useEffect(() => {
-    const previousBreakTime = previousLegacyBreakTimeRef.current;
-    if (!legacyRuntimeMode) {
-      previousLegacyBreakTimeRef.current = breakTime;
-      return;
-    }
+    if (!legacyRuntimeMode) return;
     if (timerStarted && !isIdle) {
-       if (activeMode === 'work' && workTime <= 0) {
-           handleWorkLoopComplete(0);
-       } else if (activeMode === 'break') {
-           const crossedBreakBoundary = previousBreakTime > 0 && breakTime <= 0;
-           if (crossedBreakBoundary) handleBreakLoopComplete(0);
-       }
+      if (activeMode === 'work' && workTime <= 0) {
+        handleWorkLoopComplete(0);
+      }
     }
-    previousLegacyBreakTimeRef.current = breakTime;
-  }, [workTime, breakTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, handleBreakLoopComplete, legacyRuntimeMode]);
+  }, [workTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, legacyRuntimeMode]);
 
   const legacyTick = useCallback((now: number) => {
     if (!lastTickRef.current) { lastTickRef.current = now; return; }
@@ -1520,10 +1484,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (runtime.phase === 'running-break') {
       if (Math.abs(derived.workTime - workTime) > 0.05) setWorkTime(derived.workTime);
       if (Math.abs(derived.breakTime - breakTime) > 0.05) setBreakTime(derived.breakTime);
-      const boundary = detectRuntimeBoundaryCrossing(runtime, now);
-      if (boundary?.mode === 'break') {
-        handleBreakLoopComplete(boundary.overflowSeconds);
-      }
       return;
     }
 
@@ -1545,7 +1505,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     allPauseTime,
     graceTotal,
     handleWorkLoopComplete,
-    handleBreakLoopComplete,
   ]);
 
   const tick = useCallback(() => {

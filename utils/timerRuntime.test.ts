@@ -86,7 +86,7 @@ describe('boundary catch-up policy', () => {
     expect(crossing).toEqual({ mode: 'work', overflowSeconds: 26 });
   });
 
-  it('crosses break boundary once and reports overflow only', () => {
+  it('does not auto-cross break boundary from positive bank', () => {
     const snapshot = createRuntimeSnapshot({
       sourceTabId: TAB_ID,
       phase: 'running-break',
@@ -98,7 +98,7 @@ describe('boundary catch-up policy', () => {
     });
 
     const crossing = detectRuntimeBoundaryCrossing(snapshot, BASE_NOW + 45_000);
-    expect(crossing).toEqual({ mode: 'break', overflowSeconds: 35 });
+    expect(crossing).toBeNull();
   });
 
   it('does not cross break boundary when break starts at zero', () => {
