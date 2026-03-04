@@ -6,12 +6,12 @@ import { Task } from '../types';
 import { getIcon } from '../utils/icons';
 
 const PRESET_COLORS = [
-  '#BA4949', // Red
-  '#38858a', // Teal
-  '#397097', // Blue
-  '#8c5e32', // Sienna 
-  '#7a5c87', // Purple
-  '#547a59', // Green
+  '#E8A6A6', // Dusty Rose
+  '#9ECFC8', // Soft Teal
+  '#AFC3E6', // Misty Blue
+  '#DDBA9B', // Warm Sand
+  '#C6B1D9', // Muted Lavender
+  '#AFCFB1', // Sage
 ];
 
 const clampPomoEstimate = (value: number) => {
@@ -53,11 +53,11 @@ const getColorSwatchClass = (selected: boolean, size: 'sm' | 'md' = 'md') => {
 };
 
 type DragInsertPosition = 'before' | 'after';
-const DRAG_DEAD_ZONE_MIN_PX = 10;
-const DRAG_DEAD_ZONE_RATIO = 0.26;
-const REORDER_MIN_INTERVAL_MS = 55;
-const FLIP_ANIMATION_DURATION_MS = 180;
-const FLIP_MAX_ITEMS = 60;
+const DRAG_DEAD_ZONE_MIN_PX = 14;
+const DRAG_DEAD_ZONE_RATIO = 0.34;
+const REORDER_MIN_INTERVAL_MS = 96;
+const FLIP_ANIMATION_DURATION_MS = 165;
+const FLIP_MAX_ITEMS = 120;
 
 interface TaskItemProps {
   task: Task;
@@ -272,15 +272,15 @@ const TaskItem: React.FC<TaskItemProps> = ({
       }}
       className={`
         flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2 cursor-grab active:cursor-grabbing' : ''} relative
-        transition-[transform,opacity,filter] duration-300 ease-out
+        transition-[transform,opacity] duration-250 ease-out
         ${isEntering ? 'doro-task-enter' : ''}
-        ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 blur-[2px] pointer-events-none' : 'opacity-100 scale-100 translate-x-0 blur-0'}
+        ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 pointer-events-none' : 'opacity-100 scale-100 translate-x-0'}
       `}
     >
       <div 
         onClick={() => selectTask(task.id)}
         className={`
-          group relative rounded-lg cursor-pointer transition-all duration-500 ease-out
+          group relative rounded-lg cursor-pointer transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
           flex items-center gap-3 border
           ${depth === 0 ? 'p-3' : 'p-2.5'}
           ${task.selected && isSectionActive
@@ -292,7 +292,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/10 hover:shadow-md opacity-80 hover:opacity-100')
           }
           ${task.checked ? 'opacity-40' : ''}
-          ${isDraggedTask ? 'opacity-45 scale-[0.985] saturate-75' : ''}
+          ${isDraggedTask ? 'opacity-45 scale-[0.985]' : ''}
           ${isCheckAnimating ? 'doro-check-burst scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
         `}
       >
@@ -455,9 +455,11 @@ const Tasks: React.FC = () => {
   const [hoverTarget, setHoverTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
   const didInitTaskIdsRef = useRef(false);
+  const mountAtRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
   const prevTaskIdsRef = useRef<number[]>([]);
   const taskCardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
-  const previousTaskRectsRef = useRef<Map<number, DOMRect>>(new Map());
+  const previousTaskTopsRef = useRef<Map<number, number>>(new Map());
+  const flipAnimationsRef = useRef<Map<number, Animation>>(new Map());
   const lastHoverMoveKeyRef = useRef<string | null>(null);
   const lastReorderAtRef = useRef<number>(0);
 
@@ -476,6 +478,16 @@ const Tasks: React.FC = () => {
     const currentIds = filteredTasks.map(task => task.id);
     if (!didInitTaskIdsRef.current) {
       didInitTaskIdsRef.current = true;
+      prevTaskIdsRef.current = currentIds;
+      return;
+    }
+
+    // Hydration path can populate many tasks right after mount; skip enter animations there to avoid first-load jank.
+    if (
+      prevTaskIdsRef.current.length === 0 &&
+      currentIds.length > 0 &&
+      ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountAtRef.current) < 2000
+    ) {
       prevTaskIdsRef.current = currentIds;
       return;
     }
@@ -505,56 +517,138 @@ const Tasks: React.FC = () => {
     else taskCardRefsRef.current.delete(taskId);
   }, []);
 
-  useLayoutEffect(() => {
-    const nextRects = new Map<number, DOMRect>();
+  const cancelFlipAnimations = useCallback(() => {
+    flipAnimationsRef.current.forEach((animation) => {
+      try {
+        animation.cancel();
+      } catch {
+        // no-op
+      }
+    });
+    flipAnimationsRef.current.clear();
+    taskCardRefsRef.current.forEach((node) => {
+      node.style.transform = '';
+      node.style.transition = '';
+      node.style.willChange = '';
+    });
+  }, []);
+
+  const snapshotTaskRects = useCallback(() => {
+    const tops = new Map<number, number>();
+    const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
     filteredTaskIds.forEach((taskId) => {
       const node = taskCardRefsRef.current.get(taskId);
-      if (node) nextRects.set(taskId, node.getBoundingClientRect());
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      tops.set(taskId, rect.top + windowScrollY);
     });
+    previousTaskTopsRef.current = tops;
+  }, [filteredTaskIds]);
+
+  useEffect(() => {
+    return () => {
+      cancelFlipAnimations();
+    };
+  }, [cancelFlipAnimations]);
+
+  useLayoutEffect(() => {
+    const nextTops = new Map<number, number>();
+    const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
+    filteredTaskIds.forEach((taskId) => {
+      const node = taskCardRefsRef.current.get(taskId);
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      nextTops.set(taskId, rect.top + windowScrollY);
+    });
+
+    // Keep rect history fresh, but only animate while actively dragging.
+    if (draggingTaskId === null) {
+      previousTaskTopsRef.current = nextTops;
+      return;
+    }
 
     if (filteredTaskIds.length > FLIP_MAX_ITEMS) {
-      previousTaskRectsRef.current = nextRects;
+      previousTaskTopsRef.current = nextTops;
       return;
     }
 
-    if (previousTaskRectsRef.current.size === 0) {
-      previousTaskRectsRef.current = nextRects;
+    if (previousTaskTopsRef.current.size === 0) {
+      previousTaskTopsRef.current = nextTops;
       return;
     }
 
-    nextRects.forEach((nextRect, taskId) => {
+    nextTops.forEach((nextTop, taskId) => {
       if (taskId === draggingTaskId) return;
-      const prevRect = previousTaskRectsRef.current.get(taskId);
+      const prevTop = previousTaskTopsRef.current.get(taskId);
       const node = taskCardRefsRef.current.get(taskId);
-      if (!prevRect || !node) return;
+      if (typeof prevTop !== 'number' || !node) return;
 
-      const deltaY = prevRect.top - nextRect.top;
+      const deltaY = prevTop - nextTop;
       if (Math.abs(deltaY) < 0.75) return;
+      if (Math.abs(deltaY) > 420) return;
 
-      node.style.transition = 'transform 0s';
-      node.style.transform = `translateY(${deltaY}px)`;
-      requestAnimationFrame(() => {
-        node.style.transition = `transform ${FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
-        node.style.transform = 'translateY(0)';
-      });
+      const existing = flipAnimationsRef.current.get(taskId);
+      if (existing) {
+        try {
+          existing.cancel();
+        } catch {
+          // no-op
+        }
+      }
+
+      node.style.willChange = 'transform';
+      if (typeof node.animate === 'function') {
+        const animation = node.animate(
+          [
+            { transform: `translateY(${deltaY}px)` },
+            { transform: 'translateY(0)' },
+          ],
+          {
+            duration: FLIP_ANIMATION_DURATION_MS,
+            easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            fill: 'both',
+          },
+        );
+        flipAnimationsRef.current.set(taskId, animation);
+        animation.onfinish = () => {
+          if (flipAnimationsRef.current.get(taskId) === animation) flipAnimationsRef.current.delete(taskId);
+          node.style.willChange = '';
+          node.style.transform = '';
+        };
+        animation.oncancel = () => {
+          if (flipAnimationsRef.current.get(taskId) === animation) flipAnimationsRef.current.delete(taskId);
+          node.style.willChange = '';
+          node.style.transform = '';
+        };
+      } else {
+        node.style.transition = 'transform 0s';
+        node.style.transform = `translateY(${deltaY}px)`;
+        requestAnimationFrame(() => {
+          node.style.transition = `transform ${FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+          node.style.transform = 'translateY(0)';
+        });
+      }
     });
 
-    previousTaskRectsRef.current = nextRects;
+    previousTaskTopsRef.current = nextTops;
   }, [filteredTaskOrderKey, filteredTaskIds, draggingTaskId]);
 
   const handleTaskDragStart = useCallback((taskId: number) => {
+    cancelFlipAnimations();
+    snapshotTaskRects();
     setDraggingTaskId(taskId);
     setHoverTarget(null);
     lastHoverMoveKeyRef.current = null;
     lastReorderAtRef.current = 0;
-  }, []);
+  }, [cancelFlipAnimations, snapshotTaskRects]);
 
   const clearDragState = useCallback(() => {
+    cancelFlipAnimations();
     setDraggingTaskId(null);
     setHoverTarget(null);
     lastHoverMoveKeyRef.current = null;
     lastReorderAtRef.current = 0;
-  }, []);
+  }, [cancelFlipAnimations]);
 
   const handleTaskDragHover = useCallback((targetTaskId: number, position: DragInsertPosition) => {
     if (!draggingTaskId || draggingTaskId === targetTaskId) return;
@@ -591,7 +685,7 @@ const Tasks: React.FC = () => {
 
   const isSectionActive = isHovered || isInputFocused;
   const shouldBlur = !isSectionActive && !settings.disableBlur;
-  const blurClass = shouldBlur ? 'blur-[2px] opacity-50' : 'blur-0 opacity-100';
+  const blurClass = shouldBlur ? 'opacity-60' : 'opacity-100';
   
   // Pomo Counter Logic
   const pomosPerSet = settings.longBreakInterval || 4;
@@ -638,17 +732,14 @@ const Tasks: React.FC = () => {
           0% {
             opacity: 0;
             transform: translateY(12px) scale(0.96);
-            filter: blur(2px);
           }
           62% {
             opacity: 1;
             transform: translateY(-2px) scale(1.012);
-            filter: blur(0);
           }
           100% {
             opacity: 1;
             transform: translateY(0) scale(1);
-            filter: blur(0);
           }
         }
         .doro-task-enter {
@@ -658,15 +749,12 @@ const Tasks: React.FC = () => {
         @keyframes doro-check-burst {
           0% {
             transform: scale(1);
-            filter: saturate(1);
           }
           58% {
             transform: scale(1.02);
-            filter: saturate(1.08);
           }
           100% {
             transform: scale(1);
-            filter: saturate(1);
           }
         }
         .doro-check-burst {
@@ -711,13 +799,13 @@ const Tasks: React.FC = () => {
         }
       `}</style>
       <div 
-        className="w-full max-w-lg mx-auto transition-all duration-700"
+        className="w-full max-w-lg mx-auto transition-opacity duration-250"
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
       <div className="relative flex flex-col">
         {/* Header */}
-        <div className={`flex justify-between items-center mb-4 px-2 transition-all duration-500 ${blurClass}`}>
+        <div className={`flex justify-between items-center mb-4 px-2 transition-opacity duration-250 ${blurClass}`}>
           <h2 className="text-[10px] font-bold text-white/50 tracking-[0.2em] uppercase">Task List</h2>
         </div>
 
@@ -725,7 +813,7 @@ const Tasks: React.FC = () => {
         <form 
           onSubmit={handleSubmit} 
           className={`
-            mb-8 relative group z-30 transition-all duration-500
+            mb-8 relative group z-30 transition-[transform,opacity,box-shadow] duration-300
             ${isInputFocused 
               ? 'scale-100 shadow-xl' 
               : 'scale-[0.98] shadow-none'
@@ -869,7 +957,7 @@ const Tasks: React.FC = () => {
             event.preventDefault();
             clearDragState();
           }}
-          className={`space-y-1 pb-8 min-h-[100px] transition-all duration-500 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
+          className={`space-y-1 pb-8 min-h-[100px] transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
         >
           {filteredTasks.map(task => (
             <TaskItem
@@ -894,7 +982,7 @@ const Tasks: React.FC = () => {
         <div className={`
             mt-auto pt-3 pb-1 border-t border-white/5 grid grid-cols-3 items-center gap-1
             text-center whitespace-nowrap [font-size:clamp(7px,1.8vw,10px)] uppercase tracking-[0.13em] font-bold text-white/45
-            transition-all duration-500 ${blurClass}
+            transition-opacity duration-250 ${blurClass}
         `}>
             <div className="flex min-w-0 items-center justify-center gap-1">
                  <span className={`leading-none font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>

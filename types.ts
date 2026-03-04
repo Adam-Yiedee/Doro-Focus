@@ -70,6 +70,7 @@ export interface User {
         totalFocusHours: number;
         totalSessions: number;
         totalPomos: number;
+        activeDays: number;
         currentStreak: number;
         bestStreak: number;
         lastActiveDate: string | null; // "YYYY-MM-DD"
@@ -119,4 +120,33 @@ export interface GroupMember {
   id: string;
   name: string;
   isHost: boolean;
+}
+
+export type GroupEventType =
+  | 'joined'
+  | 'timer-started'
+  | 'timer-stopped'
+  | 'timer-paused'
+  | 'timer-resumed'
+  | 'mode-switched'
+  | 'timer-reset'
+  | 'grace-resolved';
+
+export interface GroupEventPayload {
+  id: string;
+  type: GroupEventType;
+  actorId: string;
+  actorName: string;
+  mode?: TimerMode;
+  reason?: string;
+  at: number;
+}
+
+export interface GroupNotice {
+  id: string;
+  actorId: string;
+  actorName: string;
+  kind: 'join' | 'action';
+  message: string;
+  createdAt: number;
 }

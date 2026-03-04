@@ -8,6 +8,9 @@ import {
   AlarmSound,
   GroupSyncConfig,
   GroupMember,
+  GroupEventType,
+  GroupEventPayload,
+  GroupNotice,
   User,
   SessionRecord,
   TimerRuntimePhase,
@@ -22,6 +25,14 @@ import {
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
 } from '../utils/timerRuntime';
+import {
+  fetchAccountData,
+  isUnauthorizedError,
+  loginAccount,
+  logoutAccount,
+  registerAccount,
+  saveAccountData,
+} from '../utils/accountApi';
 
 export interface ScheduleBreak {
   id: string;
@@ -81,15 +92,17 @@ interface TimerContextType {
   hostSyncConfig: GroupSyncConfig;
   clientSyncConfig: GroupSyncConfig; // What the joiner chooses to accept
   pendingJoinId: string | null;
+  groupNotice: GroupNotice | null;
+  accountSyncState: 'idle' | 'syncing' | 'synced' | 'error';
+  accountSyncError: string | null;
+  lastAccountSyncAt: number | null;
 
   // Actions
   login: (username: string, password?: string) => Promise<boolean>;
   register: (username: string, password?: string) => Promise<boolean>;
   logout: () => void;
-  exportData: () => string;
-  importData: (jsonStr: string) => boolean;
-  startMigrationHost: () => Promise<string>;
-  joinMigration: (code: string) => Promise<void>;
+  syncAccountNow: () => Promise<boolean>;
+  refreshAccountFromCloud: (options?: { force?: boolean }) => Promise<boolean>;
   
   startTimer: () => void;
   stopTimer: () => void;
@@ -147,40 +160,91 @@ const TimerContext = createContext<TimerContextType | undefined>(undefined);
 // Storage Logic
 const getGuestKey = () => 'doro_guest_data';
 const getUserKey = (username: string) => `doro_user_${username}`;
-const MOCK_CLOUD_DB_KEY = 'doro_mock_cloud_db';
-
-// Mock Cloud Helpers
-const getCloudDB = () => {
-    try {
-        return JSON.parse(localStorage.getItem(MOCK_CLOUD_DB_KEY) || '{}');
-    } catch { return {}; }
-};
-
-const saveCloudDB = (db: any) => {
-    localStorage.setItem(MOCK_CLOUD_DB_KEY, JSON.stringify(db));
-};
 
 const DEFAULT_SETTINGS: TimerSettings = {
   workDuration: 1500, 
   shortBreakDuration: 300, 
   longBreakDuration: 900,
   longBreakInterval: 4, 
-  disableBlur: false,
+  disableBlur: true,
   alarmSound: 'bell',
   themeMode: 'dark'
 };
 
 const DEFAULT_SYNC_CONFIG: GroupSyncConfig = {
     syncTimers: true,
-    syncTasks: true,
-    syncSchedule: true,
+    syncTasks: false,
+    syncSchedule: false,
     syncHistory: false,
-    syncSettings: true
+    syncSettings: false
 };
 
 const DATA_SCHEMA_VERSION = 2;
 const LEGACY_RUNTIME_FLAG = 'doro_use_legacy_tick';
 const CROSS_TAB_CHANNEL = 'doro_timer_sync';
+const AUTH_TOKEN_KEY = 'doro_auth_token';
+
+const TIMER_ONLY_SYNC_CONFIG: GroupSyncConfig = {
+  syncTimers: true,
+  syncTasks: false,
+  syncSchedule: false,
+  syncHistory: false,
+  syncSettings: false,
+};
+
+const normalizeSyncConfig = (value: Partial<GroupSyncConfig> | undefined | null, fallback: GroupSyncConfig = DEFAULT_SYNC_CONFIG): GroupSyncConfig => ({
+  syncTimers: typeof value?.syncTimers === 'boolean' ? value.syncTimers : fallback.syncTimers,
+  syncTasks: typeof value?.syncTasks === 'boolean' ? value.syncTasks : fallback.syncTasks,
+  syncSchedule: typeof value?.syncSchedule === 'boolean' ? value.syncSchedule : fallback.syncSchedule,
+  syncHistory: typeof value?.syncHistory === 'boolean' ? value.syncHistory : fallback.syncHistory,
+  syncSettings: typeof value?.syncSettings === 'boolean' ? value.syncSettings : fallback.syncSettings,
+});
+
+const intersectSyncConfig = (host: GroupSyncConfig, client: GroupSyncConfig): GroupSyncConfig => ({
+  syncTimers: host.syncTimers && client.syncTimers,
+  syncTasks: host.syncTasks && client.syncTasks,
+  syncSchedule: host.syncSchedule && client.syncSchedule,
+  syncHistory: host.syncHistory && client.syncHistory,
+  syncSettings: host.syncSettings && client.syncSettings,
+});
+
+const GROUP_EVENT_TYPES: GroupEventType[] = [
+  'joined',
+  'timer-started',
+  'timer-stopped',
+  'timer-paused',
+  'timer-resumed',
+  'mode-switched',
+  'timer-reset',
+  'grace-resolved',
+];
+
+const isGroupEventType = (value: unknown): value is GroupEventType => {
+  return typeof value === 'string' && GROUP_EVENT_TYPES.includes(value as GroupEventType);
+};
+
+const getDateKey = (date: Date) => {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const isDeferredTaskFromToday = (task: Pick<Task, 'isFuture' | 'scheduledDate'>, todayKey: string = getDateKey(new Date())) => {
+  if (task.isFuture) return true;
+  return typeof task.scheduledDate === 'string' && task.scheduledDate > todayKey;
+};
+
+let lastTaskIdSeed = 0;
+const createTaskId = () => {
+  const candidate = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+  if (candidate <= lastTaskIdSeed) {
+    lastTaskIdSeed += 1;
+  } else {
+    lastTaskIdSeed = candidate;
+  }
+  return lastTaskIdSeed;
+};
 
 // Recursive Helpers for Tasks
 const recalculateStats = (task: Task): Task => {
@@ -272,6 +336,19 @@ const flattenTasks = (tasks: Task[]): Task[] => {
     return flat;
 };
 
+const getMaxTaskId = (tasks: Task[]): number => {
+  let maxId = 0;
+  tasks.forEach((task) => {
+    if (typeof task.id === 'number' && Number.isFinite(task.id)) {
+      maxId = Math.max(maxId, Math.floor(task.id));
+    }
+    if (task.subtasks.length > 0) {
+      maxId = Math.max(maxId, getMaxTaskId(task.subtasks));
+    }
+  });
+  return maxId;
+};
+
 const findActiveContext = (tasks: Task[], parentColor?: string): { task: Task | null, color?: string } => {
   for (const task of tasks) {
     const currentColor = task.color || parentColor;
@@ -308,6 +385,158 @@ const removeCompletedTasks = (tasks: Task[]): Task[] => {
         }));
 };
 
+const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
+  totalFocusHours: 0,
+  totalSessions: 0,
+  totalPomos: 0,
+  activeDays: 0,
+  currentStreak: 0,
+  bestStreak: 0,
+  lastActiveDate: null,
+  categoryBreakdown: {},
+};
+
+const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
+  if (entry.type !== 'work') return false;
+  const reason = (entry.reason || '').trim().toLowerCase();
+  return reason.startsWith('paused') || reason.includes('pause credit');
+};
+
+const getLocalDateKeyFromIso = (iso: string): string | null => {
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return null;
+  return getDateKey(dt);
+};
+
+const parseDateKey = (value: string): Date | null => {
+  const parts = value.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+};
+
+const getDayDiff = (fromKey: string, toKey: string): number | null => {
+  const from = parseDateKey(fromKey);
+  const to = parseDateKey(toKey);
+  if (!from || !to) return null;
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+};
+
+const calculateLifetimeStatsFromData = (
+  sessions: SessionRecord[],
+  currentLogs: LogEntry[],
+  categories: Category[],
+): User['lifetimeStats'] => {
+  const safeSessions = Array.isArray(sessions) ? sessions : [];
+  const safeLogs = Array.isArray(currentLogs) ? currentLogs : [];
+  const safeCategories = Array.isArray(categories) ? categories : [];
+
+  const productiveLogs = safeLogs.filter((entry) => {
+    if (entry.type !== 'work') return false;
+    if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
+    return !isPauseCreditedWorkLog(entry);
+  });
+
+  const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
+  const workHoursFromLogs = workSecondsFromLogs / 3600;
+  const workMinutesFromSessions = safeSessions.reduce((acc, session) => {
+    const mins = Number(session.stats?.totalWorkMinutes || 0);
+    return acc + (Number.isFinite(mins) && mins > 0 ? mins : 0);
+  }, 0);
+  const workHoursFromSessions = workMinutesFromSessions / 60;
+  const totalFocusHours = productiveLogs.length > 0 ? workHoursFromLogs : workHoursFromSessions;
+
+  const totalSessions = safeSessions.length;
+  const totalPomos = safeSessions.reduce((acc, session) => {
+    const pomos = Number(session.stats?.pomosCompleted || 0);
+    return acc + Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
+  }, 0);
+
+  const categoryMap = new Map<number, string>();
+  safeCategories.forEach((cat) => {
+    if (typeof cat.id === 'number' && Number.isFinite(cat.id) && cat.name) {
+      categoryMap.set(cat.id, cat.name);
+    }
+  });
+
+  const categoryBreakdown: Record<string, number> = {};
+  if (productiveLogs.length > 0) {
+    productiveLogs.forEach((entry) => {
+      const minutes = Math.max(0, entry.duration / 60);
+      if (minutes <= 0) return;
+      const key = typeof entry.categoryId === 'number'
+        ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
+        : 'Uncategorized';
+      categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
+    });
+  } else {
+    safeSessions.forEach((session) => {
+      if (!session.stats?.categoryStats) return;
+      Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
+        const safeMinutes = Number(minutes);
+        if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+        categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
+      });
+    });
+  }
+
+  const productiveDates = new Set<string>();
+  if (productiveLogs.length > 0) {
+    productiveLogs.forEach((entry) => {
+      const key = getLocalDateKeyFromIso(entry.start);
+      if (key) productiveDates.add(key);
+    });
+  } else {
+    safeSessions.forEach((session) => {
+      const mins = Number(session.stats?.totalWorkMinutes || 0);
+      if (!Number.isFinite(mins) || mins <= 0) return;
+      const key = getLocalDateKeyFromIso(session.startTime);
+      if (key) productiveDates.add(key);
+    });
+  }
+
+  const sortedDates = Array.from(productiveDates).sort();
+  const activeDays = sortedDates.length;
+
+  let bestStreak = 0;
+  let runningStreak = 0;
+  for (let i = 0; i < sortedDates.length; i += 1) {
+    if (i === 0) {
+      runningStreak = 1;
+    } else {
+      const diff = getDayDiff(sortedDates[i - 1], sortedDates[i]);
+      runningStreak = diff === 1 ? runningStreak + 1 : 1;
+    }
+    if (runningStreak > bestStreak) bestStreak = runningStreak;
+  }
+
+  let currentStreak = 0;
+  if (sortedDates.length > 0) {
+    const todayKey = getDateKey(new Date());
+    const lastKey = sortedDates[sortedDates.length - 1];
+    const diffToToday = getDayDiff(lastKey, todayKey);
+    if (diffToToday !== null && diffToToday <= 1) {
+      currentStreak = 1;
+      for (let i = sortedDates.length - 1; i > 0; i -= 1) {
+        const diff = getDayDiff(sortedDates[i - 1], sortedDates[i]);
+        if (diff === 1) currentStreak += 1;
+        else break;
+      }
+    }
+  }
+
+  return {
+    ...EMPTY_LIFETIME_STATS,
+    totalFocusHours,
+    totalSessions,
+    totalPomos,
+    activeDays,
+    currentStreak,
+    bestStreak,
+    lastActiveDate: sortedDates.length > 0 ? sortedDates[sortedDates.length - 1] : null,
+    categoryBreakdown,
+  };
+};
+
 interface TimerPersistencePayload {
   schemaVersion?: number;
   runtime?: TimerRuntimeSnapshot;
@@ -334,6 +563,7 @@ interface TimerPersistencePayload {
   sessionStartTime?: string | null;
   userName?: string;
   user?: User | null;
+  updatedAt?: string;
 }
 
 const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
@@ -343,6 +573,10 @@ const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const isDevMode = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const [user, setUser] = useState<User | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const [accountSyncState, setAccountSyncState] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [accountSyncError, setAccountSyncError] = useState<string | null>(null);
+  const [lastAccountSyncAt, setLastAccountSyncAt] = useState<number | null>(null);
   
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [workTime, setWorkTime] = useState(1500);
@@ -384,11 +618,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [hostSyncConfig, setHostSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [clientSyncConfig, setClientSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [pendingJoinId, setPendingJoinId] = useState<string | null>(null);
+  const [groupNotice, setGroupNotice] = useState<GroupNotice | null>(null);
+  const hostSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const clientSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const activeModeRef = useRef<TimerMode>('work');
   
   const isRemoteUpdate = useRef(false);
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<DataConnection[]>([]);
-  const migrationPeerRef = useRef<Peer | null>(null);
+  const lastClientTimerBroadcastSignatureRef = useRef<string | null>(null);
+  const localPeerIdRef = useRef<string | null>(null);
 
   const lastTickRef = useRef<number | null>(null);
   const shadowTickRef = useRef<number | null>(null);
@@ -398,6 +637,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const isProcessingRef = useRef(false);
   const isResolvingGraceRef = useRef(false);
   const skipSaveRef = useRef(false);
+  const isCloudSyncInFlightRef = useRef(false);
+  const isApplyingCloudSnapshotRef = useRef(false);
+  const hasHydratedCloudForUserRef = useRef<string | null>(null);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
     sourceTabId: tabIdRef.current,
@@ -421,6 +663,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return false;
     }
   });
+
+  useEffect(() => {
+    hostSyncConfigRef.current = hostSyncConfig;
+  }, [hostSyncConfig]);
+
+  useEffect(() => {
+    clientSyncConfigRef.current = clientSyncConfig;
+  }, [clientSyncConfig]);
+
+  useEffect(() => {
+    activeModeRef.current = activeMode;
+  }, [activeMode]);
 
   const getActiveStorageKey = useCallback(() => {
     return user ? getUserKey(user.username) : getGuestKey();
@@ -521,11 +775,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (saved) {
         try {
             const parsed: TimerPersistencePayload = JSON.parse(saved);
+            const parsedTasks = parsed.tasks || [];
+            const parsedSessions = parsed.pastSessions || [];
+            const parsedCategories = parsed.categories || [];
+            const parsedLogs = parsed.logs || [];
             setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
-            setTasks(parsed.tasks || []);
-            setPastSessions(parsed.pastSessions || []);
-            setCategories(parsed.categories || []);
-            setLogs(parsed.logs || []);
+            setTasks(parsedTasks);
+            lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(parsedTasks));
+            setPastSessions(parsedSessions);
+            setCategories(parsedCategories);
+            setLogs(parsedLogs);
             setPomodoroCount(parsed.pomodoroCount || 0);
             setScheduleBreaks(parsed.scheduleBreaks || []);
             const nextBreakTime = parsed.breakTime !== undefined ? parsed.breakTime : 0;
@@ -535,20 +794,23 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setActiveMode(parsed.activeMode || 'work');
             setIsIdle(parsed.isIdle !== undefined ? parsed.isIdle : true);
             
-            if (username && parsed.user) {
-                // Ensure streak properties exist
-                const u = parsed.user;
-                if (!u.lifetimeStats.currentStreak) u.lifetimeStats.currentStreak = 0;
-                if (!u.lifetimeStats.bestStreak) u.lifetimeStats.bestStreak = 0;
-                if (!u.lifetimeStats.categoryBreakdown) u.lifetimeStats.categoryBreakdown = {};
-                setUser(u);
-            } else if (username) {
-                 // Recover user structure if missing
-                 setUser({ 
-                     username, 
-                     joinedAt: new Date().toISOString(), 
-                     lifetimeStats: { totalFocusHours: 0, totalPomos: 0, totalSessions: 0, currentStreak: 0, bestStreak: 0, lastActiveDate: null, categoryBreakdown: {} } 
-                 });
+            if (username) {
+                const baseUser = parsed.user && typeof parsed.user.joinedAt === 'string'
+                  ? parsed.user
+                  : {
+                      username,
+                      joinedAt: new Date().toISOString(),
+                      lifetimeStats: { ...EMPTY_LIFETIME_STATS },
+                    };
+                const normalizedUsername = typeof baseUser.username === 'string' && baseUser.username.trim()
+                  ? baseUser.username
+                  : username;
+                const recalculatedStats = calculateLifetimeStatsFromData(parsedSessions, parsedLogs, parsedCategories);
+                setUser({
+                  ...baseUser,
+                  username: normalizedUsername,
+                  lifetimeStats: recalculatedStats,
+                });
             } else {
                 setUser(null);
             }
@@ -642,7 +904,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               setUser({ 
                   username, 
                   joinedAt: new Date().toISOString(), 
-                  lifetimeStats: { totalFocusHours: 0, totalPomos: 0, totalSessions: 0, currentStreak: 0, bestStreak: 0, lastActiveDate: null, categoryBreakdown: {} } 
+                  lifetimeStats: { ...EMPTY_LIFETIME_STATS } 
               });
           } else {
               setUser(null);
@@ -668,91 +930,46 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Initial Load
   useEffect(() => {
       const lastUser = localStorage.getItem('doro_last_user');
-      if (lastUser) {
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (lastUser && token) {
           loadData(lastUser);
       } else {
+          if (!token) {
+            localStorage.removeItem('doro_last_user');
+            setAuthToken(null);
+          }
           loadData();
       }
   }, [loadData]);
 
   // Auth Methods with Sync Logic
-  const calculateLifetimeStats = (sessions: SessionRecord[], currentLogs: LogEntry[], joinedAt: string) => {
-       const totalWorkMins = currentLogs.filter(l => l.type === 'work').reduce((acc, l) => acc + (l.duration / 60), 0);
-       const totalSessions = sessions.length;
-       const totalPomos = sessions.reduce((acc, s) => acc + (s.stats?.pomosCompleted || 0), 0);
-       
-       // Calculate Categories
-       const catStats: Record<string, number> = {};
-       sessions.forEach(s => {
-           if (s.stats?.categoryStats) {
-               Object.entries(s.stats.categoryStats).forEach(([k, v]) => {
-                   catStats[k] = (catStats[k] || 0) + v;
-               });
-           }
-       });
-
-       // Calculate Streak
-       let currentStreak = 0;
-       let bestStreak = 0;
-       const dates = new Set(sessions.map(s => s.startTime.split('T')[0]).concat(currentLogs.map(l => l.start.split('T')[0])));
-       const sortedDates = Array.from(dates).sort();
-       
-       // Simple streak calc for demo
-       if (sortedDates.length > 0) {
-           currentStreak = 1;
-           bestStreak = 1;
-           let tempStreak = 1;
-           for (let i = 1; i < sortedDates.length; i++) {
-               const prev = new Date(sortedDates[i-1]);
-               const curr = new Date(sortedDates[i]);
-               const diffDays = (curr.getTime() - prev.getTime()) / (1000 * 3600 * 24);
-               if (Math.round(diffDays) === 1) {
-                   tempStreak++;
-               } else {
-                   tempStreak = 1;
-               }
-               if (tempStreak > bestStreak) bestStreak = tempStreak;
-           }
-           // Check if current streak is active (today or yesterday)
-           const today = new Date().toISOString().split('T')[0];
-           const lastDate = sortedDates[sortedDates.length - 1];
-           const diffToToday = (new Date(today).getTime() - new Date(lastDate).getTime()) / (1000 * 3600 * 24);
-           if (diffToToday <= 1) currentStreak = tempStreak;
-           else currentStreak = 0;
-       }
-
-       return {
-           totalFocusHours: totalWorkMins / 60,
-           totalPomos,
-           totalSessions,
-           currentStreak,
-           bestStreak,
-           lastActiveDate: sortedDates.pop() || null,
-           categoryBreakdown: catStats
-       };
+  const calculateLifetimeStats = (
+    sessions: SessionRecord[],
+    currentLogs: LogEntry[],
+    _joinedAt: string,
+    sourceCategories?: Category[],
+  ) => {
+    return calculateLifetimeStatsFromData(sessions, currentLogs, sourceCategories || categories);
   };
 
-  const mergeData = (localData: any, remoteData: any) => {
+  const mergeData = (localData: any, remoteData: any, prefer: 'local' | 'remote' = 'local') => {
+      const mergeByPreference = <T extends { id: number | string }>(remoteItems: T[] = [], localItems: T[] = []) => {
+        const merged = new Map<number | string, T>();
+        const first = prefer === 'local' ? remoteItems : localItems;
+        const second = prefer === 'local' ? localItems : remoteItems;
+        first.forEach((item) => merged.set(item.id, item));
+        second.forEach((item) => merged.set(item.id, item));
+        return Array.from(merged.values());
+      };
+
       // 1. Logs: Union by start time + type
       const logMap = new Map();
       remoteData.logs?.forEach((l: LogEntry) => logMap.set(l.start + l.type, l));
       localData.logs?.forEach((l: LogEntry) => logMap.set(l.start + l.type, l));
       const mergedLogs = Array.from(logMap.values()).sort((a: any, b: any) => new Date(b.start).getTime() - new Date(a.start).getTime());
 
-      // 2. Tasks: Union by ID (Local wins if collision to preserve recent edits)
-      const taskMap = new Map();
-      const flatten = (arr: Task[]) => {
-          arr.forEach(t => {
-              taskMap.set(t.id, t);
-              if (t.subtasks && t.subtasks.length > 0) flatten(t.subtasks);
-          });
-      }
-      // Simple merge: Just top level lists, assuming tasks don't move deep in hierarchy often for this use case
-      // A better approach for this simplified mock:
-      const mergedTaskMap = new Map();
-      remoteData.tasks?.forEach((t: Task) => mergedTaskMap.set(t.id, t));
-      localData.tasks?.forEach((t: Task) => mergedTaskMap.set(t.id, t));
-      const mergedTasks = Array.from(mergedTaskMap.values());
+      // 2. Tasks: Union by ID with caller-defined conflict preference.
+      const mergedTasks = mergeByPreference<Task>(remoteData.tasks, localData.tasks);
 
       // 3. Sessions: Union by ID
       const sessionMap = new Map();
@@ -761,13 +978,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const mergedSessions = Array.from(sessionMap.values()).sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
       // 4. Categories
-      const catMap = new Map();
-      remoteData.categories?.forEach((c: Category) => catMap.set(c.id, c));
-      localData.categories?.forEach((c: Category) => catMap.set(c.id, c));
-      const mergedCategories = Array.from(catMap.values());
+      const mergedCategories = mergeByPreference<Category>(remoteData.categories, localData.categories);
 
       // 5. Settings: Local takes precedence for user comfort on this device
-      const mergedSettings = { ...DEFAULT_SETTINGS, ...remoteData.settings, ...localData.settings };
+      const mergedSettings = prefer === 'local'
+        ? { ...DEFAULT_SETTINGS, ...remoteData.settings, ...localData.settings }
+        : { ...DEFAULT_SETTINGS, ...localData.settings, ...remoteData.settings };
 
       return {
           logs: mergedLogs,
@@ -778,103 +994,213 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       };
   };
 
+  const syncAccountNow = useCallback(async (): Promise<boolean> => {
+      if (!user || !authToken || isApplyingCloudSnapshotRef.current) return false;
+      if (isCloudSyncInFlightRef.current) return false;
+
+      const localStr = localStorage.getItem(getUserKey(user.username));
+      if (!localStr) return false;
+
+      try {
+          isCloudSyncInFlightRef.current = true;
+          setAccountSyncState('syncing');
+          setAccountSyncError(null);
+          const payload: TimerPersistencePayload = JSON.parse(localStr);
+          const payloadUser = payload.user;
+          const joinedAt = payloadUser?.joinedAt || user.joinedAt;
+          const normalizedUser: User = {
+            ...(payloadUser || user),
+            username: user.username,
+            joinedAt,
+            lifetimeStats: calculateLifetimeStats(
+              payload.pastSessions || [],
+              payload.logs || [],
+              joinedAt,
+              payload.categories || [],
+            ),
+          };
+          payload.schemaVersion = DATA_SCHEMA_VERSION;
+          payload.userName = normalizedUser.username;
+          payload.user = normalizedUser;
+          payload.updatedAt = new Date().toISOString();
+          const response = await saveAccountData(authToken, payload);
+          const persisted = response.accountData || payload;
+          localStorage.setItem(getUserKey(user.username), JSON.stringify(persisted));
+          if (persisted.user) setUser(persisted.user as User);
+          setLastAccountSyncAt(Date.now());
+          setAccountSyncState('synced');
+          return true;
+      } catch (error) {
+          if (isUnauthorizedError(error)) {
+              localStorage.removeItem(AUTH_TOKEN_KEY);
+              setAuthToken(null);
+          }
+          setAccountSyncState('error');
+          setAccountSyncError(error instanceof Error ? error.message : 'Cloud sync failed.');
+          return false;
+      } finally {
+          isCloudSyncInFlightRef.current = false;
+      }
+  }, [authToken, user]);
+
+  const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
+      if (!user || !authToken) return false;
+      if (isCloudSyncInFlightRef.current || isApplyingCloudSnapshotRef.current) return false;
+
+      const force = options?.force ?? true;
+
+      try {
+          setAccountSyncState('syncing');
+          setAccountSyncError(null);
+          const remote = await fetchAccountData(authToken);
+          const cloudUser = remote.user;
+          const cloudPayload = remote.accountData || {};
+          const localCacheKey = getUserKey(cloudUser.username);
+          const localPayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
+          const cloudRuntimeUpdated = isRuntimeSnapshot(cloudPayload.runtime) ? cloudPayload.runtime.updatedAtMs : 0;
+          const localRuntimeUpdated = isRuntimeSnapshot(localPayload.runtime) ? localPayload.runtime.updatedAtMs : 0;
+          const cloudUpdatedAt = typeof cloudPayload.updatedAt === 'string' ? Date.parse(cloudPayload.updatedAt) : 0;
+          const localUpdatedAt = typeof localPayload.updatedAt === 'string' ? Date.parse(localPayload.updatedAt) : 0;
+          const hasRemoteTimerChange = cloudRuntimeUpdated > localRuntimeUpdated;
+          const hasRemoteDataChange = Number.isFinite(cloudUpdatedAt) && Number.isFinite(localUpdatedAt)
+            ? cloudUpdatedAt > localUpdatedAt
+            : cloudUpdatedAt > 0;
+          if (!force && !hasRemoteTimerChange && !hasRemoteDataChange) {
+            setAccountSyncState('synced');
+            setLastAccountSyncAt(Date.now());
+            return true;
+          }
+
+          const mergedCore = mergeData(localPayload, cloudPayload, 'remote');
+          const mergedStats = calculateLifetimeStats(
+            mergedCore.pastSessions || [],
+            mergedCore.logs || [],
+            cloudUser.joinedAt,
+            mergedCore.categories || [],
+          );
+          const mergedPayload: TimerPersistencePayload = {
+              ...cloudPayload,
+              ...mergedCore,
+              schemaVersion: DATA_SCHEMA_VERSION,
+              user: { ...cloudUser, lifetimeStats: mergedStats },
+              userName: cloudUser.username,
+              activeMode: cloudPayload.activeMode === 'break' ? 'break' : 'work',
+              timerStarted: Boolean(cloudPayload.timerStarted),
+              isIdle: typeof cloudPayload.isIdle === 'boolean' ? cloudPayload.isIdle : true,
+              allPauseActive: Boolean(cloudPayload.allPauseActive),
+              allPauseTime: typeof cloudPayload.allPauseTime === 'number' ? cloudPayload.allPauseTime : 0,
+              graceOpen: Boolean(cloudPayload.graceOpen),
+              graceContext: cloudPayload.graceContext === 'afterWork' || cloudPayload.graceContext === 'afterBreak' ? cloudPayload.graceContext : null,
+              graceTotal: typeof cloudPayload.graceTotal === 'number' ? cloudPayload.graceTotal : 0,
+              updatedAt: typeof cloudPayload.updatedAt === 'string' ? cloudPayload.updatedAt : new Date().toISOString(),
+          };
+
+          if (!isRuntimeSnapshot(mergedPayload.runtime)) {
+              const safeWork = mergedPayload.workTime ?? mergedPayload.settings?.workDuration ?? DEFAULT_SETTINGS.workDuration;
+              const safeBreak = mergedPayload.breakTime ?? 0;
+              mergedPayload.runtime = createRuntimeSnapshot({
+                  sourceTabId: tabIdRef.current,
+                  phase: 'idle',
+                  nowMs: Date.now(),
+                  workTime: safeWork,
+                  breakTime: safeBreak,
+                  allPauseTime: 0,
+                  graceTotal: 0,
+                  activityStartIso: null,
+              });
+              mergedPayload.timerStarted = false;
+              mergedPayload.isIdle = true;
+              mergedPayload.allPauseActive = false;
+              mergedPayload.allPauseTime = 0;
+              mergedPayload.graceOpen = false;
+              mergedPayload.graceContext = null;
+              mergedPayload.graceTotal = 0;
+          }
+
+          isApplyingCloudSnapshotRef.current = true;
+          localStorage.setItem(localCacheKey, JSON.stringify(mergedPayload));
+          localStorage.setItem('doro_last_user', cloudUser.username);
+          setUserName(cloudUser.username);
+          loadData(cloudUser.username);
+          isApplyingCloudSnapshotRef.current = false;
+
+          if (force || hasRemoteDataChange) {
+            await saveAccountData(authToken, mergedPayload);
+          }
+          hasHydratedCloudForUserRef.current = cloudUser.username;
+          setLastAccountSyncAt(Date.now());
+          setAccountSyncState('synced');
+          return true;
+      } catch (error) {
+          isApplyingCloudSnapshotRef.current = false;
+          if (isUnauthorizedError(error)) {
+              localStorage.removeItem(AUTH_TOKEN_KEY);
+              setAuthToken(null);
+          }
+          setAccountSyncState('error');
+          setAccountSyncError(error instanceof Error ? error.message : 'Failed to refresh from cloud.');
+          return false;
+      }
+  }, [authToken, loadData, user]);
+
   const register = async (username: string, password?: string): Promise<boolean> => {
-      // Simulate Network Delay
-      await new Promise(r => setTimeout(r, 800));
-      
-      const db = getCloudDB();
-      if (db[username]) return false; // Already exists
+      if (!password) return false;
+      try {
+          const guestData = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
+          const response = await registerAccount(username, password, guestData);
+          localStorage.setItem(AUTH_TOKEN_KEY, response.token);
+          setAuthToken(response.token);
 
-      // Grab current Guest Data to merge/push
-      const guestKey = getGuestKey();
-      const guestData = JSON.parse(localStorage.getItem(guestKey) || '{}');
+          const accountUsername = response.user.username;
+          const seededPayload = response.accountData || {};
+          const accountPayload: TimerPersistencePayload = {
+            ...seededPayload,
+            user: {
+              ...response.user,
+              lifetimeStats: calculateLifetimeStats(
+                seededPayload.pastSessions || [],
+                seededPayload.logs || [],
+                response.user.joinedAt,
+                seededPayload.categories || [],
+              ),
+            },
+            userName: accountUsername,
+            schemaVersion: DATA_SCHEMA_VERSION,
+            updatedAt: typeof seededPayload.updatedAt === 'string' ? seededPayload.updatedAt : new Date().toISOString(),
+          };
 
-      // Create new user record
-      const joinedAt = new Date().toISOString();
-      const initialStats = calculateLifetimeStats(guestData.pastSessions || [], guestData.logs || [], joinedAt);
-
-      const newUser: User = {
-          username,
-          password, 
-          joinedAt,
-          lifetimeStats: initialStats
-      };
-
-      const seedWorkTime = guestData.workTime ?? DEFAULT_SETTINGS.workDuration;
-      const seedBreakTime = guestData.breakTime ?? 0;
-      const seedRuntime = createRuntimeSnapshot({
-        sourceTabId: tabIdRef.current,
-        phase: 'idle',
-        nowMs: Date.now(),
-        workTime: seedWorkTime,
-        breakTime: seedBreakTime,
-        allPauseTime: 0,
-        graceTotal: 0,
-        activityStartIso: null,
-      });
-
-      const accountData = {
-          schemaVersion: DATA_SCHEMA_VERSION,
-          runtime: seedRuntime,
-          user: newUser,
-          settings: { ...DEFAULT_SETTINGS, ...(guestData.settings || {}) },
-          tasks: guestData.tasks || [],
-          logs: guestData.logs || [],
-          pastSessions: guestData.pastSessions || [],
-          categories: guestData.categories || [],
-          workTime: seedWorkTime,
-          breakTime: seedBreakTime,
-          activeMode: 'work',
-          timerStarted: false,
-          isIdle: true,
-          allPauseActive: false,
-          allPauseTime: 0,
-          graceOpen: false,
-          graceContext: null,
-          graceTotal: 0
-      };
-
-      // Save to Cloud
-      db[username] = accountData;
-      saveCloudDB(db);
-      
-      // Save to Local User Cache
-      const key = getUserKey(username);
-      localStorage.setItem(key, JSON.stringify(accountData));
-
-      // Set Active
-      localStorage.setItem('doro_last_user', username);
-      setUserName(username);
-      loadData(username);
-      
-      return true;
+          localStorage.setItem(getUserKey(accountUsername), JSON.stringify(accountPayload));
+          localStorage.setItem('doro_last_user', accountUsername);
+          hasHydratedCloudForUserRef.current = accountUsername;
+          setUserName(accountUsername);
+          setLastAccountSyncAt(Date.now());
+          setAccountSyncState('synced');
+          setAccountSyncError(null);
+          loadData(accountUsername);
+          return true;
+      } catch (error) {
+          setAccountSyncState('error');
+          setAccountSyncError(error instanceof Error ? error.message : 'Registration failed.');
+          return false;
+      }
   };
 
   const login = async (username: string, password?: string): Promise<boolean> => {
-      // Simulate Network
-      await new Promise(r => setTimeout(r, 800));
-
-      const db = getCloudDB();
-      const remoteAccount = db[username];
-      
-      if (!remoteAccount) return false;
-      if (remoteAccount.user?.password && remoteAccount.user.password !== password) return false;
-
-      // Get Local Guest Data (to merge)
-      const guestData = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
-
-      // Merge Guest Data into Account
-      const merged = mergeData(guestData, remoteAccount);
-      
-      // Recalculate User Stats based on merged data
-      const newStats = calculateLifetimeStats(merged.pastSessions, merged.logs, remoteAccount.user.joinedAt);
-      
-      const updatedAccount = {
-          ...remoteAccount,
-          ...merged,
-          user: { ...remoteAccount.user, lifetimeStats: newStats },
-          schemaVersion: DATA_SCHEMA_VERSION,
-          runtime: isRuntimeSnapshot(remoteAccount.runtime)
+      if (!password) return false;
+      try {
+          const response = await loginAccount(username, password);
+          const guestData = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
+          const remoteAccount = response.accountData || {};
+          const merged = mergeData(guestData, remoteAccount);
+          const mergedStats = calculateLifetimeStats(
+            merged.pastSessions || [],
+            merged.logs || [],
+            response.user.joinedAt,
+            merged.categories || [],
+          );
+          const accountUsername = response.user.username;
+          const remoteMode: TimerMode = remoteAccount.activeMode === 'break' ? 'break' : 'work';
+          const remoteRuntime = isRuntimeSnapshot(remoteAccount.runtime)
             ? remoteAccount.runtime
             : createRuntimeSnapshot({
                 sourceTabId: tabIdRef.current,
@@ -885,227 +1211,115 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 allPauseTime: 0,
                 graceTotal: 0,
                 activityStartIso: null,
-              }),
-          activeMode: remoteAccount.activeMode || 'work',
-          timerStarted: false,
-          isIdle: true,
-          allPauseActive: false,
-          allPauseTime: 0,
-          graceOpen: false,
-          graceContext: null,
-          graceTotal: 0
-      };
+              });
+          const remoteRuntimeRunning = remoteRuntime.phase === 'running-work' || remoteRuntime.phase === 'running-break';
+          const remoteGraceRawContext = remoteAccount.graceContext;
+          const remoteGraceCandidateOpen = Boolean(remoteAccount.graceOpen);
+          const remoteHasLegacyBreakGrace = remoteGraceRawContext === 'afterBreak' || (remoteGraceRawContext == null && remoteMode === 'break');
+          const remoteGraceOpen = remoteGraceCandidateOpen && !remoteHasLegacyBreakGrace;
+          const remoteGraceContext: 'afterWork' | null = remoteGraceOpen ? 'afterWork' : null;
 
-      // Push merged state back to cloud
-      db[username] = updatedAccount;
-      saveCloudDB(db);
+          const updatedAccount: TimerPersistencePayload = {
+              ...remoteAccount,
+              ...merged,
+              user: { ...response.user, lifetimeStats: mergedStats },
+              userName: accountUsername,
+              schemaVersion: DATA_SCHEMA_VERSION,
+              runtime: remoteRuntime,
+              activeMode: remoteMode,
+              timerStarted: typeof remoteAccount.timerStarted === 'boolean' ? remoteAccount.timerStarted : remoteRuntimeRunning,
+              isIdle: typeof remoteAccount.isIdle === 'boolean' ? remoteAccount.isIdle : remoteRuntime.phase === 'idle',
+              allPauseActive: typeof remoteAccount.allPauseActive === 'boolean' ? remoteAccount.allPauseActive : remoteRuntime.phase === 'all-pause',
+              allPauseTime: typeof remoteAccount.allPauseTime === 'number' ? remoteAccount.allPauseTime : 0,
+              allPauseReason: typeof remoteAccount.allPauseReason === 'string' ? remoteAccount.allPauseReason : '',
+              allPauseStartTime: remoteAccount.allPauseStartTime === null || typeof remoteAccount.allPauseStartTime === 'number'
+                ? remoteAccount.allPauseStartTime
+                : null,
+              graceOpen: remoteGraceOpen,
+              graceContext: remoteGraceContext,
+              graceTotal: remoteGraceOpen && typeof remoteAccount.graceTotal === 'number' ? remoteAccount.graceTotal : 0,
+              updatedAt: typeof remoteAccount.updatedAt === 'string' ? remoteAccount.updatedAt : new Date().toISOString(),
+          };
 
-      // Save to Local User Cache
-      localStorage.setItem(getUserKey(username), JSON.stringify(updatedAccount));
-
-      // Switch context
-      localStorage.setItem('doro_last_user', username);
-      setUserName(username);
-      loadData(username);
-
-      return true;
+          await saveAccountData(response.token, updatedAccount);
+          localStorage.setItem(AUTH_TOKEN_KEY, response.token);
+          setAuthToken(response.token);
+          localStorage.setItem(getUserKey(accountUsername), JSON.stringify(updatedAccount));
+          localStorage.setItem('doro_last_user', accountUsername);
+          hasHydratedCloudForUserRef.current = accountUsername;
+          setUserName(accountUsername);
+          setLastAccountSyncAt(Date.now());
+          setAccountSyncState('synced');
+          setAccountSyncError(null);
+          loadData(accountUsername);
+          return true;
+      } catch (error) {
+          setAccountSyncState('error');
+          setAccountSyncError(error instanceof Error ? error.message : 'Login failed.');
+          return false;
+      }
   };
 
   const logout = () => {
+      const tokenToRevoke = authToken;
+      if (tokenToRevoke) {
+          void logoutAccount(tokenToRevoke).catch(() => {});
+      }
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      setAuthToken(null);
+      setAccountSyncState('idle');
+      setAccountSyncError(null);
+      setLastAccountSyncAt(null);
+      hasHydratedCloudForUserRef.current = null;
       setUser(null);
       setUserName('');
       localStorage.removeItem('doro_last_user');
       loadData(); // Load Guest Data
   };
 
-  // Sync Effect: Periodically sync local user data to cloud if logged in
   useEffect(() => {
-      if (!user) return;
-      const interval = setInterval(() => {
-          const db = getCloudDB();
-          const localStr = localStorage.getItem(getUserKey(user.username));
-          if (localStr) {
-              const localData = JSON.parse(localStr);
-              // Optimistic update to cloud
-              db[user.username] = localData;
-              saveCloudDB(db);
-          }
-      }, 10000); // 10 seconds auto-sync
+      if (!user || !authToken) return;
+      if (hasHydratedCloudForUserRef.current === user.username) return;
+      void refreshAccountFromCloud();
+  }, [authToken, refreshAccountFromCloud, user]);
+
+  useEffect(() => {
+      if (!user || !authToken) return;
+      const interval = setInterval(() => { void refreshAccountFromCloud({ force: false }); }, 12000);
       return () => clearInterval(interval);
-  }, [user]);
+  }, [authToken, refreshAccountFromCloud, user]);
 
-  // Cloud Export / Import
-  const exportData = (): string => {
-      const userDataToSave = user ? { ...user } : null;
-      const dataToSave = {
-        schemaVersion: DATA_SCHEMA_VERSION,
-        runtime: runtimeRef.current,
-        settings,
-        tasks,
-        pastSessions,
-        categories,
-        logs,
-        pomodoroCount,
-        workTime,
-        breakTime,
-        activeMode,
-        timerStarted,
-        isIdle,
-        allPauseActive,
-        allPauseTime,
-        allPauseReason,
-        allPauseStartTime,
-        graceOpen,
-        graceContext,
-        graceTotal,
-        scheduleBreaks,
-        scheduleStartTime,
-        sessionStartTime,
-        userName,
-        user: userDataToSave
-      };
-      return btoa(JSON.stringify(dataToSave));
-  };
-
-  const importData = (encodedData: string): boolean => {
-      try {
-          const jsonStr = atob(encodedData);
-          const parsed = JSON.parse(jsonStr);
-          
-          if (parsed.user && parsed.user.username) {
-             const key = getUserKey(parsed.user.username);
-             
-             // Merge Strategy: Don't overwrite if existing data is present, merge logs and sessions
-             const existingStr = localStorage.getItem(key);
-             let dataToStore = parsed;
-             
-             if (existingStr) {
-                 const existing = JSON.parse(existingStr);
-                 // Merge Past Sessions (dedup by ID)
-                 const sessionMap = new Map();
-                 existing.pastSessions?.forEach((s: any) => sessionMap.set(s.id, s));
-                 parsed.pastSessions?.forEach((s: any) => sessionMap.set(s.id, s));
-                 
-                 // Merge Logs (dedup by start time)
-                 const logMap = new Map();
-                 existing.logs?.forEach((l: any) => logMap.set(l.start, l));
-                 parsed.logs?.forEach((l: any) => logMap.set(l.start, l));
-
-                 // Merge Stats
-                 const eStats = existing.user?.lifetimeStats || {};
-                 const pStats = parsed.user?.lifetimeStats || {};
-                 const newStats = { ...pStats }; // Prefer imported, but logic could be better
-                 
-                 dataToStore = {
-                     ...parsed,
-                     pastSessions: Array.from(sessionMap.values()),
-                     logs: Array.from(logMap.values()),
-                     user: { ...parsed.user, lifetimeStats: newStats }
-                 };
-             }
-
-             if (!isRuntimeSnapshot((dataToStore as TimerPersistencePayload).runtime)) {
-                const safeWork = (dataToStore as TimerPersistencePayload).workTime ?? parsed.settings?.workDuration ?? DEFAULT_SETTINGS.workDuration;
-                const safeBreak = (dataToStore as TimerPersistencePayload).breakTime ?? 0;
-                (dataToStore as any).schemaVersion = DATA_SCHEMA_VERSION;
-                (dataToStore as any).runtime = createRuntimeSnapshot({
-                  sourceTabId: tabIdRef.current,
-                  phase: 'idle',
-                  nowMs: Date.now(),
-                  workTime: safeWork,
-                  breakTime: safeBreak,
-                  allPauseTime: 0,
-                  graceTotal: 0,
-                  activityStartIso: null,
-                });
-                (dataToStore as any).timerStarted = false;
-                (dataToStore as any).isIdle = true;
-                (dataToStore as any).allPauseActive = false;
-                (dataToStore as any).allPauseTime = 0;
-                (dataToStore as any).graceOpen = false;
-                (dataToStore as any).graceContext = null;
-                (dataToStore as any).graceTotal = 0;
-             }
-
-             localStorage.setItem(key, JSON.stringify(dataToStore));
-             
-             localStorage.setItem('doro_last_user', parsed.user.username);
-             setUserName(parsed.user.username);
-             loadData(parsed.user.username);
-             return true;
-          } else {
-              localStorage.setItem(getGuestKey(), JSON.stringify(parsed));
-              loadData();
-              return true;
-          }
-      } catch (e) {
-          console.error("Import failed", e);
-          return false;
-      }
-  };
-
-  // ---- DEVICE SYNC LOGIC ----
-  const startMigrationHost = async (): Promise<string> => {
-      const dataStr = exportData();
-      return new Promise((resolve, reject) => {
-          try {
-              const shortId = Math.random().toString(36).substring(2, 8).toUpperCase();
-              // @ts-ignore
-              const peer = new Peer(shortId);
-              migrationPeerRef.current = peer;
-              
-              peer.on('open', (id) => {
-                  resolve(id);
-              });
-              
-              peer.on('connection', (conn) => {
-                  conn.on('open', () => {
-                      conn.send({ type: 'MIGRATION_DATA', data: dataStr });
-                      setTimeout(() => {
-                          conn.close();
-                          peer.destroy();
-                          migrationPeerRef.current = null;
-                      }, 2000);
-                  });
-              });
-
-              peer.on('error', (err) => reject(err));
-          } catch (e) { reject(e); }
-      });
-  };
-
-  const joinMigration = async (code: string): Promise<void> => {
-      return new Promise((resolve, reject) => {
-          try {
-              // @ts-ignore
-              const peer = new Peer();
-              migrationPeerRef.current = peer;
-              
-              peer.on('open', () => {
-                  const conn = peer.connect(code);
-                  
-                  conn.on('open', () => {
-                      console.log("Connected to migration host");
-                  });
-
-                  conn.on('data', (msg: any) => {
-                      if (msg.type === 'MIGRATION_DATA' && msg.data) {
-                          const success = importData(msg.data);
-                          if (success) resolve();
-                          else reject(new Error("Data corruption during sync"));
-                          conn.close();
-                          peer.destroy();
-                          migrationPeerRef.current = null;
-                      }
-                  });
-              });
-              
-              peer.on('error', (err) => {
-                  reject(err);
-              });
-          } catch(e) { reject(e); }
-      });
-  };
+  useEffect(() => {
+      if (!user || !authToken) return;
+      if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
+      const timeout = setTimeout(() => { void syncAccountNow(); }, 2500);
+      return () => clearTimeout(timeout);
+  }, [
+      user,
+      authToken,
+      settings,
+      tasks,
+      pastSessions,
+      categories,
+      logs,
+      pomodoroCount,
+      workTime,
+      breakTime,
+      activeMode,
+      timerStarted,
+      isIdle,
+      allPauseActive,
+      allPauseTime,
+      allPauseReason,
+      allPauseStartTime,
+      graceOpen,
+      graceContext,
+      graceTotal,
+      scheduleBreaks,
+      scheduleStartTime,
+      sessionStartTime,
+      syncAccountNow,
+  ]);
 
   // Save Effect
   useEffect(() => {
@@ -1137,7 +1351,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       scheduleStartTime,
       sessionStartTime,
       userName,
-      user: userDataToSave
+      user: userDataToSave,
+      updatedAt: new Date().toISOString(),
     };
     localStorage.setItem(key, JSON.stringify(dataToSave));
   }, [
@@ -1186,7 +1401,114 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, []);
 
-  // PeerJS logic (omitted for brevity, same as before)
+  // PeerJS logic
+  const GROUP_CONNECT_TIMEOUT_MS = 15000;
+
+  const pruneConnections = useCallback(() => {
+    const byPeer = new Map<string, DataConnection>();
+    connectionsRef.current.forEach(conn => {
+      if (!conn || !conn.peer || !conn.open) return;
+      if (!byPeer.has(conn.peer)) byPeer.set(conn.peer, conn);
+    });
+    connectionsRef.current = Array.from(byPeer.values());
+    return connectionsRef.current;
+  }, []);
+
+  const formatGroupEventMessage = useCallback((event: GroupEventPayload): string => {
+    switch (event.type) {
+      case 'joined':
+        return 'joined the study session';
+      case 'timer-started':
+        return 'started the timer';
+      case 'timer-stopped':
+        return 'stopped the timer';
+      case 'timer-paused':
+        return event.reason ? `paused the timer (${event.reason})` : 'paused the timer';
+      case 'timer-resumed':
+        return event.mode === 'break' ? 'resumed on break mode' : 'resumed on focus mode';
+      case 'mode-switched':
+        return event.mode === 'break' ? 'switched to break mode' : 'switched to focus mode';
+      case 'timer-reset':
+        return 'reset the active timer';
+      case 'grace-resolved':
+        return event.mode === 'break' ? 'continued into break after grace' : 'returned to focus after grace';
+      default:
+        return 'updated the timer';
+    }
+  }, []);
+
+  const postGroupNotice = useCallback((event: GroupEventPayload) => {
+    if (!event.actorId || !event.actorName) return;
+    if (localPeerIdRef.current && event.actorId === localPeerIdRef.current) return;
+    setGroupNotice({
+      id: `${event.id}_${Date.now()}`,
+      actorId: event.actorId,
+      actorName: event.actorName,
+      kind: event.type === 'joined' ? 'join' : 'action',
+      message: formatGroupEventMessage(event),
+      createdAt: Date.now(),
+    });
+  }, [formatGroupEventMessage]);
+
+  const sendGroupEvent = useCallback((event: GroupEventPayload, excludeConnId?: string) => {
+    if (!groupSessionId) return;
+    const openConnections = pruneConnections();
+    if (openConnections.length === 0) return;
+    openConnections.forEach(conn => {
+      if (conn.open && conn.peer !== excludeConnId) {
+        conn.send({ type: 'GROUP_EVENT', event });
+      }
+    });
+  }, [groupSessionId, pruneConnections]);
+
+  const normalizeGroupEventPayload = useCallback((raw: any, fallbackActorId?: string, fallbackActorName?: string): GroupEventPayload | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    if (!isGroupEventType(raw.type)) return null;
+
+    const actorId = typeof raw.actorId === 'string' && raw.actorId.trim()
+      ? raw.actorId.trim()
+      : (fallbackActorId || '');
+    const actorName = typeof raw.actorName === 'string' && raw.actorName.trim()
+      ? raw.actorName.trim()
+      : (fallbackActorName || 'Member');
+    if (!actorId) return null;
+
+    const normalized: GroupEventPayload = {
+      id: typeof raw.id === 'string' && raw.id.trim()
+        ? raw.id.trim()
+        : `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      type: raw.type,
+      actorId,
+      actorName,
+      at: typeof raw.at === 'number' ? raw.at : Date.now(),
+    };
+
+    if (raw.mode === 'work' || raw.mode === 'break') {
+      normalized.mode = raw.mode;
+    }
+    if (typeof raw.reason === 'string' && raw.reason.trim()) {
+      normalized.reason = raw.reason.trim().slice(0, 80);
+    }
+    return normalized;
+  }, []);
+
+  const emitLocalGroupEvent = useCallback((type: GroupEventType, extras?: { mode?: TimerMode, reason?: string }) => {
+    if (!groupSessionId) return;
+    const actorId = localPeerIdRef.current;
+    const actorName = userName.trim();
+    if (!actorId || !actorName) return;
+    const payload: GroupEventPayload = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      type,
+      actorId,
+      actorName,
+      at: Date.now(),
+    };
+    if (extras?.mode === 'work' || extras?.mode === 'break') payload.mode = extras.mode;
+    if (typeof extras?.reason === 'string' && extras.reason.trim()) payload.reason = extras.reason.trim().slice(0, 80);
+    sendGroupEvent(payload);
+  }, [groupSessionId, userName, sendGroupEvent]);
+
   const getCurrentState = useCallback(() => {
     return {
        settings, tasks, categories, logs, activeMode, timerStarted, isIdle,
@@ -1194,15 +1516,41 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
        scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime,
        allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal,
        runtime: runtimeRef.current,
-       hostConfig: hostSyncConfig
+       hostConfig: hostSyncConfigRef.current
     };
-  }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, hostSyncConfig]);
+  }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal]);
 
-  const applyRemoteState = useCallback((remote: any) => {
+  const buildFilteredGroupState = useCallback((state: any, config: GroupSyncConfig) => {
+      const filteredState: any = { ...state };
+      if (!config.syncTimers) {
+          delete filteredState.workTime; delete filteredState.breakTime; delete filteredState.activeMode;
+          delete filteredState.timerStarted; delete filteredState.isIdle;
+          delete filteredState.pomodoroCount;
+          delete filteredState.allPauseActive; delete filteredState.allPauseTime; delete filteredState.allPauseReason;
+          delete filteredState.allPauseStartTime; delete filteredState.graceOpen; delete filteredState.graceContext;
+          delete filteredState.graceTotal; delete filteredState.runtime;
+      }
+      if (!config.syncTasks) { delete filteredState.tasks; delete filteredState.categories; }
+      if (!config.syncHistory) { delete filteredState.logs; }
+      if (!config.syncSchedule) { delete filteredState.scheduleBreaks; delete filteredState.scheduleStartTime; delete filteredState.sessionStartTime; }
+      if (!config.syncSettings) { delete filteredState.settings; }
+      filteredState.hostConfig = hostSyncConfigRef.current;
+      return filteredState;
+  }, []);
+
+  const applyRemoteState = useCallback((remote: any, mode: 'full' | 'timer-only' = 'full') => {
+      if (!remote || typeof remote !== 'object') return;
       isRemoteUpdate.current = true;
-      const config = isHost ? DEFAULT_SYNC_CONFIG : clientSyncConfig;
+
+      const remoteHostConfig = normalizeSyncConfig(remote.hostConfig, hostSyncConfigRef.current);
+      const inboundBaseConfig = isHost
+        ? hostSyncConfigRef.current
+        : intersectSyncConfig(remoteHostConfig, clientSyncConfigRef.current);
+      const config = mode === 'timer-only'
+        ? { ...TIMER_ONLY_SYNC_CONFIG, syncTimers: inboundBaseConfig.syncTimers }
+        : inboundBaseConfig;
       
-      if (config.syncSettings && remote.settings) {
+      if (mode === 'full' && config.syncSettings && remote.settings) {
           setSettings(prev => ({
             ...DEFAULT_SETTINGS,
             ...remote.settings,
@@ -1210,15 +1558,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             themeMode: prev.themeMode,
           }));
       }
-      if (config.syncTasks && remote.tasks) {
+      if (mode === 'full' && config.syncTasks && Array.isArray(remote.tasks)) {
           setTasks(remote.tasks);
-          setCategories(remote.categories);
+          if (Array.isArray(remote.categories)) setCategories(remote.categories);
       }
-      if (config.syncHistory && remote.logs) setLogs(remote.logs);
-      if (config.syncSchedule) {
-          if (remote.scheduleBreaks) setScheduleBreaks(remote.scheduleBreaks);
-          if (remote.scheduleStartTime) setScheduleStartTime(remote.scheduleStartTime);
-          if (remote.sessionStartTime) setSessionStartTime(remote.sessionStartTime);
+      if (mode === 'full' && config.syncHistory && Array.isArray(remote.logs)) setLogs(remote.logs);
+      if (mode === 'full' && config.syncSchedule) {
+          if (Array.isArray(remote.scheduleBreaks)) setScheduleBreaks(remote.scheduleBreaks);
+          if (typeof remote.scheduleStartTime === 'string') setScheduleStartTime(remote.scheduleStartTime);
+          if (typeof remote.sessionStartTime === 'string' || remote.sessionStartTime === null) setSessionStartTime(remote.sessionStartTime ?? null);
       }
       if (config.syncTimers) {
           if (typeof remote.workTime === 'number') setWorkTime(remote.workTime);
@@ -1232,7 +1580,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (typeof remote.allPauseReason === 'string') setAllPauseReason(remote.allPauseReason);
           if (remote.allPauseStartTime === null || typeof remote.allPauseStartTime === 'number') setAllPauseStartTime(remote.allPauseStartTime ?? null);
           const remoteGraceRawContext = remote.graceContext;
-          const remoteMode = remote.activeMode === 'work' || remote.activeMode === 'break' ? remote.activeMode : activeMode;
+          const remoteMode = remote.activeMode === 'work' || remote.activeMode === 'break' ? remote.activeMode : activeModeRef.current;
           const remoteGraceCandidateOpen = typeof remote.graceOpen === 'boolean' ? remote.graceOpen : false;
           const remoteHasLegacyBreakGrace = remoteGraceRawContext === 'afterBreak' || (remoteGraceRawContext == null && remoteMode === 'break');
           const remoteGraceOpen = remoteGraceCandidateOpen;
@@ -1247,108 +1595,371 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               currentActivityStartRef.current = remote.runtime.activityStartIso ? new Date(remote.runtime.activityStartIso) : null;
           }
       }
-      if (!isHost && remote.hostConfig) setHostSyncConfig(remote.hostConfig);
-      setTimeout(() => { isRemoteUpdate.current = false; }, 300);
-  }, [isHost, clientSyncConfig, activeMode]);
+      if (!isHost && remote.hostConfig) {
+          hostSyncConfigRef.current = remoteHostConfig;
+          setHostSyncConfig(remoteHostConfig);
+      }
+      setTimeout(() => { isRemoteUpdate.current = false; }, 120);
+  }, [isHost]);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
-      if (!groupSessionId || connectionsRef.current.length === 0) return;
+      if (!groupSessionId) return;
+      const openConnections = pruneConnections();
+      if (openConnections.length === 0) return;
       const fullState = getCurrentState();
-      const filteredState: any = { ...fullState };
-      
-      if (!hostSyncConfig.syncTimers) {
-          delete filteredState.workTime; delete filteredState.breakTime; delete filteredState.activeMode;
-          delete filteredState.timerStarted; delete filteredState.isIdle;
-          delete filteredState.allPauseActive; delete filteredState.allPauseTime; delete filteredState.allPauseReason;
-          delete filteredState.allPauseStartTime; delete filteredState.graceOpen; delete filteredState.graceContext;
-          delete filteredState.graceTotal; delete filteredState.runtime;
-      }
-      if (!hostSyncConfig.syncTasks) { delete filteredState.tasks; delete filteredState.categories; }
-      if (!hostSyncConfig.syncHistory) { delete filteredState.logs; }
-      if (!hostSyncConfig.syncSchedule) { delete filteredState.scheduleBreaks; delete filteredState.scheduleStartTime; }
-      if (!hostSyncConfig.syncSettings) { delete filteredState.settings; }
 
-      connectionsRef.current.forEach(conn => {
+      if (isHost) {
+          const filteredState = buildFilteredGroupState(fullState, hostSyncConfigRef.current);
+          openConnections.forEach(conn => {
+              if (conn.open && conn.peer !== excludeConnId) {
+                  conn.send({ type: 'STATE_UPDATE', state: filteredState });
+              }
+          });
+          return;
+      }
+
+      const outboundClientConfig = intersectSyncConfig(hostSyncConfigRef.current, clientSyncConfigRef.current);
+      if (!outboundClientConfig.syncTimers) return;
+      const roundedWork = Math.round(fullState.workTime * 10) / 10;
+      const roundedBreak = Math.round(fullState.breakTime * 10) / 10;
+      const clientTimerSignature = [
+        runtimeRef.current.updatedAtMs,
+        fullState.activeMode,
+        fullState.timerStarted ? 1 : 0,
+        fullState.isIdle ? 1 : 0,
+        fullState.allPauseActive ? 1 : 0,
+        fullState.allPauseReason || '',
+        fullState.graceOpen ? 1 : 0,
+        fullState.graceContext || '',
+        fullState.pomodoroCount,
+        fullState.timerStarted ? '' : roundedWork,
+        fullState.timerStarted ? '' : roundedBreak,
+      ].join('|');
+      if (lastClientTimerBroadcastSignatureRef.current === clientTimerSignature) return;
+      const timerState = buildFilteredGroupState(fullState, TIMER_ONLY_SYNC_CONFIG);
+      let didSend = false;
+      openConnections.forEach(conn => {
           if (conn.open && conn.peer !== excludeConnId) {
-              conn.send({ type: 'STATE_UPDATE', state: filteredState });
+              conn.send({ type: 'TIMER_STATE', state: timerState });
+              didSend = true;
           }
       });
-  }, [groupSessionId, getCurrentState, hostSyncConfig]);
+      if (didSend) {
+        lastClientTimerBroadcastSignatureRef.current = clientTimerSignature;
+      }
+  }, [groupSessionId, getCurrentState, isHost, buildFilteredGroupState, pruneConnections]);
 
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
-     const t = setTimeout(() => { broadcastState(); }, 100);
+     const t = setTimeout(() => { broadcastState(); }, 80);
      return () => clearTimeout(t);
-  }, [tasks, settings, activeMode, timerStarted, isIdle, scheduleBreaks, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseStartTime, graceOpen, graceTotal, groupSessionId, broadcastState, hostSyncConfig]);
+  }, [tasks, settings, activeMode, timerStarted, isIdle, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
 
   const updateMembersList = useCallback(() => {
       if (isHost) {
+           const openConnections = pruneConnections();
            const memberList: GroupMember[] = [
                { id: 'host', name: userName, isHost: true },
-               ...connectionsRef.current.map(c => ({ id: c.peer, name: (c.metadata as any)?.name || 'Member', isHost: false }))
+               ...openConnections.map(c => ({ id: c.peer, name: (c.metadata as any)?.name || 'Member', isHost: false }))
            ];
            setMembers(memberList);
-           connectionsRef.current.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
+           openConnections.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
       }
-  }, [isHost, userName]);
+  }, [isHost, userName, pruneConnections]);
 
   const createGroupSession = async (name: string, config: GroupSyncConfig): Promise<string> => {
+      const normalizedConfig = normalizeSyncConfig(config, hostSyncConfigRef.current);
+      if (groupSessionId || peerRef.current || connectionsRef.current.length > 0) {
+          leaveGroupSession();
+      }
       setUserName(name);
-      setHostSyncConfig(config);
+      hostSyncConfigRef.current = normalizedConfig;
+      setHostSyncConfig(normalizedConfig);
+      lastClientTimerBroadcastSignatureRef.current = null;
+
       return new Promise((resolve, reject) => {
+          let settled = false;
+          const timeoutId = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              try { peerRef.current?.destroy(); } catch {}
+              peerRef.current = null;
+              connectionsRef.current = [];
+              localPeerIdRef.current = null;
+              setGroupSessionId(null);
+              setIsHost(false);
+              setMembers([]);
+              setPeerError("Timed out creating group session. Check your connection and try again.");
+              reject(new Error("Timed out creating group session."));
+          }, GROUP_CONNECT_TIMEOUT_MS);
+
+          const settle = (handler: () => void) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timeoutId);
+              handler();
+          };
+
           try {
             const shortId = Math.random().toString(36).substring(2, 8).toUpperCase();
             // @ts-ignore
-            const peer = new Peer(shortId); 
+            const peer = new Peer(shortId);
             peerRef.current = peer;
+
             peer.on('open', (id: string) => {
-                setGroupSessionId(id); setIsHost(true); setPeerError(null);
-                setMembers([{ id, name, isHost: true }]); resolve(id);
+                settle(() => {
+                  localPeerIdRef.current = id;
+                  setGroupSessionId(id);
+                  setIsHost(true);
+                  setPeerError(null);
+                  setMembers([{ id, name, isHost: true }]);
+                  resolve(id);
+                });
             });
+
             peer.on('connection', (conn: DataConnection) => {
+                connectionsRef.current = connectionsRef.current.filter(existing => {
+                  if (existing.peer !== conn.peer) return true;
+                  try { existing.close(); } catch {}
+                  return false;
+                });
                 connectionsRef.current.push(conn);
-                conn.on('open', () => { conn.send({ type: 'STATE_UPDATE', state: getCurrentState() }); updateMembersList(); });
-                conn.on('close', () => { connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer); updateMembersList(); });
+
+                conn.on('open', () => {
+                  connectionsRef.current = connectionsRef.current.filter(existing => existing.peer !== conn.peer);
+                  connectionsRef.current.push(conn);
+                  const initialState = buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current);
+                  conn.send({ type: 'STATE_UPDATE', state: initialState });
+                  const joinEvent = normalizeGroupEventPayload({
+                    type: 'joined',
+                    actorId: conn.peer,
+                    actorName: (conn.metadata as any)?.name || 'Member',
+                    at: Date.now(),
+                  }, conn.peer, (conn.metadata as any)?.name || 'Member');
+                  if (joinEvent) {
+                    postGroupNotice(joinEvent);
+                    sendGroupEvent(joinEvent);
+                  }
+                  updateMembersList();
+                });
+
+                conn.on('data', (data: any) => {
+                    if (!data || typeof data !== 'object') return;
+                    if (data.type === 'GROUP_EVENT') {
+                        const forwardedEvent = normalizeGroupEventPayload({
+                          ...(data.event || {}),
+                          actorId: conn.peer,
+                          actorName: (conn.metadata as any)?.name || 'Member',
+                        }, conn.peer, (conn.metadata as any)?.name || 'Member');
+                        if (forwardedEvent) {
+                            postGroupNotice(forwardedEvent);
+                            sendGroupEvent(forwardedEvent, conn.peer);
+                        }
+                        return;
+                    }
+                    if (data.type === 'TIMER_STATE' && data.state && hostSyncConfigRef.current.syncTimers) {
+                        const timerState = buildFilteredGroupState(data.state, TIMER_ONLY_SYNC_CONFIG);
+                        applyRemoteState(timerState, 'timer-only');
+                        pruneConnections().forEach(peerConn => {
+                            if (peerConn.open && peerConn.peer !== conn.peer) {
+                                peerConn.send({ type: 'TIMER_STATE', state: timerState });
+                            }
+                        });
+                        return;
+                    }
+                    // Backward compatibility for older clients that still send STATE_UPDATE.
+                    if (data.type === 'STATE_UPDATE' && data.state && hostSyncConfigRef.current.syncTimers) {
+                        const timerState = buildFilteredGroupState(data.state, TIMER_ONLY_SYNC_CONFIG);
+                        applyRemoteState(timerState, 'timer-only');
+                        pruneConnections().forEach(peerConn => {
+                            if (peerConn.open && peerConn.peer !== conn.peer) {
+                                peerConn.send({ type: 'TIMER_STATE', state: timerState });
+                            }
+                        });
+                    }
+                });
+
+                conn.on('error', () => {
+                  connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+                  updateMembersList();
+                });
+
+                conn.on('close', () => {
+                  connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+                  updateMembersList();
+                });
             });
+
             peer.on('error', (err: any) => {
-                if (err.type === 'unavailable-id') reject(new Error("Session ID collision."));
-                else { setPeerError("Connection Error: " + err.type); reject(err); }
+                const message = err?.type === 'unavailable-id'
+                  ? "Session ID collision. Try again."
+                  : `Connection Error: ${err?.type || 'unknown'}`;
+                if (!settled) {
+                  settle(() => {
+                    try { peer.destroy(); } catch {}
+                    peerRef.current = null;
+                    connectionsRef.current = [];
+                    localPeerIdRef.current = null;
+                    setGroupSessionId(null);
+                    setIsHost(false);
+                    setMembers([]);
+                    setPeerError(message);
+                    reject(new Error(message));
+                  });
+                  return;
+                }
+                setPeerError(message);
             });
-          } catch (e) { reject(e); }
+          } catch (e) {
+            settle(() => {
+              const error = e instanceof Error ? e : new Error('Failed to create group session.');
+              setPeerError(error.message);
+              reject(error);
+            });
+          }
       });
   };
 
   const joinGroupSession = async (hostId: string, name: string, config: GroupSyncConfig): Promise<void> => {
+      const sessionId = hostId.trim().toUpperCase();
+      if (!sessionId) throw new Error('Session ID is required.');
+      const normalizedConfig = normalizeSyncConfig(config, clientSyncConfigRef.current);
+      if (groupSessionId || peerRef.current || connectionsRef.current.length > 0) {
+          leaveGroupSession();
+      }
       setUserName(name);
-      setClientSyncConfig(config);
+      clientSyncConfigRef.current = normalizedConfig;
+      setClientSyncConfig(normalizedConfig);
+      lastClientTimerBroadcastSignatureRef.current = null;
+
       return new Promise((resolve, reject) => {
+          let settled = false;
+          let conn: DataConnection | null = null;
+          const timeoutId = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              try { conn?.close(); } catch {}
+              try { peerRef.current?.destroy(); } catch {}
+              peerRef.current = null;
+              connectionsRef.current = [];
+              localPeerIdRef.current = null;
+              setGroupSessionId(null);
+              setIsHost(false);
+              setMembers([]);
+              setPeerError("Timed out joining the host session. Verify the ID and try again.");
+              reject(new Error("Timed out joining the host session."));
+          }, GROUP_CONNECT_TIMEOUT_MS);
+
+          const fail = (message: string, err?: unknown) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            try { conn?.close(); } catch {}
+            try { peerRef.current?.destroy(); } catch {}
+            peerRef.current = null;
+            connectionsRef.current = [];
+            localPeerIdRef.current = null;
+            setGroupSessionId(null);
+            setIsHost(false);
+            setMembers([]);
+            setPeerError(message);
+            if (err instanceof Error) reject(err);
+            else reject(new Error(message));
+          };
+
+          const succeed = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            setPeerError(null);
+            resolve();
+          };
+
           try {
             // @ts-ignore
             const peer = new Peer();
             peerRef.current = peer;
             peer.on('open', (id: string) => {
-                setGroupSessionId(hostId); setIsHost(false); setPeerError(null);
-                const conn = peer.connect(hostId, { metadata: { name } });
+                localPeerIdRef.current = id;
+                setGroupSessionId(sessionId);
+                setIsHost(false);
+                setPeerError(null);
+                conn = peer.connect(sessionId, { metadata: { name } });
                 connectionsRef.current = [conn];
-                conn.on('open', () => { resolve(); });
-                conn.on('data', (data: any) => {
-                    if (data.type === 'STATE_UPDATE') applyRemoteState(data.state);
-                    else if (data.type === 'MEMBERS_UPDATE') setMembers(data.members);
+                conn.on('open', () => {
+                  connectionsRef.current = [conn!];
+                  succeed();
                 });
-                conn.on('close', () => { setPeerError("Disconnected from Host"); leaveGroupSession(); });
+                conn.on('data', (data: any) => {
+                    if (!data || typeof data !== 'object') return;
+                    if (data.type === 'STATE_UPDATE') applyRemoteState(data.state, 'full');
+                    else if (data.type === 'TIMER_STATE') applyRemoteState(data.state, 'timer-only');
+                    else if (data.type === 'MEMBERS_UPDATE') setMembers(data.members);
+                    else if (data.type === 'GROUP_EVENT') {
+                      const remoteEvent = normalizeGroupEventPayload(data.event);
+                      if (remoteEvent) postGroupNotice(remoteEvent);
+                    }
+                });
+                conn.on('error', (err: any) => {
+                  const message = `Unable to connect to host (${err?.type || 'error'}).`;
+                  if (!settled) {
+                    fail(message, err instanceof Error ? err : new Error(message));
+                    return;
+                  }
+                  leaveGroupSession({ reason: message, preserveConfigs: true });
+                });
+                conn.on('close', () => {
+                  const message = "Disconnected from Host";
+                  if (!settled) {
+                    fail(message, new Error(message));
+                    return;
+                  }
+                  leaveGroupSession({ reason: message, preserveConfigs: true });
+                });
             });
-            peer.on('error', (err: any) => { setPeerError("Connection Failed. Check ID."); setGroupSessionId(null); reject(err); });
-          } catch (e) { reject(e); }
+            peer.on('error', (err: any) => {
+              const message = err?.type === 'peer-unavailable'
+                ? 'Host session not found. Check the ID and try again.'
+                : `Connection Failed: ${err?.type || 'unknown'}`;
+              if (!settled) {
+                fail(message, err instanceof Error ? err : new Error(message));
+                return;
+              }
+              setPeerError(message);
+            });
+          } catch (e) {
+            const error = e instanceof Error ? e : new Error('Failed to join group session.');
+            fail(error.message, error);
+          }
       });
   };
 
-  const leaveGroupSession = () => {
-      if (peerRef.current) { peerRef.current.destroy(); peerRef.current = null; }
+  const leaveGroupSession = (options?: { reason?: string, preserveConfigs?: boolean }) => {
+      if (peerRef.current) { try { peerRef.current.destroy(); } catch {} peerRef.current = null; }
+      connectionsRef.current.forEach(conn => { try { conn.close(); } catch {} });
       connectionsRef.current = [];
-      setGroupSessionId(null); setIsHost(false); setPeerError(null); setMembers([]);
+      lastClientTimerBroadcastSignatureRef.current = null;
+      localPeerIdRef.current = null;
+      setGroupNotice(null);
+      setGroupSessionId(null);
+      setIsHost(false);
+      setMembers([]);
+      if (!options?.preserveConfigs) {
+        hostSyncConfigRef.current = DEFAULT_SYNC_CONFIG;
+        clientSyncConfigRef.current = DEFAULT_SYNC_CONFIG;
+        setHostSyncConfig(DEFAULT_SYNC_CONFIG);
+        setClientSyncConfig(DEFAULT_SYNC_CONFIG);
+      }
+      if (options?.reason) setPeerError(options.reason);
+      else setPeerError(null);
   };
 
-  const updateHostSyncConfig = (config: GroupSyncConfig) => { setHostSyncConfig(config); broadcastState(); };
+  const updateHostSyncConfig = (config: GroupSyncConfig) => {
+    const normalizedConfig = normalizeSyncConfig(config, hostSyncConfigRef.current);
+    hostSyncConfigRef.current = normalizedConfig;
+    setHostSyncConfig(normalizedConfig);
+    broadcastState();
+  };
   
   useEffect(() => {
     const workerCode = `
@@ -1420,6 +2031,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTasks(prevTasks => {
         const selected = findSelectedTask(prevTasks);
         if (!selected) return prevTasks;
+        const todayKey = getDateKey(new Date());
+        if (isDeferredTaskFromToday(selected, todayKey)) return prevTasks;
         
         let updatedTasks = incrementCompletedInTree(prevTasks, selected.id);
         
@@ -1729,11 +2342,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, [graceOpen, graceContext, workTime, breakTime]);
 
-  const startTimer = () => startTimerInternal();
+  const startTimer = () => {
+    if (timerStarted) return;
+    startTimerInternal();
+    emitLocalGroupEvent('timer-started');
+  };
 
-  const stopTimer = () => {
+  const stopTimer = (opts?: { silentGroupEvent?: boolean }) => {
     setTimerStarted(false);
     anchorRuntimePhase('idle');
+    if (!opts?.silentGroupEvent) emitLocalGroupEvent('timer-stopped');
   };
   const toggleTimer = () => timerStarted ? stopTimer() : startTimer();
 
@@ -1753,6 +2371,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     anchorRuntimePhase(targetMode === 'work' ? 'running-work' : 'running-break', {
       activityStartIso: currentActivityStartRef.current.toISOString(),
     });
+    emitLocalGroupEvent('mode-switched', { mode: targetMode });
   };
 
   const activateMode = (mode: TimerMode) => {
@@ -1764,7 +2383,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const switchMode = () => performSwitch(activeMode === 'work' ? 'break' : 'work');
 
   const restartActiveTimer = (customSeconds?: number) => {
-    stopTimer();
+    stopTimer({ silentGroupEvent: true });
     const nextWorkTime = activeMode === 'work' ? (customSeconds !== undefined ? customSeconds : settings.workDuration) : workTime;
     const nextBreakTime = activeMode === 'break' ? (customSeconds !== undefined ? customSeconds : breakTime) : breakTime;
     if (activeMode === 'work') setWorkTime(nextWorkTime);
@@ -1780,11 +2399,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       phaseStartBreakTime: nextBreakTime,
       activityStartIso: now.toISOString(),
     });
+    emitLocalGroupEvent('timer-reset', { mode: activeMode });
   };
 
   const startAllPause = () => {};
   const confirmAllPause = (reason: string) => {
-    stopTimer();
+    stopTimer({ silentGroupEvent: true });
     const pauseStart = Date.now();
     setAllPauseReason(reason);
     setAllPauseStartTime(pauseStart);
@@ -1794,6 +2414,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       phaseStartAllPauseTime: 0,
       activityStartIso: null,
     });
+    emitLocalGroupEvent('timer-paused', { reason: reason || undefined });
   };
 
   const endAllPause = () => {
@@ -1812,9 +2433,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setAllPauseActive(false);
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
-       let taskOverride: Task | undefined = undefined;
-       if (logPauseAs === 'work' && activeTask) taskOverride = activeTask;
-       logActivity(logPauseAs || 'allpause', start, allPauseTime, allPauseReason || 'Paused', taskOverride);
+       const pauseReason = allPauseReason || 'Paused';
+       const pauseLabel = logPauseAs === 'work'
+         ? `${pauseReason} (Pause Credit: Working)`
+         : logPauseAs === 'break'
+           ? `${pauseReason} (Pause Credit: Resting)`
+           : pauseReason;
+       // Paused time is never productive focus time; always record as pause for stats integrity.
+       logActivity('allpause', start, allPauseTime, pauseLabel);
     }
     setActiveMode(action);
     setIsIdle(false);
@@ -1831,6 +2457,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       forceActivityStart: now,
       playSound: true,
     });
+    emitLocalGroupEvent('timer-resumed', { mode: action });
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
@@ -1883,28 +2510,56 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       playSound: true,
       forceStart: true,
     });
+    emitLocalGroupEvent('grace-resolved', { mode: nextMode });
     setTimeout(() => { isResolvingGraceRef.current = false; }, 300);
   };
 
   const endSession = () => {
-    stopTimer();
+    let pendingActiveDuration = 0;
+    let pendingActiveMode: TimerMode | null = null;
+    let pendingActiveCategoryId: number | null | undefined = null;
+    let pendingActiveStartIso: string | null = null;
+    if (!isIdle && currentActivityStartRef.current) {
+      const elapsed = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
+      if (Number.isFinite(elapsed) && elapsed > 0.5) {
+        pendingActiveDuration = elapsed;
+        pendingActiveMode = activeMode;
+        pendingActiveCategoryId = activeTask?.categoryId;
+        pendingActiveStartIso = currentActivityStartRef.current.toISOString();
+        logActivity(activeMode, currentActivityStartRef.current, elapsed, 'Session End', activeTask || undefined);
+      }
+    }
+
+    stopTimer({ silentGroupEvent: true });
     setAllPauseActive(false);
-    const workLogs = logs.filter(l => l.type === 'work' && l.start > (sessionStartTime || ''));
-    const breakLogs = logs.filter(l => l.type === 'break' && l.start > (sessionStartTime || ''));
-    const totalWork = workLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
-    const totalBreak = breakLogs.reduce((acc, l) => acc + l.duration, 0) / 60;
+    const sessionFloor = sessionStartTime || '';
+    const workLogs = logs.filter((l) => l.type === 'work' && l.start >= sessionFloor && !isPauseCreditedWorkLog(l));
+    const breakLogs = logs.filter((l) => l.type === 'break' && l.start >= sessionFloor);
+    const pendingWorkSeconds = pendingActiveMode === 'work' ? pendingActiveDuration : 0;
+    const pendingBreakSeconds = pendingActiveMode === 'break' ? pendingActiveDuration : 0;
+    const totalWork = (workLogs.reduce((acc, l) => acc + l.duration, 0) + pendingWorkSeconds) / 60;
+    const totalBreak = (breakLogs.reduce((acc, l) => acc + l.duration, 0) + pendingBreakSeconds) / 60;
     const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
     
     // Calculate Category Stats
     const catStats: Record<string, number> = {};
     workLogs.forEach(l => {
-        if (l.categoryId) {
-            const cat = categories.find(c => c.id === l.categoryId);
-            if (cat) {
-                catStats[cat.name] = (catStats[cat.name] || 0) + (l.duration / 60);
-            }
+        const minutes = l.duration / 60;
+        if (typeof l.categoryId === 'number') {
+          const cat = categories.find(c => c.id === l.categoryId);
+          const key = cat?.name || 'Uncategorized';
+          catStats[key] = (catStats[key] || 0) + minutes;
+        } else {
+          catStats.Uncategorized = (catStats.Uncategorized || 0) + minutes;
         }
     });
+    if (pendingWorkSeconds > 0 && typeof pendingActiveCategoryId === 'number') {
+      const cat = categories.find(c => c.id === pendingActiveCategoryId);
+      const key = cat?.name || 'Uncategorized';
+      catStats[key] = (catStats[key] || 0) + (pendingWorkSeconds / 60);
+    } else if (pendingWorkSeconds > 0) {
+      catStats.Uncategorized = (catStats.Uncategorized || 0) + (pendingWorkSeconds / 60);
+    }
 
     // Archive Session
     if (sessionStartTime) {
@@ -1923,44 +2578,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         
         setPastSessions(prev => [record, ...prev]);
 
-        // Update User Lifetime Stats & Streak
+        // Recalculate lifetime stats from canonical history each time.
         if (user) {
             setUser(prev => {
                 if (!prev) return null;
-                const stats = { ...prev.lifetimeStats };
-                
-                stats.totalFocusHours += (totalWork / 60);
-                stats.totalPomos += pomodoroCount;
-                stats.totalSessions += 1;
-                
-                // Update Lifetime Category Stats
-                const lifetimeCats = stats.categoryBreakdown || {};
-                Object.entries(catStats).forEach(([catName, mins]) => {
-                    lifetimeCats[catName] = (lifetimeCats[catName] || 0) + mins;
-                });
-                stats.categoryBreakdown = lifetimeCats;
-
-                // Streak Calculation
-                const today = new Date().toISOString().split('T')[0];
-                const lastActive = stats.lastActiveDate;
-                
-                if (lastActive !== today) {
-                    const yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    const yesterdayStr = yesterday.toISOString().split('T')[0];
-                    
-                    if (lastActive === yesterdayStr) {
-                        stats.currentStreak += 1;
-                    } else {
-                        stats.currentStreak = 1;
-                    }
-                    if (stats.currentStreak > stats.bestStreak) {
-                        stats.bestStreak = stats.currentStreak;
-                    }
-                    stats.lastActiveDate = today;
-                }
-
-                return { ...prev, lifetimeStats: stats };
+                const pendingSessionLogs = pendingActiveDuration > 0
+                  ? [{
+                      type: pendingActiveMode === 'work' ? 'work' : 'break',
+                      start: pendingActiveStartIso || new Date().toISOString(),
+                      end: new Date().toISOString(),
+                      duration: pendingActiveDuration,
+                      reason: 'Session End',
+                      task: activeTask ? { id: activeTask.id, name: activeTask.name } : null,
+                      color: activeColor,
+                      categoryId: pendingActiveCategoryId ?? null,
+                    } as LogEntry]
+                  : [];
+                const nextStats = calculateLifetimeStats(
+                  [record, ...pastSessions],
+                  [...pendingSessionLogs, ...logs],
+                  prev.joinedAt,
+                  categories,
+                );
+                return { ...prev, lifetimeStats: nextStats };
             });
         }
     }
@@ -2038,18 +2678,22 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => {
+    const todayKey = getDateKey(new Date());
+    const deferred = Boolean(isFuture) || (typeof scheduledDate === 'string' && scheduledDate > todayKey);
     const newTask: Task = {
-      id: Date.now(), name, estimated, completed: 0, checked: false,
-      selected: tasks.length === 0 && !parentId && !isFuture, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
+      id: createTaskId(), name, estimated, completed: 0, checked: false,
+      selected: tasks.length === 0 && !parentId && !deferred, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
     };
     if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
     else setTasks(prev => [...prev, newTask]);
   };
 
   const addDetailedTask = (taskProps: Partial<Task> & { name: string, estimated: number }) => {
+      const todayKey = getDateKey(new Date());
+      const deferred = Boolean(taskProps.isFuture) || (typeof taskProps.scheduledDate === 'string' && taskProps.scheduledDate > todayKey);
       const newTask: Task = {
-        id: Date.now(), name: taskProps.name, estimated: taskProps.estimated, completed: 0, checked: false,
-        selected: tasks.length === 0 && !taskProps.isFuture, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
+        id: createTaskId(), name: taskProps.name, estimated: taskProps.estimated, completed: 0, checked: false,
+        selected: tasks.length === 0 && !deferred, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
         isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
       setTasks(prev => [...prev, newTask]);
@@ -2059,14 +2703,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTasks(prev => {
         let newTasks = [...prev];
         subtasks.forEach(sub => {
-             const t: Task = { id: Date.now() + Math.random(), name: sub.name, estimated: sub.est, completed: 0, checked: false, selected: false, categoryId: null, subtasks: [], isExpanded: false };
+             const t: Task = { id: createTaskId(), name: sub.name, estimated: sub.est, completed: 0, checked: false, selected: false, categoryId: null, subtasks: [], isExpanded: false };
              newTasks = addTaskToTree(newTasks, parentId, t);
         });
         return newTasks;
     });
   };
 
-  const updateTask = (task: Task) => setTasks(prev => updateTaskInTree(prev, task));
+  const updateTask = (task: Task) => {
+    const nextTask = task.selected && isDeferredTaskFromToday(task) ? { ...task, selected: false } : task;
+    setTasks(prev => updateTaskInTree(prev, nextTask));
+  };
   const deleteTask = (id: number) => setTasks(prev => deleteTaskInTree(prev, id));
   const selectTask = (id: number) => setTasks(prev => selectTaskInTree(prev, id));
   
@@ -2140,7 +2787,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (splitAt <= task.completed || splitAt >= task.estimated) return prev;
         const remainingEst = task.estimated - splitAt;
         const part1 = { ...task, estimated: splitAt };
-        const part2 = { ...task, id: Date.now(), name: `${task.name} (Part 2)`, estimated: remainingEst, completed: 0, subtasks: [] };
+        const part2 = { ...task, id: createTaskId(), name: `${task.name} (Part 2)`, estimated: remainingEst, completed: 0, subtasks: [] };
         const newTasks = [...prev];
         newTasks[index] = part1;
         newTasks.splice(index + 1, 0, part2);
@@ -2190,8 +2837,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId,
-      login, logout, register, exportData, importData, startMigrationHost, joinMigration,
+      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, groupNotice,
+      accountSyncState, accountSyncError, lastAccountSyncAt,
+      login, logout, register, syncAccountNow, refreshAccountFromCloud,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, setPendingJoinId,

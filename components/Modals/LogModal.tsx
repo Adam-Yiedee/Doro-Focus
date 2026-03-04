@@ -1,929 +1,1372 @@
-
-
-import React, { useState, useEffect } from 'react';
-import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, GroupSyncConfig, Category } from '../../types';
-import { playAlarm } from '../../utils/sound';
+import React, { useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { getIcon, CATEGORY_ICONS } from '../../utils/icons';
+import { useTimer } from '../../context/TimerContext';
+import { AlarmSound, GroupSyncConfig, LogEntry, TimerSettings } from '../../types';
+import { CATEGORY_ICONS, getIcon } from '../../utils/icons';
+import { playAlarm } from '../../utils/sound';
 
-const PRESET_COLORS = ['#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59', '#e056fd', '#f0932b'];
+interface LogModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
 
-const LogModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { logs, clearLogs, settings, updateSettings, hardReset, groupSessionId, userName, createGroupSession, joinGroupSession, leaveGroupSession, isHost, peerError, members, hostSyncConfig, updateHostSyncConfig, pendingJoinId, user, login, register, logout, exportData, importData, startMigrationHost, joinMigration, setScheduleOpen, categories, addCategory, deleteCategory } = useTimer();
-  const [tab, setTab] = useState<'log' | 'schedule' | 'group' | 'account' | 'settings'>('log');
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [showQR, setShowQR] = useState(false);
-  
-  // Auth Form State
-  const [authUsername, setAuthUsername] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-  const [isRegistering, setIsRegistering] = useState(false);
+type ModalTab = 'log' | 'group' | 'account' | 'settings';
+type TabButton = ModalTab | 'schedule';
+type GroupFlow = 'menu' | 'host' | 'join';
+type SyncKey = keyof GroupSyncConfig;
+type AccountAction = 'sync' | 'refresh' | null;
 
-  // Cloud/Export State
-  const [exportString, setExportString] = useState('');
-  const [importString, setImportString] = useState('');
-  const [importStatus, setImportStatus] = useState<string>('');
-  
-  // Migration Sync State
-  const [migrationCode, setMigrationCode] = useState<string | null>(null);
-  const [migrationInput, setMigrationInput] = useState('');
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState('');
+const PRESET_COLORS = ['#E8A6A6', '#9ECFC8', '#AFC3E6', '#DDBA9B', '#C6B1D9', '#AFCFB1'];
+const DEFAULT_GROUP_CONFIG: GroupSyncConfig = {
+  syncTimers: true,
+  syncTasks: false,
+  syncSchedule: false,
+  syncHistory: false,
+  syncSettings: false,
+};
 
-  // Category State
-  const [newCatName, setNewCatName] = useState('');
-  const [newCatColor, setNewCatColor] = useState(PRESET_COLORS[0]);
-  const [newCatIcon, setNewCatIcon] = useState('star');
-  const [isCreatingCat, setIsCreatingCat] = useState(false);
+const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
+  { label: 'Bell', value: 'bell' },
+  { label: 'Digital', value: 'digital' },
+  { label: 'Chime', value: 'chime' },
+  { label: 'Gong', value: 'gong' },
+  { label: 'Pop', value: 'pop' },
+  { label: 'Wood', value: 'wood' },
+  { label: 'Marimba', value: 'marimba' },
+  { label: 'Crystal', value: 'crystal' },
+  { label: 'Blade', value: 'blade' },
+  { label: 'Cosmic', value: 'cosmic' },
+  { label: 'Ripple', value: 'ripple' },
+  { label: 'News', value: 'news' },
+];
 
-  // Group Study Flow State: 'menu' | 'host' | 'join'
-  const [groupMode, setGroupMode] = useState<'menu' | 'host' | 'join'>('menu');
-  const [inputName, setInputName] = useState(userName || '');
-  const [inputSessionId, setInputSessionId] = useState('');
-  const [isConnecting, setIsConnecting] = useState(false);
+const formatDuration = (seconds: number) => {
+  const safe = Math.max(0, Math.floor(seconds));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
 
-  // Auto-fill from URL
-  useEffect(() => {
-    if (isOpen && pendingJoinId && !groupSessionId) {
-        setTab('group');
-        setGroupMode('join');
-        setInputSessionId(pendingJoinId);
-    }
-  }, [isOpen, pendingJoinId, groupSessionId]);
-
-  // Reset internal state when tab or modal closes
-  useEffect(() => {
-      if(!isOpen) {
-          setGroupMode('menu');
-          setMigrationCode(null);
-          setIsSyncing(false);
-          setAuthError('');
-      }
-  }, [isOpen]);
-
-  // Sync Options State for New Session
-  const [tempSyncConfig, setTempSyncConfig] = useState<GroupSyncConfig>({
-      syncTimers: true,
-      syncTasks: true,
-      syncSchedule: true,
-      syncHistory: false,
-      syncSettings: true
+const formatDateTime = (iso: string) => {
+  const dt = new Date(iso);
+  return dt.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   });
+};
 
-  const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const formatDur = (sec: number) => {
-    if (sec < 60) return `${Math.floor(sec)}s`;
-    return `${Math.floor(sec/60)}m ${Math.floor(sec%60)}s`;
+const clampInt = (value: number, min: number, max: number) => {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+};
+
+const isGraceLike = (entry: LogEntry) => {
+  return entry.type === 'grace' || Boolean(entry.reason?.startsWith('Grace Period'));
+};
+
+const getDateKey = (date: Date) => {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getDateKeyFromIso = (iso: string) => {
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return '';
+  return getDateKey(dt);
+};
+
+const parseDateKey = (key: string) => {
+  const [y, m, d] = key.split('-').map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+  return new Date(y, m - 1, d);
+};
+
+const formatLogDayLabel = (key: string) => {
+  const date = parseDateKey(key);
+  if (!date) return key;
+  const todayKey = getDateKey(new Date());
+  if (key === todayKey) return 'Today';
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (key === getDateKey(yesterday)) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+};
+
+const formatClockTime = (iso: string) => {
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return '--:--';
+  return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+
+const formatTimeRange = (start: string, end: string) => {
+  return `${formatClockTime(start)} - ${formatClockTime(end)}`;
+};
+
+const getLogBlockHeight = (seconds: number) => {
+  const minutes = Math.max(1, seconds / 60);
+  return Math.min(164, Math.max(52, 34 + minutes * 1.9));
+};
+
+const copyToClipboard = async (value: string) => {
+  if (!value) return false;
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const ToggleRow: React.FC<{
+  label: string;
+  description?: string;
+  checked: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}> = ({ label, description, checked, onToggle, disabled = false }) => {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      className={`settings-option-btn w-full flex items-center justify-between p-3 rounded-xl border transition-all ${
+        disabled ? 'opacity-60 cursor-not-allowed' : 'hover:bg-white/10'
+      } ${checked ? 'bg-white/14 border-white/25 text-white' : 'bg-white/5 border-white/10 text-white/70'}`}
+    >
+      <div className="text-left">
+        <div className="text-xs font-bold uppercase tracking-[0.14em]">{label}</div>
+        {description && <div className="text-[10px] text-white/45 mt-1">{description}</div>}
+      </div>
+      <div className={`w-12 h-6 rounded-full p-1 transition-colors ${checked ? 'bg-green-500' : 'bg-white/10'}`}>
+        <div className={`w-4 h-4 rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : ''}`} />
+      </div>
+    </button>
+  );
+};
+
+const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
+  const {
+    logs,
+    clearLogs,
+    settings,
+    updateSettings,
+    hardReset,
+    categories,
+    addCategory,
+    deleteCategory,
+    user,
+    login,
+    register,
+    logout,
+    syncAccountNow,
+    refreshAccountFromCloud,
+    accountSyncState,
+    accountSyncError,
+    lastAccountSyncAt,
+    groupSessionId,
+    userName,
+    isHost,
+    members,
+    peerError,
+    hostSyncConfig,
+    clientSyncConfig,
+    createGroupSession,
+    joinGroupSession,
+    leaveGroupSession,
+    updateHostSyncConfig,
+    pendingJoinId,
+    setPendingJoinId,
+    setWeeklyScheduleOpen,
+  } = useTimer();
+
+  const [activeTab, setActiveTab] = useState<ModalTab>('log');
+
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authLocalError, setAuthLocalError] = useState<string | null>(null);
+  const [accountActionBusy, setAccountActionBusy] = useState<AccountAction>(null);
+  const [accountMessage, setAccountMessage] = useState<string | null>(null);
+
+  const [groupFlow, setGroupFlow] = useState<GroupFlow>('menu');
+  const [groupName, setGroupName] = useState('');
+  const [groupSessionInput, setGroupSessionInput] = useState('');
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupLocalError, setGroupLocalError] = useState<string | null>(null);
+  const [showGroupQr, setShowGroupQr] = useState(false);
+  const [hostDraftConfig, setHostDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
+  const [joinDraftConfig, setJoinDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
+
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryColor, setNewCategoryColor] = useState(PRESET_COLORS[0]);
+  const [newCategoryIcon, setNewCategoryIcon] = useState('star');
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const isLightTheme = settings.themeMode !== 'dark';
+  const iconKeys = useMemo(() => Object.keys(CATEGORY_ICONS), []);
+  const orderedLogs = useMemo(() => {
+    return [...logs].sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+  }, [logs]);
+  const groupedLogDays = useMemo(() => {
+    const groups = new Map<string, LogEntry[]>();
+    orderedLogs.forEach((entry) => {
+      const key = getDateKeyFromIso(entry.start) || 'unknown';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(entry);
+    });
+    return Array.from(groups.entries()).map(([dateKey, entries]) => {
+      const totals = entries.reduce(
+        (acc, entry) => {
+          if (entry.type === 'work') acc.work += Math.max(0, entry.duration);
+          else if (entry.type === 'break') acc.break += Math.max(0, entry.duration);
+          else if (entry.type === 'allpause') acc.pause += Math.max(0, entry.duration);
+          else if (isGraceLike(entry)) acc.grace += Math.max(0, entry.duration);
+          return acc;
+        },
+        { work: 0, break: 0, pause: 0, grace: 0 },
+      );
+      return { dateKey, entries, totals };
+    });
+  }, [orderedLogs]);
+
+  const accountError = authLocalError || accountSyncError || null;
+
+  const syncStateMeta = useMemo(() => {
+    if (accountSyncState === 'syncing') return { label: 'Syncing', className: 'text-blue-200 bg-blue-500/15 border-blue-400/30' };
+    if (accountSyncState === 'synced') return { label: 'Synced', className: 'text-emerald-200 bg-emerald-500/15 border-emerald-400/30' };
+    if (accountSyncState === 'error') return { label: 'Error', className: 'text-red-200 bg-red-500/15 border-red-400/30' };
+    return { label: 'Idle', className: 'text-white/70 bg-white/10 border-white/15' };
+  }, [accountSyncState]);
+
+  const categoryBreakdown = useMemo(() => {
+    const breakdown = user?.lifetimeStats.categoryBreakdown || {};
+    return Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+  }, [user]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (pendingJoinId) {
+      setActiveTab('group');
+      setGroupFlow('join');
+      setGroupSessionInput(pendingJoinId);
+      setPendingJoinId(null);
+    }
+  }, [isOpen, pendingJoinId, setPendingJoinId]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setGroupName(prev => prev || user?.username || userName || '');
+    setHostDraftConfig(hostSyncConfig || DEFAULT_GROUP_CONFIG);
+    setJoinDraftConfig(clientSyncConfig || DEFAULT_GROUP_CONFIG);
+  }, [isOpen, user?.username, userName, hostSyncConfig, clientSyncConfig]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (user) {
+      setUsernameInput(user.username);
+      setPasswordInput('');
+      setAuthLocalError(null);
+    }
+  }, [isOpen, user]);
+
+  if (!isOpen) return null;
+
+  const updateTimerSettings = (patch: Partial<TimerSettings>) => {
+    updateSettings({ ...settings, ...patch });
   };
 
-  const SOUND_OPTIONS: { val: AlarmSound, label: string }[] = [
-      { val: 'bell', label: 'Classic Bell' },
-      { val: 'digital', label: 'Digital Alarm' },
-      { val: 'chime', label: 'Soft Chime' },
-      { val: 'gong', label: 'Zen Gong' },
-      { val: 'pop', label: 'Pop' },
-      { val: 'wood', label: 'Woodblock' },
-      { val: 'marimba', label: 'Marimba' },
-      { val: 'crystal', label: 'Crystal' },
-      { val: 'blade', label: 'Blade Runner' },
-      { val: 'cosmic', label: 'Cosmic Echo' },
-      { val: 'ripple', label: 'Water Ripple' },
-      { val: 'news', label: 'Breaking News' }
-  ];
-  
-  const handleStartGroup = async () => {
-      if(!inputName.trim()) return;
-      setIsConnecting(true);
-      try {
-        await createGroupSession(inputName, tempSyncConfig);
-      } catch (e) {
-          console.error(e);
-      }
-      setIsConnecting(false);
+  const setDurationFromMinutes = (
+    field: 'workDuration' | 'shortBreakDuration' | 'longBreakDuration',
+    rawMinutes: string
+  ) => {
+    const parsed = Number(rawMinutes);
+    if (!Number.isFinite(parsed)) return;
+    const seconds = clampInt(parsed, 1, 999) * 60;
+    if (field === 'workDuration') updateTimerSettings({ workDuration: seconds });
+    if (field === 'shortBreakDuration') updateTimerSettings({ shortBreakDuration: seconds });
+    if (field === 'longBreakDuration') updateTimerSettings({ longBreakDuration: seconds });
   };
-  
+
+  const setLongBreakInterval = (rawValue: string) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) return;
+    updateTimerSettings({ longBreakInterval: clampInt(parsed, 1, 24) });
+  };
+
+  const handleTabClick = (tab: TabButton) => {
+    if (tab === 'schedule') {
+      setWeeklyScheduleOpen(true);
+      onClose();
+      return;
+    }
+    setActiveTab(tab);
+  };
+
+  const handleAuthSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (authBusy) return;
+    const username = usernameInput.trim().toLowerCase();
+    if (!username || !passwordInput) {
+      setAuthLocalError('Username and password are required.');
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthLocalError(null);
+    setAccountMessage(null);
+
+    const ok = authMode === 'register'
+      ? await register(username, passwordInput)
+      : await login(username, passwordInput);
+
+    setAuthBusy(false);
+    if (!ok) {
+      setAuthLocalError(
+        accountSyncError || (authMode === 'register' ? 'Unable to create account.' : 'Unable to sign in.')
+      );
+      return;
+    }
+
+    setPasswordInput('');
+    setAccountMessage(authMode === 'register' ? 'Account created and synced.' : 'Signed in and synced.');
+  };
+
+  const handleSyncNow = async () => {
+    if (accountActionBusy) return;
+    setAccountActionBusy('sync');
+    setAccountMessage(null);
+    const ok = await syncAccountNow();
+    if (ok) setAccountMessage('Cloud sync complete.');
+    setAccountActionBusy(null);
+  };
+
+  const handleRefreshCloud = async () => {
+    if (accountActionBusy) return;
+    setAccountActionBusy('refresh');
+    setAccountMessage(null);
+    const ok = await refreshAccountFromCloud();
+    if (ok) setAccountMessage('Pulled latest cloud data.');
+    setAccountActionBusy(null);
+  };
+
+  const toggleHostDraftSync = (key: SyncKey) => {
+    setHostDraftConfig(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const toggleJoinDraftSync = (key: SyncKey) => {
+    setJoinDraftConfig(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const toggleLiveHostSync = (key: SyncKey) => {
+    updateHostSyncConfig({ ...hostSyncConfig, [key]: !hostSyncConfig[key] });
+  };
+
+  const handleCreateGroup = async () => {
+    if (groupBusy) return;
+    const name = groupName.trim();
+    if (!name) {
+      setGroupLocalError('Enter your name before creating a session.');
+      return;
+    }
+    setGroupBusy(true);
+    setGroupLocalError(null);
+    try {
+      await createGroupSession(name, hostDraftConfig);
+    } catch (error) {
+      setGroupLocalError(error instanceof Error ? error.message : 'Failed to create session.');
+    } finally {
+      setGroupBusy(false);
+    }
+  };
+
   const handleJoinGroup = async () => {
-      if(!inputName.trim() || !inputSessionId.trim()) return;
-      setIsConnecting(true);
-      try {
-        await joinGroupSession(inputSessionId.trim(), inputName, tempSyncConfig);
-      } catch(e) {
-          console.error(e);
-      }
-      setInputSessionId('');
-      setIsConnecting(false);
-  };
-
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-      e.preventDefault();
-      setAuthError('');
-      if (!authUsername.trim() || !authPassword.trim()) {
-          setAuthError('Username and password required');
-          return;
-      }
-      setAuthLoading(true);
-      
-      let success = false;
-      try {
-        if (isRegistering) {
-            success = await register(authUsername, authPassword);
-            if (!success) setAuthError('Username already taken');
-        } else {
-            success = await login(authUsername, authPassword);
-            if (!success) setAuthError('Invalid username or password');
-        }
-      } catch (e) {
-          setAuthError("Connection error");
-      }
-
-      setAuthLoading(false);
-      if (success) {
-          setAuthUsername('');
-          setAuthPassword('');
-      }
-  };
-
-  const handleExport = () => {
-      const data = exportData();
-      setExportString(data);
-  };
-
-  const handleImport = () => {
-      if (!importString) return;
-      const success = importData(importString);
-      if (success) {
-          setImportStatus('Data imported successfully!');
-          setImportString('');
-      } else {
-          setImportStatus('Invalid Data String.');
-      }
-      setTimeout(() => setImportStatus(''), 3000);
-  };
-
-  const handleStartMigration = async () => {
-      setIsSyncing(true);
-      try {
-          const code = await startMigrationHost();
-          setMigrationCode(code);
-      } catch (e) {
-          setSyncStatus('Error starting sync.');
-          setIsSyncing(false);
-      }
-  };
-
-  const handleJoinMigration = async () => {
-      if (!migrationInput.trim()) return;
-      setIsSyncing(true);
-      setSyncStatus('Connecting...');
-      try {
-          await joinMigration(migrationInput.trim());
-          setSyncStatus('Sync Complete!');
-          setTimeout(() => setIsSyncing(false), 2000);
-      } catch (e) {
-          setSyncStatus('Failed to sync. Check code.');
-          setTimeout(() => setIsSyncing(false), 3000);
-      }
+    if (groupBusy) return;
+    const name = groupName.trim();
+    const sessionId = groupSessionInput.trim().toUpperCase();
+    if (!name) {
+      setGroupLocalError('Enter your name before joining.');
+      return;
+    }
+    if (!sessionId) {
+      setGroupLocalError('Enter a valid session ID.');
+      return;
+    }
+    setGroupBusy(true);
+    setGroupLocalError(null);
+    try {
+      await joinGroupSession(sessionId, name, joinDraftConfig);
+      setPendingJoinId(null);
+    } catch (error) {
+      setGroupLocalError(error instanceof Error ? error.message : 'Failed to join session.');
+    } finally {
+      setGroupBusy(false);
+    }
   };
 
   const handleCreateCategory = () => {
-      if (!newCatName.trim()) return;
-      addCategory(newCatName, newCatColor, newCatIcon);
-      setNewCatName('');
-      setIsCreatingCat(false);
+    const name = newCategoryName.trim();
+    if (!name) return;
+    addCategory(name, newCategoryColor, newCategoryIcon);
+    setNewCategoryName('');
+    setNewCategoryColor(PRESET_COLORS[0]);
+    setNewCategoryIcon('star');
+    setShowAddCategory(false);
   };
 
-  const toggleTempSync = (key: keyof GroupSyncConfig) => {
-      setTempSyncConfig(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-  
-  const toggleHostSync = (key: keyof GroupSyncConfig) => {
-      if (!isHost) return;
-      updateHostSyncConfig({ ...hostSyncConfig, [key]: !hostSyncConfig[key] });
-  };
-
-  if (!isOpen) return null;
-  const isLightTheme = settings.themeMode !== 'dark';
-
-  if (showQR && groupSessionId) {
-      return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fade-in" onClick={() => setShowQR(false)}>
-              <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center gap-6 animate-slide-up max-w-sm w-full" onClick={e => e.stopPropagation()}>
-                  <h3 className="text-black font-bold text-xl tracking-tight">Join Session</h3>
-                  <div className="p-2 bg-white border-2 border-black rounded-xl">
-                      <QRCodeSVG value={`https://dorofocus.netlify.app/?session=${groupSessionId}`} size={200} level="H" />
-                  </div>
-                  <div className="text-center w-full">
-                      <div className="text-black/40 text-xs font-bold uppercase tracking-widest mb-1">Session ID</div>
-                      <div className="text-2xl md:text-3xl font-mono font-bold text-black break-all">{groupSessionId}</div>
-                  </div>
-                  <button onClick={() => setShowQR(false)} className="text-black/50 hover:text-black text-sm font-bold uppercase tracking-wide">Close</button>
-              </div>
-          </div>
-      );
-  }
-
-  const SyncOptionToggle = ({ label, checked, onChange, disabled = false }: { label: string, checked: boolean, onChange: () => void, disabled?: boolean }) => (
-      <div className={`flex items-center justify-between p-3 rounded-lg border ${checked ? 'bg-white/10 border-white/20' : 'bg-black/20 border-white/5'} ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
-          <span className="text-xs text-white/80 font-medium">{label}</span>
-          <button 
-            onClick={onChange}
-            className={`w-10 h-5 rounded-full p-0.5 transition-colors ${checked ? 'bg-green-500' : 'bg-white/10'}`}
+  const renderLogTab = () => {
+    return (
+      <div className="p-4 md:p-8 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold text-white tracking-tight">Activity Log</h3>
+          <button
+            type="button"
+            onClick={clearLogs}
+            className="text-[10px] uppercase tracking-widest text-red-300 hover:text-red-200 font-bold border border-red-500/30 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors"
           >
-             <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${checked ? 'translate-x-5' : ''}`} />
+            Clear
           </button>
-      </div>
-  );
-
-  return (
-    <>
-    <style>{`
-      .settings-option-btn {
-        transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease, color 180ms ease;
-      }
-      .settings-option-btn:hover {
-        transform: translateY(-1px) scale(1.01);
-        box-shadow: 0 10px 20px -14px rgba(15, 23, 42, 0.55);
-      }
-      .settings-option-btn:active {
-        transform: translateY(0) scale(0.985);
-      }
-      .doro-no-spin::-webkit-outer-spin-button,
-      .doro-no-spin::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
-      }
-      .doro-no-spin[type='number'] {
-        -moz-appearance: textfield;
-        appearance: textfield;
-      }
-      .doro-settings-shell.theme-light {
-        background: linear-gradient(160deg, #f7f9fc 0%, #eef3f9 52%, #ebf1f8 100%) !important;
-        border-color: #d4dde9 !important;
-        box-shadow: 0 30px 70px -26px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
-      }
-      .doro-settings-shell.theme-light .settings-tabbar {
-        border-color: rgba(15, 23, 42, 0.1) !important;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.75)) !important;
-        backdrop-filter: blur(14px);
-      }
-      .doro-settings-shell.theme-light .settings-body {
-        background: radial-gradient(circle at 12% -10%, rgba(86, 148, 255, 0.12), transparent 38%), radial-gradient(circle at 95% 0%, rgba(95, 198, 255, 0.08), transparent 35%), #f2f6fb !important;
-      }
-      .doro-settings-shell.theme-light [class*="bg-white/"] {
-        background-color: rgba(255, 255, 255, 0.7) !important;
-      }
-      .doro-settings-shell.theme-light [class*="bg-black/"] {
-        background-color: rgba(225, 233, 244, 0.72) !important;
-      }
-      .doro-settings-shell.theme-light [class*="border-white/"] {
-        border-color: rgba(15, 23, 42, 0.12) !important;
-      }
-      .doro-settings-shell.theme-light [class*="text-white"] {
-        color: #0b1526 !important;
-      }
-      .doro-settings-shell.theme-light [class*="text-white/"] {
-        color: #5f6f85 !important;
-      }
-      .doro-settings-shell.theme-light .theme-accent {
-        color: #0a64ec !important;
-      }
-      .doro-settings-shell.theme-light .settings-option-btn:hover {
-        box-shadow: 0 12px 24px -14px rgba(10, 100, 236, 0.35);
-      }
-    `}</style>
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4 bg-black/60 backdrop-blur-xl animate-fade-in" onClick={onClose}>
-      <div className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`} onClick={e => e.stopPropagation()}>
-        
-        <div className="settings-tabbar flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
-          {['log', 'schedule', 'group', 'account', 'settings'].map(t => (
-            <button 
-              key={t}
-              onClick={() => {
-                  if (t === 'schedule') {
-                      setScheduleOpen(true);
-                  } else {
-                    setTab(t as any);
-                  }
-              }}
-              className={`flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}`}
-            >
-              {t === 'group' ? 'Group Study' : (t === 'schedule' ? 'Schedule' : t)}
-            </button>
-          ))}
         </div>
 
-        <div className="settings-body flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">
-          {tab === 'log' && (
-            <div className="p-4 md:p-8 space-y-4">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="font-bold text-white text-lg tracking-tight">Activity Log</h3>
-                <button onClick={clearLogs} className="text-[10px] uppercase tracking-widest text-red-300 hover:text-red-200 font-bold border border-red-500/30 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors">Clear</button>
+        {orderedLogs.length === 0 && (
+          <div className="text-white/35 text-center py-12 text-sm italic">No activity recorded yet.</div>
+        )}
+
+        {orderedLogs.length > 0 && (
+          <div className="space-y-2.5">
+            <div className="rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2.5 flex flex-wrap items-center gap-2.5">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold mr-1">Legend</div>
+              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-white/15 bg-white/[0.06] text-[10px] text-white/70">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: PRESET_COLORS[0] }} />
+                Focus
               </div>
-              
-              {logs.length === 0 ? (
-                <div className="text-white/30 text-center py-12 text-sm font-medium italic">No activity recorded yet.</div>
-              ) : (
-                <div className="space-y-3">
-                  {logs.map((log, i) => {
-                    const isGrace = log.type === 'grace' || (log.reason && log.reason.startsWith('Grace Period'));
+              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-teal-300/30 bg-teal-400/[0.11] text-[10px] text-teal-100">
+                <span className="w-2 h-2 rounded-full bg-teal-300" />
+                Break
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-300/25 bg-slate-300/[0.1] text-[10px] text-slate-100">
+                <span className="w-2 h-2 rounded-full bg-slate-300" />
+                Paused
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-fuchsia-300/30 bg-fuchsia-400/[0.11] text-[10px] text-fuchsia-100">
+                <span className="w-2 h-2 rounded-full bg-fuchsia-300" />
+                Grace
+              </div>
+            </div>
 
-                    if (isGrace) {
-                        let displayType = 'Unmarked';
-                        if (log.reason?.includes('Working')) displayType = 'Working';
-                        if (log.reason?.includes('Resting')) displayType = 'Resting';
-
-                        return (
-                            <div key={i} className="px-4 py-3 rounded-xl bg-[#1a1523] border border-purple-500/30 flex justify-between items-center text-xs group hover:border-purple-500/50 transition-colors">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_10px_rgba(192,132,252,0.5)]" />
-                                    <div className="flex flex-col">
-                                        <span className="text-purple-200 font-bold tracking-wide uppercase text-[10px]">Grace Period</span>
-                                        <span className="text-white/60 text-xs">{displayType}</span>
-                                    </div>
-                                </div>
-                                <span className="font-mono font-bold text-purple-200/80 bg-purple-500/10 px-2 py-1 rounded">{formatDur(log.duration)}</span>
-                            </div>
-                        );
-                    }
-
-                    let borderColor = 'border-white/10';
-                    let bgColor = 'bg-white/5';
-                    let textColor = 'text-white/80';
-                    
-                    if (log.type === 'work') {
-                        const c = log.color || '#BA4949';
-                        borderColor = `border-[${c}]`; 
-                        bgColor = 'bg-[#1c1c1e]'; 
-                        textColor = 'text-white';
-                    } else if (log.type === 'break') {
-                        borderColor = 'border-teal-500/30';
-                        bgColor = 'bg-[#132020]';
-                        textColor = 'text-teal-100';
-                    } else if (log.type === 'allpause') {
-                        borderColor = 'border-white/10';
-                        bgColor = 'bg-[#18181a]';
-                        textColor = 'text-white/50';
-                    }
-
-                    return (
-                      <div 
-                        key={i} 
-                        className={`p-4 rounded-2xl border-l-[6px] backdrop-blur-sm flex flex-col gap-2 transition-all hover:bg-white/10 ${borderColor} ${bgColor}`}
-                        style={log.type === 'work' ? { borderLeftColor: log.color || '#BA4949' } : {}}
-                      >
-                        <div className="flex justify-between items-center">
-                          <div className="flex items-center gap-2">
-                              <span className={`uppercase font-bold text-[10px] tracking-widest opacity-70 ${textColor}`}>
-                                {log.type === 'allpause' ? 'PAUSED' : log.type}
-                              </span>
-                          </div>
-                          <span className="font-mono text-xs font-bold opacity-70 bg-black/20 px-2 py-1 rounded">{formatDur(log.duration)}</span>
-                        </div>
-                        
-                        <div className="flex justify-between items-end">
-                           <div className="flex flex-col gap-1">
-                              {log.task ? (
-                                  <span className="text-sm font-bold text-white tracking-tight">{log.task.name}</span>
-                              ) : (
-                                  <span className="text-sm font-medium text-white/40 italic">No active task</span>
-                              )}
-                              
-                              {log.reason && <span className="text-xs text-white/50 italic">"{log.reason}"</span>}
-                              
-                              <div className="flex items-center gap-2 mt-1">
-                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/30"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                                  <span className="text-[10px] text-white/30 font-mono uppercase tracking-wider">
-                                    {formatTime(log.start)} - {formatTime(log.end)}
-                                  </span>
-                              </div>
-                           </div>
-                        </div>
+            {groupedLogDays.map(({ dateKey, entries, totals }) => {
+              const maxDuration = Math.max(1, ...entries.map((entry) => Math.max(1, entry.duration)));
+              return (
+                <div key={`log-day-${dateKey}`} className="rounded-xl border border-white/10 bg-white/[0.05] p-2.5">
+                  <div className="mb-2 flex items-center justify-between gap-2.5">
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold">
+                        {formatLogDayLabel(dateKey)}
                       </div>
-                    );
-                  })}
+                      <div className="text-[11px] text-white/70 font-medium tracking-[0.06em]">
+                        {entries.length} entries
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="px-2 py-1 rounded-md border border-white/15 bg-white/[0.07] text-[10px] text-white/70 font-mono">
+                        Focus {formatDuration(totals.work)}
+                      </div>
+                      <div className="px-2 py-1 rounded-md border border-teal-300/30 bg-teal-400/[0.11] text-[10px] text-teal-100 font-mono">
+                        Break {formatDuration(totals.break)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5 min-h-[58px]">
+                    {entries.map((entry, index) => {
+                      const isWork = entry.type === 'work';
+                      const isBreak = entry.type === 'break';
+                      const isPause = entry.type === 'allpause';
+                      const isGrace = isGraceLike(entry);
+                      const accentColor = isWork
+                        ? entry.color || PRESET_COLORS[0]
+                        : isBreak
+                          ? '#2dd4bf'
+                          : isPause
+                            ? '#94a3b8'
+                            : '#c084fc';
+                      const typeLabel = isWork ? 'Focus' : isBreak ? 'Break' : isPause ? 'Paused' : 'Grace';
+                      const toneClass = isBreak
+                        ? 'bg-teal-400/[0.11] border-teal-300/30'
+                        : isPause
+                          ? 'bg-slate-300/[0.1] border-slate-300/25'
+                          : isGrace
+                            ? 'bg-fuchsia-400/[0.11] border-fuchsia-300/30'
+                            : 'bg-white/[0.07] border-white/15';
+                      const title = isWork
+                        ? entry.task?.name || 'Focus Block'
+                        : isBreak
+                          ? 'Break'
+                          : isPause
+                            ? 'Paused Session'
+                            : 'Grace Period';
+                      const subtitle = isWork
+                        ? (entry.reason || 'Focused work')
+                        : isBreak
+                          ? (entry.reason || 'Recovery')
+                          : isPause
+                            ? (entry.reason || 'Paused')
+                            : (entry.reason || 'Unassigned');
+                      const relativeWidth = Math.max(18, Math.round((Math.max(1, entry.duration) / maxDuration) * 100));
+
+                      return (
+                        <div
+                          key={`log-row-${dateKey}-${entry.start}-${entry.type}-${index}`}
+                          className={`relative overflow-hidden rounded-xl border transition-[transform,background-color,border-color] duration-200 hover:-translate-y-[1px] hover:border-white/30 ${toneClass}`}
+                        >
+                          <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: accentColor }} />
+                          <div
+                            className="pl-3 pr-3 py-2.5 flex flex-col justify-between gap-2"
+                            style={{ minHeight: `${getLogBlockHeight(entry.duration)}px` }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[10px] uppercase font-bold tracking-[0.16em] text-white/65">{typeLabel}</div>
+                              <div className="font-mono text-[11px] font-bold text-white/85 bg-black/20 px-2 py-1 rounded-md">
+                                {formatDuration(entry.duration)}
+                              </div>
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="text-sm font-bold text-white tracking-tight truncate">{title}</div>
+                              <div className="text-[11px] text-white/60 truncate">{subtitle}</div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="text-[10px] text-white/45 font-mono uppercase tracking-[0.12em]">
+                                {formatTimeRange(entry.start, entry.end)}
+                              </div>
+                              <div className="h-1.5 rounded-full bg-black/25 overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-[width] duration-300"
+                                  style={{ width: `${relativeWidth}%`, backgroundColor: accentColor }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderAccountLoggedIn = () => {
+    const stats = user!.lifetimeStats;
+    const joinedAt = formatDateTime(user!.joinedAt);
+    const activeDays = Math.max(0, Math.floor(stats.activeDays || 0));
+    const dailyAvgHours = activeDays > 0 ? stats.totalFocusHours / activeDays : 0;
+    const focusHoursLabel = stats.totalFocusHours >= 100
+      ? `${Math.round(stats.totalFocusHours)}h`
+      : `${stats.totalFocusHours.toFixed(1)}h`;
+
+    return (
+      <div className="p-4 md:p-8 space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-500 flex items-center justify-center text-2xl font-bold text-white shadow-xl">
+              {user!.username.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <h3 className="text-2xl font-bold text-white tracking-tight">{user!.username}</h3>
+              <div className="text-xs text-white/45 uppercase tracking-[0.14em] mt-1">Joined {joinedAt}</div>
+            </div>
+          </div>
+          <div className={`px-3 py-1.5 rounded-full border text-[10px] font-bold uppercase tracking-[0.16em] ${syncStateMeta.className}`}>
+            Cloud {syncStateMeta.label}
+          </div>
+        </div>
+
+        <div className="bg-white/5 rounded-2xl p-5 border border-white/10 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-white">Cloud Sync</div>
+              <div className="text-xs text-white/50 mt-1">
+                Last sync: {lastAccountSyncAt ? formatDateTime(new Date(lastAccountSyncAt).toISOString()) : 'Never'}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={accountActionBusy !== null}
+                onClick={handleSyncNow}
+                className="px-3 py-2 rounded-lg border border-blue-400/30 bg-blue-500/15 text-blue-100 text-[10px] uppercase tracking-[0.14em] font-bold hover:bg-blue-500/25 disabled:opacity-55 transition-colors"
+              >
+                {accountActionBusy === 'sync' ? 'Syncing...' : 'Sync Now'}
+              </button>
+              <button
+                type="button"
+                disabled={accountActionBusy !== null}
+                onClick={handleRefreshCloud}
+                className="px-3 py-2 rounded-lg border border-white/15 bg-white/8 text-white text-[10px] uppercase tracking-[0.14em] font-bold hover:bg-white/14 disabled:opacity-55 transition-colors"
+              >
+                {accountActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+          </div>
+
+          {accountError && (
+            <div className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-100 text-xs">
+              {accountError}
+            </div>
+          )}
+          {accountMessage && (
+            <div className="p-3 rounded-xl bg-emerald-500/12 border border-emerald-500/25 text-emerald-100 text-xs">
+              {accountMessage}
+            </div>
+          )}
+          <div className="text-xs text-white/50 leading-relaxed">
+            Active timer state, tasks, logs, sessions, categories, and schedule data are stored in your account and sync across signed-in devices.
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
+            <div className="text-xl font-mono font-bold text-white">{focusHoursLabel}</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Focus</div>
+          </div>
+          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
+            <div className="text-xl font-mono font-bold text-teal-200">{stats.totalPomos}</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Pomos</div>
+          </div>
+          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
+            <div className="text-xl font-mono font-bold text-blue-200">{stats.totalSessions}</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Sessions</div>
+          </div>
+          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
+            <div className="text-xl font-mono font-bold text-orange-200">{stats.currentStreak}</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Current Streak</div>
+          </div>
+          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
+            <div className="text-xl font-mono font-bold text-yellow-200">{stats.bestStreak}</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Best Streak</div>
+          </div>
+          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
+            <div className="text-xl font-mono font-bold text-purple-200">{dailyAvgHours.toFixed(1)}h</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Active-Day Avg</div>
+            <div className="text-[10px] text-white/35 mt-1">{activeDays} day{activeDays === 1 ? '' : 's'}</div>
+          </div>
+        </div>
+
+        {categoryBreakdown.length > 0 && (
+          <div className="bg-white/5 rounded-2xl p-5 border border-white/10 space-y-3">
+            <div className="text-sm font-bold text-white uppercase tracking-[0.14em] opacity-70">Category Focus</div>
+            {categoryBreakdown.map(([name, minutes]) => {
+              const pct = Math.min(100, Math.round((minutes / Math.max(1, stats.totalFocusHours * 60)) * 100));
+              return (
+                <div key={name} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-white/85 font-bold">{name}</span>
+                    <span className="text-white/55 font-mono">{Math.round(minutes / 60)}h</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div className="h-full bg-white/55" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={logout}
+          className="w-full py-3 bg-red-500/12 border border-red-500/30 text-red-200 rounded-xl font-bold uppercase text-xs tracking-[0.16em] hover:bg-red-500/22 transition-colors"
+        >
+          Sign Out
+        </button>
+      </div>
+    );
+  };
+
+  const renderAccountSignedOut = () => {
+    return (
+      <div className="p-4 md:p-8 flex flex-col items-center min-h-[520px]">
+        <div className="w-full max-w-md space-y-6 my-auto">
+          <div className="text-center space-y-2">
+            <h3 className="text-3xl font-bold text-white tracking-tight">
+              {authMode === 'register' ? 'Create Account' : 'Welcome Back'}
+            </h3>
+            <p className="text-white/45 text-xs uppercase tracking-[0.14em]">
+              Sign in to sync timers, tasks, and history across devices
+            </p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            {accountError && (
+              <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
+                {accountError}
+              </div>
+            )}
+            {accountMessage && (
+              <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-100 text-xs text-center font-bold">
+                {accountMessage}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Username</label>
+              <input
+                type="text"
+                autoFocus
+                value={usernameInput}
+                onChange={event => setUsernameInput(event.target.value)}
+                placeholder="Enter username"
+                className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/25"
+                disabled={authBusy}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Password</label>
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={event => setPasswordInput(event.target.value)}
+                placeholder="At least 8 characters"
+                className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/25"
+                disabled={authBusy}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={authBusy}
+              className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-[0.16em] rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg disabled:opacity-60 flex items-center justify-center"
+            >
+              {authBusy ? (
+                <span className="w-4 h-4 rounded-full border-2 border-black border-t-transparent animate-spin" />
+              ) : authMode === 'register' ? (
+                'Create Account'
+              ) : (
+                'Sign In'
+              )}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode(prev => (prev === 'register' ? 'login' : 'register'));
+              setAuthLocalError(null);
+              setAccountMessage(null);
+            }}
+            disabled={authBusy}
+            className="w-full text-xs text-white/45 hover:text-white transition-colors uppercase tracking-[0.14em] font-bold"
+          >
+            {authMode === 'register' ? 'Already have an account? Sign In' : 'New here? Create Account'}
+          </button>
+
+        </div>
+      </div>
+    );
+  };
+
+  const renderAccountTab = () => {
+    return user ? renderAccountLoggedIn() : renderAccountSignedOut();
+  };
+
+  const renderGroupTab = () => {
+    const groupError = groupLocalError || peerError;
+    const hostControls = hostSyncConfig || DEFAULT_GROUP_CONFIG;
+    const clientControls = clientSyncConfig || DEFAULT_GROUP_CONFIG;
+
+    if (groupBusy) {
+      return (
+        <div className="p-4 md:p-8 min-h-[520px] flex flex-col items-center justify-center gap-4">
+          <div className="w-12 h-12 rounded-full border-2 border-white/20 border-t-white animate-spin" />
+          <span className="text-white/55 text-xs uppercase tracking-[0.16em] font-bold">Connecting...</span>
+        </div>
+      );
+    }
+
+    if (groupSessionId) {
+      return (
+        <div className="p-4 md:p-8 min-h-[520px]">
+          <div className="max-w-lg mx-auto space-y-6">
+            <div className="text-center space-y-1">
+              <h3 className="text-2xl font-bold text-white tracking-tight">Group Study Active</h3>
+              <p className="text-blue-300 text-xs uppercase tracking-[0.16em] font-bold">Live Session</p>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-bold text-white/35 uppercase tracking-[0.16em]">Session ID</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => { await copyToClipboard(groupSessionId); }}
+                    className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
+                  >
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowGroupQr(prev => !prev)}
+                    className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
+                  >
+                    {showGroupQr ? 'Hide QR' : 'Show QR'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="text-xl md:text-2xl font-mono font-bold text-white tracking-wide bg-black/35 p-3 rounded-xl text-center border border-white/10">
+                {groupSessionId}
+              </div>
+
+              {showGroupQr && (
+                <div className="flex justify-center p-4 bg-white rounded-xl">
+                  <QRCodeSVG value={groupSessionId} size={180} />
                 </div>
               )}
+
+              <div>
+                <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.16em] mb-2">
+                  Members ({members.length})
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {members.map(member => (
+                    <div
+                      key={member.id}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs ${
+                        member.isHost
+                          ? 'bg-blue-500/20 border-blue-400/30 text-blue-100'
+                          : 'bg-white/5 border-white/10 text-white/85'
+                      }`}
+                    >
+                      <div className={`w-2 h-2 rounded-full ${member.isHost ? 'bg-blue-400' : 'bg-white/45'}`} />
+                      <span className="font-bold">{member.name}{member.isHost ? ' (Host)' : ''}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {isHost ? (
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+                <div className="text-[10px] font-bold text-white/35 uppercase tracking-[0.16em]">Host Sync Controls</div>
+                <ToggleRow label="Sync Timers" checked={hostControls.syncTimers} onToggle={() => toggleLiveHostSync('syncTimers')} />
+                <ToggleRow label="Sync Tasks" checked={hostControls.syncTasks} onToggle={() => toggleLiveHostSync('syncTasks')} />
+                <ToggleRow label="Sync Schedule" checked={hostControls.syncSchedule} onToggle={() => toggleLiveHostSync('syncSchedule')} />
+                <ToggleRow label="Sync History" checked={hostControls.syncHistory} onToggle={() => toggleLiveHostSync('syncHistory')} />
+                <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} />
+              </div>
+            ) : (
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-2">
+                <div className="text-[10px] font-bold text-white/35 uppercase tracking-[0.16em]">Accepted Sync Types</div>
+                <div className="text-xs text-white/55">Timers: {clientControls.syncTimers ? 'On' : 'Off'}</div>
+                <div className="text-xs text-white/55">Tasks: {clientControls.syncTasks ? 'On' : 'Off'}</div>
+                <div className="text-xs text-white/55">Schedule: {clientControls.syncSchedule ? 'On' : 'Off'}</div>
+                <div className="text-xs text-white/55">History: {clientControls.syncHistory ? 'On' : 'Off'}</div>
+                <div className="text-xs text-white/55">Settings: {clientControls.syncSettings ? 'On' : 'Off'}</div>
+              </div>
+            )}
+
+            {groupError && (
+              <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-200 text-xs">
+                {groupError}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                leaveGroupSession();
+                setShowGroupQr(false);
+                setGroupFlow('menu');
+              }}
+              className="w-full py-3 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-[0.16em] transition-colors"
+            >
+              Leave Session
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="p-4 md:p-8 min-h-[520px]">
+        <div className="max-w-md mx-auto space-y-6">
+          <div className="text-center space-y-2">
+            <h3 className="text-3xl font-bold text-white tracking-tight">Group Study</h3>
+            <p className="text-white/45 text-xs uppercase tracking-[0.14em]">
+              Timer sync is enabled by default. Task/history sync stays off unless you enable it.
+            </p>
+          </div>
+
+          {groupError && (
+            <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
+              {groupError}
             </div>
           )}
 
-          {tab === 'account' && (
-              <div className="p-4 md:p-8 flex flex-col items-center min-h-[500px]">
-                  {user ? (
-                      <div className="w-full max-w-lg space-y-8 animate-slide-up">
-                          <div className="flex flex-col items-center gap-4">
-                              <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-blue-500 to-purple-600 flex items-center justify-center text-3xl font-bold text-white shadow-xl">
-                                  {user.username.charAt(0).toUpperCase()}
-                              </div>
-                              <div className="text-center">
-                                  <h2 className="text-2xl font-bold text-white tracking-tight">{user.username}</h2>
-                                  <p className="text-white/40 text-xs uppercase tracking-widest">Premium Member</p>
-                                  <p className="text-green-400 text-[10px] uppercase tracking-widest font-bold mt-1">● Cloud Sync Active</p>
-                              </div>
-                          </div>
+          <div>
+            <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Your Name</label>
+            <input
+              type="text"
+              value={groupName}
+              onChange={event => setGroupName(event.target.value)}
+              placeholder="Enter your name"
+              className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 text-center font-bold"
+            />
+          </div>
 
-                          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 w-full">
-                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
-                                  <div className="text-2xl font-mono font-bold text-white">{Math.floor(user.lifetimeStats.totalFocusHours)}<span className="text-sm opacity-50">h</span></div>
-                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Total Focus</div>
-                              </div>
-                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
-                                  <div className="text-2xl font-mono font-bold text-teal-200">{user.lifetimeStats.totalPomos}</div>
-                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Pomos</div>
-                              </div>
-                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1 col-span-2 md:col-span-1">
-                                  <div className="text-2xl font-mono font-bold text-blue-200">{user.lifetimeStats.totalSessions}</div>
-                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Sessions</div>
-                              </div>
-                              
-                              {/* New Stats */}
-                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
-                                  <div className="text-2xl font-mono font-bold text-orange-200">{user.lifetimeStats.currentStreak} <span className="text-sm">days</span></div>
-                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Current Streak</div>
-                              </div>
-                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
-                                  <div className="text-2xl font-mono font-bold text-yellow-200">{user.lifetimeStats.bestStreak} <span className="text-sm">days</span></div>
-                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Best Streak</div>
-                              </div>
-                              <div className="bg-white/5 rounded-2xl p-4 border border-white/10 text-center space-y-1">
-                                  <div className="text-2xl font-mono font-bold text-purple-200">
-                                      {(user.lifetimeStats.totalFocusHours / Math.max(1, (new Date().getTime() - new Date(user.joinedAt).getTime()) / (1000 * 3600 * 24))).toFixed(1)}h
-                                  </div>
-                                  <div className="text-[10px] uppercase font-bold text-white/30 tracking-wider">Daily Avg</div>
-                              </div>
-                          </div>
-
-                          {/* Category Stats Breakdown */}
-                          {user.lifetimeStats.categoryBreakdown && Object.keys(user.lifetimeStats.categoryBreakdown).length > 0 && (
-                              <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-4">
-                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Category Focus Time</h3>
-                                  <div className="space-y-3">
-                                      {(Object.entries(user.lifetimeStats.categoryBreakdown) as [string, number][]).sort((a, b) => b[1] - a[1]).map(([name, mins]) => (
-                                          <div key={name} className="flex justify-between items-center text-xs">
-                                              <span className="text-white/80 font-bold">{name}</span>
-                                              <div className="flex items-center gap-2">
-                                                 <div className="w-32 h-2 bg-white/10 rounded-full overflow-hidden">
-                                                     <div className="h-full bg-white/50" style={{ width: `${Math.min(100, (mins / (user.lifetimeStats.totalFocusHours * 60)) * 100)}%` }} />
-                                                 </div>
-                                                 <span className="font-mono text-white/50">{Math.round(mins / 60)}h</span>
-                                              </div>
-                                          </div>
-                                      ))}
-                                  </div>
-                              </div>
-                          )}
-
-                          {/* Category Management */}
-                          <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-6">
-                              <div className="flex justify-between items-center">
-                                  <div>
-                                      <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Categories</h3>
-                                      <p className="text-xs text-white/50">Manage your focus areas</p>
-                                  </div>
-                                  <button onClick={() => setIsCreatingCat(!isCreatingCat)} className="px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-white text-[10px] font-bold uppercase tracking-wider">{isCreatingCat ? 'Cancel' : 'New Category'}</button>
-                              </div>
-                              
-                              {isCreatingCat && (
-                                  <div className="bg-black/20 p-4 rounded-xl border border-white/10 space-y-4 animate-slide-up">
-                                      <div>
-                                          <label className="text-[10px] text-white/40 uppercase font-bold block mb-1">Name</label>
-                                          <input autoFocus type="text" value={newCatName} onChange={e => setNewCatName(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm outline-none" placeholder="e.g. Math" />
-                                      </div>
-                                      <div>
-                                          <label className="text-[10px] text-white/40 uppercase font-bold block mb-1">Color</label>
-                                          <div className="flex gap-2 flex-wrap">
-                                              {PRESET_COLORS.map(c => (
-                                                  <button key={c} onClick={() => setNewCatColor(c)} className={`w-6 h-6 rounded-full transition-transform ${newCatColor === c ? 'scale-110 ring-2 ring-white' : 'opacity-50 hover:opacity-100'}`} style={{backgroundColor: c}} />
-                                              ))}
-                                          </div>
-                                      </div>
-                                      <div>
-                                          <label className="text-[10px] text-white/40 uppercase font-bold block mb-1">Icon</label>
-                                          <div className="grid grid-cols-5 gap-2">
-                                              {Object.keys(CATEGORY_ICONS).map(k => (
-                                                  <button key={k} onClick={() => setNewCatIcon(k)} className={`p-2 rounded-lg flex items-center justify-center text-white transition-colors ${newCatIcon === k ? 'bg-white/20' : 'bg-white/5 hover:bg-white/10 opacity-50 hover:opacity-100'}`}>
-                                                      {getIcon(k)}
-                                                  </button>
-                                              ))}
-                                          </div>
-                                      </div>
-                                      <button onClick={handleCreateCategory} className="w-full py-2 bg-white text-black font-bold text-xs uppercase rounded-lg">Create Category</button>
-                                  </div>
-                              )}
-
-                              <div className="space-y-2">
-                                  {categories.length === 0 && <div className="text-center text-white/30 text-xs italic py-4">No categories created</div>}
-                                  {categories.map(cat => (
-                                      <div key={cat.id} className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/5">
-                                          <div className="flex items-center gap-3">
-                                              <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{backgroundColor: cat.color}}>
-                                                  {getIcon(cat.icon)}
-                                              </div>
-                                              <span className="text-white font-bold text-sm">{cat.name}</span>
-                                          </div>
-                                          <button onClick={() => deleteCategory(cat.id)} className="text-white/20 hover:text-red-400 p-1">
-                                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                                          </button>
-                                      </div>
-                                  ))}
-                              </div>
-                          </div>
-
-                          <div className="bg-white/5 rounded-2xl p-6 border border-white/10 space-y-6">
-                              <div>
-                                  <h3 className="text-white font-bold text-sm uppercase tracking-widest opacity-60">Manual Backup (Legacy)</h3>
-                                  <p className="text-xs text-white/50 leading-relaxed mb-4">
-                                      Since you are logged in, data is automatically synced. Use this to export a snapshot.
-                                  </p>
-                              </div>
-
-                              <div className="pt-4 border-t border-white/5">
-                                  <button onClick={handleExport} className="w-full py-2 bg-white/5 hover:bg-white/10 text-white/40 hover:text-white rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all">
-                                      Show Data Key
-                                  </button>
-                                  {exportString && (
-                                      <div className="mt-2 bg-black/40 p-4 rounded-xl border border-white/10 relative">
-                                          <textarea readOnly value={exportString} className="w-full bg-transparent text-[10px] font-mono text-white/60 h-24 outline-none resize-none" onClick={e => e.currentTarget.select()} />
-                                          <div className="absolute top-2 right-2 text-[10px] bg-white/10 px-2 py-1 rounded text-white/40">Copy</div>
-                                      </div>
-                                  )}
-                              </div>
-                          </div>
-
-                          <button onClick={logout} className="w-full py-4 bg-white/5 hover:bg-white/10 border border-white/5 text-red-300 rounded-xl font-bold uppercase text-xs tracking-widest transition-all">
-                              Sign Out
-                          </button>
-                      </div>
-                  ) : (
-                      <div className="w-full max-w-sm space-y-8 animate-slide-up my-auto">
-                          <div className="text-center space-y-2">
-                              <h2 className="text-3xl font-bold text-white tracking-tight">{isRegistering ? 'Create Account' : 'Welcome Back'}</h2>
-                              <p className="text-white/40 text-xs uppercase tracking-widest">Sign in to sync your progress</p>
-                          </div>
-
-                          {isSyncing ? (
-                               <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
-                                   <div className="text-center">
-                                       <h3 className="text-white font-bold text-sm uppercase tracking-widest mb-1">Enter Sync Code</h3>
-                                       <p className="text-[10px] text-white/40">From your other device</p>
-                                   </div>
-                                   <input 
-                                      autoFocus
-                                      type="text" 
-                                      className="w-full bg-black/20 border border-white/10 rounded-xl p-4 text-center text-xl font-mono text-white outline-none focus:border-white/30 uppercase"
-                                      placeholder="XXXXXX"
-                                      value={migrationInput}
-                                      onChange={e => setMigrationInput(e.target.value.toUpperCase())}
-                                   />
-                                   <div className="flex gap-2">
-                                       <button onClick={() => setIsSyncing(false)} className="flex-1 py-3 text-white/40 hover:text-white text-xs font-bold uppercase tracking-widest">Cancel</button>
-                                       <button onClick={handleJoinMigration} className="flex-1 py-3 bg-blue-500/20 text-blue-100 rounded-xl text-xs font-bold uppercase tracking-widest">Connect</button>
-                                   </div>
-                                   {syncStatus && <div className="text-center text-xs text-blue-300 font-bold">{syncStatus}</div>}
-                               </div>
-                          ) : (
-                            <>
-                                <form onSubmit={handleAuthSubmit} className="space-y-4">
-                                    {authError && (
-                                        <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold animate-pulse">
-                                            {authError}
-                                        </div>
-                                    )}
-                                    <div>
-                                        <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
-                                        <input 
-                                            type="text" 
-                                            autoFocus
-                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 disabled:opacity-50"
-                                            placeholder="Enter username"
-                                            value={authUsername}
-                                            onChange={e => setAuthUsername(e.target.value)}
-                                            disabled={authLoading}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Password</label>
-                                        <input 
-                                            type="password" 
-                                            className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/20 disabled:opacity-50"
-                                            placeholder="Enter password"
-                                            value={authPassword}
-                                            onChange={e => setAuthPassword(e.target.value)}
-                                            disabled={authLoading}
-                                        />
-                                    </div>
-
-                                    <button type="submit" disabled={authLoading} className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-widest rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg mt-4 disabled:opacity-50 flex items-center justify-center">
-                                        {authLoading ? <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" /> : (isRegistering ? 'Create Account' : 'Sign In')}
-                                    </button>
-                                </form>
-
-                                <div className="text-center space-y-4">
-                                    <button 
-                                        onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
-                                        className="text-xs text-white/40 hover:text-white transition-colors uppercase tracking-wider font-bold block w-full"
-                                        disabled={authLoading}
-                                    >
-                                        {isRegistering ? 'Already have an account? Sign In' : 'New here? Create Account'}
-                                    </button>
-
-                                    {!isRegistering && (
-                                        <div className="pt-4 border-t border-white/10">
-                                            <button onClick={() => setIsSyncing(true)} className="text-xs text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest">
-                                                Manual Sync from old device?
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-                            </>
-                          )}
-                      </div>
-                  )}
-              </div>
+          {groupFlow === 'menu' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                disabled={!groupName.trim()}
+                onClick={() => setGroupFlow('host')}
+                className="p-5 rounded-2xl bg-white/10 border border-white/10 hover:bg-white/20 text-white transition-all disabled:opacity-55 disabled:cursor-not-allowed"
+              >
+                <div className="text-sm font-bold uppercase tracking-[0.12em]">Host Session</div>
+                <div className="text-[10px] text-white/45 mt-2">Create a room and share ID/QR.</div>
+              </button>
+              <button
+                type="button"
+                disabled={!groupName.trim()}
+                onClick={() => setGroupFlow('join')}
+                className="p-5 rounded-2xl bg-white/10 border border-white/10 hover:bg-white/20 text-white transition-all disabled:opacity-55 disabled:cursor-not-allowed"
+              >
+                <div className="text-sm font-bold uppercase tracking-[0.12em]">Join Session</div>
+                <div className="text-[10px] text-white/45 mt-2">Connect with a session ID.</div>
+              </button>
+            </div>
           )}
 
-          {tab === 'group' && (
-              <div className="p-4 md:p-8 flex flex-col items-center justify-center min-h-[500px]">
-                  {isConnecting ? (
-                      <div className="flex flex-col items-center justify-center gap-4">
-                          <div className="w-12 h-12 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
-                          <span className="text-white/50 text-xs font-bold uppercase tracking-widest">Connecting...</span>
-                      </div>
-                  ) : groupSessionId ? (
-                      <div className="w-full flex flex-col items-center gap-8 animate-fade-in max-w-lg">
-                          <div className="text-center space-y-1">
-                              <h2 className="text-2xl font-bold text-white tracking-tight">Group Study Active</h2>
-                              <p className="text-blue-300 text-xs uppercase tracking-widest font-bold">Live Synchronized</p>
-                          </div>
-                          
-                          <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6 backdrop-blur-md">
-                              <div>
-                                  <div className="flex justify-between items-center mb-2">
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Session ID</label>
-                                      <button onClick={() => setShowQR(true)} className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-widest flex items-center gap-1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Show QR</button>
-                                  </div>
-                                  <div 
-                                      onClick={() => navigator.clipboard.writeText(groupSessionId || '')}
-                                      className="text-xl md:text-2xl font-mono font-bold text-white tracking-wide cursor-pointer hover:text-white/80 select-all bg-black/40 p-4 rounded-xl break-all border border-white/5 shadow-inner text-center"
-                                  >
-                                      {groupSessionId}
-                                  </div>
-                              </div>
-
-                              <div>
-                                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Members ({members.length})</label>
-                                  <div className="flex flex-wrap gap-2">
-                                      {members.map(m => (
-                                          <div key={m.id} className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${m.isHost ? 'bg-blue-500/20 border-blue-400/30 text-blue-100' : 'bg-white/5 border-white/10 text-white/80'}`}>
-                                              <div className={`w-2 h-2 rounded-full ${m.isHost ? 'bg-blue-400' : 'bg-white/40'}`} />
-                                              <span className="text-xs font-bold">{m.name} {m.id === 'host' || m.isHost ? '(Host)' : ''}</span>
-                                          </div>
-                                      ))}
-                                  </div>
-                              </div>
-                              
-                              {isHost ? (
-                                  <div>
-                                     <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Host Controls (Shared Data)</label>
-                                     <div className="space-y-2">
-                                        <SyncOptionToggle label="Sync Timers" checked={hostSyncConfig.syncTimers} onChange={() => toggleHostSync('syncTimers')} />
-                                        <SyncOptionToggle label="Sync Tasks" checked={hostSyncConfig.syncTasks} onChange={() => toggleHostSync('syncTasks')} />
-                                        <SyncOptionToggle label="Sync Schedule" checked={hostSyncConfig.syncSchedule} onChange={() => toggleHostSync('syncSchedule')} />
-                                     </div>
-                                  </div>
-                              ) : (
-                                  <div>
-                                     <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-3">Client Preferences (Accept Data)</label>
-                                     <div className="space-y-2">
-                                        <div className="p-3 bg-white/5 rounded-lg border border-white/5 text-center text-xs text-white/50 italic">
-                                            Controlled by initial join settings. Rejoin to change.
-                                        </div>
-                                     </div>
-                                  </div>
-                              )}
-                          </div>
-
-                          <button 
-                              onClick={() => { leaveGroupSession(); setGroupMode('menu'); }}
-                              className="w-full py-4 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
-                          >
-                              Leave Session
-                          </button>
-                      </div>
-                  ) : (
-                      <div className="w-full max-w-sm space-y-8 animate-slide-up">
-                          <div className="text-center space-y-2">
-                              <h2 className="text-3xl font-bold text-white tracking-tight">Group Study</h2>
-                              <p className="text-white/40 text-xs uppercase tracking-widest">Sync Timers & Tasks</p>
-                          </div>
-
-                          {peerError && (
-                              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-200 text-xs text-center font-bold">
-                                  {peerError}
-                              </div>
-                          )}
-
-                          {groupMode === 'menu' && (
-                              <div className="space-y-4">
-                                  <div>
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Username</label>
-                                      <input 
-                                          type="text" 
-                                          placeholder="Enter Your Name"
-                                          className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 focus:bg-white/10 transition-all placeholder-white/20 text-center font-bold"
-                                          value={inputName}
-                                          onChange={e => setInputName(e.target.value)}
-                                      />
-                                  </div>
-                                  
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
-                                      <button 
-                                          onClick={() => setGroupMode('host')}
-                                          disabled={!inputName.trim()}
-                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98]"
-                                      >
-                                          <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-200">
-                                              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                                          </div>
-                                          <div className="text-center">
-                                              <div className="text-sm font-bold text-white uppercase tracking-wider">Host Session</div>
-                                              <div className="text-[10px] text-white/40 mt-1">Create a room & sync data</div>
-                                          </div>
-                                      </button>
-
-                                      <button 
-                                          onClick={() => setGroupMode('join')}
-                                          disabled={!inputName.trim()}
-                                          className="p-6 bg-white/10 hover:bg-white/20 border border-white/5 rounded-2xl flex flex-col items-center gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-[0.98]"
-                                      >
-                                          <div className="w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center text-purple-200">
-                                              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                                          </div>
-                                          <div className="text-center">
-                                              <div className="text-sm font-bold text-white uppercase tracking-wider">Join Session</div>
-                                              <div className="text-[10px] text-white/40 mt-1">Connect via ID or Code</div>
-                                          </div>
-                                      </button>
-                                  </div>
-                              </div>
-                          )}
-
-                          {groupMode === 'host' && (
-                              <div className="space-y-6">
-                                  <div className="flex items-center gap-2 mb-4">
-                                      <button onClick={() => setGroupMode('menu')} className="text-white/40 hover:text-white text-xs uppercase font-bold tracking-widest">Back</button>
-                                      <span className="text-white/20">/</span>
-                                      <span className="text-white text-xs uppercase font-bold tracking-widest">Host Settings</span>
-                                  </div>
-
-                                  <div className="space-y-3">
-                                      <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Data to Sync</p>
-                                      <SyncOptionToggle label="Sync Timers" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
-                                      <SyncOptionToggle label="Sync Tasks" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
-                                      <SyncOptionToggle label="Sync Schedule" checked={tempSyncConfig.syncSchedule} onChange={() => toggleTempSync('syncSchedule')} />
-                                      <SyncOptionToggle label="Sync Settings" checked={tempSyncConfig.syncSettings} onChange={() => toggleTempSync('syncSettings')} />
-                                  </div>
-
-                                  <button onClick={handleStartGroup} className="w-full py-4 bg-blue-500/20 hover:bg-blue-500/30 text-blue-100 font-bold uppercase text-xs tracking-widest rounded-xl border border-blue-500/30 transition-all">
-                                      Start Session
-                                  </button>
-                              </div>
-                          )}
-
-                          {groupMode === 'join' && (
-                              <div className="space-y-6">
-                                   <div className="flex items-center gap-2 mb-4">
-                                      <button onClick={() => setGroupMode('menu')} className="text-white/40 hover:text-white text-xs uppercase font-bold tracking-widest">Back</button>
-                                      <span className="text-white/20">/</span>
-                                      <span className="text-white text-xs uppercase font-bold tracking-widest">Join Session</span>
-                                  </div>
-
-                                  <div>
-                                      <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Session ID</label>
-                                      <input 
-                                          type="text" 
-                                          autoFocus
-                                          placeholder="e.g. A1B2C3"
-                                          className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 text-center font-mono font-bold uppercase"
-                                          value={inputSessionId}
-                                          onChange={e => setInputSessionId(e.target.value.toUpperCase())}
-                                      />
-                                  </div>
-
-                                  <div className="space-y-3">
-                                      <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Accept Data</p>
-                                      <SyncOptionToggle label="Accept Timer Sync" checked={tempSyncConfig.syncTimers} onChange={() => toggleTempSync('syncTimers')} />
-                                      <SyncOptionToggle label="Accept Task Sync" checked={tempSyncConfig.syncTasks} onChange={() => toggleTempSync('syncTasks')} />
-                                  </div>
-
-                                  <button onClick={handleJoinGroup} disabled={!inputSessionId.trim()} className="w-full py-4 bg-purple-500/20 hover:bg-purple-500/30 text-purple-100 font-bold uppercase text-xs tracking-widest rounded-xl border border-purple-500/30 transition-all disabled:opacity-50">
-                                      Connect
-                                  </button>
-                              </div>
-                          )}
-                      </div>
-                  )}
+          {groupFlow === 'host' && (
+            <div className="space-y-4 bg-white/5 border border-white/10 rounded-2xl p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-[0.14em] text-white/70">Host Sync Options</div>
+                <button
+                  type="button"
+                  onClick={() => setGroupFlow('menu')}
+                  className="text-[10px] text-white/45 hover:text-white uppercase tracking-[0.14em] font-bold"
+                >
+                  Back
+                </button>
               </div>
+              <ToggleRow label="Sync Timers" checked={hostDraftConfig.syncTimers} onToggle={() => toggleHostDraftSync('syncTimers')} />
+              <ToggleRow label="Sync Tasks" checked={hostDraftConfig.syncTasks} onToggle={() => toggleHostDraftSync('syncTasks')} />
+              <ToggleRow label="Sync Schedule" checked={hostDraftConfig.syncSchedule} onToggle={() => toggleHostDraftSync('syncSchedule')} />
+              <ToggleRow label="Sync History" checked={hostDraftConfig.syncHistory} onToggle={() => toggleHostDraftSync('syncHistory')} />
+              <ToggleRow label="Sync Settings" checked={hostDraftConfig.syncSettings} onToggle={() => toggleHostDraftSync('syncSettings')} />
+              <button
+                type="button"
+                onClick={handleCreateGroup}
+                className="w-full py-3 bg-blue-500/20 border border-blue-500/35 text-blue-100 rounded-xl text-xs font-bold uppercase tracking-[0.14em] hover:bg-blue-500/28 transition-colors"
+              >
+                Start Session
+              </button>
+            </div>
           )}
 
-          {tab === 'settings' && (
-              <div className="p-4 md:p-8 space-y-8 animate-slide-up max-w-2xl mx-auto">
-                  <div className="flex justify-between items-center border-b border-white/10 pb-4">
-                      <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
-                      <button onClick={() => updateSettings({ ...settings, workDuration: 1500, shortBreakDuration: 300, longBreakDuration: 900, themeMode: 'dark' })} className="hidden text-xs text-white/50 hover:text-white uppercase font-bold tracking-widest">Reset Defaults</button>
-                  </div>
-
-                  <div className="space-y-6">
-                      <div className="grid grid-cols-3 gap-4">
-                           <div className="space-y-2">
-                               <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Work</label>
-                               <input type="number" value={settings.workDuration / 60} onChange={e => updateSettings({...settings, workDuration: Number(e.target.value) * 60})} className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
-                           </div>
-                           <div className="space-y-2">
-                               <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Short Break</label>
-                               <input type="number" value={settings.shortBreakDuration / 60} onChange={e => updateSettings({...settings, shortBreakDuration: Number(e.target.value) * 60})} className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
-                           </div>
-                           <div className="space-y-2">
-                               <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest">Long Break</label>
-                               <input type="number" value={settings.longBreakDuration / 60} onChange={e => updateSettings({...settings, longBreakDuration: Number(e.target.value) * 60})} className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30" />
-                           </div>
-                      </div>
-
-                      <div className="pt-4 border-t border-white/5">
-                           <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Appearance</label>
-                           <div className="grid grid-cols-2 gap-2">
-                               <button
-                                  onClick={() => updateSettings({ ...settings, themeMode: 'light' })}
-                                  className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all ${settings.themeMode === 'light' ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
-                               >
-                                  Light
-                               </button>
-                               <button
-                                  onClick={() => updateSettings({ ...settings, themeMode: 'dark' })}
-                                  className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all ${settings.themeMode === 'dark' ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
-                               >
-                                  Dark
-                               </button>
-                           </div>
-                      </div>
-
-                      <div className="space-y-3 pt-4 border-t border-white/5">
-                           <label className="block text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2">Alarm Sound</label>
-                           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                               {SOUND_OPTIONS.map(opt => (
-                                   <button 
-                                     key={opt.val}
-                                     onClick={() => { updateSettings({...settings, alarmSound: opt.val}); playAlarm(opt.val); }}
-                                      className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-wide font-bold transition-all truncate ${settings.alarmSound === opt.val ? 'bg-white/20 border-white/30 text-white' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
-                                   >
-                                       {opt.label}
-                                   </button>
-                               ))}
-                           </div>
-                      </div>
-                      
-                      <div className="pt-4 border-t border-white/5">
-                           <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/5">
-                               <div>
-                                   <div className="text-sm font-bold text-white">Disable Blur Effects</div>
-                                   <div className="text-xs text-white/40">Improves performance on older devices</div>
-                               </div>
-                               <button 
-                                onClick={() => updateSettings({...settings, disableBlur: !settings.disableBlur})}
-                                className={`w-12 h-6 rounded-full p-1 transition-colors relative ${settings.disableBlur ? 'bg-green-500' : 'bg-white/10'}`}
-                               >
-                                  <div className={`w-4 h-4 bg-white rounded-full transition-transform shadow-sm ${settings.disableBlur ? 'translate-x-6' : ''}`} />
-                               </button>
-                           </div>
-                      </div>
-
-                      <div className="pt-8 border-t border-white/5">
-                           <div className="bg-red-500/5 border border-red-500/10 rounded-xl p-4 flex flex-col gap-4">
-                               <div>
-                                   <div className="text-sm font-bold text-red-200">Danger Zone</div>
-                                   <div className="text-xs text-red-200/50">Irreversible actions</div>
-                               </div>
-                               {!showResetConfirm ? (
-                                   <button onClick={() => setShowResetConfirm(true)} className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-300 font-bold uppercase text-xs tracking-widest rounded-lg transition-all">
-                                       Reset App Data
-                                   </button>
-                               ) : (
-                                   <div className="flex gap-2">
-                                       <button onClick={() => setShowResetConfirm(false)} className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-white/60 font-bold uppercase text-xs tracking-widest rounded-lg transition-all">Cancel</button>
-                                       <button onClick={() => { hardReset(); onClose(); }} className="flex-1 py-3 bg-red-500 text-white font-bold uppercase text-xs tracking-widest rounded-lg transition-all hover:bg-red-600">Confirm Reset</button>
-                                   </div>
-                               )}
-                           </div>
-                      </div>
-                  </div>
+          {groupFlow === 'join' && (
+            <div className="space-y-4 bg-white/5 border border-white/10 rounded-2xl p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-[0.14em] text-white/70">Join Session</div>
+                <button
+                  type="button"
+                  onClick={() => setGroupFlow('menu')}
+                  className="text-[10px] text-white/45 hover:text-white uppercase tracking-[0.14em] font-bold"
+                >
+                  Back
+                </button>
               </div>
-          )}
 
+              <input
+                type="text"
+                value={groupSessionInput}
+                onChange={event => setGroupSessionInput(event.target.value.toUpperCase())}
+                placeholder="Session ID"
+                className="w-full p-4 bg-black/25 border border-white/10 rounded-xl text-center text-white font-mono tracking-[0.2em] outline-none focus:border-white/30"
+              />
+
+              <ToggleRow label="Accept Timer Sync" checked={joinDraftConfig.syncTimers} onToggle={() => toggleJoinDraftSync('syncTimers')} />
+              <ToggleRow label="Accept Task Sync" checked={joinDraftConfig.syncTasks} onToggle={() => toggleJoinDraftSync('syncTasks')} />
+              <ToggleRow label="Accept Schedule Sync" checked={joinDraftConfig.syncSchedule} onToggle={() => toggleJoinDraftSync('syncSchedule')} />
+              <ToggleRow label="Accept History Sync" checked={joinDraftConfig.syncHistory} onToggle={() => toggleJoinDraftSync('syncHistory')} />
+              <ToggleRow label="Accept Settings Sync" checked={joinDraftConfig.syncSettings} onToggle={() => toggleJoinDraftSync('syncSettings')} />
+
+              <button
+                type="button"
+                onClick={handleJoinGroup}
+                className="w-full py-3 bg-purple-500/20 border border-purple-500/35 text-purple-100 rounded-xl text-xs font-bold uppercase tracking-[0.14em] hover:bg-purple-500/30 transition-colors"
+              >
+                Connect
+              </button>
+            </div>
+          )}
         </div>
       </div>
-    </div>
+    );
+  };
+
+  const renderSettingsTab = () => {
+    return (
+      <div className="p-4 md:p-8 space-y-8 max-w-2xl mx-auto">
+        <div className="space-y-4">
+          <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Work (min)</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={Math.round(settings.workDuration / 60)}
+                onChange={event => setDurationFromMinutes('workDuration', event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Short Break</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={Math.round(settings.shortBreakDuration / 60)}
+                onChange={event => setDurationFromMinutes('shortBreakDuration', event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={Math.round(settings.longBreakDuration / 60)}
+                onChange={event => setDurationFromMinutes('longBreakDuration', event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break Every</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={settings.longBreakInterval}
+                onChange={event => setLongBreakInterval(event.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-2 border-t border-white/10">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Appearance</div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => updateTimerSettings({ themeMode: 'light' })}
+              className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.14em] font-bold transition-all ${
+                settings.themeMode === 'light'
+                  ? 'bg-white/20 border-white/30 text-white'
+                  : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+              }`}
+            >
+              Light
+            </button>
+            <button
+              type="button"
+              onClick={() => updateTimerSettings({ themeMode: 'dark' })}
+              className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.14em] font-bold transition-all ${
+                settings.themeMode === 'dark'
+                  ? 'bg-white/20 border-white/30 text-white'
+                  : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+              }`}
+            >
+              Dark
+            </button>
+          </div>
+          <ToggleRow
+            label="Disable Blur Effects"
+            description="Improves performance on older devices"
+            checked={settings.disableBlur}
+            onToggle={() => updateTimerSettings({ disableBlur: !settings.disableBlur })}
+          />
+        </div>
+
+        <div className="space-y-3 pt-2 border-t border-white/10">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Alarm Sound</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {ALARM_OPTIONS.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  updateTimerSettings({ alarmSound: option.value });
+                  void playAlarm(option.value);
+                }}
+                className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                  settings.alarmSound === option.value
+                    ? 'bg-white/20 border-white/30 text-white'
+                    : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-4 pt-2 border-t border-white/10">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-bold text-white">Categories</div>
+              <div className="text-xs text-white/45">Used for task grouping and stats.</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowAddCategory(prev => !prev)}
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+            >
+              {showAddCategory ? 'Cancel' : 'New Category'}
+            </button>
+          </div>
+
+          {showAddCategory && (
+            <div className="bg-black/25 border border-white/10 rounded-xl p-4 space-y-4">
+              <div>
+                <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Name</label>
+                <input
+                  type="text"
+                  value={newCategoryName}
+                  onChange={event => setNewCategoryName(event.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-white/30"
+                  placeholder="e.g. Math"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Color</label>
+                <div className="flex gap-2 flex-wrap">
+                  {PRESET_COLORS.map(color => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => setNewCategoryColor(color)}
+                      className={`w-6 h-6 rounded-full transition-transform ${
+                        newCategoryColor === color ? 'scale-110 ring-2 ring-white' : 'opacity-60 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Icon</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {iconKeys.map(iconKey => (
+                    <button
+                      key={iconKey}
+                      type="button"
+                      onClick={() => setNewCategoryIcon(iconKey)}
+                      className={`p-2 rounded-lg flex items-center justify-center text-white transition-colors ${
+                        newCategoryIcon === iconKey
+                          ? 'bg-white/20'
+                          : 'bg-white/5 hover:bg-white/10 opacity-60 hover:opacity-100'
+                      }`}
+                    >
+                      {getIcon(iconKey)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleCreateCategory}
+                className="w-full py-2 bg-white text-black font-bold text-xs uppercase rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                Create Category
+              </button>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {categories.length === 0 && (
+              <div className="text-center text-white/35 text-xs italic py-4">No categories created.</div>
+            )}
+            {categories.map(category => (
+              <div
+                key={category.id}
+                className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/10"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: category.color }}>
+                    {getIcon(category.icon)}
+                  </div>
+                  <span className="text-white font-bold text-sm">{category.name}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => deleteCategory(category.id)}
+                  className="text-white/30 hover:text-red-400 p-1 transition-colors"
+                  aria-label={`Delete ${category.name}`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-white/10">
+          <div className="bg-red-500/7 border border-red-500/20 rounded-xl p-4 space-y-3">
+            <div>
+              <div className="text-sm font-bold text-red-200">Danger Zone</div>
+              <div className="text-xs text-red-200/55">Resets local app data for this browser profile.</div>
+            </div>
+            {showResetConfirm ? (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(false)}
+                  className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white/65 font-bold uppercase text-xs tracking-[0.14em] rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    hardReset();
+                    setShowResetConfirm(false);
+                    onClose();
+                  }}
+                  className="flex-1 py-2 bg-red-500 text-white font-bold uppercase text-xs tracking-[0.14em] rounded-lg hover:bg-red-600 transition-colors"
+                >
+                  Confirm Reset
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowResetConfirm(true)}
+                className="w-full py-2 bg-red-500/15 hover:bg-red-500/24 text-red-200 font-bold uppercase text-xs tracking-[0.14em] rounded-lg transition-colors"
+              >
+                Reset App Data
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <style>{`
+        .settings-option-btn {
+          transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease;
+        }
+        .settings-option-btn:hover {
+          transform: translateY(-1px) scale(1.01);
+          box-shadow: 0 10px 20px -14px rgba(15, 23, 42, 0.55);
+        }
+        .settings-option-btn:active {
+          transform: translateY(0) scale(0.985);
+        }
+        .doro-no-spin::-webkit-outer-spin-button,
+        .doro-no-spin::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        .doro-no-spin[type='number'] {
+          -moz-appearance: textfield;
+          appearance: textfield;
+        }
+        .doro-settings-shell.theme-light {
+          background: linear-gradient(160deg, #f7f9fc 0%, #eef3f9 52%, #ebf1f8 100%) !important;
+          border-color: #d4dde9 !important;
+          box-shadow: 0 30px 70px -26px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
+        }
+        .doro-settings-shell.theme-light .settings-tabbar {
+          border-color: rgba(15, 23, 42, 0.1) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.75)) !important;
+        }
+        .doro-settings-shell.theme-light .settings-body {
+          background: radial-gradient(circle at 12% -10%, rgba(86, 148, 255, 0.12), transparent 38%), radial-gradient(circle at 95% 0%, rgba(95, 198, 255, 0.08), transparent 35%), #f2f6fb !important;
+        }
+        .doro-settings-shell.theme-light [class*='bg-white/'] {
+          background-color: rgba(255, 255, 255, 0.7) !important;
+        }
+        .doro-settings-shell.theme-light [class*='bg-black/'] {
+          background-color: rgba(225, 233, 244, 0.72) !important;
+        }
+        .doro-settings-shell.theme-light [class*='border-white/'] {
+          border-color: rgba(15, 23, 42, 0.12) !important;
+        }
+        .doro-settings-shell.theme-light [class*='text-white'] {
+          color: #0b1526 !important;
+        }
+        .doro-settings-shell.theme-light [class*='text-white/'] {
+          color: #5f6f85 !important;
+        }
+      `}</style>
+
+      <div
+        className="fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4 bg-black/60 backdrop-blur-xl animate-fade-in"
+        onClick={onClose}
+      >
+        <div
+          className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`}
+          onClick={event => event.stopPropagation()}
+        >
+          <div className="settings-tabbar flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
+            {([
+              { id: 'log', label: 'Log' },
+              { id: 'schedule', label: 'Schedule' },
+              { id: 'group', label: 'Group Study' },
+              { id: 'account', label: 'Account' },
+              { id: 'settings', label: 'Settings' },
+            ] as Array<{ id: TabButton; label: string }>).map(tab => {
+              const isActive = tab.id !== 'schedule' && activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabClick(tab.id)}
+                  className={`flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${
+                    isActive ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="settings-body flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">
+            {activeTab === 'log' && renderLogTab()}
+            {activeTab === 'group' && renderGroupTab()}
+            {activeTab === 'account' && renderAccountTab()}
+            {activeTab === 'settings' && renderSettingsTab()}
+          </div>
+        </div>
+      </div>
     </>
   );
 };

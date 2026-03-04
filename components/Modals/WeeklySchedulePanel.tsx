@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTimer } from '../../context/TimerContext';
 import { Task } from '../../types';
 
-const PRESET_COLORS = ['#BA4949', '#38858a', '#397097', '#8c5e32', '#7a5c87', '#547a59'];
+const PRESET_COLORS = ['#E8A6A6', '#9ECFC8', '#AFC3E6', '#DDBA9B', '#C6B1D9', '#AFCFB1'];
 
 const clampEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -63,14 +63,17 @@ const buildDayRange = (start: Date, end: Date, todayKey: string) => {
   return days;
 };
 
-const getPredictedPomos = (task: Task) => Math.max(1, task.estimated - task.completed);
+const getPredictedPomos = (task: Task) => {
+  if (task.checked) return 0;
+  return Math.max(1, task.estimated - task.completed);
+};
 const formatPomoLabel = (count: number) => `${count} POMO${count === 1 ? '' : 'S'}`;
 type DragInsertPosition = 'before' | 'after';
-const DRAG_DEAD_ZONE_MIN_PX = 10;
-const DRAG_DEAD_ZONE_RATIO = 0.26;
-const REORDER_MIN_INTERVAL_MS = 55;
-const FLIP_ANIMATION_DURATION_MS = 180;
-const FLIP_MAX_ITEMS = 80;
+const DRAG_DEAD_ZONE_MIN_PX = 14;
+const DRAG_DEAD_ZONE_RATIO = 0.34;
+const REORDER_MIN_INTERVAL_MS = 96;
+const FLIP_ANIMATION_DURATION_MS = 165;
+const FLIP_MAX_ITEMS = 120;
 
 const colorToRgba = (color: string, alpha: number) => {
   const safeAlpha = Math.max(0, Math.min(1, alpha));
@@ -132,6 +135,7 @@ const ScheduleTaskCard: React.FC<{
   const [estimated, setEstimated] = useState(task.estimated);
   const [color, setColor] = useState(task.color || PRESET_COLORS[0]);
   const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isCompleted = Boolean(task.checked);
 
   useEffect(() => {
     if (!isEditing) {
@@ -149,13 +153,17 @@ const ScheduleTaskCard: React.FC<{
 
   const predictedPomos = getPredictedPomos(task);
   const displayColor = task.color || PRESET_COLORS[0];
-  const additionalHeight = Math.min(44, Math.max(0, predictedPomos - 1) * 8);
+  const additionalHeight = isCompleted ? 0 : Math.min(44, Math.max(0, predictedPomos - 1) * 8);
   const taskGlassStyle = useMemo(() => ({
-    background: `linear-gradient(142deg, ${colorToRgba(displayColor, 0.38)} 0%, ${colorToRgba(displayColor, 0.24)} 46%, ${colorToRgba(displayColor, 0.15)} 100%)`,
-    borderColor: colorToRgba(displayColor, 0.5),
-    boxShadow: `inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 24px -18px ${colorToRgba(displayColor, 0.88)}`,
+    background: isCompleted
+      ? `linear-gradient(142deg, ${colorToRgba(displayColor, 0.14)} 0%, ${colorToRgba(displayColor, 0.1)} 46%, ${colorToRgba(displayColor, 0.06)} 100%)`
+      : `linear-gradient(142deg, ${colorToRgba(displayColor, 0.38)} 0%, ${colorToRgba(displayColor, 0.24)} 46%, ${colorToRgba(displayColor, 0.15)} 100%)`,
+    borderColor: isCompleted ? colorToRgba(displayColor, 0.24) : colorToRgba(displayColor, 0.5),
+    boxShadow: isCompleted
+      ? `inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 8px 20px -20px ${colorToRgba(displayColor, 0.32)}`
+      : `inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 24px -18px ${colorToRgba(displayColor, 0.88)}`,
     minHeight: `${58 + additionalHeight}px`,
-  }), [displayColor, additionalHeight]);
+  }), [displayColor, additionalHeight, isCompleted]);
   const exitEdit = () => {
     setIsEditing(false);
     setIsSettlingAfterEdit(true);
@@ -233,8 +241,12 @@ const ScheduleTaskCard: React.FC<{
   return (
     <div
       ref={registerCardRef ? (node) => registerCardRef(task.id, node) : undefined}
-      draggable
+      draggable={!isCompleted}
       onDragStart={(event) => {
+        if (isCompleted) {
+          event.preventDefault();
+          return;
+        }
         const dragTarget = event.target as HTMLElement;
         if (dragTarget.closest('button, input, textarea, select, a, form')) {
           event.preventDefault();
@@ -245,6 +257,7 @@ const ScheduleTaskCard: React.FC<{
         onDragStart(task.id);
       }}
       onDragOver={(event) => {
+        if (isCompleted) return;
         if (isDragging) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
@@ -260,7 +273,11 @@ const ScheduleTaskCard: React.FC<{
         onDragEnd();
       }}
       onDragEnd={onDragEnd}
-      className={`group relative rounded-xl border p-2.5 transition-[transform,opacity,filter,background-color,border-color] duration-200 cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20 ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
+      className={`group relative rounded-xl border p-2.5 transition-[transform,opacity,background-color,border-color] duration-200 ${
+        isCompleted
+          ? 'cursor-default opacity-55'
+          : 'cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20'
+      } ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
       style={taskGlassStyle}
     >
       {dropHint && !isDragging && (
@@ -268,22 +285,24 @@ const ScheduleTaskCard: React.FC<{
       )}
       <div className="pointer-events-none absolute inset-0 rounded-xl bg-[linear-gradient(160deg,rgba(255,255,255,0.35),rgba(255,255,255,0.08)_34%,rgba(255,255,255,0)_64%)] opacity-60" />
       <div className="relative z-10 pr-8">
-        <div className="text-[16px] leading-tight text-white font-bold truncate">{task.name}</div>
-        <div className="mt-1 text-[9px] uppercase tracking-[0.1em] text-white/45 font-sans font-medium">
-          {formatPomoLabel(predictedPomos)}
+        <div className={`text-[16px] leading-tight font-bold truncate ${isCompleted ? 'text-white/45 line-through decoration-white/45 decoration-2' : 'text-white'}`}>{task.name}</div>
+        <div className={`mt-1 text-[9px] uppercase tracking-[0.1em] font-sans font-medium ${isCompleted ? 'text-white/30' : 'text-white/45'}`}>
+          {isCompleted ? 'Completed' : formatPomoLabel(predictedPomos)}
         </div>
       </div>
-      <button
-        type="button"
-        onClick={() => setIsEditing(true)}
-        className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center z-10"
-        aria-label="Edit task"
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-        </svg>
-      </button>
+      {!isCompleted && (
+        <button
+          type="button"
+          onClick={() => setIsEditing(true)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center z-10"
+          aria-label="Edit task"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 };
@@ -304,16 +323,20 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const [addingDate, setAddingDate] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [extendSchedule, setExtendSchedule] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(true);
   const [showUnscheduled, setShowUnscheduled] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskEst, setNewTaskEst] = useState(1);
   const [newTaskColor, setNewTaskColor] = useState(activeColor || PRESET_COLORS[0]);
+  const openAtRef = useRef<number>(0);
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
   const dropAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastHoverMoveKeyRef = useRef<string | null>(null);
   const lastReorderAtRef = useRef<number>(0);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const cardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
-  const previousCardRectsRef = useRef<Map<number, DOMRect>>(new Map());
+  const previousCardTopsRef = useRef<Map<number, number>>(new Map());
+  const flipAnimationsRef = useRef<Map<number, Animation>>(new Map());
   const todayKey = useMemo(() => getDateKey(new Date()), []);
   const todayDate = useMemo(() => parseDateKey(todayKey), [todayKey]);
 
@@ -344,9 +367,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       setExtendSchedule(false);
       setShowUnscheduled(false);
       lastHoverMoveKeyRef.current = null;
-      previousCardRectsRef.current = new Map();
+      previousCardTopsRef.current = new Map();
+      openAtRef.current = 0;
       return;
     }
+    openAtRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
     setNewTaskName('');
     setNewTaskEst(1);
     setNewTaskColor(activeColor || PRESET_COLORS[0]);
@@ -363,6 +388,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   }, [isOpen, tasks, todayKey, updateTask]);
 
   const rootOpenTasks = useMemo(() => tasks.filter((task) => !task.checked), [tasks]);
+  const rootScheduledTasks = useMemo(() => tasks.filter((task) => Boolean(task.scheduledDate)), [tasks]);
+  const visibleScheduledTasks = useMemo(() => {
+    if (showCompleted) return rootScheduledTasks;
+    return rootScheduledTasks.filter((task) => !task.checked);
+  }, [rootScheduledTasks, showCompleted]);
   const rootOpenTaskIds = useMemo(() => rootOpenTasks.map((task) => task.id), [rootOpenTasks]);
   const rootOpenTaskLayoutKey = useMemo(
     () => rootOpenTasks.map((task) => `${task.id}:${task.scheduledDate || 'unscheduled'}`).join('|'),
@@ -378,7 +408,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     let start = showHistory ? addDays(todayDate, -21) : new Date(todayDate);
     let end = extendSchedule ? addDays(weekEnd, 21) : weekEnd;
 
-    const scheduledKeys = rootOpenTasks
+    const scheduledKeys = visibleScheduledTasks
       .map(task => task.scheduledDate)
       .filter((value): value is string => !!value)
       .sort();
@@ -393,7 +423,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     }
 
     return buildDayRange(start, end, todayKey);
-  }, [rootOpenTasks, todayKey, todayDate, showHistory, extendSchedule]);
+  }, [visibleScheduledTasks, todayKey, todayDate, showHistory, extendSchedule]);
   const dayRangeKey = useMemo(() => dayRange.map((day) => day.key).join('|'), [dayRange]);
 
   useEffect(() => {
@@ -409,43 +439,140 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     else cardRefsRef.current.delete(taskId);
   }, []);
 
+  const cancelFlipAnimations = useCallback(() => {
+    flipAnimationsRef.current.forEach((animation) => {
+      try {
+        animation.cancel();
+      } catch {
+        // no-op
+      }
+    });
+    flipAnimationsRef.current.clear();
+    cardRefsRef.current.forEach((node) => {
+      node.style.transform = '';
+      node.style.transition = '';
+      node.style.willChange = '';
+    });
+  }, []);
+
+  const snapshotCardRects = useCallback(() => {
+    const tops = new Map<number, number>();
+    const container = scrollContainerRef.current;
+    const containerRect = container?.getBoundingClientRect();
+    const containerScrollTop = container?.scrollTop || 0;
+    const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
+    rootOpenTaskIds.forEach((taskId) => {
+      const node = cardRefsRef.current.get(taskId);
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      const stableTop = container && containerRect
+        ? rect.top - containerRect.top + containerScrollTop
+        : rect.top + windowScrollY;
+      tops.set(taskId, stableTop);
+    });
+    previousCardTopsRef.current = tops;
+  }, [rootOpenTaskIds]);
+
+  useEffect(() => {
+    return () => {
+      cancelFlipAnimations();
+    };
+  }, [cancelFlipAnimations]);
+
   useLayoutEffect(() => {
     if (!isOpen) return;
 
-    const nextRects = new Map<number, DOMRect>();
+    const nextTops = new Map<number, number>();
+    const container = scrollContainerRef.current;
+    const containerRect = container?.getBoundingClientRect();
+    const containerScrollTop = container?.scrollTop || 0;
+    const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
     rootOpenTaskIds.forEach((taskId) => {
       const node = cardRefsRef.current.get(taskId);
-      if (node) nextRects.set(taskId, node.getBoundingClientRect());
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      const stableTop = container && containerRect
+        ? rect.top - containerRect.top + containerScrollTop
+        : rect.top + windowScrollY;
+      nextTops.set(taskId, stableTop);
     });
+
+    // Keep rects in sync, but only animate while dragging to avoid first-open jitter.
+    if (draggingTaskId === null) {
+      previousCardTopsRef.current = nextTops;
+      return;
+    }
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (openAtRef.current > 0 && now - openAtRef.current < 220) {
+      previousCardTopsRef.current = nextTops;
+      return;
+    }
 
     if (rootOpenTaskIds.length > FLIP_MAX_ITEMS) {
-      previousCardRectsRef.current = nextRects;
+      previousCardTopsRef.current = nextTops;
       return;
     }
 
-    if (previousCardRectsRef.current.size === 0) {
-      previousCardRectsRef.current = nextRects;
+    if (previousCardTopsRef.current.size === 0) {
+      previousCardTopsRef.current = nextTops;
       return;
     }
 
-    nextRects.forEach((nextRect, taskId) => {
+    nextTops.forEach((nextTop, taskId) => {
       if (taskId === draggingTaskId) return;
-      const prevRect = previousCardRectsRef.current.get(taskId);
+      const prevTop = previousCardTopsRef.current.get(taskId);
       const node = cardRefsRef.current.get(taskId);
-      if (!prevRect || !node) return;
+      if (typeof prevTop !== 'number' || !node) return;
 
-      const deltaY = prevRect.top - nextRect.top;
+      const deltaY = prevTop - nextTop;
       if (Math.abs(deltaY) < 0.75) return;
+      if (Math.abs(deltaY) > 420) return;
 
-      node.style.transition = 'transform 0s';
-      node.style.transform = `translateY(${deltaY}px)`;
-      requestAnimationFrame(() => {
-        node.style.transition = `transform ${FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
-        node.style.transform = 'translateY(0)';
-      });
+      const existing = flipAnimationsRef.current.get(taskId);
+      if (existing) {
+        try {
+          existing.cancel();
+        } catch {
+          // no-op
+        }
+      }
+
+      node.style.willChange = 'transform';
+      if (typeof node.animate === 'function') {
+        const animation = node.animate(
+          [
+            { transform: `translateY(${deltaY}px)` },
+            { transform: 'translateY(0)' },
+          ],
+          {
+            duration: FLIP_ANIMATION_DURATION_MS,
+            easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            fill: 'both',
+          },
+        );
+        flipAnimationsRef.current.set(taskId, animation);
+        animation.onfinish = () => {
+          if (flipAnimationsRef.current.get(taskId) === animation) flipAnimationsRef.current.delete(taskId);
+          node.style.willChange = '';
+          node.style.transform = '';
+        };
+        animation.oncancel = () => {
+          if (flipAnimationsRef.current.get(taskId) === animation) flipAnimationsRef.current.delete(taskId);
+          node.style.willChange = '';
+          node.style.transform = '';
+        };
+      } else {
+        node.style.transition = 'transform 0s';
+        node.style.transform = `translateY(${deltaY}px)`;
+        requestAnimationFrame(() => {
+          node.style.transition = `transform ${FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+          node.style.transform = 'translateY(0)';
+        });
+      }
     });
 
-    previousCardRectsRef.current = nextRects;
+    previousCardTopsRef.current = nextTops;
   }, [isOpen, rootOpenTaskIds, rootOpenTaskLayoutKey, dayRangeKey, showUnscheduled, draggingTaskId]);
 
   const tasksByDate = useMemo(() => {
@@ -454,12 +581,18 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       map[day.key] = [];
     });
 
-    rootOpenTasks.forEach((task) => {
+    visibleScheduledTasks.forEach((task) => {
       if (!task.scheduledDate) return;
       if (map[task.scheduledDate]) map[task.scheduledDate].push(task);
     });
+    Object.values(map).forEach((list) => {
+      list.sort((a, b) => {
+        if (a.checked === b.checked) return 0;
+        return a.checked ? 1 : -1;
+      });
+    });
     return map;
-  }, [rootOpenTasks, dayRange]);
+  }, [visibleScheduledTasks, dayRange]);
 
   const unscheduledTasks = useMemo(() => {
     return rootOpenTasks.filter((task) => !task.scheduledDate);
@@ -481,19 +614,22 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   };
 
   const clearDragState = useCallback(() => {
+    cancelFlipAnimations();
     setDraggingTaskId(null);
     setHoveredLane(null);
     setHoveredTaskTarget(null);
     lastHoverMoveKeyRef.current = null;
     lastReorderAtRef.current = 0;
-  }, []);
+  }, [cancelFlipAnimations]);
 
   const handleCardDragStart = useCallback((taskId: number) => {
+    cancelFlipAnimations();
+    snapshotCardRects();
     setDraggingTaskId(taskId);
     setHoveredTaskTarget(null);
     lastHoverMoveKeyRef.current = null;
     lastReorderAtRef.current = 0;
-  }, []);
+  }, [cancelFlipAnimations, snapshotCardRects]);
 
   const handleCardDragHover = useCallback((targetTaskId: number, position: DragInsertPosition) => {
     if (!draggingTaskId || draggingTaskId === targetTaskId) return;
@@ -618,17 +754,14 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           0% {
             transform: translateY(4px) scale(0.97);
             opacity: 0.72;
-            filter: saturate(0.92);
           }
           55% {
             transform: translateY(-1px) scale(1.02);
             opacity: 1;
-            filter: saturate(1.05);
           }
           100% {
             transform: translateY(0) scale(1);
             opacity: 1;
-            filter: saturate(1);
           }
         }
         .doro-drop-pop {
@@ -637,15 +770,12 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         @keyframes doro-edit-close-settle {
           0% {
             transform: translateY(2px) scale(0.985);
-            filter: saturate(0.9);
           }
           55% {
             transform: translateY(-1px) scale(1.01);
-            filter: saturate(1.03);
           }
           100% {
             transform: translateY(0) scale(1);
-            filter: saturate(1);
           }
         }
         .doro-edit-close-settle {
@@ -671,7 +801,6 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .doro-dragging-card {
           opacity: 0.36;
           transform: scale(0.985);
-          filter: saturate(0.82);
         }
         .schedule-reveal-controls {
           opacity: 0;
@@ -730,6 +859,19 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                   >
                     {extendSchedule ? 'Default Range' : 'Extend Schedule'}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCompleted(prev => !prev)}
+                    className={`group relative overflow-hidden px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-all duration-300 ${
+                      showCompleted
+                        ? 'border-emerald-200/35 bg-emerald-300/18 text-emerald-50 hover:bg-emerald-300/26 hover:border-emerald-100/45 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(16,185,129,0.9)]'
+                        : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1] hover:border-white/20 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(255,255,255,0.4)]'
+                    }`}
+                    aria-label={showCompleted ? 'Hide completed tasks' : 'Show completed tasks'}
+                  >
+                    <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_62%)]" />
+                    <span className="relative z-10">{showCompleted ? 'Hide Completed' : 'Show Completed'}</span>
+                  </button>
                 </div>
               </div>
               <button
@@ -743,7 +885,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 py-4">
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 py-4">
             {unscheduledTasks.length > 0 && (
               <div
                 onDragOver={(event) => {
@@ -805,7 +947,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             <div className="space-y-2.5 pb-5">
               {dayRange.map((day) => {
                 const dayTasks = tasksByDate[day.key] || [];
-                const dayPredictedPomos = dayTasks.reduce((sum, task) => sum + getPredictedPomos(task), 0);
+                const dayPredictedPomos = dayTasks.reduce((sum, task) => sum + (task.checked ? 0 : getPredictedPomos(task)), 0);
                 const isAddingHere = addingDate === day.key;
                 const isHovered = hoveredLane === day.key;
 
