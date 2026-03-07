@@ -1,6 +1,7 @@
 import { TimerRuntimePhase, TimerRuntimeSnapshot, TimerSettings } from '../types';
 
 export const TIMER_RUNTIME_VERSION = 2 as const;
+const RESTORED_GRACE_MAX_AGE_MS = 60 * 60 * 1000;
 
 export interface RuntimeDerivedValues {
   workTime: number;
@@ -13,6 +14,8 @@ export interface RuntimeBoundaryCrossing {
   mode: 'work' | 'break';
   overflowSeconds: number;
 }
+
+export type GraceContext = 'afterWork' | 'afterBreak' | null;
 
 interface RuntimeSnapshotInput {
   sourceTabId: string;
@@ -116,9 +119,59 @@ export const detectRuntimeBoundaryCrossing = (snapshot: TimerRuntimeSnapshot, no
     }
   }
 
-  // Break no longer auto-crosses into grace; break bank can run indefinitely into debt.
-
   return null;
+};
+
+export const normalizeGraceWindow = ({
+  graceOpenCandidate,
+  rawGraceContext,
+  fallbackMode,
+}: {
+  graceOpenCandidate: boolean;
+  rawGraceContext?: unknown;
+  fallbackMode: 'work' | 'break';
+}): {
+  graceOpen: boolean;
+  graceContext: GraceContext;
+} => {
+  const graceOpen = Boolean(graceOpenCandidate);
+  if (!graceOpen) {
+    return {
+      graceOpen: false,
+      graceContext: null as GraceContext,
+    };
+  }
+  if (rawGraceContext === 'afterWork' || rawGraceContext === 'afterBreak') {
+    return {
+      graceOpen: true,
+      graceContext: rawGraceContext,
+    };
+  }
+  return {
+    graceOpen: true,
+    graceContext: fallbackMode === 'break' ? 'afterBreak' : 'afterWork',
+  };
+};
+
+export const shouldDiscardRestoredGrace = ({
+  snapshot,
+  sessionStartTime,
+  graceOpen = false,
+  nowMs,
+  maxAgeMs = RESTORED_GRACE_MAX_AGE_MS,
+}: {
+  snapshot?: TimerRuntimeSnapshot | null;
+  sessionStartTime?: string | null;
+  graceOpen?: boolean;
+  nowMs: number;
+  maxAgeMs?: number;
+}) => {
+  const hasSessionAnchor = typeof sessionStartTime === 'string' && sessionStartTime.trim().length > 0;
+  if (graceOpen && !hasSessionAnchor) return true;
+  if (!snapshot || snapshot.phase !== 'grace') return false;
+  if (!hasSessionAnchor) return true;
+  if (typeof snapshot.phaseStartedAtMs !== 'number') return true;
+  return nowMs - snapshot.phaseStartedAtMs > maxAgeMs;
 };
 
 export interface WorkCompletionResult {

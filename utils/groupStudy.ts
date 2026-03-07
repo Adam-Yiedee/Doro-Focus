@@ -174,6 +174,39 @@ export const shouldFollowHostTimerSync = ({
   );
 };
 
+export const shouldAwaitFreshHostTimerState = ({
+  previousConfig,
+  nextConfig,
+  wasReadyForBroadcast,
+  hasOpenHostConnection,
+}: {
+  previousConfig: GroupSyncConfig;
+  nextConfig: GroupSyncConfig;
+  wasReadyForBroadcast: boolean;
+  hasOpenHostConnection: boolean;
+}) => {
+  if (!nextConfig.syncTimers) return false;
+  if (!hasOpenHostConnection) return false;
+  if (!previousConfig.syncTimers) return true;
+  return !wasReadyForBroadcast;
+};
+
+export const shouldRefreshMembersAfterPeerCleanup = ({
+  hasPeerConnection,
+  replacementConnectionOpen,
+}: {
+  hasPeerConnection: boolean;
+  replacementConnectionOpen: boolean;
+}) => !hasPeerConnection || replacementConnectionOpen;
+
+export const shouldCreateReplacementPeerConnection = ({
+  hasOpenConnection,
+  hasPendingConnection,
+}: {
+  hasOpenConnection: boolean;
+  hasPendingConnection: boolean;
+}) => !hasOpenConnection && !hasPendingConnection;
+
 export const shouldBroadcastGroupState = ({
   groupSessionId,
   isHost,

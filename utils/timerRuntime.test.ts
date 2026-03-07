@@ -6,6 +6,8 @@ import {
   detectRuntimeBoundaryCrossing,
   getGraceCompensation,
   getPauseCompensation,
+  normalizeGraceWindow,
+  shouldDiscardRestoredGrace,
 } from './timerRuntime';
 
 const BASE_NOW = 1_700_000_000_000;
@@ -129,6 +131,97 @@ describe('boundary catch-up policy', () => {
 
     const crossing = detectRuntimeBoundaryCrossing(snapshot, BASE_NOW + 45_000);
     expect(crossing).toBeNull();
+  });
+});
+
+describe('restored grace sanitization', () => {
+  it('discards restored grace when no active session anchor exists', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 0,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 5,
+    });
+
+    expect(shouldDiscardRestoredGrace({
+      snapshot,
+      sessionStartTime: null,
+      nowMs: BASE_NOW + 1_000,
+    })).toBe(true);
+  });
+
+  it('discards restored grace when the persisted grace snapshot is stale', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 0,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 5,
+    });
+
+    expect(shouldDiscardRestoredGrace({
+      snapshot,
+      sessionStartTime: '2026-03-07T10:00:00.000Z',
+      nowMs: BASE_NOW + (60 * 60 * 1000) + 1,
+    })).toBe(true);
+  });
+
+  it('keeps fresh restored grace when the session is still active', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 0,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 5,
+    });
+
+    expect(shouldDiscardRestoredGrace({
+      snapshot,
+      sessionStartTime: '2026-03-07T10:00:00.000Z',
+      nowMs: BASE_NOW + 30 * 60 * 1000,
+    })).toBe(false);
+  });
+});
+
+describe('grace context normalization', () => {
+  it('keeps explicit after-break grace state intact', () => {
+    expect(normalizeGraceWindow({
+      graceOpenCandidate: true,
+      rawGraceContext: 'afterBreak',
+      fallbackMode: 'break',
+    })).toEqual({
+      graceOpen: true,
+      graceContext: 'afterBreak',
+    });
+  });
+
+  it('infers legacy break grace from break mode when context is missing', () => {
+    expect(normalizeGraceWindow({
+      graceOpenCandidate: true,
+      rawGraceContext: null,
+      fallbackMode: 'break',
+    })).toEqual({
+      graceOpen: true,
+      graceContext: 'afterBreak',
+    });
+  });
+
+  it('clears grace context when grace is not open', () => {
+    expect(normalizeGraceWindow({
+      graceOpenCandidate: false,
+      rawGraceContext: 'afterWork',
+      fallbackMode: 'work',
+    })).toEqual({
+      graceOpen: false,
+      graceContext: null,
+    });
   });
 });
 

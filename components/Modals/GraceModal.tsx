@@ -1,6 +1,8 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
+
+const GRACE_INACTIVITY_PROMPT_MS = 60 * 60 * 1000;
 
 const formatDuration = (seconds: number) => {
   const s = Math.floor(seconds);
@@ -95,12 +97,26 @@ const shuffleMessages = (messages: string[]) => {
 };
 
 const GraceModal: React.FC = () => {
-  const { graceOpen, graceTotal, graceContext, resolveGrace, sessionStartTime } = useTimer();
+  const {
+    graceOpen,
+    graceTotal,
+    graceContext,
+    resolveGrace,
+    sessionStartTime,
+    endSession,
+    groupSessionId,
+    isHost,
+    hostSyncConfig,
+    clientSyncConfig,
+  } = useTimer();
   const [showOptions, setShowOptions] = useState(false);
+  const [showInactivityPrompt, setShowInactivityPrompt] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [sessionKey, setSessionKey] = useState<string | null>(sessionStartTime);
   const [workMessageQueue, setWorkMessageQueue] = useState<string[]>(() => shuffleMessages(WORK_COMPLETE_MESSAGES));
   const [breakMessageQueue, setBreakMessageQueue] = useState<string[]>(() => shuffleMessages(BREAK_COMPLETE_MESSAGES));
+  const lastInteractionAtRef = useRef<number>(Date.now());
+  const canOfferNewSessionPrompt = !groupSessionId || isHost || !clientSyncConfig.syncTimers || !hostSyncConfig.syncTimers;
 
   const consumeMessage = (isAfterWork: boolean) => {
     if (isAfterWork) {
@@ -127,6 +143,15 @@ const GraceModal: React.FC = () => {
   }, [graceOpen]);
 
   useEffect(() => {
+    if (graceOpen && graceContext === 'afterWork') {
+      lastInteractionAtRef.current = Date.now();
+      setShowInactivityPrompt(false);
+      return;
+    }
+    setShowInactivityPrompt(false);
+  }, [graceContext, graceOpen, sessionStartTime]);
+
+  useEffect(() => {
     if (sessionStartTime !== sessionKey) {
       setSessionKey(sessionStartTime);
       setWorkMessageQueue(shuffleMessages(WORK_COMPLETE_MESSAGES));
@@ -146,7 +171,45 @@ const GraceModal: React.FC = () => {
     }
   }, [graceTotal, graceOpen, showOptions]);
 
-  if (!graceOpen || graceContext !== 'afterWork') return null;
+  const evaluateInactivityPrompt = useCallback(() => {
+    if (!graceOpen || graceContext !== 'afterWork' || !canOfferNewSessionPrompt) return;
+    if (Date.now() - lastInteractionAtRef.current >= GRACE_INACTIVITY_PROMPT_MS) {
+      setShowInactivityPrompt(true);
+    }
+  }, [canOfferNewSessionPrompt, graceContext, graceOpen]);
+
+  useEffect(() => {
+    if (!graceOpen || graceContext !== 'afterWork' || !canOfferNewSessionPrompt) return;
+
+    const markInteraction = () => {
+      lastInteractionAtRef.current = Date.now();
+    };
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        evaluateInactivityPrompt();
+      }
+    };
+
+    const intervalId = window.setInterval(evaluateInactivityPrompt, 30_000);
+    window.addEventListener('pointerdown', markInteraction, { passive: true });
+    window.addEventListener('keydown', markInteraction);
+    window.addEventListener('wheel', markInteraction, { passive: true });
+    window.addEventListener('touchstart', markInteraction, { passive: true });
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('pointerdown', markInteraction);
+      window.removeEventListener('keydown', markInteraction);
+      window.removeEventListener('wheel', markInteraction);
+      window.removeEventListener('touchstart', markInteraction);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [canOfferNewSessionPrompt, evaluateInactivityPrompt, graceContext, graceOpen]);
+
+  if (!graceOpen || (graceContext !== 'afterWork' && graceContext !== 'afterBreak')) return null;
 
   const isAfterWork = graceContext === 'afterWork';
   
@@ -163,6 +226,16 @@ const GraceModal: React.FC = () => {
   const handleNeutral = () => {
       const nextMode = isAfterWork ? 'break' : 'work';
       resolveGrace(nextMode, { logGraceAs: 'grace' });
+  };
+
+  const handleDismissInactivityPrompt = () => {
+    lastInteractionAtRef.current = Date.now();
+    setShowInactivityPrompt(false);
+  };
+
+  const handleStartNewSession = () => {
+    setShowInactivityPrompt(false);
+    endSession();
   };
 
   const addToBankAmount = graceTotal / 5;
@@ -247,6 +320,36 @@ const GraceModal: React.FC = () => {
             >
                 Start {isAfterWork ? 'Break' : 'Focus'} (No Adjustment)
             </button>
+        )}
+
+        {showInactivityPrompt && (
+          <div className="w-full max-w-xl rounded-[1.6rem] border border-amber-300/20 bg-white/8 backdrop-blur-2xl px-5 py-4 text-center shadow-[0_24px_60px_-36px_rgba(15,23,42,0.85)]">
+            <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-100/70">
+              Inactive Grace Menu
+            </div>
+            <div className="mt-2 text-lg md:text-xl font-bold tracking-tight text-white">
+              Hey, it&apos;s been a while. Start New Session?
+            </div>
+            <div className="mt-2 text-sm leading-relaxed text-white/60">
+              This will wrap up the current session and return you to a fresh timer without changing any grace calculations unless you choose it.
+            </div>
+            <div className="mt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={handleStartNewSession}
+                className="w-full sm:w-auto rounded-full border border-white/15 bg-white px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-white/90 active:scale-[0.98]"
+              >
+                Start New Session
+              </button>
+              <button
+                type="button"
+                onClick={handleDismissInactivityPrompt}
+                className="w-full sm:w-auto rounded-full border border-white/12 bg-white/8 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+              >
+                Keep Current Session
+              </button>
+            </div>
+          </div>
         )}
 
       </div>

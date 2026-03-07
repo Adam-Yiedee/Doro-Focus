@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, GroupSyncConfig, LogEntry, TimerSettings } from '../../types';
@@ -56,6 +56,59 @@ const formatDateTime = (iso: string) => {
     hour: 'numeric',
     minute: '2-digit',
   });
+};
+
+const formatRelativeTimeFromMs = (timestamp: number | null) => {
+  if (!timestamp) return 'Never';
+  const diffMs = Date.now() - timestamp;
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 'Just now';
+
+  const diffMinutes = Math.floor(diffMs / 60_000);
+  if (diffMinutes < 1) return 'Just now';
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return formatDateTime(new Date(timestamp).toISOString());
+};
+
+const formatCompactHours = (hours: number) => {
+  const safe = Math.max(0, hours);
+  return safe >= 100 ? `${Math.round(safe)}h` : `${safe.toFixed(1)}h`;
+};
+
+const formatCompactMinutes = (minutes: number) => {
+  const safe = Math.max(0, minutes);
+  if (safe >= 60) {
+    return `${(safe / 60).toFixed(safe >= 120 ? 0 : 1)}h`;
+  }
+  return `${Math.max(1, Math.round(safe))}m`;
+};
+
+const ACCOUNT_USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
+const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
+const ACCOUNT_PASSWORD_MAX_LENGTH = 256;
+const ACCOUNT_SYNC_SCOPE_LABELS = ['Live Timer', 'Tasks', 'History', 'Schedule', 'Categories', 'Settings', 'Profile Name'];
+
+const validateAccountUsernameInput = (value: string) => {
+  if (!ACCOUNT_USERNAME_REGEX.test(value)) {
+    return 'Use 3-32 letters, numbers, ".", "_" or "-".';
+  }
+  return null;
+};
+
+const validateAccountPasswordInput = (value: string) => {
+  if (value.length < ACCOUNT_PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${ACCOUNT_PASSWORD_MIN_LENGTH} characters.`;
+  }
+  if (value.length > ACCOUNT_PASSWORD_MAX_LENGTH) {
+    return `Password must be at most ${ACCOUNT_PASSWORD_MAX_LENGTH} characters.`;
+  }
+  return null;
 };
 
 const clampInt = (value: number, min: number, max: number) => {
@@ -246,6 +299,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     joinGroupSession,
     leaveGroupSession,
     updateHostSyncConfig,
+    updateClientSyncConfig,
     pendingJoinId,
     setPendingJoinId,
     setWeeklyScheduleOpen,
@@ -270,6 +324,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [hostDraftConfig, setHostDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [joinDraftConfig, setJoinDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [inviteSessionId, setInviteSessionId] = useState('');
+  const groupNameInputRef = useRef<HTMLInputElement | null>(null);
+  const inviteAutoJoinKeyRef = useRef<string | null>(null);
 
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -323,16 +379,65 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const accountError = authLocalError || accountSyncError || null;
 
   const syncStateMeta = useMemo(() => {
-    if (accountSyncState === 'syncing') return { label: 'Syncing', className: 'text-blue-200 bg-blue-500/15 border-blue-400/30' };
-    if (accountSyncState === 'synced') return { label: 'Synced', className: 'text-emerald-200 bg-emerald-500/15 border-emerald-400/30' };
-    if (accountSyncState === 'error') return { label: 'Error', className: 'text-red-200 bg-red-500/15 border-red-400/30' };
-    return { label: 'Idle', className: 'text-white/70 bg-white/10 border-white/15' };
+    if (accountSyncState === 'syncing') {
+      return {
+        label: 'Syncing',
+        detail: 'Pushing local changes and checking cloud state.',
+        className: 'text-blue-200 bg-blue-500/15 border-blue-400/30',
+      };
+    }
+    if (accountSyncState === 'synced') {
+      return {
+        label: 'Synced',
+        detail: 'Cloud data and this device are aligned.',
+        className: 'text-emerald-200 bg-emerald-500/15 border-emerald-400/30',
+      };
+    }
+    if (accountSyncState === 'error') {
+      return {
+        label: 'Needs Attention',
+        detail: 'The latest sync did not complete cleanly.',
+        className: 'text-red-200 bg-red-500/15 border-red-400/30',
+      };
+    }
+    return {
+      label: 'Ready',
+      detail: 'Your account is available on this device.',
+      className: 'text-white/70 bg-white/10 border-white/15',
+    };
   }, [accountSyncState]);
+
+  const normalizedUsernameInput = usernameInput.trim().toLowerCase();
+  const usernameValidationMessage = normalizedUsernameInput
+    ? validateAccountUsernameInput(normalizedUsernameInput)
+    : null;
+  const passwordValidationMessage = passwordInput
+    ? validateAccountPasswordInput(passwordInput)
+    : null;
+  const canSubmitAuth = Boolean(
+    normalizedUsernameInput
+      && passwordInput
+      && !usernameValidationMessage
+      && !passwordValidationMessage
+      && !authBusy,
+  );
+  const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(lastAccountSyncAt), [lastAccountSyncAt]);
 
   const categoryBreakdown = useMemo(() => {
     const breakdown = user?.lifetimeStats.categoryBreakdown || {};
     return Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
   }, [user]);
+  const categoryColorsByName = useMemo(
+    () => new Map(categories.map((category) => [category.name, category.color])),
+    [categories],
+  );
+  const accountPrimaryColor = useMemo(() => {
+    for (const [name] of categoryBreakdown) {
+      const categoryColor = categoryColorsByName.get(name);
+      if (categoryColor) return categoryColor;
+    }
+    return PRESET_COLORS[0];
+  }, [categoryBreakdown, categoryColorsByName]);
   const groupInviteUrl = useMemo(() => (
     groupSessionId ? buildGroupInviteUrl(groupSessionId) : ''
   ), [groupSessionId]);
@@ -349,6 +454,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     if (!isOpen) return;
     if (pendingJoinId) {
+      inviteAutoJoinKeyRef.current = null;
       setActiveTab('group');
       setGroupFlow('join');
       setGroupSessionInput(pendingJoinId);
@@ -415,9 +521,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const handleAuthSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (authBusy) return;
-    const username = usernameInput.trim().toLowerCase();
+    const username = normalizedUsernameInput;
     if (!username || !passwordInput) {
       setAuthLocalError('Username and password are required.');
+      return;
+    }
+    const usernameError = validateAccountUsernameInput(username);
+    if (usernameError) {
+      setAuthLocalError(usernameError);
+      return;
+    }
+    const passwordError = validateAccountPasswordInput(passwordInput);
+    if (passwordError) {
+      setAuthLocalError(passwordError);
       return;
     }
 
@@ -447,6 +563,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setAccountMessage(null);
     const ok = await syncAccountNow();
     if (ok) setAccountMessage('Cloud sync complete.');
+    else if (!accountSyncError) setAccountMessage('Cloud sync did not complete.');
     setAccountActionBusy(null);
   };
 
@@ -456,6 +573,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setAccountMessage(null);
     const ok = await refreshAccountFromCloud();
     if (ok) setAccountMessage('Pulled latest cloud data.');
+    else if (!accountSyncError) setAccountMessage('Could not pull cloud data.');
     setAccountActionBusy(null);
   };
 
@@ -469,6 +587,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const toggleLiveHostSync = (key: SyncKey) => {
     updateHostSyncConfig({ ...hostSyncConfig, [key]: !hostSyncConfig[key] });
+  };
+
+  const toggleLiveClientSync = (key: SyncKey) => {
+    updateClientSyncConfig({ ...clientSyncConfig, [key]: !clientSyncConfig[key] });
   };
 
   const handleCreateGroup = async () => {
@@ -489,7 +611,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleJoinGroup = async () => {
+  const handleJoinGroup = useCallback(async () => {
     if (groupBusy) return;
     const name = groupName.trim();
     const sessionId = groupSessionInput.trim().toUpperCase();
@@ -505,14 +627,36 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setGroupLocalError(null);
     try {
       await joinGroupSession(sessionId, name, joinDraftConfig);
-      setInviteSessionId(sessionId);
       setPendingJoinId(null);
     } catch (error) {
       setGroupLocalError(error instanceof Error ? error.message : 'Failed to join session.');
     } finally {
       setGroupBusy(false);
     }
-  };
+  }, [groupBusy, groupName, groupSessionInput, joinDraftConfig, joinGroupSession, setPendingJoinId]);
+
+  useEffect(() => {
+    if (!isOpen || groupBusy || groupSessionId || groupFlow !== 'join') return;
+    if (!inviteSessionId || inviteSessionId !== groupSessionInput.trim().toUpperCase()) return;
+
+    const trimmedName = groupName.trim();
+    if (!trimmedName) {
+      groupNameInputRef.current?.focus();
+      groupNameInputRef.current?.select();
+      return;
+    }
+
+    const inviteKey = `${inviteSessionId}:${trimmedName}`;
+    if (inviteAutoJoinKeyRef.current === inviteKey) return;
+    inviteAutoJoinKeyRef.current = inviteKey;
+    void handleJoinGroup();
+  }, [groupBusy, groupFlow, groupName, groupSessionId, groupSessionInput, handleJoinGroup, inviteSessionId, isOpen]);
+
+  useEffect(() => {
+    if (groupSessionId) {
+      inviteAutoJoinKeyRef.current = null;
+    }
+  }, [groupSessionId]);
 
   const handleCreateCategory = () => {
     const name = newCategoryName.trim();
@@ -695,207 +839,388 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const joinedAt = formatDateTime(user!.joinedAt);
     const activeDays = Math.max(0, Math.floor(stats.activeDays || 0));
     const dailyAvgHours = activeDays > 0 ? stats.totalFocusHours / activeDays : 0;
-    const focusHoursLabel = stats.totalFocusHours >= 100
-      ? `${Math.round(stats.totalFocusHours)}h`
-      : `${stats.totalFocusHours.toFixed(1)}h`;
+    const focusHoursLabel = formatCompactHours(stats.totalFocusHours);
+    const displayName = userName.trim();
+    const hasCustomDisplayName = Boolean(displayName && displayName !== user!.username);
+    const lastActiveLabel = stats.lastActiveDate
+      ? new Date(`${stats.lastActiveDate}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+      : 'No focus days yet';
+    const heroStyle: React.CSSProperties = {
+      background: isLightTheme
+        ? `linear-gradient(152deg, ${colorToRgba(accountPrimaryColor, 0.26)} 0%, rgba(255, 255, 255, 0.86) 52%, rgba(250, 252, 255, 0.7) 100%)`
+        : `linear-gradient(152deg, ${colorToRgba(accountPrimaryColor, 0.34)} 0%, rgba(11, 15, 24, 0.9) 52%, rgba(255, 255, 255, 0.06) 100%)`,
+      boxShadow: `0 32px 60px -42px ${colorToRgba(accountPrimaryColor, isLightTheme ? 0.32 : 0.72)}`,
+    };
+    const statCards = [
+      { label: 'Focus Time', value: focusHoursLabel, helper: 'Across all synced work blocks', color: accountPrimaryColor },
+      { label: 'Pomodoros', value: `${stats.totalPomos}`, helper: 'Completed focus cycles', color: PRESET_COLORS[2] },
+      { label: 'Sessions', value: `${stats.totalSessions}`, helper: 'Saved summary sessions', color: PRESET_COLORS[1] },
+      {
+        label: 'Current Streak',
+        value: `${stats.currentStreak}`,
+        helper: `${stats.currentStreak === 1 ? 'Day' : 'Days'} in a row`,
+        color: PRESET_COLORS[3],
+      },
+      {
+        label: 'Best Streak',
+        value: `${stats.bestStreak}`,
+        helper: `${stats.bestStreak === 1 ? 'Day' : 'Days'} best run`,
+        color: PRESET_COLORS[4],
+      },
+      {
+        label: 'Active-Day Average',
+        value: formatCompactHours(dailyAvgHours),
+        helper: `${activeDays} active day${activeDays === 1 ? '' : 's'}`,
+        color: PRESET_COLORS[6],
+      },
+    ];
+    const topCategories = categoryBreakdown.slice(0, 5);
 
     return (
-      <div className="p-4 md:p-8 space-y-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-500 flex items-center justify-center text-2xl font-bold text-white shadow-xl">
-              {user!.username.charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <h3 className="text-2xl font-bold text-white tracking-tight">{user!.username}</h3>
-              <div className="text-xs text-white/45 uppercase tracking-[0.14em] mt-1">Joined {joinedAt}</div>
-            </div>
-          </div>
-          <div className={`px-3 py-1.5 rounded-full border text-[10px] font-bold uppercase tracking-[0.16em] ${syncStateMeta.className}`}>
-            Cloud {syncStateMeta.label}
-          </div>
-        </div>
-
-        <div className="bg-white/5 rounded-2xl p-5 border border-white/10 space-y-4">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-bold text-white">Cloud Sync</div>
-              <div className="text-xs text-white/50 mt-1">
-                Last sync: {lastAccountSyncAt ? formatDateTime(new Date(lastAccountSyncAt).toISOString()) : 'Never'}
+      <div className="p-4 md:p-8 space-y-5">
+        <div className="relative overflow-hidden rounded-[1.85rem] border border-white/10 p-5 md:p-6" style={heroStyle}>
+          <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_18%_-8%,rgba(255,255,255,0.34),transparent_34%),radial-gradient(circle_at_90%_8%,rgba(255,255,255,0.16),transparent_24%)]" />
+          <div className="relative flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
+            <div className="flex items-start gap-4">
+              <div
+                className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[1.35rem] border border-white/20 text-2xl font-bold text-white shadow-[0_24px_44px_-28px_rgba(15,23,42,0.85)]"
+                style={{
+                  background: `linear-gradient(145deg, ${colorToRgba(accountPrimaryColor, 0.92)}, ${colorToRgba(accountPrimaryColor, 0.62)})`,
+                }}
+              >
+                {user!.username.charAt(0).toUpperCase()}
               </div>
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={accountActionBusy !== null}
-                onClick={handleSyncNow}
-                className="px-3 py-2 rounded-lg border border-blue-400/30 bg-blue-500/15 text-blue-100 text-[10px] uppercase tracking-[0.14em] font-bold hover:bg-blue-500/25 disabled:opacity-55 transition-colors"
-              >
-                {accountActionBusy === 'sync' ? 'Syncing...' : 'Sync Now'}
-              </button>
-              <button
-                type="button"
-                disabled={accountActionBusy !== null}
-                onClick={handleRefreshCloud}
-                className="px-3 py-2 rounded-lg border border-white/15 bg-white/8 text-white text-[10px] uppercase tracking-[0.14em] font-bold hover:bg-white/14 disabled:opacity-55 transition-colors"
-              >
-                {accountActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh'}
-              </button>
-            </div>
-          </div>
-
-          {accountError && (
-            <div className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-100 text-xs">
-              {accountError}
-            </div>
-          )}
-          {accountMessage && (
-            <div className="p-3 rounded-xl bg-emerald-500/12 border border-emerald-500/25 text-emerald-100 text-xs">
-              {accountMessage}
-            </div>
-          )}
-          <div className="text-xs text-white/50 leading-relaxed">
-            Active timer state, tasks, logs, sessions, categories, and schedule data are stored in your account and sync across signed-in devices.
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
-            <div className="text-xl font-mono font-bold text-white">{focusHoursLabel}</div>
-            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Focus</div>
-          </div>
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
-            <div className="text-xl font-mono font-bold text-teal-200">{stats.totalPomos}</div>
-            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Pomos</div>
-          </div>
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
-            <div className="text-xl font-mono font-bold text-blue-200">{stats.totalSessions}</div>
-            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Sessions</div>
-          </div>
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
-            <div className="text-xl font-mono font-bold text-orange-200">{stats.currentStreak}</div>
-            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Current Streak</div>
-          </div>
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
-            <div className="text-xl font-mono font-bold text-yellow-200">{stats.bestStreak}</div>
-            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Best Streak</div>
-          </div>
-          <div className="bg-white/5 rounded-xl p-3 border border-white/10 text-center">
-            <div className="text-xl font-mono font-bold text-purple-200">{dailyAvgHours.toFixed(1)}h</div>
-            <div className="text-[10px] text-white/45 uppercase tracking-[0.12em] mt-1">Active-Day Avg</div>
-            <div className="text-[10px] text-white/35 mt-1">{activeDays} day{activeDays === 1 ? '' : 's'}</div>
-          </div>
-        </div>
-
-        {categoryBreakdown.length > 0 && (
-          <div className="bg-white/5 rounded-2xl p-5 border border-white/10 space-y-3">
-            <div className="text-sm font-bold text-white uppercase tracking-[0.14em] opacity-70">Category Focus</div>
-            {categoryBreakdown.map(([name, minutes]) => {
-              const pct = Math.min(100, Math.round((minutes / Math.max(1, stats.totalFocusHours * 60)) * 100));
-              return (
-                <div key={name} className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-white/85 font-bold">{name}</span>
-                    <span className="text-white/55 font-mono">{Math.round(minutes / 60)}h</span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
-                    <div className="h-full bg-white/55" style={{ width: `${pct}%` }} />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">Cloud Account</div>
+                  <div className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] ${syncStateMeta.className}`}>
+                    {syncStateMeta.label}
                   </div>
                 </div>
-              );
-            })}
+                <h3 className="mt-3 text-2xl md:text-[2rem] font-bold tracking-tight text-white">{user!.username}</h3>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs text-white/55">
+                  <span>Joined {joinedAt}</span>
+                  <span>Last sync {lastSyncRelative}</span>
+                  <span>Last active {lastActiveLabel}</span>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {hasCustomDisplayName && (
+                    <div className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white/85">
+                      Group name: {displayName}
+                    </div>
+                  )}
+                  {ACCOUNT_SYNC_SCOPE_LABELS.map((label) => (
+                    <div
+                      key={label}
+                      className="rounded-full border border-white/12 bg-black/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/60"
+                    >
+                      {label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="shrink-0 rounded-[1.4rem] border border-white/12 bg-black/10 p-4 md:w-[18rem]">
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">Sync Health</div>
+              <div className="mt-2 text-lg font-bold text-white">Cloud {syncStateMeta.label}</div>
+              <div className="mt-1 text-sm leading-relaxed text-white/60">{syncStateMeta.detail}</div>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={accountActionBusy !== null}
+                  onClick={handleSyncNow}
+                  className="rounded-xl border border-blue-400/30 bg-blue-500/15 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-blue-100 transition-colors hover:bg-blue-500/24 disabled:opacity-55"
+                >
+                  {accountActionBusy === 'sync' ? 'Syncing...' : 'Sync Now'}
+                </button>
+                <button
+                  type="button"
+                  disabled={accountActionBusy !== null}
+                  onClick={handleRefreshCloud}
+                  className="rounded-xl border border-white/15 bg-white/8 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white transition-colors hover:bg-white/14 disabled:opacity-55"
+                >
+                  {accountActionBusy === 'refresh' ? 'Pulling...' : 'Pull Cloud'}
+                </button>
+              </div>
+              <div className="mt-3 text-[11px] leading-relaxed text-white/45">
+                Server stats are rebuilt from synced logs and session history. Latest cloud check: {lastAccountSyncAt ? formatDateTime(new Date(lastAccountSyncAt).toISOString()) : 'Never'}.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {(accountError || accountMessage) && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {accountError && (
+              <div className="rounded-2xl border border-red-500/28 bg-red-500/12 px-4 py-3 text-sm text-red-100">
+                {accountError}
+              </div>
+            )}
+            {accountMessage && (
+              <div className="rounded-2xl border border-emerald-500/26 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100">
+                {accountMessage}
+              </div>
+            )}
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={logout}
-          className="w-full py-3 bg-red-500/12 border border-red-500/30 text-red-200 rounded-xl font-bold uppercase text-xs tracking-[0.16em] hover:bg-red-500/22 transition-colors"
-        >
-          Sign Out
-        </button>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {statCards.map((card) => (
+            <div
+              key={card.label}
+              className="rounded-[1.4rem] border border-white/10 bg-white/5 p-4"
+              style={{
+                boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.24 : 0.6)}`,
+              }}
+            >
+              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                {card.label}
+              </div>
+              <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+              <div className="mt-1 text-[11px] leading-relaxed text-white/45">{card.helper}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[1.08fr_0.92fr]">
+          <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Category Focus</div>
+                <div className="mt-2 text-lg font-bold text-white">Where your time is going</div>
+              </div>
+              <div className="text-[11px] text-white/45">Last active {lastActiveLabel}</div>
+            </div>
+
+            {topCategories.length > 0 ? (
+              <div className="mt-5 space-y-3.5">
+                {topCategories.map(([name, minutes]) => {
+                  const accentColor = categoryColorsByName.get(name) || accountPrimaryColor;
+                  const pct = Math.min(100, Math.round((minutes / Math.max(1, stats.totalFocusHours * 60)) * 100));
+                  return (
+                    <div key={name} className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: accentColor }} />
+                          <span className="truncate font-bold text-white">{name}</span>
+                        </div>
+                        <div className="shrink-0 font-mono text-white/55">{formatCompactMinutes(minutes)}</div>
+                      </div>
+                      <div className="h-2.5 overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            width: `${pct}%`,
+                            background: `linear-gradient(90deg, ${colorToRgba(accentColor, 0.98)}, ${colorToRgba(accentColor, 0.62)})`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="mt-5 rounded-2xl border border-white/10 bg-black/10 px-4 py-4 text-sm leading-relaxed text-white/55">
+                Your category focus will appear here once work blocks are saved to history.
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-[1.6rem] border border-white/10 bg-black/10 p-5">
+            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account Snapshot</div>
+            <div className="mt-2 text-lg font-bold text-white">What this account protects</div>
+            <div className="mt-4 space-y-3 text-sm text-white/60">
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                Live timer state, active mode, pauses, grace windows, and current durations.
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                Tasks, schedule items, categories, and settings that shape your workflow on every device.
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                Full history and lifetime stats rebuilt from synced logs and saved sessions.
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={logout}
+              className="mt-5 w-full rounded-2xl border border-red-500/28 bg-red-500/12 py-3 text-xs font-bold uppercase tracking-[0.16em] text-red-200 transition-colors hover:bg-red-500/20"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
       </div>
     );
   };
 
   const renderAccountSignedOut = () => {
+    const usernamePreview = normalizedUsernameInput || 'focus.sync';
+    const heroAccent = authMode === 'register' ? PRESET_COLORS[2] : PRESET_COLORS[1];
+    const authHeroStyle: React.CSSProperties = {
+      background: isLightTheme
+        ? `linear-gradient(152deg, ${colorToRgba(heroAccent, 0.24)} 0%, rgba(255, 255, 255, 0.86) 56%, rgba(247, 250, 255, 0.66) 100%)`
+        : `linear-gradient(152deg, ${colorToRgba(heroAccent, 0.28)} 0%, rgba(11, 15, 24, 0.92) 56%, rgba(255, 255, 255, 0.05) 100%)`,
+      boxShadow: `0 32px 64px -44px ${colorToRgba(heroAccent, isLightTheme ? 0.3 : 0.68)}`,
+    };
+    const authBenefits = [
+      'Carry your live timer state, pauses, and current mode across devices.',
+      'Keep tasks, schedule, categories, and settings aligned with your account.',
+      'Restore full history and server-recomputed lifetime stats when you sign in.',
+    ];
+
     return (
-      <div className="p-4 md:p-8 flex flex-col items-center min-h-[520px]">
-        <div className="w-full max-w-md space-y-6 my-auto">
-          <div className="text-center space-y-2">
-            <h3 className="text-3xl font-bold text-white tracking-tight">
-              {authMode === 'register' ? 'Create Account' : 'Welcome Back'}
-            </h3>
-            <p className="text-white/45 text-xs uppercase tracking-[0.14em]">
-              Sign in to sync timers, tasks, and history across devices
-            </p>
+      <div className="p-4 md:p-8 min-h-[520px]">
+        <div className="grid gap-4 md:grid-cols-[1.04fr_0.96fr]">
+          <div className="relative overflow-hidden rounded-[1.9rem] border border-white/10 p-5 md:p-6" style={authHeroStyle}>
+            <div className="absolute inset-0 opacity-75 bg-[radial-gradient(circle_at_18%_-10%,rgba(255,255,255,0.34),transparent_34%),radial-gradient(circle_at_92%_8%,rgba(255,255,255,0.16),transparent_24%)]" />
+            <div className="relative flex h-full flex-col justify-between gap-6">
+              <div>
+                <div className="inline-flex rounded-full border border-white/15 bg-black/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/60">
+                  Account Sync
+                </div>
+                <h3 className="mt-4 text-3xl font-bold tracking-tight text-white">
+                  {authMode === 'register' ? 'Create your cloud account' : 'Sign back in'}
+                </h3>
+                <p className="mt-3 max-w-md text-sm leading-relaxed text-white/60">
+                  Keep your timer, schedule, categories, and history tied to one account so a new browser or device picks up where you left off.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {authBenefits.map((benefit, index) => (
+                  <div key={benefit} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/10 px-4 py-3">
+                    <span
+                      className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: PRESET_COLORS[index % PRESET_COLORS.length] }}
+                    />
+                    <div className="text-sm leading-relaxed text-white/70">{benefit}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-[1.4rem] border border-white/12 bg-black/10 p-4">
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">Username Preview</div>
+                <div className="mt-2 text-xl font-mono font-bold tracking-tight text-white">{usernamePreview}</div>
+                <div className="mt-2 text-xs leading-relaxed text-white/55">
+                  Usernames are stored in lowercase and must use 3-32 letters, numbers, periods, underscores, or hyphens.
+                </div>
+              </div>
+            </div>
           </div>
 
-          <form onSubmit={handleAuthSubmit} className="space-y-4">
-            {accountError && (
-              <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
-                {accountError}
+          <div className="flex flex-col justify-center rounded-[1.9rem] border border-white/10 bg-white/5 p-5 md:p-6">
+            <div className="mb-6">
+              <div className="inline-flex rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/55">
+                {authMode === 'register' ? 'Register' : 'Login'}
               </div>
-            )}
-            {accountMessage && (
-              <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-100 text-xs text-center font-bold">
-                {accountMessage}
+              <div className="mt-4 text-2xl font-bold tracking-tight text-white">
+                {authMode === 'register' ? 'Start syncing this device' : 'Reconnect this device'}
               </div>
-            )}
-
-            <div>
-              <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Username</label>
-              <input
-                type="text"
-                autoFocus
-                value={usernameInput}
-                onChange={event => setUsernameInput(event.target.value)}
-                placeholder="Enter username"
-                className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/25"
-                disabled={authBusy}
-              />
+              <div className="mt-2 text-sm leading-relaxed text-white/55">
+                {authMode === 'register'
+                  ? 'New accounts are seeded from your current browser data and synced immediately.'
+                  : 'Sign in to merge this device with your saved cloud account.'}
+              </div>
             </div>
 
-            <div>
-              <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Password</label>
-              <input
-                type="password"
-                value={passwordInput}
-                onChange={event => setPasswordInput(event.target.value)}
-                placeholder="At least 8 characters"
-                className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 transition-all placeholder-white/25"
-                disabled={authBusy}
-              />
+            <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {accountError && (
+                <div className="rounded-2xl border border-red-500/28 bg-red-500/12 px-4 py-3 text-sm text-red-100">
+                  {accountError}
+                </div>
+              )}
+              {accountMessage && (
+                <div className="rounded-2xl border border-emerald-500/26 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100">
+                  {accountMessage}
+                </div>
+              )}
+
+              <div>
+                <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Username</label>
+                <input
+                  type="text"
+                  autoFocus
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="username"
+                  maxLength={32}
+                  value={usernameInput}
+                  onChange={event => setUsernameInput(event.target.value)}
+                  placeholder="focus.sync"
+                  aria-invalid={Boolean(usernameValidationMessage)}
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-white outline-none transition-all placeholder-white/25 focus:border-white/30"
+                  disabled={authBusy}
+                />
+                <div className="mt-2 min-h-[1.25rem] text-[11px] leading-relaxed text-white/50">
+                  {usernameValidationMessage
+                    ? usernameValidationMessage
+                    : usernameInput.trim() && normalizedUsernameInput !== usernameInput.trim()
+                      ? `Will be saved as ${normalizedUsernameInput}.`
+                      : 'Lowercase username used for sign-in across devices.'}
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Password</label>
+                <input
+                  type="password"
+                  autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+                  minLength={ACCOUNT_PASSWORD_MIN_LENGTH}
+                  maxLength={ACCOUNT_PASSWORD_MAX_LENGTH}
+                  value={passwordInput}
+                  onChange={event => setPasswordInput(event.target.value)}
+                  placeholder="At least 8 characters"
+                  aria-invalid={Boolean(passwordValidationMessage)}
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-white outline-none transition-all placeholder-white/25 focus:border-white/30"
+                  disabled={authBusy}
+                />
+                <div className="mt-2 min-h-[1.25rem] text-[11px] leading-relaxed text-white/50">
+                  {passwordValidationMessage || `Use ${ACCOUNT_PASSWORD_MIN_LENGTH}-${ACCOUNT_PASSWORD_MAX_LENGTH} characters.`}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-white/50">
+                <div className="rounded-full border border-white/10 bg-black/10 px-3 py-1.5">3-32 char username</div>
+                <div className="rounded-full border border-white/10 bg-black/10 px-3 py-1.5">8+ char password</div>
+                <div className="rounded-full border border-white/10 bg-black/10 px-3 py-1.5">Syncs current device</div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={!canSubmitAuth}
+                className="flex w-full items-center justify-center rounded-2xl bg-white py-4 text-xs font-bold uppercase tracking-[0.16em] text-black shadow-lg transition-all hover:bg-gray-200 active:scale-[0.985] disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {authBusy ? (
+                  <span className="h-4 w-4 rounded-full border-2 border-black border-t-transparent animate-spin" />
+                ) : authMode === 'register' ? (
+                  'Create Account'
+                ) : (
+                  'Sign In'
+                )}
+              </button>
+            </form>
+
+            <div className="mt-5 text-xs leading-relaxed text-white/45">
+              Account sync includes your live timer, schedule, categories, settings, and saved history.
             </div>
 
             <button
-              type="submit"
+              type="button"
+              onClick={() => {
+                setAuthMode(prev => (prev === 'register' ? 'login' : 'register'));
+                setAuthLocalError(null);
+                setAccountMessage(null);
+              }}
               disabled={authBusy}
-              className="w-full py-4 bg-white text-black font-bold uppercase text-xs tracking-[0.16em] rounded-xl hover:bg-gray-200 active:scale-95 transition-all shadow-lg disabled:opacity-60 flex items-center justify-center"
+              className="mt-5 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.16em] text-white/65 transition-colors hover:bg-white/10 hover:text-white"
             >
-              {authBusy ? (
-                <span className="w-4 h-4 rounded-full border-2 border-black border-t-transparent animate-spin" />
-              ) : authMode === 'register' ? (
-                'Create Account'
-              ) : (
-                'Sign In'
-              )}
+              {authMode === 'register' ? 'Already have an account? Sign In' : 'New here? Create Account'}
             </button>
-          </form>
-
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode(prev => (prev === 'register' ? 'login' : 'register'));
-              setAuthLocalError(null);
-              setAccountMessage(null);
-            }}
-            disabled={authBusy}
-            className="w-full text-xs text-white/45 hover:text-white transition-colors uppercase tracking-[0.14em] font-bold"
-          >
-            {authMode === 'register' ? 'Already have an account? Sign In' : 'New here? Create Account'}
-          </button>
-
+          </div>
         </div>
       </div>
     );
@@ -931,25 +1256,25 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-bold text-white/35 uppercase tracking-[0.16em]">Session ID</label>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-3">
                   <button
                     type="button"
                     onClick={async () => { await copyToClipboard(groupSessionId); }}
-                    className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
+                    className="px-3 py-1.5 rounded-full border border-blue-400/20 bg-blue-500/10 text-[10px] text-blue-300 hover:text-blue-200 hover:bg-blue-500/15 font-bold uppercase tracking-[0.14em] transition-colors"
                   >
                     Copy Code
                   </button>
                   <button
                     type="button"
                     onClick={async () => { await copyToClipboard(groupInviteUrl); }}
-                    className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
+                    className="px-3 py-1.5 rounded-full border border-blue-400/20 bg-blue-500/10 text-[10px] text-blue-300 hover:text-blue-200 hover:bg-blue-500/15 font-bold uppercase tracking-[0.14em] transition-colors"
                   >
                     Copy Link
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowGroupQr(prev => !prev)}
-                    className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
+                    className="px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-[10px] text-white/75 hover:text-white hover:bg-white/10 font-bold uppercase tracking-[0.14em] transition-colors"
                   >
                     {showGroupQr ? 'Hide QR' : 'Show QR'}
                   </button>
@@ -1003,13 +1328,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} />
               </div>
             ) : (
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-2">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
                 <div className="text-[10px] font-bold text-white/35 uppercase tracking-[0.16em]">Accepted Sync Types</div>
-                <div className="text-xs text-white/55">Timers: {clientControls.syncTimers ? 'On' : 'Off'}</div>
-                <div className="text-xs text-white/55">Tasks: {clientControls.syncTasks ? 'On' : 'Off'}</div>
-                <div className="text-xs text-white/55">Schedule: {clientControls.syncSchedule ? 'On' : 'Off'}</div>
-                <div className="text-xs text-white/55">History: {clientControls.syncHistory ? 'On' : 'Off'}</div>
-                <div className="text-xs text-white/55">Settings: {clientControls.syncSettings ? 'On' : 'Off'}</div>
+                <div className="text-xs text-white/55 leading-relaxed">
+                  Turn timer sync off if you want to control your own focus/break timer without affecting the host.
+                </div>
+                <ToggleRow label="Accept Timer Sync" checked={clientControls.syncTimers} onToggle={() => toggleLiveClientSync('syncTimers')} />
+                <ToggleRow label="Accept Task Sync" checked={clientControls.syncTasks} onToggle={() => toggleLiveClientSync('syncTasks')} />
+                <ToggleRow label="Accept Schedule Sync" checked={clientControls.syncSchedule} onToggle={() => toggleLiveClientSync('syncSchedule')} />
+                <ToggleRow label="Accept History Sync" checked={clientControls.syncHistory} onToggle={() => toggleLiveClientSync('syncHistory')} />
+                <ToggleRow label="Accept Settings Sync" checked={clientControls.syncSettings} onToggle={() => toggleLiveClientSync('syncSettings')} />
               </div>
             )}
 
@@ -1024,6 +1352,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               onClick={() => {
                 leaveGroupSession();
                 setShowGroupQr(false);
+                inviteAutoJoinKeyRef.current = null;
+                setInviteSessionId('');
                 setGroupFlow('menu');
               }}
               className="w-full py-3 border border-red-500/30 text-red-300 hover:bg-red-500/10 rounded-xl font-bold uppercase text-xs tracking-[0.16em] transition-colors"
@@ -1054,6 +1384,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           <div>
             <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Your Name</label>
             <input
+              ref={groupNameInputRef}
               type="text"
               value={groupName}
               onChange={event => setGroupName(event.target.value)}
@@ -1066,6 +1397,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               placeholder="Enter your name"
               className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 text-center font-bold"
             />
+            {inviteSessionId && groupFlow === 'join' && (
+              <div className="mt-2 text-center text-[11px] text-emerald-100/75">
+                Invite ready for <span className="font-mono font-bold tracking-[0.16em]">{inviteSessionId}</span>.
+                {groupName.trim()
+                  ? ' Joining automatically with this name.'
+                  : ' Enter your name to join.'}
+              </div>
+            )}
           </div>
 
           {groupFlow === 'menu' && (
@@ -1097,7 +1436,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 <div className="text-xs font-bold uppercase tracking-[0.14em] text-white/70">Host Sync Options</div>
                 <button
                   type="button"
-                  onClick={() => setGroupFlow('menu')}
+                  onClick={() => {
+                    inviteAutoJoinKeyRef.current = null;
+                    setInviteSessionId('');
+                    setGroupFlow('menu');
+                  }}
                   className="text-[10px] text-white/45 hover:text-white uppercase tracking-[0.14em] font-bold"
                 >
                   Back
@@ -1124,7 +1467,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 <div className="text-xs font-bold uppercase tracking-[0.14em] text-white/70">Join Session</div>
                 <button
                   type="button"
-                  onClick={() => setGroupFlow('menu')}
+                  onClick={() => {
+                    inviteAutoJoinKeyRef.current = null;
+                    setInviteSessionId('');
+                    setGroupFlow('menu');
+                  }}
                   className="text-[10px] text-white/45 hover:text-white uppercase tracking-[0.14em] font-bold"
                 >
                   Back
@@ -1162,7 +1509,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 onClick={handleJoinGroup}
                 className="w-full py-3 bg-purple-500/20 border border-purple-500/35 text-purple-100 rounded-xl text-xs font-bold uppercase tracking-[0.14em] hover:bg-purple-500/30 transition-colors"
               >
-                Connect
+                {inviteSessionId && inviteSessionId === groupSessionInput ? 'Join Invite' : 'Connect'}
               </button>
             </div>
           )}
@@ -1173,7 +1520,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const renderSettingsTab = () => {
     return (
-      <div className="p-4 pb-24 md:p-8 space-y-8 max-w-2xl mx-auto">
+      <div className="p-4 pt-16 pb-10 md:p-8 space-y-8 max-w-2xl mx-auto">
         <div className="space-y-4">
           <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1601,6 +1948,26 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} relative w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`}
           onClick={event => event.stopPropagation()}
         >
+          {activeTab === 'settings' && (
+            <div className="md:hidden absolute top-[4.7rem] right-4 z-30">
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close settings"
+                className={`flex h-11 w-11 items-center justify-center rounded-full border transition-all active:scale-[0.96] shadow-[0_22px_42px_-24px_rgba(15,23,42,0.72)] ${
+                  isLightTheme
+                    ? 'border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(241,247,255,0.42))] text-slate-800 backdrop-blur-[22px]'
+                    : 'border-white/15 bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(0,0,0,0.26))] text-white/90 backdrop-blur-[18px]'
+                }`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+          )}
+
           <div className="settings-tabbar flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
             {([
               { id: 'log', label: 'Log' },
@@ -1631,23 +1998,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             {activeTab === 'account' && renderAccountTab()}
             {activeTab === 'settings' && renderSettingsTab()}
           </div>
-
-          {activeTab === 'settings' && (
-            <div className="md:hidden pointer-events-none absolute inset-x-4 bottom-4 z-20 flex justify-center">
-              <button
-                type="button"
-                onClick={onClose}
-                aria-label="Close settings"
-                className={`pointer-events-auto min-h-12 px-5 py-3 rounded-full border shadow-[0_18px_40px_-22px_rgba(15,23,42,0.78)] text-sm font-bold tracking-[0.08em] transition-all active:scale-[0.98] ${
-                  isLightTheme
-                    ? 'bg-white/80 text-slate-900 border-white/70 backdrop-blur-2xl'
-                    : 'bg-black/55 text-white border-white/15 backdrop-blur-2xl'
-                }`}
-              >
-                Done
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </>

@@ -19,11 +19,14 @@ import {
 import { playAlarm, playSwitch } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
 import {
+  GraceContext,
   TIMER_RUNTIME_VERSION,
   computeWorkCompletion,
   createRuntimeSnapshot,
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
+  normalizeGraceWindow,
+  shouldDiscardRestoredGrace,
 } from '../utils/timerRuntime';
 import {
   fetchAccountData,
@@ -46,9 +49,12 @@ import {
   removePeerConnectionInstance,
   resolveRemoteSyncConfig,
   sanitizeGroupMemberName,
+  shouldAwaitFreshHostTimerState,
   shouldAttemptPeerReconnect,
   shouldBroadcastGroupState,
+  shouldCreateReplacementPeerConnection,
   shouldFollowHostTimerSync,
+  shouldRefreshMembersAfterPeerCleanup,
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
 
@@ -147,6 +153,7 @@ interface TimerContextType {
   joinGroupSession: (id: string, name: string, config: GroupSyncConfig) => Promise<void>;
   leaveGroupSession: () => void;
   updateHostSyncConfig: (config: GroupSyncConfig) => void;
+  updateClientSyncConfig: (config: GroupSyncConfig) => void;
   setPendingJoinId: (id: string | null) => void;
 
   // Data Management
@@ -562,6 +569,42 @@ const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
   return !!value && typeof value === 'object' && value.version === TIMER_RUNTIME_VERSION && typeof value.updatedAtMs === 'number' && typeof value.phase === 'string';
 };
 
+const collapseHydratedGraceState = ({
+  sourceTabId,
+  nowMs,
+  workTime,
+  breakTime,
+  activeMode,
+}: {
+  sourceTabId: string;
+  nowMs: number;
+  workTime: number;
+  breakTime: number;
+  activeMode: TimerMode;
+}) => ({
+  runtime: createRuntimeSnapshot({
+    sourceTabId,
+    phase: 'idle',
+    nowMs,
+    workTime,
+    breakTime,
+    allPauseTime: 0,
+    graceTotal: 0,
+    activityStartIso: null,
+  }),
+  activeMode: breakTime > 0 ? 'break' as const : activeMode,
+  timerStarted: false,
+  isIdle: true,
+  allPauseActive: false,
+  allPauseTime: 0,
+  allPauseReason: '',
+  allPauseStartTime: null as number | null,
+  graceOpen: false,
+  graceContext: null as GraceContext,
+  graceTotal: 0,
+  sessionStartTime: null as string | null,
+});
+
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const isDevMode = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const [user, setUser] = useState<User | null>(null);
@@ -619,6 +662,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const activeModeRef = useRef<TimerMode>('work');
   
   const isRemoteUpdate = useRef(false);
+  const remoteUpdateVersionRef = useRef(0);
+  const remoteUpdateClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<DataConnection[]>([]);
   const lastClientTimerBroadcastSignatureRef = useRef<string | null>(null);
@@ -861,27 +906,67 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
             const hasRuntime = parsed.schemaVersion === DATA_SCHEMA_VERSION && isRuntimeSnapshot(parsed.runtime);
             if (hasRuntime && parsed.runtime) {
-                runtimeRef.current = parsed.runtime;
-                lastRuntimeAppliedRef.current = parsed.runtime.updatedAtMs;
-                const runtimeRunning = parsed.runtime.phase === 'running-work' || parsed.runtime.phase === 'running-break';
-                setTimerStarted(parsed.timerStarted !== undefined ? Boolean(parsed.timerStarted) : runtimeRunning);
-                setAllPauseActive(parsed.allPauseActive !== undefined ? Boolean(parsed.allPauseActive) : parsed.runtime.phase === 'all-pause');
-                setAllPauseTime(parsed.allPauseTime || 0);
-                setAllPauseReason(parsed.allPauseReason || '');
-                setAllPauseStartTime(parsed.allPauseStartTime ?? null);
-                const parsedGraceRawContext = parsed.graceContext;
                 const parsedMode = parsed.activeMode === 'work' || parsed.activeMode === 'break' ? parsed.activeMode : 'work';
-                const parsedGraceCandidateOpen = parsed.graceOpen !== undefined ? Boolean(parsed.graceOpen) : parsed.runtime.phase === 'grace';
-                const parsedHasLegacyBreakGrace = parsedGraceRawContext === 'afterBreak' || (parsedGraceRawContext == null && parsedMode === 'break');
-                const parsedGraceOpen = parsedGraceCandidateOpen;
-                const parsedGraceContext: 'afterWork' | null = parsedGraceOpen && !parsedHasLegacyBreakGrace ? 'afterWork' : null;
-                setGraceOpen(parsedGraceOpen);
-                setGraceContext(parsedGraceContext);
-                setGraceTotal(parsedGraceOpen && !parsedHasLegacyBreakGrace ? (parsed.graceTotal || 0) : 0);
-                if (parsed.runtime.phase === 'running-break') setActiveMode('break');
-                if (parsed.runtime.phase === 'running-work') setActiveMode('work');
-                if (parsed.isIdle === undefined) setIsIdle(parsed.runtime.phase === 'idle');
-                currentActivityStartRef.current = parsed.runtime.activityStartIso ? new Date(parsed.runtime.activityStartIso) : null;
+                const nowMs = Date.now();
+                const shouldDropRestoredGrace = shouldDiscardRestoredGrace({
+                  snapshot: parsed.runtime,
+                  sessionStartTime: parsed.sessionStartTime ?? null,
+                  graceOpen: parsed.graceOpen,
+                  nowMs,
+                });
+                const collapsedGraceState = shouldDropRestoredGrace
+                  ? collapseHydratedGraceState({
+                      sourceTabId: tabIdRef.current,
+                      nowMs,
+                      workTime: nextWorkTime,
+                      breakTime: nextBreakTime,
+                      activeMode: parsedMode,
+                    })
+                  : null;
+                const hydratedRuntime = collapsedGraceState?.runtime || parsed.runtime;
+
+                runtimeRef.current = hydratedRuntime;
+                lastRuntimeAppliedRef.current = hydratedRuntime.updatedAtMs;
+                const runtimeRunning = hydratedRuntime.phase === 'running-work' || hydratedRuntime.phase === 'running-break';
+                setTimerStarted(
+                  collapsedGraceState
+                    ? collapsedGraceState.timerStarted
+                    : (parsed.timerStarted !== undefined ? Boolean(parsed.timerStarted) : runtimeRunning),
+                );
+                setAllPauseActive(
+                  collapsedGraceState
+                    ? collapsedGraceState.allPauseActive
+                    : (parsed.allPauseActive !== undefined ? Boolean(parsed.allPauseActive) : hydratedRuntime.phase === 'all-pause'),
+                );
+                setAllPauseTime(collapsedGraceState ? collapsedGraceState.allPauseTime : (parsed.allPauseTime || 0));
+                setAllPauseReason(collapsedGraceState ? collapsedGraceState.allPauseReason : (parsed.allPauseReason || ''));
+                setAllPauseStartTime(collapsedGraceState ? collapsedGraceState.allPauseStartTime : (parsed.allPauseStartTime ?? null));
+                const parsedGrace = normalizeGraceWindow({
+                  graceOpenCandidate: collapsedGraceState
+                    ? false
+                    : (parsed.graceOpen !== undefined ? Boolean(parsed.graceOpen) : hydratedRuntime.phase === 'grace'),
+                  rawGraceContext: parsed.graceContext,
+                  fallbackMode: parsedMode,
+                });
+                setGraceOpen(collapsedGraceState ? collapsedGraceState.graceOpen : parsedGrace.graceOpen);
+                setGraceContext(collapsedGraceState ? collapsedGraceState.graceContext : parsedGrace.graceContext);
+                setGraceTotal(
+                  collapsedGraceState
+                    ? collapsedGraceState.graceTotal
+                    : (parsedGrace.graceOpen && typeof parsed.graceTotal === 'number' ? parsed.graceTotal : 0),
+                );
+                if (collapsedGraceState) {
+                  setActiveMode(collapsedGraceState.activeMode);
+                  setIsIdle(collapsedGraceState.isIdle);
+                  setSessionStartTime(collapsedGraceState.sessionStartTime);
+                  currentActivityStartRef.current = null;
+                  pendingRuntimeMigrationRef.current = true;
+                } else {
+                  if (hydratedRuntime.phase === 'running-break') setActiveMode('break');
+                  if (hydratedRuntime.phase === 'running-work') setActiveMode('work');
+                  if (parsed.isIdle === undefined) setIsIdle(hydratedRuntime.phase === 'idle');
+                  currentActivityStartRef.current = hydratedRuntime.activityStartIso ? new Date(hydratedRuntime.activityStartIso) : null;
+                }
             } else {
                 // Legacy migration: keep remaining times but force a safe stopped state.
                 setTimerStarted(false);
@@ -1008,6 +1093,25 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const trimmed = value.trim();
     return trimmed || fallback;
   };
+
+  const resetAccountSession = useCallback((reason?: string) => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem('doro_last_user');
+    setAuthToken(null);
+    setLastAccountSyncAt(null);
+    accountRevisionRef.current = 0;
+    hasHydratedCloudForUserRef.current = null;
+    setUser(null);
+    setUserName('');
+    if (reason) {
+      setAccountSyncState('error');
+      setAccountSyncError(reason);
+    } else {
+      setAccountSyncState('idle');
+      setAccountSyncError(null);
+    }
+    loadData();
+  }, [loadData]);
 
   const getPayloadUpdatedAtMs = (payload?: TimerPersistencePayload | null) => {
     if (typeof payload?.updatedAt !== 'string') return 0;
@@ -1157,6 +1261,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const safeWorkTime = typeof source.workTime === 'number' ? source.workTime : safeSettings.workDuration;
     const safeBreakTime = typeof source.breakTime === 'number' ? source.breakTime : 0;
     const safeMode: TimerMode = source.activeMode === 'break' ? 'break' : 'work';
+    const safeSessionStartTime = typeof source.sessionStartTime === 'string' || source.sessionStartTime === null
+      ? source.sessionStartTime
+      : null;
     const runtime = isRuntimeSnapshot(source.runtime)
       ? source.runtime
       : createRuntimeSnapshot({
@@ -1169,12 +1276,31 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           graceTotal: 0,
           activityStartIso: null,
         });
-    const runtimeRunning = runtime.phase === 'running-work' || runtime.phase === 'running-break';
-    const rawGraceContext = source.graceContext;
-    const rawGraceOpen = typeof source.graceOpen === 'boolean' ? source.graceOpen : runtime.phase === 'grace';
-    const hasLegacyBreakGrace = rawGraceContext === 'afterBreak' || (rawGraceContext == null && safeMode === 'break');
-    const normalizedGraceOpen = rawGraceOpen && !hasLegacyBreakGrace;
-    const normalizedGraceContext: 'afterWork' | null = normalizedGraceOpen ? 'afterWork' : null;
+    const nowMs = Date.now();
+    const shouldDropRestoredGrace = shouldDiscardRestoredGrace({
+      snapshot: runtime,
+      sessionStartTime: safeSessionStartTime,
+      graceOpen: source.graceOpen,
+      nowMs,
+    });
+    const collapsedGraceState = shouldDropRestoredGrace
+      ? collapseHydratedGraceState({
+          sourceTabId: tabIdRef.current,
+          nowMs,
+          workTime: safeWorkTime,
+          breakTime: safeBreakTime,
+          activeMode: safeMode,
+        })
+      : null;
+    const normalizedRuntime = collapsedGraceState?.runtime || runtime;
+    const runtimeRunning = normalizedRuntime.phase === 'running-work' || normalizedRuntime.phase === 'running-break';
+    const normalizedGrace = normalizeGraceWindow({
+      graceOpenCandidate: collapsedGraceState
+        ? false
+        : (typeof source.graceOpen === 'boolean' ? source.graceOpen : normalizedRuntime.phase === 'grace'),
+      rawGraceContext: source.graceContext,
+      fallbackMode: safeMode,
+    });
     const normalizedUserName = normalizeStoredUserName(source.userName, options?.fallbackUserName || payloadUser.username);
     const normalizedUser: User = {
       ...payloadUser,
@@ -1191,7 +1317,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return {
       schemaVersion: DATA_SCHEMA_VERSION,
       revision: options?.revision ?? getPayloadRevision(source),
-      runtime,
+      runtime: normalizedRuntime,
       settings: safeSettings,
       tasks: safeTasks,
       pastSessions: safeSessions,
@@ -1200,21 +1326,37 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pomodoroCount: typeof source.pomodoroCount === 'number' ? source.pomodoroCount : 0,
       workTime: safeWorkTime,
       breakTime: safeBreakTime,
-      activeMode: runtime.phase === 'running-break' ? 'break' : runtime.phase === 'running-work' ? 'work' : safeMode,
-      timerStarted: typeof source.timerStarted === 'boolean' ? source.timerStarted : runtimeRunning,
-      isIdle: typeof source.isIdle === 'boolean' ? source.isIdle : runtime.phase === 'idle',
-      allPauseActive: typeof source.allPauseActive === 'boolean' ? source.allPauseActive : runtime.phase === 'all-pause',
-      allPauseTime: typeof source.allPauseTime === 'number' ? source.allPauseTime : 0,
-      allPauseReason: typeof source.allPauseReason === 'string' ? source.allPauseReason : '',
-      allPauseStartTime: source.allPauseStartTime === null || typeof source.allPauseStartTime === 'number'
-        ? source.allPauseStartTime
-        : null,
-      graceOpen: normalizedGraceOpen,
-      graceContext: normalizedGraceContext,
-      graceTotal: normalizedGraceOpen && typeof source.graceTotal === 'number' ? source.graceTotal : 0,
+      activeMode: collapsedGraceState
+        ? collapsedGraceState.activeMode
+        : (normalizedRuntime.phase === 'running-break' ? 'break' : normalizedRuntime.phase === 'running-work' ? 'work' : safeMode),
+      timerStarted: collapsedGraceState
+        ? collapsedGraceState.timerStarted
+        : (typeof source.timerStarted === 'boolean' ? source.timerStarted : runtimeRunning),
+      isIdle: collapsedGraceState
+        ? collapsedGraceState.isIdle
+        : (typeof source.isIdle === 'boolean' ? source.isIdle : normalizedRuntime.phase === 'idle'),
+      allPauseActive: collapsedGraceState
+        ? collapsedGraceState.allPauseActive
+        : (typeof source.allPauseActive === 'boolean' ? source.allPauseActive : normalizedRuntime.phase === 'all-pause'),
+      allPauseTime: collapsedGraceState
+        ? collapsedGraceState.allPauseTime
+        : (typeof source.allPauseTime === 'number' ? source.allPauseTime : 0),
+      allPauseReason: collapsedGraceState
+        ? collapsedGraceState.allPauseReason
+        : (typeof source.allPauseReason === 'string' ? source.allPauseReason : ''),
+      allPauseStartTime: collapsedGraceState
+        ? collapsedGraceState.allPauseStartTime
+        : (source.allPauseStartTime === null || typeof source.allPauseStartTime === 'number'
+          ? source.allPauseStartTime
+          : null),
+      graceOpen: collapsedGraceState ? collapsedGraceState.graceOpen : normalizedGrace.graceOpen,
+      graceContext: collapsedGraceState ? collapsedGraceState.graceContext : normalizedGrace.graceContext,
+      graceTotal: collapsedGraceState
+        ? collapsedGraceState.graceTotal
+        : (normalizedGrace.graceOpen && typeof source.graceTotal === 'number' ? source.graceTotal : 0),
       scheduleBreaks: Array.isArray(source.scheduleBreaks) ? source.scheduleBreaks : [],
       scheduleStartTime: typeof source.scheduleStartTime === 'string' && source.scheduleStartTime ? source.scheduleStartTime : '08:00',
-      sessionStartTime: typeof source.sessionStartTime === 'string' || source.sessionStartTime === null ? source.sessionStartTime : null,
+      sessionStartTime: collapsedGraceState ? collapsedGraceState.sessionStartTime : safeSessionStartTime,
       userName: normalizedUserName,
       user: normalizedUser,
       updatedAt: options?.updatedAt ?? (typeof source.updatedAt === 'string' ? source.updatedAt : new Date().toISOString()),
@@ -1307,8 +1449,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return true;
       } catch (error) {
           if (isUnauthorizedError(error)) {
-              localStorage.removeItem(AUTH_TOKEN_KEY);
-              setAuthToken(null);
+              resetAccountSession('Session expired. Sign in again.');
+              return false;
           }
           setAccountSyncState('error');
           setAccountSyncError(error instanceof Error ? error.message : 'Cloud sync failed.');
@@ -1316,7 +1458,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } finally {
           isCloudSyncInFlightRef.current = false;
       }
-  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, user, userName]);
+  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
 
   const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
       if (!user || !authToken) return false;
@@ -1422,14 +1564,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return true;
       } catch (error) {
           if (isUnauthorizedError(error)) {
-              localStorage.removeItem(AUTH_TOKEN_KEY);
-              setAuthToken(null);
+              resetAccountSession('Session expired. Sign in again.');
+              return false;
           }
           setAccountSyncState('error');
           setAccountSyncError(error instanceof Error ? error.message : 'Failed to refresh from cloud.');
           return false;
       }
-  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, user, userName]);
+  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
 
   const register = async (username: string, password?: string): Promise<AuthResult> => {
       if (!password) {
@@ -1540,17 +1682,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (tokenToRevoke) {
           void logoutAccount(tokenToRevoke).catch(() => {});
       }
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-      setAuthToken(null);
-      setAccountSyncState('idle');
-      setAccountSyncError(null);
-      setLastAccountSyncAt(null);
-      accountRevisionRef.current = 0;
-      hasHydratedCloudForUserRef.current = null;
-      setUser(null);
-      setUserName('');
-      localStorage.removeItem('doro_last_user');
-      loadData(); // Load Guest Data
+      resetAccountSession();
   };
 
   useEffect(() => {
@@ -1883,6 +2015,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const applyRemoteState = useCallback((remote: any, mode: 'full' | 'timer-only' = 'full') => {
       if (!remote || typeof remote !== 'object') return;
       isRemoteUpdate.current = true;
+      remoteUpdateVersionRef.current += 1;
+      const releaseVersion = remoteUpdateVersionRef.current;
+      if (remoteUpdateClearTimeoutRef.current) {
+        clearTimeout(remoteUpdateClearTimeoutRef.current);
+      }
 
       const remoteHostConfig = normalizeSyncConfig(remote.hostConfig, hostSyncConfigRef.current);
       const config = resolveRemoteSyncConfig({
@@ -1921,15 +2058,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (typeof remote.allPauseTime === 'number') setAllPauseTime(remote.allPauseTime);
           if (typeof remote.allPauseReason === 'string') setAllPauseReason(remote.allPauseReason);
           if (remote.allPauseStartTime === null || typeof remote.allPauseStartTime === 'number') setAllPauseStartTime(remote.allPauseStartTime ?? null);
-          const remoteGraceRawContext = remote.graceContext;
           const remoteMode = remote.activeMode === 'work' || remote.activeMode === 'break' ? remote.activeMode : activeModeRef.current;
-          const remoteGraceCandidateOpen = typeof remote.graceOpen === 'boolean' ? remote.graceOpen : false;
-          const remoteHasLegacyBreakGrace = remoteGraceRawContext === 'afterBreak' || (remoteGraceRawContext == null && remoteMode === 'break');
-          const remoteGraceOpen = remoteGraceCandidateOpen;
-          const remoteGraceContext: 'afterWork' | null = remoteGraceOpen && !remoteHasLegacyBreakGrace ? 'afterWork' : null;
-          if (typeof remote.graceOpen === 'boolean') setGraceOpen(remoteGraceOpen);
-          if (remote.graceContext === 'afterWork' || remote.graceContext === 'afterBreak' || remote.graceContext === null) setGraceContext(remoteGraceContext);
-          if (typeof remote.graceTotal === 'number') setGraceTotal(remoteGraceOpen && !remoteHasLegacyBreakGrace ? remote.graceTotal : 0);
+          const remoteGrace = normalizeGraceWindow({
+            graceOpenCandidate: typeof remote.graceOpen === 'boolean' ? remote.graceOpen : false,
+            rawGraceContext: remote.graceContext,
+            fallbackMode: remoteMode,
+          });
+          if (typeof remote.graceOpen === 'boolean') setGraceOpen(remoteGrace.graceOpen);
+          if (remote.graceContext === 'afterWork' || remote.graceContext === 'afterBreak' || remote.graceContext === null) setGraceContext(remoteGrace.graceContext);
+          if (typeof remote.graceTotal === 'number') setGraceTotal(remoteGrace.graceOpen ? remote.graceTotal : 0);
 
           if (isRuntimeSnapshot(remote.runtime) && remote.runtime.updatedAtMs > lastRuntimeAppliedRef.current) {
               runtimeRef.current = remote.runtime;
@@ -1941,7 +2078,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           hostSyncConfigRef.current = remoteHostConfig;
           setHostSyncConfig(remoteHostConfig);
       }
-      setTimeout(() => { isRemoteUpdate.current = false; }, 120);
+      remoteUpdateClearTimeoutRef.current = setTimeout(() => {
+        if (remoteUpdateVersionRef.current !== releaseVersion) return;
+        isRemoteUpdate.current = false;
+        remoteUpdateClearTimeoutRef.current = null;
+      }, 120);
   }, []);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
@@ -2117,7 +2258,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     delete memberNamesRef.current[conn.peer];
                     announcedPeerIdsRef.current.delete(conn.peer);
                   }
-                  updateMembersList();
+                  const replacementConnection = remainingConnections.find(connection => connection.peer === conn.peer);
+                  if (shouldRefreshMembersAfterPeerCleanup({
+                    hasPeerConnection,
+                    replacementConnectionOpen: Boolean(replacementConnection?.open),
+                  })) {
+                    updateMembersList();
+                  }
                 };
                 rememberMemberName(conn.peer, (conn.metadata as any)?.name);
                 connectionsRef.current = connectionsRef.current.filter(existing => {
@@ -2160,6 +2307,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         if (forwardedEvent) {
                             postGroupNotice(forwardedEvent);
                             sendGroupEvent(forwardedEvent, conn.peer);
+                        }
+                        return;
+                    }
+                    if (data.type === 'STATE_REQUEST') {
+                        if (conn.open) {
+                          conn.send({ type: 'STATE_UPDATE', state: buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current) });
                         }
                         return;
                     }
@@ -2290,6 +2443,107 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             resolve();
           };
 
+          const syncJoinedHostConnection = (connection: DataConnection, localPeerId: string, localName: string) => {
+            if (!connection.open) return;
+            upsertClientMembers(sessionId, undefined, localPeerId, localName);
+            connection.send({ type: 'MEMBER_INTRO', name: localName });
+            connection.send({ type: 'STATE_REQUEST' });
+          };
+
+          const cleanupJoinedHostConnection = (targetConn: DataConnection) => {
+            const { remainingConnections, hasPeerConnection } = removePeerConnectionInstance(connectionsRef.current, targetConn);
+            connectionsRef.current = remainingConnections;
+            return hasPeerConnection;
+          };
+
+          const bindHostConnection = (
+            nextConn: DataConnection,
+            localPeerId: string,
+            localName: string,
+            options?: { resolveOnOpen?: boolean },
+          ) => {
+            conn = nextConn;
+            connectionsRef.current = [...connectionsRef.current.filter(existing => existing !== nextConn), nextConn];
+
+            nextConn.on('open', () => {
+              if (isStale()) return;
+              conn = nextConn;
+              connectionsRef.current = connectionsRef.current.filter(existing => existing !== nextConn);
+              connectionsRef.current.push(nextConn);
+              pruneConnections();
+              setPeerError(null);
+              syncJoinedHostConnection(nextConn, localPeerId, localName);
+              if (options?.resolveOnOpen) {
+                succeed();
+              }
+            });
+
+            nextConn.on('data', (data: any) => {
+              if (isStale()) return;
+              if (!data || typeof data !== 'object') return;
+              if (data.type === 'STATE_UPDATE') {
+                clientReadyForBroadcastRef.current = true;
+                upsertClientMembers(
+                  sessionId,
+                  data.state?.userName ?? data.state?.user?.username ?? data.state?.hostName,
+                  localPeerId,
+                  localName,
+                );
+                applyRemoteState(data.state, 'full');
+              }
+              else if (data.type === 'TIMER_STATE') {
+                clientReadyForBroadcastRef.current = true;
+                upsertClientMembers(sessionId, undefined, localPeerId, localName);
+                applyRemoteState(data.state, 'timer-only');
+              }
+              else if (data.type === 'MEMBERS_UPDATE') {
+                const normalizedMembers = normalizeGroupMembersPayload(data.members);
+                normalizedMembers.forEach(member => {
+                  memberNamesRef.current[member.id] = member.name;
+                });
+                const resolvedHostName = normalizedMembers.find(member => member.isHost || member.id === sessionId)?.name;
+                setMembers(mergeClientMembers({
+                  existingMembers: normalizedMembers,
+                  hostId: sessionId,
+                  hostName: resolvedHostName,
+                  selfId: localPeerId,
+                  selfName: localName,
+                }));
+              }
+              else if (data.type === 'GROUP_EVENT') {
+                const remoteEvent = normalizeGroupEventPayload(data.event);
+                if (remoteEvent) {
+                  rememberMemberName(remoteEvent.actorId, remoteEvent.actorName);
+                  postGroupNotice(remoteEvent);
+                }
+              }
+            });
+
+            nextConn.on('error', (err: any) => {
+              if (isStale()) return;
+              const message = `Unable to connect to host (${err?.type || 'error'}).`;
+              const hasPeerConnection = cleanupJoinedHostConnection(nextConn);
+              if (!settled) {
+                fail(message, err instanceof Error ? err : new Error(message));
+                return;
+              }
+              if (hasPeerConnection) return;
+              leaveGroupSession({ reason: message, preserveConfigs: true });
+            });
+
+            nextConn.on('close', () => {
+              if (isStale()) return;
+              const message = 'Disconnected from Host';
+              const hasPeerConnection = cleanupJoinedHostConnection(nextConn);
+              if (!settled) {
+                fail(message, new Error(message));
+                return;
+              }
+              if (hasPeerConnection) return;
+              leaveGroupSession({ reason: message, preserveConfigs: true });
+            });
+          };
+
           try {
             // @ts-ignore
             const peer = new Peer();
@@ -2299,12 +2553,22 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   try { peer.destroy(); } catch {}
                   return;
                 }
+                const localName = rememberMemberName(id, name);
                 if (settled) {
                   localPeerIdRef.current = id;
                   setPeerError(null);
+                  const hostConnections = pruneConnections().filter(connection => connection.peer === sessionId);
+                  const hostConn = hostConnections.find(connection => connection.open);
+                  if (hostConn?.open) {
+                    syncJoinedHostConnection(hostConn, id, localName);
+                  } else if (shouldCreateReplacementPeerConnection({
+                    hasOpenConnection: false,
+                    hasPendingConnection: hostConnections.some(connection => !connection.open),
+                  })) {
+                    bindHostConnection(peer.connect(sessionId, { metadata: { name: localName } }), id, localName);
+                  }
                   return;
                 }
-                const localName = rememberMemberName(id, name);
                 localPeerIdRef.current = id;
                 groupSessionIdRef.current = sessionId;
                 isHostRef.current = false;
@@ -2317,70 +2581,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   { id: sessionId, name: 'Host', isHost: true },
                   { id, name: localName, isHost: false },
                 ]);
-                conn.on('open', () => {
-                  if (isStale()) return;
-                  connectionsRef.current = [conn!];
-                  conn?.send({ type: 'MEMBER_INTRO', name: localName });
-                  succeed();
-                });
-                conn.on('data', (data: any) => {
-                    if (isStale()) return;
-                    if (!data || typeof data !== 'object') return;
-                    if (data.type === 'STATE_UPDATE') {
-                      clientReadyForBroadcastRef.current = true;
-                      upsertClientMembers(
-                        sessionId,
-                        data.state?.userName ?? data.state?.user?.username ?? data.state?.hostName,
-                        id,
-                        localName,
-                      );
-                      applyRemoteState(data.state, 'full');
-                    }
-                    else if (data.type === 'TIMER_STATE') {
-                      clientReadyForBroadcastRef.current = true;
-                      upsertClientMembers(sessionId, undefined, id, localName);
-                      applyRemoteState(data.state, 'timer-only');
-                    }
-                    else if (data.type === 'MEMBERS_UPDATE') {
-                      const normalizedMembers = normalizeGroupMembersPayload(data.members);
-                      normalizedMembers.forEach(member => {
-                        memberNamesRef.current[member.id] = member.name;
-                      });
-                      const resolvedHostName = normalizedMembers.find(member => member.isHost || member.id === sessionId)?.name;
-                      setMembers(mergeClientMembers({
-                        existingMembers: normalizedMembers,
-                        hostId: sessionId,
-                        hostName: resolvedHostName,
-                        selfId: id,
-                        selfName: localName,
-                      }));
-                    }
-                    else if (data.type === 'GROUP_EVENT') {
-                      const remoteEvent = normalizeGroupEventPayload(data.event);
-                      if (remoteEvent) {
-                        rememberMemberName(remoteEvent.actorId, remoteEvent.actorName);
-                        postGroupNotice(remoteEvent);
-                      }
-                    }
-                });
-                conn.on('error', (err: any) => {
-                  if (isStale()) return;
-                  const message = `Unable to connect to host (${err?.type || 'error'}).`;
-                  if (!settled) {
-                    fail(message, err instanceof Error ? err : new Error(message));
-                    return;
-                  }
-                  leaveGroupSession({ reason: message, preserveConfigs: true });
-                });
-                conn.on('close', () => {
-                  if (isStale()) return;
-                  const message = "Disconnected from Host";
-                  if (!settled) {
-                    fail(message, new Error(message));
-                    return;
-                  }
-                  leaveGroupSession({ reason: message, preserveConfigs: true });
-                });
+                bindHostConnection(conn, id, localName, { resolveOnOpen: true });
             });
 
             peer.on('disconnected', () => {
@@ -2424,6 +2625,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const leaveGroupSession = (options?: { reason?: string, preserveConfigs?: boolean }) => {
       groupLifecycleRef.current += 1;
+      if (remoteUpdateClearTimeoutRef.current) {
+        clearTimeout(remoteUpdateClearTimeoutRef.current);
+        remoteUpdateClearTimeoutRef.current = null;
+      }
+      remoteUpdateVersionRef.current += 1;
+      isRemoteUpdate.current = false;
       if (peerRef.current) { try { peerRef.current.destroy(); } catch {} peerRef.current = null; }
       connectionsRef.current.forEach(conn => { try { conn.close(); } catch {} });
       connectionsRef.current = [];
@@ -2454,6 +2661,32 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     hostSyncConfigRef.current = normalizedConfig;
     setHostSyncConfig(normalizedConfig);
     broadcastState();
+  };
+
+  const updateClientSyncConfig = (config: GroupSyncConfig) => {
+    const previousConfig = clientSyncConfigRef.current;
+    const wasReadyForBroadcast = clientReadyForBroadcastRef.current;
+    const normalizedConfig = normalizeSyncConfig(config, clientSyncConfigRef.current);
+    const hostConn = !isHostRef.current && groupSessionIdRef.current
+      ? pruneConnections().find(conn => conn.open)
+      : null;
+    clientSyncConfigRef.current = normalizedConfig;
+    setClientSyncConfig(normalizedConfig);
+
+    if (shouldAwaitFreshHostTimerState({
+      previousConfig,
+      nextConfig: normalizedConfig,
+      wasReadyForBroadcast,
+      hasOpenHostConnection: Boolean(hostConn?.open),
+    })) {
+      clientReadyForBroadcastRef.current = false;
+    } else if (!normalizedConfig.syncTimers) {
+      clientReadyForBroadcastRef.current = true;
+    }
+
+    if (isHostRef.current || !groupSessionIdRef.current) return;
+    if (!hostConn?.open) return;
+    hostConn.send({ type: 'STATE_REQUEST' });
   };
   
   useEffect(() => {
@@ -2504,6 +2737,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const handleBreakBoundaryReached = useCallback((overflowSeconds: number = 0) => {
+    if (graceOpen) return;
+    const now = new Date();
+    if (currentActivityStartRef.current) {
+      const elapsed = Math.max(0, (now.getTime() - currentActivityStartRef.current.getTime()) / 1000);
+      const completedBreakDuration = Math.max(0, elapsed - overflowSeconds);
+      if (completedBreakDuration > 0.5) {
+        logActivity('break', currentActivityStartRef.current, completedBreakDuration, 'Break Complete');
+      }
+      currentActivityStartRef.current = null;
+    }
     playAlarm(settings.alarmSound);
     const roundedDebtMinutes = Math.max(0, Math.ceil(overflowSeconds / 60));
     sendNotification(
@@ -2512,7 +2755,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
         : 'Break bank depleted. Timer is now counting break debt.',
     );
-  }, [settings.alarmSound, sendNotification]);
+    setTimerStarted(false);
+    setBreakTime(0);
+    setGraceContext('afterBreak');
+    setGraceTotal(Math.max(0, overflowSeconds));
+    setGraceOpen(true);
+    anchorRuntimePhase('grace', {
+      phaseStartWorkTime: workTime,
+      phaseStartBreakTime: 0,
+      phaseStartGraceTotal: Math.max(0, overflowSeconds),
+      activityStartIso: null,
+    });
+  }, [anchorRuntimePhase, graceOpen, logActivity, sendNotification, settings.alarmSound, workTime]);
 
   const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
@@ -2728,15 +2982,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof payload.allPauseTime === 'number') setAllPauseTime(payload.allPauseTime);
     if (typeof payload.allPauseReason === 'string') setAllPauseReason(payload.allPauseReason);
     if (payload.allPauseStartTime === null || typeof payload.allPauseStartTime === 'number') setAllPauseStartTime(payload.allPauseStartTime ?? null);
-    const payloadGraceRawContext = payload.graceContext;
     const payloadMode = payload.activeMode === 'work' || payload.activeMode === 'break' ? payload.activeMode : runtimeMode;
-    const payloadGraceCandidateOpen = typeof payload.graceOpen === 'boolean' ? payload.graceOpen : runtime.phase === 'grace';
-    const payloadHasLegacyBreakGrace = payloadGraceRawContext === 'afterBreak' || (payloadGraceRawContext == null && payloadMode === 'break');
-    const payloadGraceOpen = payloadGraceCandidateOpen;
-    const payloadGraceContext: 'afterWork' | null = payloadGraceOpen && !payloadHasLegacyBreakGrace ? 'afterWork' : null;
-    setGraceOpen(payloadGraceOpen);
-    if (payload.graceContext === 'afterWork' || payload.graceContext === 'afterBreak' || payload.graceContext === null) setGraceContext(payloadGraceContext);
-    if (typeof payload.graceTotal === 'number') setGraceTotal(payloadGraceOpen && !payloadHasLegacyBreakGrace ? payload.graceTotal : 0);
+    const payloadGrace = normalizeGraceWindow({
+      graceOpenCandidate: typeof payload.graceOpen === 'boolean' ? payload.graceOpen : runtime.phase === 'grace',
+      rawGraceContext: payload.graceContext,
+      fallbackMode: payloadMode,
+    });
+    setGraceOpen(payloadGrace.graceOpen);
+    if (payload.graceContext === 'afterWork' || payload.graceContext === 'afterBreak' || payload.graceContext === null) setGraceContext(payloadGrace.graceContext);
+    if (typeof payload.graceTotal === 'number') setGraceTotal(payloadGrace.graceOpen ? payload.graceTotal : 0);
     if (typeof payload.sessionStartTime === 'string' || payload.sessionStartTime === null) setSessionStartTime(payload.sessionStartTime ?? null);
     if (typeof payload.scheduleStartTime === 'string') setScheduleStartTime(payload.scheduleStartTime);
 
@@ -2853,8 +3107,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   useEffect(() => {
-    // Grace is only valid after work completion; any other context is stale and should continue break immediately.
-    if (!graceOpen || graceContext === 'afterWork') return;
+    if (!graceOpen || graceContext !== null) return;
     setGraceOpen(false);
     setGraceContext(null);
     setGraceTotal(0);
@@ -3382,7 +3635,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
-      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, setPendingJoinId,
+      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       toggleTaskFuture, setTaskSchedule,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,

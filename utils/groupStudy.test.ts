@@ -11,9 +11,12 @@ import {
   pruneLivePeerConnections,
   removePeerConnectionInstance,
   resolveRemoteSyncConfig,
+  shouldAwaitFreshHostTimerState,
   shouldAttemptPeerReconnect,
   shouldBroadcastGroupState,
+  shouldCreateReplacementPeerConnection,
   shouldFollowHostTimerSync,
+  shouldRefreshMembersAfterPeerCleanup,
 } from './groupStudy';
 
 describe('groupStudy helpers', () => {
@@ -139,6 +142,7 @@ describe('groupStudy helpers', () => {
   it('removes only the disconnected connection instance during reconnect cleanup', () => {
     const staleConn = { peer: 'guest-1', open: true, id: 'stale' };
     const liveReplacement = { peer: 'guest-1', open: true, id: 'live' };
+    const pendingReplacement = { peer: 'guest-1', open: false, id: 'pending' };
     const anotherPeer = { peer: 'guest-2', open: true, id: 'other' };
 
     expect(removePeerConnectionInstance(
@@ -155,6 +159,14 @@ describe('groupStudy helpers', () => {
     )).toEqual({
       remainingConnections: [anotherPeer],
       hasPeerConnection: false,
+    });
+
+    expect(removePeerConnectionInstance(
+      [staleConn, pendingReplacement, anotherPeer],
+      staleConn,
+    )).toEqual({
+      remainingConnections: [pendingReplacement, anotherPeer],
+      hasPeerConnection: true,
     });
   });
 
@@ -228,6 +240,90 @@ describe('groupStudy helpers', () => {
     expect(shouldAttemptPeerReconnect({
       disconnected: false,
       destroyed: false,
+    })).toBe(false);
+  });
+
+  it('only creates a replacement host connection when there is no live or pending one already', () => {
+    expect(shouldCreateReplacementPeerConnection({
+      hasOpenConnection: false,
+      hasPendingConnection: false,
+    })).toBe(true);
+
+    expect(shouldCreateReplacementPeerConnection({
+      hasOpenConnection: true,
+      hasPendingConnection: false,
+    })).toBe(false);
+
+    expect(shouldCreateReplacementPeerConnection({
+      hasOpenConnection: false,
+      hasPendingConnection: true,
+    })).toBe(false);
+  });
+
+  it('only re-enters awaiting-host-timer mode when timer sync is newly enabled or still pending', () => {
+    expect(shouldAwaitFreshHostTimerState({
+      previousConfig: DEFAULT_GROUP_SYNC_CONFIG,
+      nextConfig: {
+        ...DEFAULT_GROUP_SYNC_CONFIG,
+        syncTasks: true,
+      },
+      wasReadyForBroadcast: true,
+      hasOpenHostConnection: true,
+    })).toBe(false);
+
+    expect(shouldAwaitFreshHostTimerState({
+      previousConfig: {
+        ...DEFAULT_GROUP_SYNC_CONFIG,
+        syncTimers: false,
+      },
+      nextConfig: DEFAULT_GROUP_SYNC_CONFIG,
+      wasReadyForBroadcast: true,
+      hasOpenHostConnection: true,
+    })).toBe(true);
+
+    expect(shouldAwaitFreshHostTimerState({
+      previousConfig: DEFAULT_GROUP_SYNC_CONFIG,
+      nextConfig: DEFAULT_GROUP_SYNC_CONFIG,
+      wasReadyForBroadcast: false,
+      hasOpenHostConnection: true,
+    })).toBe(true);
+
+    expect(shouldAwaitFreshHostTimerState({
+      previousConfig: DEFAULT_GROUP_SYNC_CONFIG,
+      nextConfig: {
+        ...DEFAULT_GROUP_SYNC_CONFIG,
+        syncTimers: false,
+        syncTasks: true,
+      },
+      wasReadyForBroadcast: true,
+      hasOpenHostConnection: true,
+    })).toBe(false);
+
+    expect(shouldAwaitFreshHostTimerState({
+      previousConfig: {
+        ...DEFAULT_GROUP_SYNC_CONFIG,
+        syncTimers: false,
+      },
+      nextConfig: DEFAULT_GROUP_SYNC_CONFIG,
+      wasReadyForBroadcast: true,
+      hasOpenHostConnection: false,
+    })).toBe(false);
+  });
+
+  it('only refreshes member lists after cleanup when the peer is truly gone or already replaced live', () => {
+    expect(shouldRefreshMembersAfterPeerCleanup({
+      hasPeerConnection: false,
+      replacementConnectionOpen: false,
+    })).toBe(true);
+
+    expect(shouldRefreshMembersAfterPeerCleanup({
+      hasPeerConnection: true,
+      replacementConnectionOpen: true,
+    })).toBe(true);
+
+    expect(shouldRefreshMembersAfterPeerCleanup({
+      hasPeerConnection: true,
+      replacementConnectionOpen: false,
     })).toBe(false);
   });
 

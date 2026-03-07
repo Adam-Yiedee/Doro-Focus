@@ -1,6 +1,6 @@
 
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
@@ -15,12 +15,48 @@ import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } fro
 
 type GroupBannerItem = GroupNotice & { exiting: boolean };
 
+const colorToRgba = (value: string | undefined, alpha: number) => {
+  const safeAlpha = Math.max(0, Math.min(1, alpha));
+  const normalized = (value || '').trim().replace('#', '');
+  if (normalized.length === 3) {
+    const expanded = normalized.split('').map((char) => `${char}${char}`).join('');
+    const r = Number.parseInt(expanded.slice(0, 2), 16);
+    const g = Number.parseInt(expanded.slice(2, 4), 16);
+    const b = Number.parseInt(expanded.slice(4, 6), 16);
+    if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) {
+      return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+    }
+  }
+  if (normalized.length === 6) {
+    const r = Number.parseInt(normalized.slice(0, 2), 16);
+    const g = Number.parseInt(normalized.slice(2, 4), 16);
+    const b = Number.parseInt(normalized.slice(4, 6), 16);
+    if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) {
+      return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+    }
+  }
+  return `rgba(255, 255, 255, ${safeAlpha})`;
+};
+
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice } = useTimer();
+  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
   const [groupBanners, setGroupBanners] = useState<GroupBannerItem[]>([]);
   const bannerTimersRef = useRef<Record<string, { exit: ReturnType<typeof setTimeout>, remove: ReturnType<typeof setTimeout> }>>({});
+  const previousGroupSessionIdRef = useRef<string | null>(null);
+
+  const clearBannerTimer = (id: string) => {
+    const timers = bannerTimersRef.current[id];
+    if (!timers) return;
+    clearTimeout(timers.exit);
+    clearTimeout(timers.remove);
+    delete bannerTimersRef.current[id];
+  };
+
+  const clearAllBannerTimers = () => {
+    Object.keys(bannerTimersRef.current).forEach(clearBannerTimer);
+  };
 
   useEffect(() => {
     if (pendingJoinId) {
@@ -29,15 +65,28 @@ const Layout: React.FC = () => {
   }, [pendingJoinId]);
 
   useEffect(() => {
+    if (previousGroupSessionIdRef.current !== groupSessionId) {
+      clearAllBannerTimers();
+      setGroupBanners([]);
+      previousGroupSessionIdRef.current = groupSessionId;
+    }
+  }, [groupSessionId]);
+
+  useEffect(() => {
     if (!groupNotice) return;
     const id = groupNotice.id;
-    const existingTimers = bannerTimersRef.current[id];
-    if (existingTimers) {
-      clearTimeout(existingTimers.exit);
-      clearTimeout(existingTimers.remove);
-      delete bannerTimersRef.current[id];
-    }
-    setGroupBanners(prev => [...prev.filter(item => item.id !== id), { ...groupNotice, exiting: false }].slice(-3));
+    clearBannerTimer(id);
+    setGroupBanners(prev => {
+      const next = [...prev.filter(item => item.id !== id), { ...groupNotice, exiting: false }];
+      const trimmed = next.slice(-3);
+      const visibleBannerIds = new Set(trimmed.map(item => item.id));
+      Object.keys(bannerTimersRef.current).forEach(timerId => {
+        if (!visibleBannerIds.has(timerId)) {
+          clearBannerTimer(timerId);
+        }
+      });
+      return trimmed;
+    });
 
     const exitTimer = setTimeout(() => {
       setGroupBanners(prev => prev.map(item => item.id === id ? { ...item, exiting: true } : item));
@@ -45,12 +94,7 @@ const Layout: React.FC = () => {
 
     const removeTimer = setTimeout(() => {
       setGroupBanners(prev => prev.filter(item => item.id !== id));
-      const activeTimers = bannerTimersRef.current[id];
-      if (activeTimers) {
-        clearTimeout(activeTimers.exit);
-        clearTimeout(activeTimers.remove);
-        delete bannerTimersRef.current[id];
-      }
+      clearBannerTimer(id);
     }, 3200);
 
     bannerTimersRef.current[id] = { exit: exitTimer, remove: removeTimer };
@@ -58,31 +102,78 @@ const Layout: React.FC = () => {
 
   useEffect(() => {
     return () => {
-      Object.values(bannerTimersRef.current).forEach(timerPair => {
-        clearTimeout(timerPair.exit);
-        clearTimeout(timerPair.remove);
-      });
-      bannerTimersRef.current = {};
+      clearAllBannerTimers();
     };
   }, []);
 
-  // Use Inherited activeColor from context, or default
-  const containerStyle: React.CSSProperties = {
-    backgroundColor: activeMode === 'break' 
-      ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
-      : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE)
-  };
+  const isLightTheme = settings.themeMode !== 'dark';
+  const surfaceColor = activeMode === 'break'
+    ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
+    : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
+  const ambientColor = activeMode === 'break'
+    ? DEFAULT_BREAK_SURFACE
+    : activeColor || DEFAULT_WORK_SURFACE;
+  const secondaryAccent = activeMode === 'break' ? DEFAULT_WORK_SURFACE : DEFAULT_BREAK_SURFACE;
+  const ambientStyles = useMemo(() => {
+    const primaryGlow = colorToRgba(ambientColor, isLightTheme ? 0.28 : 0.22);
+    const secondaryGlow = colorToRgba(secondaryAccent, isLightTheme ? 0.22 : 0.18);
+    const tertiaryGlow = colorToRgba(surfaceColor, isLightTheme ? 0.24 : 0.12);
+
+    return {
+      container: {
+        backgroundColor: surfaceColor,
+        backgroundImage: isLightTheme
+          ? `linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(255, 255, 255, 0.08)), radial-gradient(circle at 14% 10%, ${primaryGlow} 0%, transparent 34%), radial-gradient(circle at 84% 18%, ${secondaryGlow} 0%, transparent 30%), radial-gradient(circle at 50% 115%, ${tertiaryGlow} 0%, transparent 42%)`
+          : `linear-gradient(180deg, rgba(7, 10, 18, 0.36), rgba(7, 10, 18, 0.08)), radial-gradient(circle at 14% 10%, ${primaryGlow} 0%, transparent 34%), radial-gradient(circle at 84% 18%, ${secondaryGlow} 0%, transparent 30%), radial-gradient(circle at 50% 115%, ${tertiaryGlow} 0%, transparent 42%)`,
+      } as React.CSSProperties,
+      topLeft: {
+        background: `radial-gradient(circle, ${colorToRgba(ambientColor, isLightTheme ? 0.4 : 0.24)} 0%, transparent 68%)`,
+      } as React.CSSProperties,
+      topRight: {
+        background: `radial-gradient(circle, ${colorToRgba(secondaryAccent, isLightTheme ? 0.34 : 0.22)} 0%, transparent 68%)`,
+      } as React.CSSProperties,
+      bottomGlow: {
+        background: `radial-gradient(circle, ${colorToRgba(ambientColor, isLightTheme ? 0.22 : 0.16)} 0%, transparent 70%)`,
+      } as React.CSSProperties,
+      sheen: {
+        background: isLightTheme
+          ? 'linear-gradient(140deg, rgba(255,255,255,0.42), rgba(255,255,255,0) 28%, rgba(255,255,255,0.12) 72%, rgba(255,255,255,0.24))'
+          : 'linear-gradient(140deg, rgba(255,255,255,0.08), rgba(255,255,255,0) 28%, rgba(255,255,255,0.04) 72%, rgba(255,255,255,0.08))',
+      } as React.CSSProperties,
+    };
+  }, [ambientColor, isLightTheme, secondaryAccent, surfaceColor]);
+
+  const containerStyle: React.CSSProperties = ambientStyles.container;
   const contentStyle: React.CSSProperties = {
     transform: isWeeklyScheduleOpen
       ? 'translateX(calc(-1 * min(18vw, 260px))) scale(0.99)'
       : 'translateX(0) scale(1)',
   };
 
-  const backdropClass = settings.disableBlur ? 'bg-black/40' : 'backdrop-blur-md bg-white/5';
+  const chromeButtonClass = settings.disableBlur
+    ? isLightTheme
+      ? 'border-white/40 bg-white/72 text-slate-700 shadow-[0_18px_36px_-28px_rgba(66,88,122,0.55)]'
+      : 'border-white/10 bg-black/40 text-white shadow-[0_18px_36px_-28px_rgba(0,0,0,0.75)]'
+    : isLightTheme
+      ? 'border-white/45 bg-white/32 text-slate-700 backdrop-blur-xl shadow-[0_20px_40px_-28px_rgba(66,88,122,0.55)]'
+      : 'border-white/5 bg-white/5 text-white backdrop-blur-md shadow-[0_18px_36px_-28px_rgba(0,0,0,0.72)]';
+  const mainSurfaceClass = settings.disableBlur
+    ? isLightTheme
+      ? 'border-white/40 bg-white/68 shadow-[0_34px_80px_-52px_rgba(66,88,122,0.45)]'
+      : 'border-white/10 bg-black/28 shadow-[0_36px_90px_-58px_rgba(0,0,0,0.72)]'
+    : isLightTheme
+      ? 'border-white/45 bg-white/20 backdrop-blur-[24px] shadow-[0_38px_90px_-58px_rgba(66,88,122,0.45)]'
+      : 'border-white/10 bg-white/[0.06] backdrop-blur-[26px] shadow-[0_42px_100px_-64px_rgba(0,0,0,0.78)]';
+  const mainSurfaceStyle = useMemo<React.CSSProperties>(() => ({
+    backgroundImage: isLightTheme
+      ? `linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.06)), linear-gradient(145deg, ${colorToRgba(ambientColor, 0.18)} 0%, rgba(255,255,255,0.48) 48%, ${colorToRgba(secondaryAccent, 0.1)} 100%)`
+      : `linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)), linear-gradient(145deg, ${colorToRgba(ambientColor, 0.18)} 0%, rgba(7,10,18,0.52) 48%, ${colorToRgba(secondaryAccent, 0.08)} 100%)`,
+  }), [ambientColor, isLightTheme, secondaryAccent]);
+  const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
 
   return (
     <div 
-      className="min-h-screen w-full flex flex-col items-center p-4 relative overflow-x-hidden transition-colors duration-1000 ease-[cubic-bezier(0.25,1,0.5,1)]"
+      className="min-h-screen w-full flex flex-col items-center p-4 relative overflow-x-hidden transition-[background-color,background-image] duration-1000 ease-[cubic-bezier(0.25,1,0.5,1)]"
       style={containerStyle}
     >
       <style>{`
@@ -106,8 +197,12 @@ const Layout: React.FC = () => {
       {/* Ambient Background Elements (Conditional) */}
       {!settings.disableBlur && (
         <>
-            <div className="fixed top-[-20%] left-[-10%] w-[80vw] h-[80vw] bg-white opacity-[0.03] rounded-full blur-[120px] pointer-events-none" />
-            <div className="fixed bottom-[-20%] right-[-10%] w-[80vw] h-[80vw] bg-black opacity-[0.05] rounded-full blur-[150px] pointer-events-none" />
+          <div className="pointer-events-none fixed inset-0 overflow-hidden">
+            <div className="absolute -top-[22vh] -left-[16vw] h-[46rem] w-[46rem] rounded-full blur-[128px]" style={ambientStyles.topLeft} />
+            <div className="absolute -top-[14vh] right-[-14vw] h-[40rem] w-[40rem] rounded-full blur-[132px]" style={ambientStyles.topRight} />
+            <div className="absolute bottom-[-28vh] left-1/2 h-[42rem] w-[54rem] -translate-x-1/2 rounded-full blur-[150px]" style={ambientStyles.bottomGlow} />
+            <div className="absolute inset-0 opacity-70" style={ambientStyles.sheen} />
+          </div>
         </>
       )}
 
@@ -154,32 +249,40 @@ const Layout: React.FC = () => {
           <div className="flex gap-2">
             <button 
               onClick={() => setShowPauseModal(true)}
-              className={`p-2.5 rounded-xl text-white transition-all active:scale-95 shadow-sm hover:shadow-md border border-white/5 duration-500 ${backdropClass} opacity-50 hover:opacity-100`}
+              className={`p-2.5 rounded-xl transition-all active:scale-95 hover:shadow-md duration-500 ${chromeButtonClass} opacity-70 hover:opacity-100`}
               title="Pause All"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className="text-white/90"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={topIconClass}><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
             </button>
             <button 
               onClick={() => setShowLogModal(true)}
-              className={`p-2.5 rounded-xl text-white transition-all active:scale-95 shadow-sm hover:shadow-md border border-white/5 duration-500 ${backdropClass} opacity-50 hover:opacity-100`}
+              className={`p-2.5 rounded-xl transition-all active:scale-95 hover:shadow-md duration-500 ${chromeButtonClass} opacity-70 hover:opacity-100`}
               title="Menu"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" className={topIconClass} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
           </div>
         </div>
 
         {/* Main Content Area */}
-        <div className="w-full max-w-5xl z-10 flex flex-col gap-12">
-          
-          {/* Timer Section */}
-          <div className="w-full flex justify-center animate-slide-up py-8">
-             <TimerDisplay />
-          </div>
+        <div className="w-full max-w-5xl z-10">
+          <div
+            className={`relative overflow-hidden rounded-[2rem] md:rounded-[2.6rem] border px-4 py-5 md:px-7 md:py-7 ${mainSurfaceClass}`}
+            style={mainSurfaceStyle}
+          >
+            <div className="absolute inset-0 opacity-80 bg-[radial-gradient(circle_at_14%_-8%,rgba(255,255,255,0.22),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent_24%,rgba(255,255,255,0.03)_100%)]" />
+            <div className="absolute inset-x-10 top-0 h-px bg-white/40" />
+            <div className="relative flex flex-col gap-12">
+              {/* Timer Section */}
+              <div className="w-full flex justify-center animate-slide-up py-6 md:py-8">
+                <TimerDisplay />
+              </div>
 
-          {/* Tasks Section */}
-          <div className="w-full flex justify-center">
-            <Tasks />
+              {/* Tasks Section */}
+              <div className="w-full flex justify-center">
+                <Tasks />
+              </div>
+            </div>
           </div>
         </div>
       </div>
