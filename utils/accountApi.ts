@@ -1,6 +1,7 @@
 import { User } from '../types';
 
 const ACCOUNT_API_BASE = import.meta.env.VITE_ACCOUNT_API_BASE || '/.netlify/functions';
+const ACCOUNT_API_TIMEOUT_MS = 12_000;
 
 export interface AccountAuthResponse {
   token: string;
@@ -10,11 +11,13 @@ export interface AccountAuthResponse {
 
 class AccountApiError extends Error {
   status: number;
+  payload: any;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, payload: any = null) {
     super(message);
     this.name = 'AccountApiError';
     this.status = status;
+    this.payload = payload;
   }
 }
 
@@ -30,20 +33,32 @@ const parseApiResponse = async (res: Response) => {
 
   if (!res.ok) {
     const message = payload?.error || `Request failed (${res.status})`;
-    throw new AccountApiError(message, res.status);
+    throw new AccountApiError(message, res.status, payload);
   }
   return payload;
 };
 
 const callAccountApi = async (path: string, init: RequestInit = {}) => {
-  const res = await fetch(`${ACCOUNT_API_BASE}/${path}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(init.headers || {}),
-    },
-  });
-  return parseApiResponse(res);
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), ACCOUNT_API_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${ACCOUNT_API_BASE}/${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        ...(init.headers || {}),
+      },
+    });
+    return parseApiResponse(res);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Account request timed out.');
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
 };
 
 export const registerAccount = async (username: string, password: string, seedData: any): Promise<AccountAuthResponse> => {
@@ -77,16 +92,19 @@ export const fetchAccountData = async (token: string): Promise<{ accountData: an
   return payload as { accountData: any; user: User };
 };
 
-export const saveAccountData = async (token: string, accountData: any): Promise<{ accountData: any; savedAt: string }> => {
+export const saveAccountData = async (token: string, accountData: any): Promise<{ accountData: any; user: User; savedAt: string }> => {
   const payload = await callAccountApi('account-data', {
     method: 'PUT',
     headers: { authorization: `Bearer ${token}` },
     body: JSON.stringify({ accountData }),
   });
-  return payload as { accountData: any; savedAt: string };
+  return payload as { accountData: any; user: User; savedAt: string };
 };
 
 export const isUnauthorizedError = (error: unknown): boolean => {
   return error instanceof AccountApiError && error.status === 401;
 };
 
+export const isConflictError = (error: unknown): error is AccountApiError => {
+  return error instanceof AccountApiError && error.status === 409;
+};

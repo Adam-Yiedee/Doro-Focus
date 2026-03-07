@@ -11,6 +11,7 @@ import TaskViewModal from './Modals/TaskViewModal';
 import WeeklySchedulePanel from './Modals/WeeklySchedulePanel';
 import SummaryView from './SummaryView';
 import { GroupNotice } from '../types';
+import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 
 type GroupBannerItem = GroupNotice & { exiting: boolean };
 
@@ -68,8 +69,8 @@ const Layout: React.FC = () => {
   // Use Inherited activeColor from context, or default
   const containerStyle: React.CSSProperties = {
     backgroundColor: activeMode === 'break' 
-      ? '#9ECFC8' 
-      : (activeColor || '#E8A6A6')
+      ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
+      : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE)
   };
   const contentStyle: React.CSSProperties = {
     transform: isWeeklyScheduleOpen

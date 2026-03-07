@@ -1,13 +1,18 @@
 import {
   attachPublicUserToData,
+  buildPublicUserFromAccountData,
   buildDefaultAccountData,
   getAccountData,
+  getAccountRevision,
   json,
   parseBody,
+  sanitizeAccountPayload,
   requireSession,
   saveAccountData,
   persistUser,
 } from './_lib/account-store.js';
+
+const isSameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 export default async (request) => {
   if (request.method !== 'GET' && request.method !== 'PUT') {
@@ -27,10 +32,23 @@ export default async (request) => {
     const accountData = raw
       ? attachPublicUserToData(raw, publicUser)
       : buildDefaultAccountData(publicUser);
-    if (!raw) {
-      await saveAccountData(userRecord.id, accountData);
+    const authoritativeUser = buildPublicUserFromAccountData(publicUser, accountData);
+
+    const writes = [];
+    if (!raw || !isSameJson(raw, accountData)) {
+      writes.push(saveAccountData(userRecord.id, accountData));
     }
-    return json(200, { user: publicUser, accountData });
+    if (!isSameJson(userRecord.lifetimeStats || {}, authoritativeUser.lifetimeStats || {})) {
+      writes.push(persistUser({
+        ...userRecord,
+        lifetimeStats: authoritativeUser.lifetimeStats,
+      }));
+    }
+    if (writes.length > 0) {
+      await Promise.all(writes);
+    }
+
+    return json(200, { user: authoritativeUser, accountData });
   }
 
   const body = await parseBody(request);
@@ -38,17 +56,38 @@ export default async (request) => {
     return json(400, { error: 'Missing accountData payload' });
   }
 
+  const currentRaw = await getAccountData(userRecord.id);
+  const currentAccount = currentRaw
+    ? attachPublicUserToData(currentRaw, publicUser)
+    : buildDefaultAccountData(publicUser);
+  const authoritativeCurrentUser = buildPublicUserFromAccountData(publicUser, currentAccount);
+  const hasIncomingRevision = typeof body.accountData?.revision === 'number' && Number.isFinite(body.accountData.revision);
+  const currentRevision = getAccountRevision(currentAccount);
+  const incomingRevision = getAccountRevision(body.accountData);
+
+  if ((hasIncomingRevision && incomingRevision !== currentRevision) || (!hasIncomingRevision && currentRevision > 0)) {
+    return json(409, {
+      error: 'Account data conflict. Refresh and try again.',
+      user: authoritativeCurrentUser,
+      accountData: currentAccount,
+      savedAt: currentAccount.updatedAt,
+      conflict: true,
+    });
+  }
+
   let sanitizedData;
   try {
-    sanitizedData = attachPublicUserToData(body.accountData, publicUser);
+    sanitizedData = sanitizeAccountPayload(body.accountData, publicUser, {
+      revision: currentRevision + 1,
+    });
   } catch (error) {
     return json(400, { error: error instanceof Error ? error.message : 'Invalid payload' });
   }
 
-  const lifetimeStats = sanitizedData?.user?.lifetimeStats || publicUser.lifetimeStats;
+  const authoritativeUser = buildPublicUserFromAccountData(publicUser, sanitizedData);
   const updatedRecord = {
     ...userRecord,
-    lifetimeStats,
+    lifetimeStats: authoritativeUser.lifetimeStats,
   };
 
   await Promise.all([
@@ -57,13 +96,8 @@ export default async (request) => {
   ]);
 
   return json(200, {
-    user: {
-      username: updatedRecord.username,
-      joinedAt: updatedRecord.joinedAt,
-      lifetimeStats: updatedRecord.lifetimeStats,
-    },
+    user: authoritativeUser,
     accountData: sanitizedData,
-    savedAt: new Date().toISOString(),
+    savedAt: sanitizedData.updatedAt,
   });
 };
-

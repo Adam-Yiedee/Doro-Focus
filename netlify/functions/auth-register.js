@@ -1,10 +1,12 @@
 import {
   attachPublicUserToData,
+  buildPublicUserFromAccountData,
   buildDefaultAccountData,
   createSession,
   createUser,
   json,
   parseBody,
+  persistUser,
   saveAccountData,
   validatePassword,
   validateUsername,
@@ -49,9 +51,17 @@ export default async (request) => {
     return json(400, { error: error instanceof Error ? error.message : 'Invalid account payload' });
   }
 
-  await saveAccountData(userRecord.id, accountData);
-  const token = await createSession(userRecord);
+  const authoritativeUser = buildPublicUserFromAccountData(publicUser, accountData);
+  const persistedUserRecord = {
+    ...userRecord,
+    lifetimeStats: authoritativeUser.lifetimeStats,
+  };
 
-  return json(201, { token, user: publicUser, accountData });
+  await Promise.all([
+    saveAccountData(userRecord.id, accountData),
+    persistUser(persistedUserRecord),
+  ]);
+  const token = await createSession(persistedUserRecord);
+
+  return json(201, { token, user: authoritativeUser, accountData });
 };
-

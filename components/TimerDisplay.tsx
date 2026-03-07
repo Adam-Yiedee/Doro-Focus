@@ -99,15 +99,10 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      // WORK LOGIC: Start empty, and only reach "full" at 1 minute remaining.
+      // WORK LOGIC: Fill linearly and only reach full when the timer is actually done.
       const safeMax = Math.max(1, maxTime);
-      if (safeMax <= 60) {
-        const ratio = Math.max(0, Math.min(1, time / safeMax));
-        fillPercent = 1 - ratio;
-      } else {
-        const scaled = (safeMax - time) / (safeMax - 60);
-        fillPercent = Math.max(0, Math.min(1, scaled));
-      }
+      const ratio = Math.max(0, Math.min(1, time / safeMax));
+      fillPercent = 1 - ratio;
       showLiquid = true;
   } else {
       // BREAK LOGIC
@@ -119,7 +114,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
           liquidColor = 'red';
       } else {
           // Normal break: Start Full (100%), Drain to Empty (0%)
-          fillPercent = Math.min(1, time / Math.max(1, 600)); // Visual cap at 10 mins for fullness
+          fillPercent = Math.min(1, time / Math.max(1, 1200)); // Visual cap at 20 mins for fullness
           if (time <= 5) showLiquid = false; // Hide sliver when nearly empty
       }
   }

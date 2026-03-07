@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTimer, ScheduleBreak } from '../../context/TimerContext';
 import { Task } from '../../types';
+import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 
 interface WorkUnit {
     taskId: number;
@@ -28,10 +29,6 @@ interface TimeBlock {
     isPast?: boolean;
     taskId?: number;
 }
-
-const PRESET_COLORS = [
-  '#E8A6A6', '#9ECFC8', '#AFC3E6', '#DDBA9B', '#C6B1D9', '#AFCFB1'
-];
 
 const GripIcon = () => (
     <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">

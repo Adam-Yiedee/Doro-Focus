@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, GroupSyncConfig, LogEntry, TimerSettings } from '../../types';
-import { CATEGORY_ICONS, getIcon } from '../../utils/icons';
+import { CATEGORY_ICON_OPTIONS, getCategoryIconLabel, getIcon } from '../../utils/icons';
+import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm } from '../../utils/sound';
 
 interface LogModalProps {
@@ -16,7 +17,6 @@ type GroupFlow = 'menu' | 'host' | 'join';
 type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
 
-const PRESET_COLORS = ['#E8A6A6', '#9ECFC8', '#AFC3E6', '#DDBA9B', '#C6B1D9', '#AFCFB1'];
 const DEFAULT_GROUP_CONFIG: GroupSyncConfig = {
   syncTimers: true,
   syncTasks: false,
@@ -109,7 +109,74 @@ const formatTimeRange = (start: string, end: string) => {
 
 const getLogBlockHeight = (seconds: number) => {
   const minutes = Math.max(1, seconds / 60);
-  return Math.min(164, Math.max(52, 34 + minutes * 1.9));
+  return clampInt(64 + minutes * 3.6, 78, 204);
+};
+
+const getLogDisplayReason = (entry: LogEntry) => {
+  const reason = entry.reason?.trim() || '';
+  if (!reason) return '';
+
+  const normalized = reason.toLowerCase();
+  if (normalized === 'pomodoro complete' || normalized === 'session end') return '';
+  if (entry.type === 'break' && normalized === 'recovery time') return '';
+  if (entry.type === 'allpause' && normalized === 'paused session') return '';
+  if (isGraceLike(entry) && (normalized === 'grace continuation' || normalized.startsWith('grace period'))) return '';
+
+  return reason;
+};
+
+const getLogBlockTitle = (entry: LogEntry, categoryName?: string) => {
+  const detail = getLogDisplayReason(entry);
+  if (entry.task?.name) return entry.task.name;
+  if (categoryName) return categoryName;
+  if (detail) return detail;
+  if (entry.type === 'break') return 'Reset Window';
+  if (entry.type === 'allpause') return 'Pause Window';
+  if (isGraceLike(entry)) return 'Grace Window';
+  return 'Focus Block';
+};
+
+const getLogBlockSubtitle = (entry: LogEntry, categoryName?: string) => {
+  const detail = getLogDisplayReason(entry);
+  const parts: string[] = [];
+
+  if (categoryName && entry.task?.name && categoryName !== entry.task.name) parts.push(categoryName);
+  if (detail && detail !== categoryName) parts.push(detail);
+
+  return parts.join(' / ');
+};
+
+const colorToRgba = (color: string, alpha: number) => {
+  const safeAlpha = Math.max(0, Math.min(1, alpha));
+  const normalized = color.trim();
+
+  if (/^#([0-9a-f]{3})$/i.test(normalized)) {
+    const hex = normalized.slice(1);
+    const r = parseInt(hex[0] + hex[0], 16);
+    const g = parseInt(hex[1] + hex[1], 16);
+    const b = parseInt(hex[2] + hex[2], 16);
+    return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+  }
+
+  if (/^#([0-9a-f]{6})$/i.test(normalized)) {
+    const hex = normalized.slice(1);
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+  }
+
+  const rgbMatch = normalized.match(/^rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)$/i);
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${safeAlpha})`;
+  }
+
+  const rgbaMatch = normalized.match(/^rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*[\d.]+\s*\)$/i);
+  if (rgbaMatch) {
+    return `rgba(${rgbaMatch[1]}, ${rgbaMatch[2]}, ${rgbaMatch[3]}, ${safeAlpha})`;
+  }
+
+  return `rgba(125, 83, 162, ${safeAlpha})`;
 };
 
 const copyToClipboard = async (value: string) => {
@@ -210,9 +277,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const isLightTheme = settings.themeMode !== 'dark';
-  const iconKeys = useMemo(() => Object.keys(CATEGORY_ICONS), []);
   const orderedLogs = useMemo(() => {
-    return [...logs].sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+    return [...logs]
+      .filter((entry) => entry.type !== 'task-complete')
+      .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
   }, [logs]);
   const groupedLogDays = useMemo(() => {
     const groups = new Map<string, LogEntry[]>();
@@ -221,20 +289,35 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(entry);
     });
-    return Array.from(groups.entries()).map(([dateKey, entries]) => {
-      const totals = entries.reduce(
+    return Array.from(groups.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([dateKey, entries]) => {
+      const sortedEntries = [...entries].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+      const totals = sortedEntries.reduce(
         (acc, entry) => {
           if (entry.type === 'work') acc.work += Math.max(0, entry.duration);
           else if (entry.type === 'break') acc.break += Math.max(0, entry.duration);
           else if (entry.type === 'allpause') acc.pause += Math.max(0, entry.duration);
           else if (isGraceLike(entry)) acc.grace += Math.max(0, entry.duration);
+          else if (entry.type === 'task-complete') acc.completed += Math.max(0, entry.duration);
           return acc;
         },
-        { work: 0, break: 0, pause: 0, grace: 0 },
+        { work: 0, break: 0, pause: 0, grace: 0, completed: 0 },
       );
-      return { dateKey, entries, totals };
+      const tracked = totals.work + totals.break + totals.pause + totals.grace + totals.completed;
+      const firstEntry = sortedEntries[0];
+      const lastEntry = sortedEntries[sortedEntries.length - 1];
+      return {
+        dateKey,
+        entries: sortedEntries,
+        totals,
+        tracked,
+        firstStart: firstEntry?.start || null,
+        lastEnd: lastEntry?.end || firstEntry?.end || null,
+      };
     });
   }, [orderedLogs]);
+  const categoriesById = useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
 
   const accountError = authLocalError || accountSyncError || null;
 
@@ -272,9 +355,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     if (!isOpen) return;
     setGroupName(prev => prev || user?.username || userName || '');
-    setHostDraftConfig(hostSyncConfig || DEFAULT_GROUP_CONFIG);
-    setJoinDraftConfig(clientSyncConfig || DEFAULT_GROUP_CONFIG);
-  }, [isOpen, user?.username, userName, hostSyncConfig, clientSyncConfig]);
+    if (groupSessionId) {
+      setHostDraftConfig(hostSyncConfig || DEFAULT_GROUP_CONFIG);
+      setJoinDraftConfig(clientSyncConfig || DEFAULT_GROUP_CONFIG);
+      return;
+    }
+    setHostDraftConfig(DEFAULT_GROUP_CONFIG);
+    setJoinDraftConfig(DEFAULT_GROUP_CONFIG);
+  }, [isOpen, user?.username, userName, groupSessionId, hostSyncConfig, clientSyncConfig]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -444,122 +532,141 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         {orderedLogs.length === 0 && (
-          <div className="text-white/35 text-center py-12 text-sm italic">No activity recorded yet.</div>
+          <div className="text-white/35 text-center py-12 text-sm italic">No timed blocks recorded yet.</div>
         )}
 
         {orderedLogs.length > 0 && (
-          <div className="space-y-2.5">
-            <div className="rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2.5 flex flex-wrap items-center gap-2.5">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold mr-1">Legend</div>
-              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-white/15 bg-white/[0.06] text-[10px] text-white/70">
-                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: PRESET_COLORS[0] }} />
-                Focus
-              </div>
-              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-teal-300/30 bg-teal-400/[0.11] text-[10px] text-teal-100">
-                <span className="w-2 h-2 rounded-full bg-teal-300" />
-                Break
-              </div>
-              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-300/25 bg-slate-300/[0.1] text-[10px] text-slate-100">
-                <span className="w-2 h-2 rounded-full bg-slate-300" />
-                Paused
-              </div>
-              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-fuchsia-300/30 bg-fuchsia-400/[0.11] text-[10px] text-fuchsia-100">
-                <span className="w-2 h-2 rounded-full bg-fuchsia-300" />
-                Grace
-              </div>
-            </div>
-
+          <div className="space-y-3">
             {groupedLogDays.map(({ dateKey, entries, totals }) => {
-              const maxDuration = Math.max(1, ...entries.map((entry) => Math.max(1, entry.duration)));
+              const dayTracked = totals.work + totals.break + totals.pause + totals.grace;
+              const firstStart = entries[0]?.start || null;
+              const lastEnd = entries[entries.length - 1]?.end || null;
               return (
-                <div key={`log-day-${dateKey}`} className="rounded-xl border border-white/10 bg-white/[0.05] p-2.5">
-                  <div className="mb-2 flex items-center justify-between gap-2.5">
+                <div key={`log-day-${dateKey}`} className="rounded-2xl border border-white/10 bg-white/[0.05] p-3 md:p-4">
+                  <div className="mb-3 flex flex-col md:flex-row md:items-end justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold">
                         {formatLogDayLabel(dateKey)}
                       </div>
-                      <div className="text-[11px] text-white/70 font-medium tracking-[0.06em]">
-                        {entries.length} entries
+                      <div className="text-xs text-white/70 font-medium tracking-[0.04em]">
+                        {entries.length} blocks{firstStart && lastEnd ? ` · ${formatTimeRange(firstStart, lastEnd)}` : ''}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <div className="px-2 py-1 rounded-md border border-white/15 bg-white/[0.07] text-[10px] text-white/70 font-mono">
-                        Focus {formatDuration(totals.work)}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="px-2.5 py-1 rounded-lg border border-white/15 bg-white/[0.07] text-[10px] text-white/75 font-mono">
+                        Total {formatDuration(dayTracked)}
                       </div>
-                      <div className="px-2 py-1 rounded-md border border-teal-300/30 bg-teal-400/[0.11] text-[10px] text-teal-100 font-mono">
-                        Break {formatDuration(totals.break)}
-                      </div>
+                      {totals.work > 0 && (
+                        <div className="px-2.5 py-1 rounded-lg border text-[10px] font-mono" style={{
+                          borderColor: colorToRgba(PRESET_COLORS[0], 0.34),
+                          backgroundColor: colorToRgba(PRESET_COLORS[0], 0.16),
+                          color: '#f8fafc',
+                        }}>
+                          Focus {formatDuration(totals.work)}
+                        </div>
+                      )}
+                      {totals.break > 0 && (
+                        <div className="px-2.5 py-1 rounded-lg border text-[10px] font-mono" style={{
+                          borderColor: colorToRgba(PRESET_COLORS[1], 0.34),
+                          backgroundColor: colorToRgba(PRESET_COLORS[1], 0.16),
+                          color: '#f8fafc',
+                        }}>
+                          Break {formatDuration(totals.break)}
+                        </div>
+                      )}
+                      {totals.pause > 0 && (
+                        <div className="px-2.5 py-1 rounded-lg border text-[10px] font-mono" style={{
+                          borderColor: colorToRgba('#94a3b8', 0.34),
+                          backgroundColor: colorToRgba('#94a3b8', 0.16),
+                          color: '#f8fafc',
+                        }}>
+                          Pause {formatDuration(totals.pause)}
+                        </div>
+                      )}
+                      {totals.grace > 0 && (
+                        <div className="px-2.5 py-1 rounded-lg border text-[10px] font-mono" style={{
+                          borderColor: colorToRgba(PRESET_COLORS[4], 0.34),
+                          backgroundColor: colorToRgba(PRESET_COLORS[4], 0.16),
+                          color: '#f8fafc',
+                        }}>
+                          Grace {formatDuration(totals.grace)}
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="space-y-1.5 min-h-[58px]">
+                  <div className="space-y-3">
                     {entries.map((entry, index) => {
+                      const category = typeof entry.categoryId === 'number' ? categoriesById.get(entry.categoryId) : undefined;
                       const isWork = entry.type === 'work';
                       const isBreak = entry.type === 'break';
                       const isPause = entry.type === 'allpause';
-                      const isGrace = isGraceLike(entry);
-                      const accentColor = isWork
-                        ? entry.color || PRESET_COLORS[0]
-                        : isBreak
-                          ? '#2dd4bf'
-                          : isPause
-                            ? '#94a3b8'
-                            : '#c084fc';
-                      const typeLabel = isWork ? 'Focus' : isBreak ? 'Break' : isPause ? 'Paused' : 'Grace';
-                      const toneClass = isBreak
-                        ? 'bg-teal-400/[0.11] border-teal-300/30'
-                        : isPause
-                          ? 'bg-slate-300/[0.1] border-slate-300/25'
-                          : isGrace
-                            ? 'bg-fuchsia-400/[0.11] border-fuchsia-300/30'
-                            : 'bg-white/[0.07] border-white/15';
-                      const title = isWork
-                        ? entry.task?.name || 'Focus Block'
-                        : isBreak
-                          ? 'Break'
-                          : isPause
-                            ? 'Paused Session'
-                            : 'Grace Period';
-                      const subtitle = isWork
-                        ? (entry.reason || 'Focused work')
-                        : isBreak
-                          ? (entry.reason || 'Recovery')
-                          : isPause
-                            ? (entry.reason || 'Paused')
-                            : (entry.reason || 'Unassigned');
-                      const relativeWidth = Math.max(18, Math.round((Math.max(1, entry.duration) / maxDuration) * 100));
+                      const accentColor = category?.color || entry.color || (
+                        isWork
+                          ? PRESET_COLORS[0]
+                          : isBreak
+                            ? PRESET_COLORS[1]
+                            : isPause
+                              ? '#94a3b8'
+                              : PRESET_COLORS[4]
+                      );
+                      const title = getLogBlockTitle(entry, category?.name);
+                      const subtitle = getLogBlockSubtitle(entry, category?.name);
+                      const cardStyle: React.CSSProperties = {
+                        minHeight: `${getLogBlockHeight(entry.duration)}px`,
+                        borderColor: colorToRgba(accentColor, isLightTheme ? 0.26 : 0.34),
+                        background: isLightTheme
+                          ? `linear-gradient(160deg, ${colorToRgba(accentColor, 0.24)} 0%, ${colorToRgba(accentColor, 0.12)} 44%, rgba(255, 255, 255, 0.66) 100%)`
+                          : `linear-gradient(160deg, ${colorToRgba(accentColor, 0.28)} 0%, ${colorToRgba(accentColor, 0.14)} 44%, rgba(255, 255, 255, 0.04) 100%)`,
+                        boxShadow: `0 14px 30px -22px ${colorToRgba(accentColor, isLightTheme ? 0.26 : 0.58)}`,
+                      };
+                      const durationStyle: React.CSSProperties = {
+                        borderColor: colorToRgba(accentColor, isLightTheme ? 0.24 : 0.3),
+                        backgroundColor: colorToRgba(accentColor, isLightTheme ? 0.14 : 0.14),
+                        color: isLightTheme ? '#102033' : '#f8fafc',
+                      };
 
                       return (
                         <div
                           key={`log-row-${dateKey}-${entry.start}-${entry.type}-${index}`}
-                          className={`relative overflow-hidden rounded-xl border transition-[transform,background-color,border-color] duration-200 hover:-translate-y-[1px] hover:border-white/30 ${toneClass}`}
+                          className="relative pl-[4.5rem] md:pl-[5.5rem]"
                         >
-                          <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: accentColor }} />
                           <div
-                            className="pl-3 pr-3 py-2.5 flex flex-col justify-between gap-2"
-                            style={{ minHeight: `${getLogBlockHeight(entry.duration)}px` }}
+                            className="absolute left-0 top-0 bottom-0 w-[4rem] md:w-[5rem] flex flex-col justify-between py-3 pr-3"
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-[10px] uppercase font-bold tracking-[0.16em] text-white/65">{typeLabel}</div>
-                              <div className="font-mono text-[11px] font-bold text-white/85 bg-black/20 px-2 py-1 rounded-md">
-                                {formatDuration(entry.duration)}
-                              </div>
+                            <div className="text-right text-[11px] font-mono font-bold text-white/90">
+                              {formatClockTime(entry.start)}
                             </div>
-
-                            <div className="min-w-0">
-                              <div className="text-sm font-bold text-white tracking-tight truncate">{title}</div>
-                              <div className="text-[11px] text-white/60 truncate">{subtitle}</div>
+                            <div className="text-right text-[11px] font-mono text-white/45">
+                              {formatClockTime(entry.end)}
                             </div>
+                          </div>
 
-                            <div className="space-y-1">
-                              <div className="text-[10px] text-white/45 font-mono uppercase tracking-[0.12em]">
-                                {formatTimeRange(entry.start, entry.end)}
+                          <div className="absolute left-[3.95rem] md:left-[4.95rem] top-4 bottom-4 w-px bg-white/10" />
+
+                          <div className="relative ml-2 overflow-hidden rounded-2xl border" style={cardStyle}>
+                            <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: accentColor }} />
+                            <div className="absolute inset-0 opacity-60 bg-[linear-gradient(158deg,rgba(255,255,255,0.22),transparent_40%,rgba(255,255,255,0)_72%)]" />
+                            <div className="relative h-full p-3 md:p-3.5 flex flex-col justify-between gap-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  {subtitle && (
+                                    <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/55">
+                                      {subtitle}
+                                    </div>
+                                  )}
+                                  <div className={`${subtitle ? 'mt-2' : ''} text-sm md:text-[15px] font-bold text-white tracking-tight truncate`}>
+                                    {title}
+                                  </div>
+                                </div>
+                                <div className="shrink-0 rounded-xl border px-2.5 py-1.5 text-[11px] font-mono font-bold" style={durationStyle}>
+                                  {formatDuration(entry.duration)}
+                                </div>
                               </div>
-                              <div className="h-1.5 rounded-full bg-black/25 overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-[width] duration-300"
-                                  style={{ width: `${relativeWidth}%`, backgroundColor: accentColor }}
-                                />
+
+                              <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.12em] font-bold text-white/45">
+                                <div>Start {formatClockTime(entry.start)}</div>
+                                <div>Finish {formatClockTime(entry.end)}</div>
                               </div>
                             </div>
                           </div>
@@ -1176,19 +1283,24 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
               <div>
                 <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Icon</label>
-                <div className="grid grid-cols-5 gap-2">
-                  {iconKeys.map(iconKey => (
+                <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+                  {CATEGORY_ICON_OPTIONS.map(({ key, label }) => (
                     <button
-                      key={iconKey}
+                      key={key}
                       type="button"
-                      onClick={() => setNewCategoryIcon(iconKey)}
-                      className={`p-2 rounded-lg flex items-center justify-center text-white transition-colors ${
-                        newCategoryIcon === iconKey
-                          ? 'bg-white/20'
+                      onClick={() => setNewCategoryIcon(key)}
+                      title={label}
+                      aria-label={label}
+                      className={`p-2.5 rounded-xl flex flex-col items-center justify-center gap-1.5 text-white transition-colors border ${
+                        newCategoryIcon === key
+                          ? 'bg-white/18 border-white/30'
                           : 'bg-white/5 hover:bg-white/10 opacity-60 hover:opacity-100'
                       }`}
                     >
-                      {getIcon(iconKey)}
+                      {getIcon(key, { size: 16 })}
+                      <span className="text-[9px] font-semibold tracking-[0.08em] uppercase leading-none text-white/70">
+                        {label}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1217,7 +1329,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: category.color }}>
                     {getIcon(category.icon)}
                   </div>
-                  <span className="text-white font-bold text-sm">{category.name}</span>
+                  <div className="min-w-0">
+                    <div className="text-white font-bold text-sm">{category.name}</div>
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-white/35">
+                      {getCategoryIconLabel(category.icon)}
+                    </div>
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -1299,40 +1416,152 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           appearance: textfield;
         }
         .doro-settings-shell.theme-light {
-          background: linear-gradient(160deg, #f7f9fc 0%, #eef3f9 52%, #ebf1f8 100%) !important;
-          border-color: #d4dde9 !important;
-          box-shadow: 0 30px 70px -26px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
+          position: relative;
+          isolation: isolate;
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05)),
+            linear-gradient(155deg, rgba(255, 255, 255, 0.84) 0%, rgba(247, 250, 255, 0.6) 34%, rgba(232, 240, 251, 0.42) 100%) !important;
+          border-color: rgba(255, 255, 255, 0.58) !important;
+          backdrop-filter: blur(34px) saturate(185%) !important;
+          -webkit-backdrop-filter: blur(34px) saturate(185%) !important;
+          box-shadow:
+            0 44px 120px -56px rgba(67, 85, 116, 0.58),
+            inset 0 1px 0 rgba(255, 255, 255, 0.82),
+            inset 0 -1px 0 rgba(255, 255, 255, 0.22),
+            0 0 0 1px rgba(255, 255, 255, 0.24) !important;
+        }
+        .doro-settings-shell.theme-light::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background:
+            radial-gradient(circle at 18% -8%, rgba(255, 255, 255, 0.96), transparent 34%),
+            radial-gradient(circle at 87% 6%, rgba(122, 187, 255, 0.34), transparent 26%),
+            radial-gradient(circle at 50% 120%, rgba(174, 204, 255, 0.18), transparent 42%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0) 28%, rgba(255, 255, 255, 0.1) 100%);
+          opacity: 0.96;
+          pointer-events: none;
+        }
+        .doro-settings-shell.theme-light::after {
+          content: '';
+          position: absolute;
+          inset: 1px;
+          border-radius: inherit;
+          border: 1px solid rgba(255, 255, 255, 0.28);
+          pointer-events: none;
+        }
+        .doro-settings-shell.theme-light > * {
+          position: relative;
+          z-index: 1;
         }
         .doro-settings-shell.theme-light .settings-tabbar {
-          border-color: rgba(15, 23, 42, 0.1) !important;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.75)) !important;
+          padding: 0.6rem;
+          gap: 0.45rem;
+          border-color: rgba(255, 255, 255, 0.26) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(245, 249, 255, 0.14)) !important;
+          backdrop-filter: blur(18px) saturate(180%);
+          -webkit-backdrop-filter: blur(18px) saturate(180%);
+          box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.28);
+        }
+        .doro-settings-shell.theme-light .settings-tabbar button {
+          position: relative;
+          border: 1px solid transparent;
+          border-radius: 999px;
+          background: transparent !important;
+          color: #6b7a90 !important;
+          text-shadow: 0 1px 0 rgba(255, 255, 255, 0.28);
+          transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease, border-color 180ms ease, box-shadow 220ms ease, color 180ms ease;
+        }
+        .doro-settings-shell.theme-light .settings-tabbar button:hover {
+          transform: translateY(-1px);
+          color: #102133 !important;
+          border-color: rgba(255, 255, 255, 0.34);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(244, 248, 255, 0.16)) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.64), 0 18px 28px -26px rgba(77, 93, 123, 0.42);
+        }
+        .doro-settings-shell.theme-light .settings-tabbar button[class*='bg-white/10'] {
+          color: #102133 !important;
+          border-color: rgba(255, 255, 255, 0.58) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(243, 248, 255, 0.32)) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 20px 30px -26px rgba(77, 93, 123, 0.44);
         }
         .doro-settings-shell.theme-light .settings-body {
-          background: radial-gradient(circle at 12% -10%, rgba(86, 148, 255, 0.12), transparent 38%), radial-gradient(circle at 95% 0%, rgba(95, 198, 255, 0.08), transparent 35%), #f2f6fb !important;
+          position: relative;
+          background:
+            radial-gradient(circle at 14% -10%, rgba(255, 255, 255, 0.92), transparent 28%),
+            radial-gradient(circle at 100% 0%, rgba(95, 179, 255, 0.16), transparent 24%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(242, 247, 255, 0.08)),
+            rgba(233, 240, 250, 0.18) !important;
+          backdrop-filter: blur(24px) saturate(175%);
+          -webkit-backdrop-filter: blur(24px) saturate(175%);
         }
-        .doro-settings-shell.theme-light [class*='bg-white/'] {
-          background-color: rgba(255, 255, 255, 0.7) !important;
+        .doro-settings-shell.theme-light .settings-body::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background:
+            linear-gradient(145deg, rgba(255, 255, 255, 0.22), transparent 24%, rgba(255, 255, 255, 0) 62%),
+            radial-gradient(circle at 78% 14%, rgba(148, 199, 255, 0.18), transparent 22%);
+          pointer-events: none;
         }
-        .doro-settings-shell.theme-light [class*='bg-black/'] {
-          background-color: rgba(225, 233, 244, 0.72) !important;
+        .doro-settings-shell.theme-light .settings-body > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-settings-shell.theme-light .settings-body [class*='bg-white/'],
+        .doro-settings-shell.theme-light .settings-body [class*='bg-black/'] {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(245, 248, 255, 0.18)) !important;
+          border-color: rgba(255, 255, 255, 0.34) !important;
+          backdrop-filter: blur(22px) saturate(165%);
+          -webkit-backdrop-filter: blur(22px) saturate(165%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 22px 32px -28px rgba(82, 101, 136, 0.38);
+        }
+        .doro-settings-shell.theme-light .settings-body input,
+        .doro-settings-shell.theme-light .settings-body textarea,
+        .doro-settings-shell.theme-light .settings-body select {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(244, 248, 255, 0.24)) !important;
+          border-color: rgba(255, 255, 255, 0.42) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76), 0 18px 28px -26px rgba(82, 101, 136, 0.34);
+          backdrop-filter: blur(18px) saturate(160%);
+          -webkit-backdrop-filter: blur(18px) saturate(160%);
+          color: #0f2033 !important;
+        }
+        .doro-settings-shell.theme-light .settings-body input::placeholder,
+        .doro-settings-shell.theme-light .settings-body textarea::placeholder {
+          color: rgba(88, 107, 133, 0.56) !important;
+        }
+        .doro-settings-shell.theme-light .settings-body .settings-option-btn,
+        .doro-settings-shell.theme-light .settings-body button[class*='border'],
+        .doro-settings-shell.theme-light .settings-body button[class*='bg-white'],
+        .doro-settings-shell.theme-light .settings-body button[class*='bg-black/'] {
+          backdrop-filter: blur(18px) saturate(160%);
+          -webkit-backdrop-filter: blur(18px) saturate(160%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 18px 30px -26px rgba(87, 104, 137, 0.35);
+        }
+        .doro-settings-shell.theme-light .settings-option-btn:hover {
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 22px 36px -28px rgba(76, 96, 130, 0.42);
         }
         .doro-settings-shell.theme-light [class*='border-white/'] {
           border-color: rgba(15, 23, 42, 0.12) !important;
         }
         .doro-settings-shell.theme-light [class*='text-white'] {
-          color: #0b1526 !important;
+          color: #102133 !important;
         }
         .doro-settings-shell.theme-light [class*='text-white/'] {
-          color: #5f6f85 !important;
+          color: #667990 !important;
         }
       `}</style>
 
       <div
-        className="fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4 bg-black/60 backdrop-blur-xl animate-fade-in"
+        className={`fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4 animate-fade-in ${
+          isLightTheme
+            ? 'bg-[rgba(16,24,38,0.18)] backdrop-blur-[20px]'
+            : 'bg-black/60 backdrop-blur-xl'
+        }`}
         onClick={onClose}
       >
         <div
-          className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`}
+          className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} relative w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`}
           onClick={event => event.stopPropagation()}
         >
           <div className="settings-tabbar flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">

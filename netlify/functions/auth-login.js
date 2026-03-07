@@ -1,5 +1,6 @@
 import {
   attachPublicUserToData,
+  buildPublicUserFromAccountData,
   buildDefaultAccountData,
   createSession,
   getAccountData,
@@ -7,10 +8,14 @@ import {
   json,
   normalizeUsername,
   parseBody,
+  persistUser,
+  saveAccountData,
   validatePassword,
   validateUsername,
   verifyPassword,
 } from './_lib/account-store.js';
+
+const isSameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 export default async (request) => {
   if (request.method !== 'POST') {
@@ -46,8 +51,22 @@ export default async (request) => {
   const accountData = rawAccount
     ? attachPublicUserToData(rawAccount, publicUser)
     : buildDefaultAccountData(publicUser);
+  const authoritativeUser = buildPublicUserFromAccountData(publicUser, accountData);
+
+  const writes = [];
+  if (!rawAccount || !isSameJson(rawAccount, accountData)) {
+    writes.push(saveAccountData(userRecord.id, accountData));
+  }
+  if (!isSameJson(userRecord.lifetimeStats || {}, authoritativeUser.lifetimeStats || {})) {
+    writes.push(persistUser({
+      ...userRecord,
+      lifetimeStats: authoritativeUser.lifetimeStats,
+    }));
+  }
+  if (writes.length > 0) {
+    await Promise.all(writes);
+  }
 
   const token = await createSession(userRecord);
-  return json(200, { token, user: publicUser, accountData });
+  return json(200, { token, user: authoritativeUser, accountData });
 };
-

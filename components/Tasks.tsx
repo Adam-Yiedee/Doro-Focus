@@ -4,15 +4,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
 import { getIcon } from '../utils/icons';
-
-const PRESET_COLORS = [
-  '#E8A6A6', // Dusty Rose
-  '#9ECFC8', // Soft Teal
-  '#AFC3E6', // Misty Blue
-  '#DDBA9B', // Warm Sand
-  '#C6B1D9', // Muted Lavender
-  '#AFCFB1', // Sage
-];
+import { PASTEL_SWATCHES as PRESET_COLORS } from '../utils/palette';
 
 const clampPomoEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;

@@ -109,6 +109,13 @@ export const detectRuntimeBoundaryCrossing = (snapshot: TimerRuntimeSnapshot, no
     }
   }
 
+  if (snapshot.phase === 'running-break') {
+    const start = snapshot.phaseStartBreakTime;
+    if (start > 0 && elapsedSeconds >= start) {
+      return { mode: 'break', overflowSeconds: Math.max(0, elapsedSeconds - start) };
+    }
+  }
+
   // Break no longer auto-crosses into grace; break bank can run indefinitely into debt.
 
   return null;

@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
 import { Task } from '../../types';
-
-const PRESET_COLORS = ['#E8A6A6', '#9ECFC8', '#AFC3E6', '#DDBA9B', '#C6B1D9', '#AFCFB1'];
+import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 
 const clampEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -114,6 +113,7 @@ const ScheduleTaskCard: React.FC<{
   onDragHover: (taskId: number, position: DragInsertPosition) => void;
   onDragEnd: () => void;
   onSave: (task: Task) => void;
+  isLightTheme?: boolean;
   isDragging?: boolean;
   dropHint?: DragInsertPosition | null;
   isDropAnimating?: boolean;
@@ -124,6 +124,7 @@ const ScheduleTaskCard: React.FC<{
   onDragHover,
   onDragEnd,
   onSave,
+  isLightTheme = false,
   isDragging = false,
   dropHint = null,
   isDropAnimating = false,
@@ -156,14 +157,39 @@ const ScheduleTaskCard: React.FC<{
   const additionalHeight = isCompleted ? 0 : Math.min(44, Math.max(0, predictedPomos - 1) * 8);
   const taskGlassStyle = useMemo(() => ({
     background: isCompleted
-      ? `linear-gradient(142deg, ${colorToRgba(displayColor, 0.14)} 0%, ${colorToRgba(displayColor, 0.1)} 46%, ${colorToRgba(displayColor, 0.06)} 100%)`
-      : `linear-gradient(142deg, ${colorToRgba(displayColor, 0.38)} 0%, ${colorToRgba(displayColor, 0.24)} 46%, ${colorToRgba(displayColor, 0.15)} 100%)`,
-    borderColor: isCompleted ? colorToRgba(displayColor, 0.24) : colorToRgba(displayColor, 0.5),
+      ? isLightTheme
+        ? `linear-gradient(145deg, ${colorToRgba(displayColor, 0.38)} 0%, ${colorToRgba(displayColor, 0.2)} 42%, rgba(255, 255, 255, 0.72) 100%)`
+        : `linear-gradient(142deg, ${colorToRgba(displayColor, 0.14)} 0%, ${colorToRgba(displayColor, 0.1)} 46%, ${colorToRgba(displayColor, 0.06)} 100%)`
+      : isLightTheme
+        ? `linear-gradient(145deg, ${colorToRgba(displayColor, 0.58)} 0%, ${colorToRgba(displayColor, 0.34)} 40%, rgba(255, 255, 255, 0.66) 100%)`
+        : `linear-gradient(142deg, ${colorToRgba(displayColor, 0.38)} 0%, ${colorToRgba(displayColor, 0.24)} 46%, ${colorToRgba(displayColor, 0.15)} 100%)`,
+    borderColor: isCompleted
+      ? colorToRgba(displayColor, isLightTheme ? 0.42 : 0.24)
+      : colorToRgba(displayColor, isLightTheme ? 0.62 : 0.5),
     boxShadow: isCompleted
-      ? `inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 8px 20px -20px ${colorToRgba(displayColor, 0.32)}`
-      : `inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 24px -18px ${colorToRgba(displayColor, 0.88)}`,
+      ? isLightTheme
+        ? `inset 0 1px 0 rgba(255, 255, 255, 0.74), inset 0 -1px 0 ${colorToRgba(displayColor, 0.16)}, 0 16px 26px -22px ${colorToRgba(displayColor, 0.34)}`
+        : `inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 8px 20px -20px ${colorToRgba(displayColor, 0.32)}`
+      : isLightTheme
+        ? `inset 0 1px 0 rgba(255, 255, 255, 0.86), inset 0 -1px 0 ${colorToRgba(displayColor, 0.18)}, 0 20px 32px -20px ${colorToRgba(displayColor, 0.5)}`
+        : `inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 24px -18px ${colorToRgba(displayColor, 0.88)}`,
+    backdropFilter: isLightTheme ? 'blur(24px) saturate(182%)' : undefined,
+    WebkitBackdropFilter: isLightTheme ? 'blur(24px) saturate(182%)' : undefined,
     minHeight: `${58 + additionalHeight}px`,
-  }), [displayColor, additionalHeight, isCompleted]);
+  }), [displayColor, additionalHeight, isCompleted, isLightTheme]);
+  const taskTintStyle = useMemo(() => ({
+    background: isCompleted
+      ? isLightTheme
+        ? `radial-gradient(circle at 14% 10%, ${colorToRgba(displayColor, 0.26)} 0%, transparent 44%), radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.76) 0%, transparent 34%), linear-gradient(135deg, ${colorToRgba(displayColor, 0.14)} 0%, transparent 56%, ${colorToRgba(displayColor, 0.1)} 100%)`
+        : `radial-gradient(circle at 14% 10%, ${colorToRgba(displayColor, 0.18)} 0%, transparent 44%), linear-gradient(135deg, ${colorToRgba(displayColor, 0.12)} 0%, transparent 56%, ${colorToRgba(displayColor, 0.08)} 100%)`
+      : isLightTheme
+        ? `radial-gradient(circle at 16% 8%, ${colorToRgba(displayColor, 0.34)} 0%, transparent 46%), radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.82) 0%, transparent 34%), linear-gradient(135deg, ${colorToRgba(displayColor, 0.22)} 0%, transparent 48%, ${colorToRgba(displayColor, 0.16)} 100%)`
+        : `radial-gradient(circle at 16% 8%, ${colorToRgba(displayColor, 0.24)} 0%, transparent 46%), linear-gradient(135deg, ${colorToRgba(displayColor, 0.18)} 0%, transparent 48%, ${colorToRgba(displayColor, 0.14)} 100%)`,
+  }), [displayColor, isCompleted, isLightTheme]);
+  const taskAccentStyle = useMemo(() => ({
+    background: `linear-gradient(90deg, ${colorToRgba(displayColor, isCompleted ? (isLightTheme ? 0.68 : 0.52) : (isLightTheme ? 0.92 : 0.82))} 0%, ${colorToRgba(displayColor, isLightTheme ? 0.36 : 0.2)} 100%)`,
+    boxShadow: `0 0 16px ${colorToRgba(displayColor, isLightTheme ? 0.28 : 0.22)}`,
+  }), [displayColor, isCompleted, isLightTheme]);
   const exitEdit = () => {
     setIsEditing(false);
     setIsSettlingAfterEdit(true);
@@ -185,7 +211,7 @@ const ScheduleTaskCard: React.FC<{
             <button
               type="button"
               onClick={() => setEstimated(prev => clampEstimate(prev - 1))}
-              className="px-2 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+              className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Decrease predicted pomodoros"
             >
               -
@@ -194,7 +220,7 @@ const ScheduleTaskCard: React.FC<{
             <button
               type="button"
               onClick={() => setEstimated(prev => clampEstimate(prev + 1))}
-              className="px-2 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+              className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Increase predicted pomodoros"
             >
               +
@@ -219,7 +245,7 @@ const ScheduleTaskCard: React.FC<{
           <button
             type="button"
             onClick={exitEdit}
-            className="px-2.5 py-1 rounded-md border border-white/10 text-[10px] uppercase tracking-[0.14em] text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+            className="schedule-glass-button schedule-glass-button--ghost px-2.5 py-1 rounded-md border border-white/10 text-[10px] uppercase tracking-[0.14em] text-white/60 hover:text-white hover:bg-white/10 transition-colors"
           >
             Cancel
           </button>
@@ -229,7 +255,7 @@ const ScheduleTaskCard: React.FC<{
               onSave({ ...task, name: name.trim() || task.name, estimated: clampEstimate(estimated), color });
               exitEdit();
             }}
-            className="px-2.5 py-1 rounded-md border border-teal-100/35 bg-teal-300/20 text-[10px] uppercase tracking-[0.14em] font-bold text-teal-50 hover:bg-teal-300/30 transition-colors"
+            className="schedule-glass-button schedule-glass-button--primary px-2.5 py-1 rounded-md border border-teal-100/35 bg-teal-300/20 text-[10px] uppercase tracking-[0.14em] font-bold text-teal-50 hover:bg-teal-300/30 transition-colors"
           >
             Save
           </button>
@@ -273,9 +299,9 @@ const ScheduleTaskCard: React.FC<{
         onDragEnd();
       }}
       onDragEnd={onDragEnd}
-      className={`group relative rounded-xl border p-2.5 transition-[transform,opacity,background-color,border-color] duration-200 ${
+      className={`schedule-task-card group relative rounded-xl border p-2.5 transition-[transform,opacity,background-color,border-color] duration-200 ${
         isCompleted
-          ? 'cursor-default opacity-55'
+          ? 'schedule-task-card-completed cursor-default opacity-55'
           : 'cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20'
       } ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
       style={taskGlassStyle}
@@ -283,10 +309,12 @@ const ScheduleTaskCard: React.FC<{
       {dropHint && !isDragging && (
         <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.55)]`} />
       )}
+      <div className="pointer-events-none absolute inset-0 rounded-xl" style={taskTintStyle} />
+      <div className="pointer-events-none absolute left-3 right-10 top-[1px] h-[2px] rounded-full opacity-95" style={taskAccentStyle} />
       <div className="pointer-events-none absolute inset-0 rounded-xl bg-[linear-gradient(160deg,rgba(255,255,255,0.35),rgba(255,255,255,0.08)_34%,rgba(255,255,255,0)_64%)] opacity-60" />
       <div className="relative z-10 pr-8">
-        <div className={`text-[16px] leading-tight font-bold truncate ${isCompleted ? 'text-white/45 line-through decoration-white/45 decoration-2' : 'text-white'}`}>{task.name}</div>
-        <div className={`mt-1 text-[9px] uppercase tracking-[0.1em] font-sans font-medium ${isCompleted ? 'text-white/30' : 'text-white/45'}`}>
+        <div className={`schedule-task-title text-[16px] leading-tight font-bold truncate ${isCompleted ? 'text-white/45 line-through decoration-white/45 decoration-2' : 'text-white'}`}>{task.name}</div>
+        <div className={`schedule-task-meta mt-1 text-[9px] uppercase tracking-[0.1em] font-sans font-medium ${isCompleted ? 'text-white/30' : 'text-white/45'}`}>
           {isCompleted ? 'Completed' : formatPomoLabel(predictedPomos)}
         </div>
       </div>
@@ -294,7 +322,7 @@ const ScheduleTaskCard: React.FC<{
         <button
           type="button"
           onClick={() => setIsEditing(true)}
-          className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center z-10"
+          className="schedule-glass-button schedule-glass-button--icon schedule-task-edit-button absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center z-10"
           aria-label="Edit task"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -328,6 +356,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskEst, setNewTaskEst] = useState(1);
   const [newTaskColor, setNewTaskColor] = useState(activeColor || PRESET_COLORS[0]);
+  const [todayKey, setTodayKey] = useState(() => getDateKey(new Date()));
   const openAtRef = useRef<number>(0);
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
   const dropAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -337,11 +366,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const cardRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const previousCardTopsRef = useRef<Map<number, number>>(new Map());
   const flipAnimationsRef = useRef<Map<number, Animation>>(new Map());
-  const todayKey = useMemo(() => getDateKey(new Date()), []);
   const todayDate = useMemo(() => parseDateKey(todayKey), [todayKey]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
+    setTodayKey(getDateKey(new Date()));
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
@@ -382,9 +411,28 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
 
   useEffect(() => {
     if (!isOpen) return;
+    const currentTodayKey = getDateKey(new Date());
     const unscheduledActive = tasks.filter(task => !task.checked && !task.isFuture && !task.scheduledDate);
     if (unscheduledActive.length === 0) return;
-    unscheduledActive.forEach(task => updateTask({ ...task, scheduledDate: todayKey }));
+    unscheduledActive.forEach(task => updateTask({ ...task, scheduledDate: currentTodayKey }));
+  }, [isOpen, tasks, todayKey, updateTask]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const currentTodayKey = getDateKey(new Date());
+    const overdueOpenTasks = tasks.filter((task) => (
+      !task.checked
+      && typeof task.scheduledDate === 'string'
+      && task.scheduledDate < currentTodayKey
+    ));
+    if (overdueOpenTasks.length === 0) return;
+    overdueOpenTasks.forEach((task) => {
+      updateTask({
+        ...task,
+        scheduledDate: currentTodayKey,
+        isFuture: false,
+      });
+    });
   }, [isOpen, tasks, todayKey, updateTask]);
 
   const rootOpenTasks = useMemo(() => tasks.filter((task) => !task.checked), [tasks]);
@@ -710,27 +758,222 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     <>
       <style>{`
         .doro-weekly-shell.theme-light {
-          background: linear-gradient(165deg, #f7f9fc 0%, #eef3f9 54%, #ebf1f8 100%) !important;
-          border-color: #d5dee9 !important;
-          box-shadow: 0 30px 70px -24px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.88) !important;
+          isolation: isolate;
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.05)),
+            linear-gradient(160deg, rgba(255, 255, 255, 0.84) 0%, rgba(246, 250, 255, 0.56) 36%, rgba(231, 239, 249, 0.38) 100%) !important;
+          border-color: rgba(255, 255, 255, 0.56) !important;
+          backdrop-filter: blur(34px) saturate(185%) !important;
+          -webkit-backdrop-filter: blur(34px) saturate(185%) !important;
+          box-shadow:
+            0 42px 118px -56px rgba(67, 85, 116, 0.56),
+            inset 0 1px 0 rgba(255, 255, 255, 0.84),
+            inset 0 -1px 0 rgba(255, 255, 255, 0.2),
+            0 0 0 1px rgba(255, 255, 255, 0.2) !important;
         }
-        .doro-weekly-shell.theme-light [class*="bg-white/"] {
-          background-color: rgba(255, 255, 255, 0.72) !important;
+        .doro-weekly-shell.theme-light::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background:
+            radial-gradient(circle at 12% -8%, rgba(255, 255, 255, 0.96), transparent 30%),
+            radial-gradient(circle at 92% 6%, rgba(123, 188, 255, 0.32), transparent 26%),
+            radial-gradient(circle at 50% 120%, rgba(172, 202, 255, 0.16), transparent 44%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 28%, rgba(255, 255, 255, 0.08) 100%);
+          pointer-events: none;
+          opacity: 0.96;
         }
+        .doro-weekly-shell.theme-light::after {
+          content: '';
+          position: absolute;
+          inset: 1px;
+          border-radius: inherit;
+          border: 1px solid rgba(255, 255, 255, 0.28);
+          pointer-events: none;
+        }
+        .doro-weekly-shell.theme-light > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-weekly-shell.theme-light .weekly-body {
+          position: relative;
+          background:
+            radial-gradient(circle at 14% -10%, rgba(255, 255, 255, 0.88), transparent 28%),
+            radial-gradient(circle at 100% 0%, rgba(95, 179, 255, 0.16), transparent 24%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(243, 247, 255, 0.04));
+        }
+        .doro-weekly-shell.theme-light .weekly-body::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background:
+            linear-gradient(150deg, rgba(255, 255, 255, 0.18), transparent 24%, rgba(255, 255, 255, 0) 62%),
+            radial-gradient(circle at 82% 14%, rgba(149, 200, 255, 0.16), transparent 22%);
+          pointer-events: none;
+        }
+        .doro-weekly-shell.theme-light .weekly-body > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-weekly-shell.theme-light .schedule-header-group {
+          border-color: rgba(255, 255, 255, 0.26) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(245, 249, 255, 0.14)) !important;
+          backdrop-filter: blur(22px) saturate(180%);
+          -webkit-backdrop-filter: blur(22px) saturate(180%);
+          box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.28);
+        }
+        .doro-weekly-shell.theme-light [class*="bg-white/"],
         .doro-weekly-shell.theme-light [class*="bg-black/"] {
-          background-color: rgba(226, 234, 245, 0.72) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.44), rgba(245, 248, 255, 0.16)) !important;
+          border-color: rgba(255, 255, 255, 0.32) !important;
+          backdrop-filter: blur(20px) saturate(165%);
+          -webkit-backdrop-filter: blur(20px) saturate(165%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 20px 30px -28px rgba(82, 101, 136, 0.36);
+        }
+        .doro-weekly-shell.theme-light input,
+        .doro-weekly-shell.theme-light textarea,
+        .doro-weekly-shell.theme-light select {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(244, 248, 255, 0.24)) !important;
+          border-color: rgba(255, 255, 255, 0.42) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76), 0 18px 28px -26px rgba(82, 101, 136, 0.34);
+          backdrop-filter: blur(18px) saturate(160%);
+          -webkit-backdrop-filter: blur(18px) saturate(160%);
+          color: #0f2033 !important;
+        }
+        .doro-weekly-shell.theme-light input::placeholder,
+        .doro-weekly-shell.theme-light textarea::placeholder {
+          color: rgba(88, 107, 133, 0.56) !important;
+        }
+        .doro-weekly-shell.theme-light button[class*="border"],
+        .doro-weekly-shell.theme-light button[class*="bg-white"],
+        .doro-weekly-shell.theme-light button[class*="bg-black/"] {
+          backdrop-filter: blur(18px) saturate(160%);
+          -webkit-backdrop-filter: blur(18px) saturate(160%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 18px 30px -26px rgba(87, 104, 137, 0.34);
+        }
+        .doro-weekly-shell.theme-light .schedule-header-group button:hover {
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 20px 30px -24px rgba(76, 96, 130, 0.38);
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button {
+          border-color: rgba(152, 176, 206, 0.44) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(232, 239, 249, 0.38)) !important;
+          color: #17324c !important;
+          text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.9),
+            inset 0 -1px 0 rgba(171, 190, 214, 0.2),
+            0 18px 30px -24px rgba(78, 102, 138, 0.34) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button:hover {
+          border-color: rgba(132, 164, 204, 0.58) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(235, 243, 251, 0.48)) !important;
+          color: #102a44 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.94),
+            inset 0 -1px 0 rgba(164, 185, 212, 0.22),
+            0 20px 32px -24px rgba(68, 94, 134, 0.4) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--persistent {
+          border-color: rgba(128, 161, 204, 0.5) !important;
+          background: linear-gradient(180deg, rgba(251, 253, 255, 0.86), rgba(224, 234, 248, 0.5)) !important;
+          color: #173a58 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--secondary.is-active {
+          border-color: rgba(117, 158, 214, 0.5) !important;
+          background: linear-gradient(180deg, rgba(245, 250, 255, 0.84), rgba(214, 230, 249, 0.48)) !important;
+          color: #1c4d79 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--accent {
+          border-color: rgba(103, 179, 150, 0.54) !important;
+          background: linear-gradient(180deg, rgba(242, 255, 248, 0.86), rgba(208, 244, 226, 0.52)) !important;
+          color: #0f5e46 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.92),
+            inset 0 -1px 0 rgba(109, 184, 156, 0.18),
+            0 20px 32px -24px rgba(57, 133, 106, 0.34) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--primary {
+          border-color: rgba(103, 160, 219, 0.56) !important;
+          background: linear-gradient(180deg, rgba(241, 250, 255, 0.92), rgba(201, 229, 251, 0.58)) !important;
+          color: #0e4e79 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.96),
+            inset 0 -1px 0 rgba(103, 160, 219, 0.18),
+            0 20px 34px -24px rgba(63, 118, 178, 0.36) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--ghost {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(232, 239, 249, 0.24)) !important;
+          color: rgba(23, 50, 76, 0.82) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--icon {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(232, 239, 249, 0.3)) !important;
+          color: #1c3f61 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card .schedule-task-title {
+          color: #17324c !important;
+          text-shadow: 0 1px 0 rgba(255, 255, 255, 0.46);
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card .schedule-task-meta {
+          color: rgba(27, 57, 84, 0.66) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card-completed .schedule-task-title {
+          color: rgba(43, 71, 97, 0.48) !important;
+          text-decoration-color: rgba(43, 71, 97, 0.38);
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card-completed .schedule-task-meta {
+          color: rgba(43, 71, 97, 0.42) !important;
         }
         .doro-weekly-shell.theme-light [class*="border-white/"] {
           border-color: rgba(15, 23, 42, 0.12) !important;
         }
         .doro-weekly-shell.theme-light [class*="text-white"] {
-          color: #0d1a2c !important;
+          color: #102133 !important;
         }
         .doro-weekly-shell.theme-light [class*="text-white/"] {
-          color: #607086 !important;
+          color: #667990 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button {
+          border-color: rgba(152, 176, 206, 0.44) !important;
+          color: #17324c !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--persistent {
+          border-color: rgba(128, 161, 204, 0.5) !important;
+          color: #173a58 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--secondary.is-active {
+          border-color: rgba(117, 158, 214, 0.5) !important;
+          color: #1c4d79 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--accent {
+          border-color: rgba(103, 179, 150, 0.54) !important;
+          color: #0f5e46 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--primary {
+          border-color: rgba(103, 160, 219, 0.56) !important;
+          color: #0e4e79 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--ghost {
+          color: rgba(23, 50, 76, 0.82) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-glass-button--icon {
+          color: #1c3f61 !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card .schedule-task-title {
+          color: #17324c !important;
+          text-shadow: 0 1px 0 rgba(255, 255, 255, 0.46);
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card .schedule-task-meta {
+          color: rgba(27, 57, 84, 0.66) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card-completed .schedule-task-title {
+          color: rgba(43, 71, 97, 0.48) !important;
+          text-decoration-color: rgba(43, 71, 97, 0.38);
+        }
+        .doro-weekly-shell.theme-light .schedule-task-card-completed .schedule-task-meta {
+          color: rgba(43, 71, 97, 0.42) !important;
         }
         .doro-weekly-shell.theme-light > div:first-child {
-          opacity: 0.32;
+          opacity: 0.18;
         }
         @keyframes doro-soft-expand {
           0% {
@@ -803,24 +1046,50 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           transform: scale(0.985);
         }
         .schedule-reveal-controls {
+          max-width: 0;
           opacity: 0;
+          visibility: hidden;
           transform: translateY(6px);
-          transition: opacity 220ms ease, transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+          overflow: hidden;
+          white-space: nowrap;
+          transition:
+            max-width 280ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 220ms ease,
+            transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+            visibility 0s linear 280ms;
+          pointer-events: none;
         }
         .schedule-header-group:hover .schedule-reveal-controls,
         .schedule-header-group:focus-within .schedule-reveal-controls {
+          max-width: 20rem;
           opacity: 1;
+          visibility: visible;
           transform: translateY(0);
+          transition:
+            max-width 360ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 220ms ease,
+            transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+            visibility 0s linear 0s;
+          pointer-events: auto;
         }
         @media (hover: none) {
           .schedule-reveal-controls {
+            max-width: 20rem;
             opacity: 1;
+            visibility: visible;
             transform: translateY(0);
+            pointer-events: auto;
           }
         }
       `}</style>
       <div
-        className={`fixed inset-0 z-40 bg-black/45 backdrop-blur-[2px] transition-opacity duration-500 ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 z-40 transition-opacity duration-500 ${
+          isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        } ${
+          isLightTheme
+            ? 'bg-[rgba(16,24,38,0.18)] backdrop-blur-[14px]'
+            : 'bg-black/45 backdrop-blur-[2px]'
+        }`}
         onClick={onClose}
       />
 
@@ -836,13 +1105,27 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                 <div className="text-[11px] uppercase tracking-[0.24em] text-white/45 font-bold">Schedule View</div>
                 <h2 className="mt-1 text-2xl font-bold text-white tracking-tight">Weekly Planner</h2>
                 <p className="mt-1 text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
-                <div className="schedule-reveal-controls mt-3 flex items-center gap-2 flex-wrap">
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setShowCompleted(prev => !prev)}
+                    className={`schedule-glass-button group relative overflow-hidden px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-all duration-300 ${
+                      showCompleted
+                        ? 'schedule-glass-button--accent border-emerald-200/35 bg-emerald-300/18 text-emerald-50 hover:bg-emerald-300/26 hover:border-emerald-100/45 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(16,185,129,0.9)]'
+                        : 'schedule-glass-button--persistent border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1] hover:border-white/20 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(255,255,255,0.4)]'
+                    }`}
+                    aria-label={showCompleted ? 'Hide completed tasks' : 'Show completed tasks'}
+                  >
+                    <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_62%)]" />
+                    <span className="relative z-10">{showCompleted ? 'Hide Completed' : 'Show Completed'}</span>
+                  </button>
+                  <div className="schedule-reveal-controls flex items-center gap-2 shrink-0 whitespace-nowrap">
                   <button
                     type="button"
                     onClick={() => setShowHistory(prev => !prev)}
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${
+                    className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${
                       showHistory
-                        ? 'border-white/25 bg-white/14 text-white'
+                        ? 'is-active border-white/25 bg-white/14 text-white'
                         : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'
                     }`}
                   >
@@ -851,33 +1134,21 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                   <button
                     type="button"
                     onClick={() => setExtendSchedule(prev => !prev)}
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${
+                    className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${
                       extendSchedule
-                        ? 'border-white/25 bg-white/14 text-white'
+                        ? 'is-active border-white/25 bg-white/14 text-white'
                         : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'
                     }`}
                   >
                     {extendSchedule ? 'Default Range' : 'Extend Schedule'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCompleted(prev => !prev)}
-                    className={`group relative overflow-hidden px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-all duration-300 ${
-                      showCompleted
-                        ? 'border-emerald-200/35 bg-emerald-300/18 text-emerald-50 hover:bg-emerald-300/26 hover:border-emerald-100/45 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(16,185,129,0.9)]'
-                        : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1] hover:border-white/20 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(255,255,255,0.4)]'
-                    }`}
-                    aria-label={showCompleted ? 'Hide completed tasks' : 'Show completed tasks'}
-                  >
-                    <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_62%)]" />
-                    <span className="relative z-10">{showCompleted ? 'Hide Completed' : 'Show Completed'}</span>
-                  </button>
+                  </div>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="w-9 h-9 rounded-xl border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
+                className="schedule-glass-button schedule-glass-button--icon w-9 h-9 rounded-xl border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
                 aria-label="Close weekly schedule panel"
               >
                 X
@@ -885,7 +1156,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             </div>
           </div>
 
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 py-4">
+          <div ref={scrollContainerRef} className="weekly-body flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 py-4">
             {unscheduledTasks.length > 0 && (
               <div
                 onDragOver={(event) => {
@@ -906,7 +1177,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                     <button
                       type="button"
                       onClick={() => setShowUnscheduled(prev => !prev)}
-                      className="w-5 h-5 rounded-md border border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1] transition-all flex items-center justify-center"
+                      className="schedule-glass-button schedule-glass-button--icon w-5 h-5 rounded-md border border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1] transition-all flex items-center justify-center"
                       aria-label={showUnscheduled ? 'Hide unscheduled tasks' : 'Show unscheduled tasks'}
                     >
                       <svg
@@ -930,6 +1201,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         key={task.id}
                         task={task}
                         onSave={updateTask}
+                        isLightTheme={isLightTheme}
                         isDragging={draggingTaskId === task.id}
                         dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
                         isDropAnimating={dropAnimatedTaskId === task.id}
@@ -980,7 +1252,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                       <button
                         type="button"
                         onClick={() => toggleAddForDay(day.key)}
-                        className="w-7 h-7 rounded-lg border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-all shrink-0"
+                        className="schedule-glass-button schedule-glass-button--icon w-7 h-7 rounded-lg border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-all shrink-0"
                         aria-label={`Add task for ${day.label}`}
                       >
                         +
@@ -989,14 +1261,15 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
 
                     <div className="space-y-1.5 min-h-[58px]">
                       {dayTasks.map((task) => (
-                        <ScheduleTaskCard
-                          key={task.id}
-                          task={task}
-                          onSave={updateTask}
-                          isDragging={draggingTaskId === task.id}
-                          dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
-                          isDropAnimating={dropAnimatedTaskId === task.id}
-                          registerCardRef={registerCardRef}
+                      <ScheduleTaskCard
+                        key={task.id}
+                        task={task}
+                        onSave={updateTask}
+                        isLightTheme={isLightTheme}
+                        isDragging={draggingTaskId === task.id}
+                        dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
+                        isDropAnimating={dropAnimatedTaskId === task.id}
+                        registerCardRef={registerCardRef}
                           onDragStart={handleCardDragStart}
                           onDragHover={handleCardDragHover}
                           onDragEnd={clearDragState}
@@ -1007,7 +1280,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         <button
                           type="button"
                           onClick={() => toggleAddForDay(day.key)}
-                          className="w-full rounded-lg border border-dashed border-white/10 py-2.5 text-center text-[10px] uppercase tracking-[0.12em] text-white/30 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.05] transition-colors"
+                          className="schedule-glass-button schedule-glass-button--ghost w-full rounded-lg border border-dashed border-white/10 py-2.5 text-center text-[10px] uppercase tracking-[0.12em] text-white/30 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.05] transition-colors"
                           aria-label={`Add task for ${day.label}`}
                         >
                           No Tasks
@@ -1035,7 +1308,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             <button
                               type="button"
                               onClick={() => setNewTaskEst((value) => clampEstimate(value - 1))}
-                              className="w-6 h-6 rounded-md border border-white/15 text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
+                              className="schedule-glass-button schedule-glass-button--icon w-6 h-6 rounded-md border border-white/15 text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
                             >
                               -
                             </button>
@@ -1043,7 +1316,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             <button
                               type="button"
                               onClick={() => setNewTaskEst((value) => clampEstimate(value + 1))}
-                              className="w-6 h-6 rounded-md border border-white/15 text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
+                              className="schedule-glass-button schedule-glass-button--icon w-6 h-6 rounded-md border border-white/15 text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
                             >
                               +
                             </button>
@@ -1070,14 +1343,14 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                           <button
                             type="button"
                             onClick={() => setAddingDate(null)}
-                            className="px-2.5 py-1 rounded-md border border-white/10 text-[10px] uppercase tracking-[0.14em] font-bold text-white/55 hover:text-white hover:bg-white/[0.08] transition-colors"
+                            className="schedule-glass-button schedule-glass-button--ghost px-2.5 py-1 rounded-md border border-white/10 text-[10px] uppercase tracking-[0.14em] font-bold text-white/55 hover:text-white hover:bg-white/[0.08] transition-colors"
                           >
                             Cancel
                           </button>
                           <button
                             type="button"
                             onClick={() => submitDayTask(day.key)}
-                            className="px-2.5 py-1 rounded-md border border-white/20 bg-white text-[10px] uppercase tracking-[0.14em] font-bold text-black hover:bg-white/90 transition-colors"
+                            className="schedule-glass-button schedule-glass-button--primary px-2.5 py-1 rounded-md border border-white/20 bg-white text-[10px] uppercase tracking-[0.14em] font-bold text-black hover:bg-white/90 transition-colors"
                           >
                             Add
                           </button>

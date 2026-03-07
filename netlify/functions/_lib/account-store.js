@@ -12,9 +12,11 @@ const SESSION_KEY_PREFIX = 'session:';
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const MAX_ACCOUNT_BYTES = 2_000_000;
+const DISPLAY_NAME_MAX_LENGTH = 48;
 
 const USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
 const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 256;
 
 const DEFAULT_SETTINGS = {
   workDuration: 1500,
@@ -46,6 +48,160 @@ const cleanString = (value, fallback = '') => {
   return typeof value === 'string' ? value : fallback;
 };
 
+const cleanDisplayName = (value, fallback) => {
+  const trimmed = cleanString(value, fallback).trim();
+  const next = trimmed || cleanString(fallback).trim();
+  return next.slice(0, DISPLAY_NAME_MAX_LENGTH);
+};
+
+const toNonNegativeInt = (value, fallback = 0) => {
+  return Math.max(0, Math.floor(clampNumber(value, fallback)));
+};
+
+const normalizeRevision = (value, fallback = 0) => {
+  return toNonNegativeInt(value, fallback);
+};
+
+const getDateKey = (date) => {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getLocalDateKeyFromIso = (iso) => {
+  if (typeof iso !== 'string') return null;
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return null;
+  return getDateKey(dt);
+};
+
+const parseDateKey = (value) => {
+  if (typeof value !== 'string') return null;
+  const parts = value.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+};
+
+const getDayDiff = (fromKey, toKey) => {
+  const from = parseDateKey(fromKey);
+  const to = parseDateKey(toKey);
+  if (!from || !to) return null;
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+};
+
+const isPauseCreditedWorkLog = (entry) => {
+  if (!entry || entry.type !== 'work') return false;
+  const reason = cleanString(entry.reason).trim().toLowerCase();
+  return reason.startsWith('paused') || reason.includes('pause credit');
+};
+
+export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories) => {
+  const safeSessions = Array.isArray(sessions) ? sessions : [];
+  const safeLogs = Array.isArray(logs) ? logs : [];
+  const safeCategories = Array.isArray(categories) ? categories : [];
+
+  const productiveLogs = safeLogs.filter((entry) => {
+    if (!entry || entry.type !== 'work') return false;
+    if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
+    return !isPauseCreditedWorkLog(entry);
+  });
+
+  const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
+  const workMinutesFromSessions = safeSessions.reduce((acc, session) => {
+    const mins = Number(session?.stats?.totalWorkMinutes || 0);
+    return acc + (Number.isFinite(mins) && mins > 0 ? mins : 0);
+  }, 0);
+
+  const categoryMap = new Map();
+  safeCategories.forEach((category) => {
+    if (typeof category?.id === 'number' && Number.isFinite(category.id) && category.name) {
+      categoryMap.set(category.id, category.name);
+    }
+  });
+
+  const categoryBreakdown = {};
+  if (productiveLogs.length > 0) {
+    productiveLogs.forEach((entry) => {
+      const minutes = Math.max(0, entry.duration / 60);
+      if (minutes <= 0) return;
+      const key = typeof entry.categoryId === 'number'
+        ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
+        : 'Uncategorized';
+      categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
+    });
+  } else {
+    safeSessions.forEach((session) => {
+      const categoryStats = session?.stats?.categoryStats;
+      if (!categoryStats || typeof categoryStats !== 'object') return;
+      Object.entries(categoryStats).forEach(([name, minutes]) => {
+        const safeMinutes = Number(minutes);
+        if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+        categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
+      });
+    });
+  }
+
+  const productiveDates = new Set();
+  if (productiveLogs.length > 0) {
+    productiveLogs.forEach((entry) => {
+      const key = getLocalDateKeyFromIso(entry.start);
+      if (key) productiveDates.add(key);
+    });
+  } else {
+    safeSessions.forEach((session) => {
+      const mins = Number(session?.stats?.totalWorkMinutes || 0);
+      if (!Number.isFinite(mins) || mins <= 0) return;
+      const key = getLocalDateKeyFromIso(session.startTime);
+      if (key) productiveDates.add(key);
+    });
+  }
+
+  const sortedDates = Array.from(productiveDates).sort();
+
+  let bestStreak = 0;
+  let runningStreak = 0;
+  for (let i = 0; i < sortedDates.length; i += 1) {
+    if (i === 0) {
+      runningStreak = 1;
+    } else {
+      const diff = getDayDiff(sortedDates[i - 1], sortedDates[i]);
+      runningStreak = diff === 1 ? runningStreak + 1 : 1;
+    }
+    if (runningStreak > bestStreak) bestStreak = runningStreak;
+  }
+
+  let currentStreak = 0;
+  if (sortedDates.length > 0) {
+    const todayKey = getDateKey(new Date());
+    const lastKey = sortedDates[sortedDates.length - 1];
+    const diffToToday = getDayDiff(lastKey, todayKey);
+    if (diffToToday !== null && diffToToday <= 1) {
+      currentStreak = 1;
+      for (let i = sortedDates.length - 1; i > 0; i -= 1) {
+        const diff = getDayDiff(sortedDates[i - 1], sortedDates[i]);
+        if (diff === 1) currentStreak += 1;
+        else break;
+      }
+    }
+  }
+
+  return {
+    ...defaultLifetimeStats(),
+    totalFocusHours: productiveLogs.length > 0 ? workSecondsFromLogs / 3600 : workMinutesFromSessions / 60,
+    totalSessions: safeSessions.length,
+    totalPomos: safeSessions.reduce((acc, session) => {
+      const pomos = Number(session?.stats?.pomosCompleted || 0);
+      return acc + Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
+    }, 0),
+    activeDays: sortedDates.length,
+    currentStreak,
+    bestStreak,
+    lastActiveDate: sortedDates.length > 0 ? sortedDates[sortedDates.length - 1] : null,
+    categoryBreakdown,
+  };
+};
+
 export const json = (status, body) => {
   return new Response(JSON.stringify(body), {
     status,
@@ -74,6 +230,9 @@ export const validatePassword = (value) => {
   if (typeof value !== 'string' || value.length < PASSWORD_MIN_LENGTH) {
     return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`;
   }
+  if (value.length > PASSWORD_MAX_LENGTH) {
+    return `Password must be at most ${PASSWORD_MAX_LENGTH} characters.`;
+  }
   return null;
 };
 
@@ -82,6 +241,28 @@ const getStores = () => ({
   dataStore: getStore(DATA_STORE_NAME),
   sessionsStore: getStore(SESSIONS_STORE_NAME),
 });
+
+const getBlobJSON = async (store, key) => {
+  if (typeof store?.getJSON === 'function') {
+    return store.getJSON(key);
+  }
+  if (typeof store?.get === 'function') {
+    return store.get(key, { type: 'json' });
+  }
+  throw new TypeError('Blob store does not support JSON reads.');
+};
+
+const setBlobJSON = async (store, key, value) => {
+  if (typeof store?.setJSON === 'function') {
+    return store.setJSON(key, value);
+  }
+  if (typeof store?.set === 'function') {
+    return store.set(key, JSON.stringify(value), {
+      contentType: 'application/json; charset=utf-8',
+    });
+  }
+  throw new TypeError('Blob store does not support JSON writes.');
+};
 
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 
@@ -96,43 +277,33 @@ const makeUserPublic = (record) => ({
   },
 });
 
-const sanitizeLifetimeStats = (raw, fallback) => {
-  const base = {
-    ...defaultLifetimeStats(),
-    ...(fallback || {}),
-  };
-  const next = raw && typeof raw === 'object' ? raw : {};
-  return {
-    totalFocusHours: clampNumber(next.totalFocusHours, base.totalFocusHours),
-    totalSessions: Math.max(0, Math.floor(clampNumber(next.totalSessions, base.totalSessions))),
-    totalPomos: Math.max(0, Math.floor(clampNumber(next.totalPomos, base.totalPomos))),
-    activeDays: Math.max(0, Math.floor(clampNumber(next.activeDays, base.activeDays))),
-    currentStreak: Math.max(0, Math.floor(clampNumber(next.currentStreak, base.currentStreak))),
-    bestStreak: Math.max(0, Math.floor(clampNumber(next.bestStreak, base.bestStreak))),
-    lastActiveDate: typeof next.lastActiveDate === 'string' || next.lastActiveDate === null ? next.lastActiveDate : base.lastActiveDate,
-    categoryBreakdown: next.categoryBreakdown && typeof next.categoryBreakdown === 'object' ? next.categoryBreakdown : base.categoryBreakdown,
-  };
-};
-
-export const sanitizeAccountPayload = (payload, publicUser) => {
+export const sanitizeAccountPayload = (payload, publicUser, options = {}) => {
   const source = payload && typeof payload === 'object' ? payload : {};
+  const safeTasks = Array.isArray(source.tasks) ? source.tasks : [];
+  const safeSessions = Array.isArray(source.pastSessions) ? source.pastSessions : [];
+  const safeCategories = Array.isArray(source.categories) ? source.categories : [];
+  const safeLogs = Array.isArray(source.logs) ? source.logs : [];
+  const safeRevision = normalizeRevision(options.revision ?? source.revision, 0);
+  const safeUpdatedAt = typeof options.updatedAt === 'string' ? options.updatedAt : new Date().toISOString();
+  const lifetimeStats = calculateLifetimeStatsFromAccountData(safeSessions, safeLogs, safeCategories);
   const safeUser = {
     username: publicUser.username,
     joinedAt: publicUser.joinedAt,
-    lifetimeStats: sanitizeLifetimeStats(source.user?.lifetimeStats, publicUser.lifetimeStats),
+    lifetimeStats,
   };
 
   const sanitized = {
+    revision: safeRevision,
     schemaVersion: 2,
     runtime: source.runtime && typeof source.runtime === 'object' ? source.runtime : undefined,
     settings: {
       ...DEFAULT_SETTINGS,
       ...(source.settings && typeof source.settings === 'object' ? source.settings : {}),
     },
-    tasks: Array.isArray(source.tasks) ? source.tasks : [],
-    pastSessions: Array.isArray(source.pastSessions) ? source.pastSessions : [],
-    categories: Array.isArray(source.categories) ? source.categories : [],
-    logs: Array.isArray(source.logs) ? source.logs : [],
+    tasks: safeTasks,
+    pastSessions: safeSessions,
+    categories: safeCategories,
+    logs: safeLogs,
     pomodoroCount: clampNumber(source.pomodoroCount, 0),
     workTime: clampNumber(source.workTime, DEFAULT_SETTINGS.workDuration),
     breakTime: clampNumber(source.breakTime, 0),
@@ -149,9 +320,9 @@ export const sanitizeAccountPayload = (payload, publicUser) => {
     scheduleBreaks: Array.isArray(source.scheduleBreaks) ? source.scheduleBreaks : [],
     scheduleStartTime: cleanString(source.scheduleStartTime, '08:00'),
     sessionStartTime: typeof source.sessionStartTime === 'string' || source.sessionStartTime === null ? source.sessionStartTime : null,
-    userName: safeUser.username,
+    userName: cleanDisplayName(source.userName, safeUser.username),
     user: safeUser,
-    updatedAt: new Date().toISOString(),
+    updatedAt: safeUpdatedAt,
   };
 
   const serialized = JSON.stringify(sanitized);
@@ -186,22 +357,22 @@ export const buildDefaultAccountData = (publicUser) => sanitizeAccountPayload({
   sessionStartTime: null,
   userName: publicUser.username,
   user: publicUser,
-}, publicUser);
+}, publicUser, { revision: 1 });
 
 export const getUserByUsername = async (normalizedUsername) => {
   const { usersStore } = getStores();
-  return usersStore.getJSON(`${USER_KEY_PREFIX}${normalizedUsername}`);
+  return getBlobJSON(usersStore, `${USER_KEY_PREFIX}${normalizedUsername}`);
 };
 
 export const getUserById = async (userId) => {
   const { usersStore } = getStores();
-  return usersStore.getJSON(`${USER_ID_KEY_PREFIX}${userId}`);
+  return getBlobJSON(usersStore, `${USER_ID_KEY_PREFIX}${userId}`);
 };
 
 export const createUser = async (username, password) => {
   const { usersStore } = getStores();
   const normalized = normalizeUsername(username);
-  const existing = await usersStore.getJSON(`${USER_KEY_PREFIX}${normalized}`);
+  const existing = await getBlobJSON(usersStore, `${USER_KEY_PREFIX}${normalized}`);
   if (existing) return null;
 
   const salt = randomBytes(16).toString('hex');
@@ -219,8 +390,8 @@ export const createUser = async (username, password) => {
   };
 
   await Promise.all([
-    usersStore.setJSON(`${USER_KEY_PREFIX}${normalized}`, record),
-    usersStore.setJSON(`${USER_ID_KEY_PREFIX}${record.id}`, record),
+    setBlobJSON(usersStore, `${USER_KEY_PREFIX}${normalized}`, record),
+    setBlobJSON(usersStore, `${USER_ID_KEY_PREFIX}${record.id}`, record),
   ]);
   return record;
 };
@@ -237,8 +408,8 @@ export const persistUser = async (record) => {
   const { usersStore } = getStores();
   const withUpdated = { ...record, updatedAt: new Date().toISOString() };
   await Promise.all([
-    usersStore.setJSON(`${USER_KEY_PREFIX}${withUpdated.normalizedUsername}`, withUpdated),
-    usersStore.setJSON(`${USER_ID_KEY_PREFIX}${withUpdated.id}`, withUpdated),
+    setBlobJSON(usersStore, `${USER_KEY_PREFIX}${withUpdated.normalizedUsername}`, withUpdated),
+    setBlobJSON(usersStore, `${USER_ID_KEY_PREFIX}${withUpdated.id}`, withUpdated),
   ]);
 };
 
@@ -252,7 +423,7 @@ export const createSession = async (userRecord) => {
     createdAt: now,
     expiresAt: now + SESSION_TTL_MS,
   };
-  await sessionsStore.setJSON(`${SESSION_KEY_PREFIX}${hashToken(token)}`, session);
+  await setBlobJSON(sessionsStore, `${SESSION_KEY_PREFIX}${hashToken(token)}`, session);
   return token;
 };
 
@@ -269,7 +440,7 @@ export const requireSession = async (request) => {
 
   const tokenHash = hashToken(token);
   const { sessionsStore } = getStores();
-  const session = await sessionsStore.getJSON(`${SESSION_KEY_PREFIX}${tokenHash}`);
+  const session = await getBlobJSON(sessionsStore, `${SESSION_KEY_PREFIX}${tokenHash}`);
   if (!session) return null;
 
   if (typeof session.expiresAt !== 'number' || session.expiresAt < Date.now()) {
@@ -284,7 +455,7 @@ export const requireSession = async (request) => {
   }
 
   if (session.expiresAt - Date.now() < SESSION_TTL_MS / 2) {
-    await sessionsStore.setJSON(`${SESSION_KEY_PREFIX}${tokenHash}`, {
+    await setBlobJSON(sessionsStore, `${SESSION_KEY_PREFIX}${tokenHash}`, {
       ...session,
       expiresAt: Date.now() + SESSION_TTL_MS,
     });
@@ -305,18 +476,25 @@ export const revokeSessionByTokenHash = async (tokenHash) => {
 
 export const getAccountData = async (userId) => {
   const { dataStore } = getStores();
-  return dataStore.getJSON(`${ACCOUNT_KEY_PREFIX}${userId}`);
+  return getBlobJSON(dataStore, `${ACCOUNT_KEY_PREFIX}${userId}`);
 };
 
 export const saveAccountData = async (userId, data) => {
   const { dataStore } = getStores();
-  await dataStore.setJSON(`${ACCOUNT_KEY_PREFIX}${userId}`, data);
+  await setBlobJSON(dataStore, `${ACCOUNT_KEY_PREFIX}${userId}`, data);
 };
 
 export const attachPublicUserToData = (accountData, publicUser) => {
   const patched = sanitizeAccountPayload(accountData, publicUser);
   return patched;
 };
+
+export const buildPublicUserFromAccountData = (publicUser, accountData) => ({
+  ...publicUser,
+  lifetimeStats: accountData?.user?.lifetimeStats || publicUser.lifetimeStats || defaultLifetimeStats(),
+});
+
+export const getAccountRevision = (accountData) => normalizeRevision(accountData?.revision, 0);
 
 export const tokenHashFromRequest = (request) => {
   const token = parseBearer(request.headers.get('authorization'));

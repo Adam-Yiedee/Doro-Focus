@@ -27,6 +27,7 @@ import {
 } from '../utils/timerRuntime';
 import {
   fetchAccountData,
+  isConflictError,
   isUnauthorizedError,
   loginAccount,
   logoutAccount,
@@ -192,6 +193,8 @@ const TIMER_ONLY_SYNC_CONFIG: GroupSyncConfig = {
   syncSettings: false,
 };
 
+const GROUP_MEMBER_FALLBACK_NAME = 'Member';
+
 const normalizeSyncConfig = (value: Partial<GroupSyncConfig> | undefined | null, fallback: GroupSyncConfig = DEFAULT_SYNC_CONFIG): GroupSyncConfig => ({
   syncTimers: typeof value?.syncTimers === 'boolean' ? value.syncTimers : fallback.syncTimers,
   syncTasks: typeof value?.syncTasks === 'boolean' ? value.syncTasks : fallback.syncTasks,
@@ -199,6 +202,29 @@ const normalizeSyncConfig = (value: Partial<GroupSyncConfig> | undefined | null,
   syncHistory: typeof value?.syncHistory === 'boolean' ? value.syncHistory : fallback.syncHistory,
   syncSettings: typeof value?.syncSettings === 'boolean' ? value.syncSettings : fallback.syncSettings,
 });
+
+const sanitizeGroupMemberName = (value: unknown, fallback: string = GROUP_MEMBER_FALLBACK_NAME) => {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 48) : fallback;
+};
+
+const normalizeGroupMembersPayload = (value: unknown): GroupMember[] => {
+  if (!Array.isArray(value)) return [];
+  const byId = new Map<string, GroupMember>();
+  value.forEach((member, index) => {
+    if (!member || typeof member !== 'object') return;
+    const candidate = member as Partial<GroupMember>;
+    const rawId = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+    const id = rawId || `member_${index}`;
+    byId.set(id, {
+      id,
+      name: sanitizeGroupMemberName(candidate.name),
+      isHost: Boolean(candidate.isHost),
+    });
+  });
+  return Array.from(byId.values());
+};
 
 const intersectSyncConfig = (host: GroupSyncConfig, client: GroupSyncConfig): GroupSyncConfig => ({
   syncTimers: host.syncTimers && client.syncTimers,
@@ -539,6 +565,7 @@ const calculateLifetimeStatsFromData = (
 
 interface TimerPersistencePayload {
   schemaVersion?: number;
+  revision?: number;
   runtime?: TimerRuntimeSnapshot;
   settings?: TimerSettings;
   tasks?: Task[];
@@ -628,17 +655,23 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const connectionsRef = useRef<DataConnection[]>([]);
   const lastClientTimerBroadcastSignatureRef = useRef<string | null>(null);
   const localPeerIdRef = useRef<string | null>(null);
+  const memberNamesRef = useRef<Record<string, string>>({});
+  const announcedPeerIdsRef = useRef<Set<string>>(new Set());
+  const clientReadyForBroadcastRef = useRef(true);
 
   const lastTickRef = useRef<number | null>(null);
   const shadowTickRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
+  const lastBreakBoundaryAlertPhaseRef = useRef<number | null>(null);
+  const previousLegacyBreakTimeRef = useRef<number | null>(null);
   const isProcessingRef = useRef(false);
   const isResolvingGraceRef = useRef(false);
   const skipSaveRef = useRef(false);
   const isCloudSyncInFlightRef = useRef(false);
   const isApplyingCloudSnapshotRef = useRef(false);
+  const accountRevisionRef = useRef(0);
   const hasHydratedCloudForUserRef = useRef<string | null>(null);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
@@ -775,6 +808,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (saved) {
         try {
             const parsed: TimerPersistencePayload = JSON.parse(saved);
+            accountRevisionRef.current = getPayloadRevision(parsed);
             const parsedTasks = parsed.tasks || [];
             const parsedSessions = parsed.pastSessions || [];
             const parsedCategories = parsed.categories || [];
@@ -811,12 +845,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   username: normalizedUsername,
                   lifetimeStats: recalculatedStats,
                 });
+                setUserName(normalizeStoredUserName(parsed.userName, normalizedUsername));
             } else {
                 setUser(null);
+                setUserName(normalizeStoredUserName(parsed.userName));
             }
-            
-            if (parsed.userName) setUserName(parsed.userName);
-            
+
             if (parsed.sessionStartTime) {
                 setSessionStartTime(parsed.sessionStartTime);
                 if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
@@ -874,10 +908,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 });
                 lastRuntimeAppliedRef.current = runtimeRef.current.updatedAtMs;
                 pendingRuntimeMigrationRef.current = true;
-            }
-        } catch (e) { console.error("Failed to load", e); }
-      } else {
-          // Defaults for new user or guest
+             }
+         } catch (e) {
+            accountRevisionRef.current = 0;
+            console.error("Failed to load", e);
+         }
+       } else {
+           // Defaults for new user or guest
+          accountRevisionRef.current = 0;
           setSettings(DEFAULT_SETTINGS);
           setTasks([]);
           setPastSessions([]);
@@ -900,15 +938,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const h = now.getHours().toString().padStart(2, '0');
           const m = now.getMinutes().toString().padStart(2, '0');
           setScheduleStartTime(`${h}:${m}`);
-          if (username) {
-              setUser({ 
-                  username, 
-                  joinedAt: new Date().toISOString(), 
-                  lifetimeStats: { ...EMPTY_LIFETIME_STATS } 
-              });
-          } else {
-              setUser(null);
-          }
+           if (username) {
+               setUser({ 
+                   username, 
+                   joinedAt: new Date().toISOString(), 
+                   lifetimeStats: { ...EMPTY_LIFETIME_STATS } 
+               });
+               setUserName(username);
+           } else {
+               setUser(null);
+               setUserName('');
+           }
           currentActivityStartRef.current = null;
           runtimeRef.current = createRuntimeSnapshot({
             sourceTabId: tabIdRef.current,
@@ -926,6 +966,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pendingPostLoadReconcileRef.current = true;
       setTimeout(() => { skipSaveRef.current = false; }, 100);
   }, []);
+
+  const applyAccountSnapshot = useCallback((accountUsername: string, payload: TimerPersistencePayload) => {
+      isApplyingCloudSnapshotRef.current = true;
+      try {
+          accountRevisionRef.current = getPayloadRevision(payload);
+          localStorage.setItem(getUserKey(accountUsername), JSON.stringify(payload));
+          localStorage.setItem('doro_last_user', accountUsername);
+          setUserName(normalizeStoredUserName(payload.userName, accountUsername));
+          loadData(accountUsername);
+      } finally {
+          isApplyingCloudSnapshotRef.current = false;
+      }
+  }, [loadData]);
 
   // Initial Load
   useEffect(() => {
@@ -952,47 +1005,274 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return calculateLifetimeStatsFromData(sessions, currentLogs, sourceCategories || categories);
   };
 
-  const mergeData = (localData: any, remoteData: any, prefer: 'local' | 'remote' = 'local') => {
-      const mergeByPreference = <T extends { id: number | string }>(remoteItems: T[] = [], localItems: T[] = []) => {
-        const merged = new Map<number | string, T>();
-        const first = prefer === 'local' ? remoteItems : localItems;
-        const second = prefer === 'local' ? localItems : remoteItems;
-        first.forEach((item) => merged.set(item.id, item));
-        second.forEach((item) => merged.set(item.id, item));
-        return Array.from(merged.values());
-      };
-
-      // 1. Logs: Union by start time + type
-      const logMap = new Map();
-      remoteData.logs?.forEach((l: LogEntry) => logMap.set(l.start + l.type, l));
-      localData.logs?.forEach((l: LogEntry) => logMap.set(l.start + l.type, l));
-      const mergedLogs = Array.from(logMap.values()).sort((a: any, b: any) => new Date(b.start).getTime() - new Date(a.start).getTime());
-
-      // 2. Tasks: Union by ID with caller-defined conflict preference.
-      const mergedTasks = mergeByPreference<Task>(remoteData.tasks, localData.tasks);
-
-      // 3. Sessions: Union by ID
-      const sessionMap = new Map();
-      remoteData.pastSessions?.forEach((s: SessionRecord) => sessionMap.set(s.id, s));
-      localData.pastSessions?.forEach((s: SessionRecord) => sessionMap.set(s.id, s));
-      const mergedSessions = Array.from(sessionMap.values()).sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
-
-      // 4. Categories
-      const mergedCategories = mergeByPreference<Category>(remoteData.categories, localData.categories);
-
-      // 5. Settings: Local takes precedence for user comfort on this device
-      const mergedSettings = prefer === 'local'
-        ? { ...DEFAULT_SETTINGS, ...remoteData.settings, ...localData.settings }
-        : { ...DEFAULT_SETTINGS, ...localData.settings, ...remoteData.settings };
-
-      return {
-          logs: mergedLogs,
-          tasks: mergedTasks,
-          pastSessions: mergedSessions,
-          categories: mergedCategories,
-          settings: mergedSettings
-      };
+  const normalizeStoredUserName = (value: unknown, fallback = '') => {
+    if (typeof value !== 'string') return fallback;
+    const trimmed = value.trim();
+    return trimmed || fallback;
   };
+
+  const getPayloadUpdatedAtMs = (payload?: TimerPersistencePayload | null) => {
+    if (typeof payload?.updatedAt !== 'string') return 0;
+    const parsed = Date.parse(payload.updatedAt);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const getPayloadRevision = (payload?: TimerPersistencePayload | null) => {
+    if (typeof payload?.revision !== 'number' || !Number.isFinite(payload.revision)) return 0;
+    return Math.max(0, Math.floor(payload.revision));
+  };
+
+  const getPayloadRuntimeUpdatedAtMs = (payload?: TimerPersistencePayload | null) => {
+    return isRuntimeSnapshot(payload?.runtime) ? payload.runtime.updatedAtMs : 0;
+  };
+
+  const pickPayloadByStamp = (
+    localData: TimerPersistencePayload,
+    remoteData: TimerPersistencePayload,
+    prefer: 'local' | 'remote',
+    getStamp: (payload: TimerPersistencePayload) => number,
+  ) => {
+    const localStamp = getStamp(localData);
+    const remoteStamp = getStamp(remoteData);
+    if (localStamp === remoteStamp) return prefer === 'local' ? localData : remoteData;
+    return localStamp > remoteStamp ? localData : remoteData;
+  };
+
+  const mergeLogs = (remoteLogs: LogEntry[] = [], localLogs: LogEntry[] = []) => {
+    const logMap = new Map<string, LogEntry>();
+    remoteLogs.forEach((entry) => {
+      const key = `${entry.type}:${entry.start}:${entry.end}:${entry.duration}`;
+      logMap.set(key, entry);
+    });
+    localLogs.forEach((entry) => {
+      const key = `${entry.type}:${entry.start}:${entry.end}:${entry.duration}`;
+      logMap.set(key, entry);
+    });
+    return Array.from(logMap.values()).sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+  };
+
+  const mergeSessions = (remoteSessions: SessionRecord[] = [], localSessions: SessionRecord[] = []) => {
+    const sessionMap = new Map<string, SessionRecord>();
+    remoteSessions.forEach((session) => sessionMap.set(session.id, session));
+    localSessions.forEach((session) => sessionMap.set(session.id, session));
+    return Array.from(sessionMap.values()).sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+  };
+
+  const mergeByIdWithPreference = <T extends { id: number | string }>(
+    remoteItems: T[] = [],
+    localItems: T[] = [],
+    prefer: 'local' | 'remote' = 'local',
+  ) => {
+    const merged = new Map<number | string, T>();
+    const first = prefer === 'local' ? remoteItems : localItems;
+    const second = prefer === 'local' ? localItems : remoteItems;
+    first.forEach((item) => merged.set(item.id, item));
+    second.forEach((item) => merged.set(item.id, item));
+    return Array.from(merged.values());
+  };
+
+  const mergeSeedDataIntoAccount = (guestData: TimerPersistencePayload, remoteData: TimerPersistencePayload): TimerPersistencePayload => {
+    const guestUpdatedAt = getPayloadUpdatedAtMs(guestData);
+    const remoteUpdatedAt = getPayloadUpdatedAtMs(remoteData);
+    return {
+      ...remoteData,
+      settings: { ...DEFAULT_SETTINGS, ...(remoteData.settings || {}) },
+      tasks: mergeByIdWithPreference<Task>(remoteData.tasks, guestData.tasks, 'local'),
+      categories: mergeByIdWithPreference<Category>(remoteData.categories, guestData.categories, 'local'),
+      logs: mergeLogs(remoteData.logs, guestData.logs),
+      pastSessions: mergeSessions(remoteData.pastSessions, guestData.pastSessions),
+      scheduleBreaks: mergeByIdWithPreference<ScheduleBreak>(remoteData.scheduleBreaks, guestData.scheduleBreaks, 'local'),
+      userName: normalizeStoredUserName(guestData.userName, normalizeStoredUserName(remoteData.userName)),
+      updatedAt: guestUpdatedAt >= remoteUpdatedAt ? guestData.updatedAt : remoteData.updatedAt,
+    };
+  };
+
+  const mergeAccountPayload = (
+    localData: TimerPersistencePayload,
+    remoteData: TimerPersistencePayload,
+    prefer: 'local' | 'remote' = 'local',
+  ): TimerPersistencePayload => {
+    const dataWinner = pickPayloadByStamp(localData, remoteData, prefer, getPayloadUpdatedAtMs);
+    const timerWinner = pickPayloadByStamp(
+      localData,
+      remoteData,
+      prefer,
+      (payload) => Math.max(getPayloadRuntimeUpdatedAtMs(payload), getPayloadUpdatedAtMs(payload)),
+    );
+
+    return {
+      schemaVersion: DATA_SCHEMA_VERSION,
+      revision: Math.max(getPayloadRevision(localData), getPayloadRevision(remoteData)),
+      settings: { ...DEFAULT_SETTINGS, ...(dataWinner.settings || {}) },
+      tasks: Array.isArray(dataWinner.tasks) ? dataWinner.tasks : [],
+      categories: Array.isArray(dataWinner.categories) ? dataWinner.categories : [],
+      logs: mergeLogs(remoteData.logs, localData.logs),
+      pastSessions: mergeSessions(remoteData.pastSessions, localData.pastSessions),
+      runtime: isRuntimeSnapshot(timerWinner.runtime) ? timerWinner.runtime : dataWinner.runtime,
+      pomodoroCount: typeof timerWinner.pomodoroCount === 'number' ? timerWinner.pomodoroCount : 0,
+      workTime: typeof timerWinner.workTime === 'number' ? timerWinner.workTime : DEFAULT_SETTINGS.workDuration,
+      breakTime: typeof timerWinner.breakTime === 'number' ? timerWinner.breakTime : 0,
+      activeMode: timerWinner.activeMode === 'break' ? 'break' : 'work',
+      timerStarted: typeof timerWinner.timerStarted === 'boolean' ? timerWinner.timerStarted : false,
+      isIdle: typeof timerWinner.isIdle === 'boolean' ? timerWinner.isIdle : true,
+      allPauseActive: typeof timerWinner.allPauseActive === 'boolean' ? timerWinner.allPauseActive : false,
+      allPauseTime: typeof timerWinner.allPauseTime === 'number' ? timerWinner.allPauseTime : 0,
+      allPauseReason: typeof timerWinner.allPauseReason === 'string' ? timerWinner.allPauseReason : '',
+      allPauseStartTime: timerWinner.allPauseStartTime === null || typeof timerWinner.allPauseStartTime === 'number'
+        ? timerWinner.allPauseStartTime
+        : null,
+      graceOpen: typeof timerWinner.graceOpen === 'boolean' ? timerWinner.graceOpen : false,
+      graceContext: timerWinner.graceContext === 'afterWork' || timerWinner.graceContext === 'afterBreak'
+        ? timerWinner.graceContext
+        : null,
+      graceTotal: typeof timerWinner.graceTotal === 'number' ? timerWinner.graceTotal : 0,
+      scheduleBreaks: Array.isArray(dataWinner.scheduleBreaks) ? dataWinner.scheduleBreaks : [],
+      scheduleStartTime: typeof timerWinner.scheduleStartTime === 'string' && timerWinner.scheduleStartTime
+        ? timerWinner.scheduleStartTime
+        : (typeof dataWinner.scheduleStartTime === 'string' && dataWinner.scheduleStartTime ? dataWinner.scheduleStartTime : '08:00'),
+      sessionStartTime: typeof timerWinner.sessionStartTime === 'string' || timerWinner.sessionStartTime === null
+        ? timerWinner.sessionStartTime
+        : (typeof dataWinner.sessionStartTime === 'string' || dataWinner.sessionStartTime === null ? dataWinner.sessionStartTime : null),
+      userName: normalizeStoredUserName(
+        dataWinner.userName,
+        normalizeStoredUserName(timerWinner.userName, normalizeStoredUserName(remoteData.userName, normalizeStoredUserName(localData.userName))),
+      ),
+      updatedAt: typeof dataWinner.updatedAt === 'string' ? dataWinner.updatedAt : new Date().toISOString(),
+    };
+  };
+
+  const normalizeAccountPayload = useCallback((
+    payload: Partial<TimerPersistencePayload> | undefined | null,
+    payloadUser: User,
+    options?: {
+      fallbackUserName?: string;
+      revision?: number;
+      updatedAt?: string;
+    },
+  ): TimerPersistencePayload => {
+    const source = payload || {};
+    const safeSettings = { ...DEFAULT_SETTINGS, ...(source.settings || {}) };
+    const safeTasks = Array.isArray(source.tasks) ? source.tasks : [];
+    const safeSessions = Array.isArray(source.pastSessions) ? source.pastSessions : [];
+    const safeCategories = Array.isArray(source.categories) ? source.categories : [];
+    const safeLogs = Array.isArray(source.logs) ? source.logs : [];
+    const safeWorkTime = typeof source.workTime === 'number' ? source.workTime : safeSettings.workDuration;
+    const safeBreakTime = typeof source.breakTime === 'number' ? source.breakTime : 0;
+    const safeMode: TimerMode = source.activeMode === 'break' ? 'break' : 'work';
+    const runtime = isRuntimeSnapshot(source.runtime)
+      ? source.runtime
+      : createRuntimeSnapshot({
+          sourceTabId: tabIdRef.current,
+          phase: 'idle',
+          nowMs: Date.now(),
+          workTime: safeWorkTime,
+          breakTime: safeBreakTime,
+          allPauseTime: 0,
+          graceTotal: 0,
+          activityStartIso: null,
+        });
+    const runtimeRunning = runtime.phase === 'running-work' || runtime.phase === 'running-break';
+    const rawGraceContext = source.graceContext;
+    const rawGraceOpen = typeof source.graceOpen === 'boolean' ? source.graceOpen : runtime.phase === 'grace';
+    const hasLegacyBreakGrace = rawGraceContext === 'afterBreak' || (rawGraceContext == null && safeMode === 'break');
+    const normalizedGraceOpen = rawGraceOpen && !hasLegacyBreakGrace;
+    const normalizedGraceContext: 'afterWork' | null = normalizedGraceOpen ? 'afterWork' : null;
+    const normalizedUserName = normalizeStoredUserName(source.userName, options?.fallbackUserName || payloadUser.username);
+    const normalizedUser: User = {
+      ...payloadUser,
+      username: payloadUser.username,
+      joinedAt: payloadUser.joinedAt,
+      lifetimeStats: calculateLifetimeStats(
+        safeSessions,
+        safeLogs,
+        payloadUser.joinedAt,
+        safeCategories,
+      ),
+    };
+
+    return {
+      schemaVersion: DATA_SCHEMA_VERSION,
+      revision: options?.revision ?? getPayloadRevision(source),
+      runtime,
+      settings: safeSettings,
+      tasks: safeTasks,
+      pastSessions: safeSessions,
+      categories: safeCategories,
+      logs: safeLogs,
+      pomodoroCount: typeof source.pomodoroCount === 'number' ? source.pomodoroCount : 0,
+      workTime: safeWorkTime,
+      breakTime: safeBreakTime,
+      activeMode: runtime.phase === 'running-break' ? 'break' : runtime.phase === 'running-work' ? 'work' : safeMode,
+      timerStarted: typeof source.timerStarted === 'boolean' ? source.timerStarted : runtimeRunning,
+      isIdle: typeof source.isIdle === 'boolean' ? source.isIdle : runtime.phase === 'idle',
+      allPauseActive: typeof source.allPauseActive === 'boolean' ? source.allPauseActive : runtime.phase === 'all-pause',
+      allPauseTime: typeof source.allPauseTime === 'number' ? source.allPauseTime : 0,
+      allPauseReason: typeof source.allPauseReason === 'string' ? source.allPauseReason : '',
+      allPauseStartTime: source.allPauseStartTime === null || typeof source.allPauseStartTime === 'number'
+        ? source.allPauseStartTime
+        : null,
+      graceOpen: normalizedGraceOpen,
+      graceContext: normalizedGraceContext,
+      graceTotal: normalizedGraceOpen && typeof source.graceTotal === 'number' ? source.graceTotal : 0,
+      scheduleBreaks: Array.isArray(source.scheduleBreaks) ? source.scheduleBreaks : [],
+      scheduleStartTime: typeof source.scheduleStartTime === 'string' && source.scheduleStartTime ? source.scheduleStartTime : '08:00',
+      sessionStartTime: typeof source.sessionStartTime === 'string' || source.sessionStartTime === null ? source.sessionStartTime : null,
+      userName: normalizedUserName,
+      user: normalizedUser,
+      updatedAt: options?.updatedAt ?? (typeof source.updatedAt === 'string' ? source.updatedAt : new Date().toISOString()),
+    };
+  }, [calculateLifetimeStats]);
+
+  const persistAccountPayload = useCallback(async (
+      token: string,
+      payload: TimerPersistencePayload,
+      payloadUser: User,
+  ): Promise<TimerPersistencePayload> => {
+      let candidatePayload = payload;
+      let candidateUser = payloadUser;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+              const response = await saveAccountData(token, candidatePayload);
+              return normalizeAccountPayload(
+                  response.accountData || candidatePayload,
+                  response.user || candidatePayload.user || candidateUser,
+                  {
+                    fallbackUserName: candidatePayload.userName || candidateUser.username,
+                    revision: getPayloadRevision(response.accountData || candidatePayload),
+                    updatedAt: typeof response.accountData?.updatedAt === 'string' ? response.accountData.updatedAt : response.savedAt,
+                  },
+              );
+          } catch (error) {
+              if (attempt === 0 && isConflictError(error) && error.payload?.accountData && error.payload?.user) {
+                  const remoteUser = error.payload.user as User;
+                  const remotePayload = normalizeAccountPayload(
+                      error.payload.accountData,
+                      remoteUser,
+                      {
+                        fallbackUserName: error.payload.accountData?.userName ?? remoteUser.username,
+                        revision: getPayloadRevision(error.payload.accountData),
+                        updatedAt: typeof error.payload.accountData?.updatedAt === 'string' ? error.payload.accountData.updatedAt : undefined,
+                      },
+                  );
+                  candidateUser = remoteUser;
+                  candidatePayload = normalizeAccountPayload(
+                      mergeAccountPayload(candidatePayload, remotePayload, 'local'),
+                      remoteUser,
+                      {
+                        fallbackUserName: candidatePayload.userName || remotePayload.userName || remoteUser.username,
+                        revision: getPayloadRevision(remotePayload),
+                        updatedAt: new Date().toISOString(),
+                      },
+                  );
+                  continue;
+              }
+              throw error;
+          }
+      }
+
+      return candidatePayload;
+  }, [normalizeAccountPayload]);
 
   const syncAccountNow = useCallback(async (): Promise<boolean> => {
       if (!user || !authToken || isApplyingCloudSnapshotRef.current) return false;
@@ -1005,28 +1285,25 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           isCloudSyncInFlightRef.current = true;
           setAccountSyncState('syncing');
           setAccountSyncError(null);
-          const payload: TimerPersistencePayload = JSON.parse(localStr);
-          const payloadUser = payload.user;
-          const joinedAt = payloadUser?.joinedAt || user.joinedAt;
-          const normalizedUser: User = {
-            ...(payloadUser || user),
+          const rawPayload: TimerPersistencePayload = JSON.parse(localStr);
+          const payloadUser: User = {
+            ...(rawPayload.user || user),
             username: user.username,
-            joinedAt,
-            lifetimeStats: calculateLifetimeStats(
-              payload.pastSessions || [],
-              payload.logs || [],
-              joinedAt,
-              payload.categories || [],
-            ),
+            joinedAt: rawPayload.user?.joinedAt || user.joinedAt,
+            lifetimeStats: user.lifetimeStats,
           };
-          payload.schemaVersion = DATA_SCHEMA_VERSION;
-          payload.userName = normalizedUser.username;
-          payload.user = normalizedUser;
-          payload.updatedAt = new Date().toISOString();
-          const response = await saveAccountData(authToken, payload);
-          const persisted = response.accountData || payload;
-          localStorage.setItem(getUserKey(user.username), JSON.stringify(persisted));
-          if (persisted.user) setUser(persisted.user as User);
+          const normalizedPayload = normalizeAccountPayload(
+            rawPayload,
+            payloadUser,
+            {
+              fallbackUserName: normalizeStoredUserName(rawPayload.userName, userName || user.username),
+              revision: Math.max(accountRevisionRef.current, getPayloadRevision(rawPayload)),
+              updatedAt: new Date().toISOString(),
+            },
+          );
+          const persisted = await persistAccountPayload(authToken, normalizedPayload, payloadUser);
+          applyAccountSnapshot(user.username, persisted);
+          hasHydratedCloudForUserRef.current = user.username;
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
           return true;
@@ -1041,7 +1318,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } finally {
           isCloudSyncInFlightRef.current = false;
       }
-  }, [authToken, user]);
+  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, user, userName]);
 
   const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
       if (!user || !authToken) return false;
@@ -1054,85 +1331,98 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setAccountSyncError(null);
           const remote = await fetchAccountData(authToken);
           const cloudUser = remote.user;
-          const cloudPayload = remote.accountData || {};
           const localCacheKey = getUserKey(cloudUser.username);
-          const localPayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
-          const cloudRuntimeUpdated = isRuntimeSnapshot(cloudPayload.runtime) ? cloudPayload.runtime.updatedAtMs : 0;
-          const localRuntimeUpdated = isRuntimeSnapshot(localPayload.runtime) ? localPayload.runtime.updatedAtMs : 0;
-          const cloudUpdatedAt = typeof cloudPayload.updatedAt === 'string' ? Date.parse(cloudPayload.updatedAt) : 0;
-          const localUpdatedAt = typeof localPayload.updatedAt === 'string' ? Date.parse(localPayload.updatedAt) : 0;
+          const localRaw: TimerPersistencePayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
+          const localPayload = normalizeAccountPayload(
+            localRaw,
+            {
+              ...(localRaw.user || cloudUser),
+              username: cloudUser.username,
+              joinedAt: localRaw.user?.joinedAt || cloudUser.joinedAt,
+              lifetimeStats: cloudUser.lifetimeStats,
+            },
+            {
+              fallbackUserName: normalizeStoredUserName(localRaw.userName, userName || cloudUser.username),
+              revision: Math.max(accountRevisionRef.current, getPayloadRevision(localRaw)),
+              updatedAt: typeof localRaw.updatedAt === 'string' ? localRaw.updatedAt : undefined,
+            },
+          );
+          const cloudPayload = normalizeAccountPayload(
+            remote.accountData || {},
+            cloudUser,
+            {
+              fallbackUserName: normalizeStoredUserName(remote.accountData?.userName, cloudUser.username),
+              revision: getPayloadRevision(remote.accountData),
+              updatedAt: typeof remote.accountData?.updatedAt === 'string' ? remote.accountData.updatedAt : undefined,
+            },
+          );
+
+          const localRevision = getPayloadRevision(localPayload);
+          const cloudRevision = getPayloadRevision(cloudPayload);
+          const localUpdatedAt = getPayloadUpdatedAtMs(localPayload);
+          const cloudUpdatedAt = getPayloadUpdatedAtMs(cloudPayload);
+          const localRuntimeUpdated = getPayloadRuntimeUpdatedAtMs(localPayload);
+          const cloudRuntimeUpdated = getPayloadRuntimeUpdatedAtMs(cloudPayload);
+          const revisionsMatch = localRevision === cloudRevision;
+          const localDirty = revisionsMatch && localUpdatedAt > cloudUpdatedAt;
           const hasRemoteTimerChange = cloudRuntimeUpdated > localRuntimeUpdated;
-          const hasRemoteDataChange = Number.isFinite(cloudUpdatedAt) && Number.isFinite(localUpdatedAt)
-            ? cloudUpdatedAt > localUpdatedAt
-            : cloudUpdatedAt > 0;
-          if (!force && !hasRemoteTimerChange && !hasRemoteDataChange) {
+          const hasRemoteDataChange = cloudRevision > localRevision || cloudUpdatedAt > localUpdatedAt;
+
+          if (!hasRemoteTimerChange && !hasRemoteDataChange && !localDirty) {
             setAccountSyncState('synced');
             setLastAccountSyncAt(Date.now());
+            hasHydratedCloudForUserRef.current = cloudUser.username;
             return true;
           }
 
-          const mergedCore = mergeData(localPayload, cloudPayload, 'remote');
-          const mergedStats = calculateLifetimeStats(
-            mergedCore.pastSessions || [],
-            mergedCore.logs || [],
-            cloudUser.joinedAt,
-            mergedCore.categories || [],
-          );
-          const mergedPayload: TimerPersistencePayload = {
-              ...cloudPayload,
-              ...mergedCore,
-              schemaVersion: DATA_SCHEMA_VERSION,
-              user: { ...cloudUser, lifetimeStats: mergedStats },
-              userName: cloudUser.username,
-              activeMode: cloudPayload.activeMode === 'break' ? 'break' : 'work',
-              timerStarted: Boolean(cloudPayload.timerStarted),
-              isIdle: typeof cloudPayload.isIdle === 'boolean' ? cloudPayload.isIdle : true,
-              allPauseActive: Boolean(cloudPayload.allPauseActive),
-              allPauseTime: typeof cloudPayload.allPauseTime === 'number' ? cloudPayload.allPauseTime : 0,
-              graceOpen: Boolean(cloudPayload.graceOpen),
-              graceContext: cloudPayload.graceContext === 'afterWork' || cloudPayload.graceContext === 'afterBreak' ? cloudPayload.graceContext : null,
-              graceTotal: typeof cloudPayload.graceTotal === 'number' ? cloudPayload.graceTotal : 0,
-              updatedAt: typeof cloudPayload.updatedAt === 'string' ? cloudPayload.updatedAt : new Date().toISOString(),
-          };
-
-          if (!isRuntimeSnapshot(mergedPayload.runtime)) {
-              const safeWork = mergedPayload.workTime ?? mergedPayload.settings?.workDuration ?? DEFAULT_SETTINGS.workDuration;
-              const safeBreak = mergedPayload.breakTime ?? 0;
-              mergedPayload.runtime = createRuntimeSnapshot({
-                  sourceTabId: tabIdRef.current,
-                  phase: 'idle',
-                  nowMs: Date.now(),
-                  workTime: safeWork,
-                  breakTime: safeBreak,
-                  allPauseTime: 0,
-                  graceTotal: 0,
-                  activityStartIso: null,
-              });
-              mergedPayload.timerStarted = false;
-              mergedPayload.isIdle = true;
-              mergedPayload.allPauseActive = false;
-              mergedPayload.allPauseTime = 0;
-              mergedPayload.graceOpen = false;
-              mergedPayload.graceContext = null;
-              mergedPayload.graceTotal = 0;
+          if (!force && !hasRemoteTimerChange && !hasRemoteDataChange) {
+              setAccountSyncState('synced');
+              setLastAccountSyncAt(Date.now());
+              hasHydratedCloudForUserRef.current = cloudUser.username;
+              return true;
           }
 
-          isApplyingCloudSnapshotRef.current = true;
-          localStorage.setItem(localCacheKey, JSON.stringify(mergedPayload));
-          localStorage.setItem('doro_last_user', cloudUser.username);
-          setUserName(cloudUser.username);
-          loadData(cloudUser.username);
-          isApplyingCloudSnapshotRef.current = false;
+          let nextPayload = cloudPayload;
+          let shouldPersistMergedPayload = false;
 
-          if (force || hasRemoteDataChange) {
-            await saveAccountData(authToken, mergedPayload);
+          if (localDirty || cloudRevision !== localRevision || hasRemoteTimerChange) {
+              const prefer: 'local' | 'remote' = localDirty || localUpdatedAt > cloudUpdatedAt ? 'local' : 'remote';
+              nextPayload = normalizeAccountPayload(
+                mergeAccountPayload(localPayload, cloudPayload, prefer),
+                cloudUser,
+                {
+                  fallbackUserName: prefer === 'local'
+                    ? normalizeStoredUserName(localPayload.userName, cloudPayload.userName || cloudUser.username)
+                    : normalizeStoredUserName(cloudPayload.userName, localPayload.userName || cloudUser.username),
+                  revision: cloudRevision,
+                  updatedAt: prefer === 'local' ? localPayload.updatedAt : cloudPayload.updatedAt,
+                },
+              );
+              shouldPersistMergedPayload = prefer === 'local' && (localDirty || cloudRevision !== localRevision);
           }
+
+          if (shouldPersistMergedPayload) {
+              nextPayload = await persistAccountPayload(
+                authToken,
+                normalizeAccountPayload(
+                  nextPayload,
+                  cloudUser,
+                  {
+                    fallbackUserName: nextPayload.userName || cloudUser.username,
+                    revision: cloudRevision,
+                    updatedAt: new Date().toISOString(),
+                  },
+                ),
+                cloudUser,
+              );
+          }
+
+          applyAccountSnapshot(cloudUser.username, nextPayload);
           hasHydratedCloudForUserRef.current = cloudUser.username;
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
           return true;
       } catch (error) {
-          isApplyingCloudSnapshotRef.current = false;
           if (isUnauthorizedError(error)) {
               localStorage.removeItem(AUTH_TOKEN_KEY);
               setAuthToken(null);
@@ -1141,42 +1431,32 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setAccountSyncError(error instanceof Error ? error.message : 'Failed to refresh from cloud.');
           return false;
       }
-  }, [authToken, loadData, user]);
+  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, user, userName]);
 
   const register = async (username: string, password?: string): Promise<boolean> => {
       if (!password) return false;
       try {
-          const guestData = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
+          const guestData: TimerPersistencePayload = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
           const response = await registerAccount(username, password, guestData);
           localStorage.setItem(AUTH_TOKEN_KEY, response.token);
           setAuthToken(response.token);
 
           const accountUsername = response.user.username;
-          const seededPayload = response.accountData || {};
-          const accountPayload: TimerPersistencePayload = {
-            ...seededPayload,
-            user: {
-              ...response.user,
-              lifetimeStats: calculateLifetimeStats(
-                seededPayload.pastSessions || [],
-                seededPayload.logs || [],
-                response.user.joinedAt,
-                seededPayload.categories || [],
-              ),
+          const accountPayload = normalizeAccountPayload(
+            response.accountData || guestData,
+            response.user,
+            {
+              fallbackUserName: normalizeStoredUserName(response.accountData?.userName, normalizeStoredUserName(guestData.userName, accountUsername)),
+              revision: getPayloadRevision(response.accountData),
+              updatedAt: typeof response.accountData?.updatedAt === 'string' ? response.accountData.updatedAt : undefined,
             },
-            userName: accountUsername,
-            schemaVersion: DATA_SCHEMA_VERSION,
-            updatedAt: typeof seededPayload.updatedAt === 'string' ? seededPayload.updatedAt : new Date().toISOString(),
-          };
+          );
 
-          localStorage.setItem(getUserKey(accountUsername), JSON.stringify(accountPayload));
-          localStorage.setItem('doro_last_user', accountUsername);
+          applyAccountSnapshot(accountUsername, accountPayload);
           hasHydratedCloudForUserRef.current = accountUsername;
-          setUserName(accountUsername);
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
           setAccountSyncError(null);
-          loadData(accountUsername);
           return true;
       } catch (error) {
           setAccountSyncState('error');
@@ -1189,69 +1469,60 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!password) return false;
       try {
           const response = await loginAccount(username, password);
-          const guestData = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
-          const remoteAccount = response.accountData || {};
-          const merged = mergeData(guestData, remoteAccount);
-          const mergedStats = calculateLifetimeStats(
-            merged.pastSessions || [],
-            merged.logs || [],
-            response.user.joinedAt,
-            merged.categories || [],
-          );
           const accountUsername = response.user.username;
-          const remoteMode: TimerMode = remoteAccount.activeMode === 'break' ? 'break' : 'work';
-          const remoteRuntime = isRuntimeSnapshot(remoteAccount.runtime)
-            ? remoteAccount.runtime
-            : createRuntimeSnapshot({
-                sourceTabId: tabIdRef.current,
-                phase: 'idle',
-                nowMs: Date.now(),
-                workTime: remoteAccount.workTime ?? merged.settings?.workDuration ?? DEFAULT_SETTINGS.workDuration,
-                breakTime: remoteAccount.breakTime ?? 0,
-                allPauseTime: 0,
-                graceTotal: 0,
-                activityStartIso: null,
-              });
-          const remoteRuntimeRunning = remoteRuntime.phase === 'running-work' || remoteRuntime.phase === 'running-break';
-          const remoteGraceRawContext = remoteAccount.graceContext;
-          const remoteGraceCandidateOpen = Boolean(remoteAccount.graceOpen);
-          const remoteHasLegacyBreakGrace = remoteGraceRawContext === 'afterBreak' || (remoteGraceRawContext == null && remoteMode === 'break');
-          const remoteGraceOpen = remoteGraceCandidateOpen && !remoteHasLegacyBreakGrace;
-          const remoteGraceContext: 'afterWork' | null = remoteGraceOpen ? 'afterWork' : null;
-
-          const updatedAccount: TimerPersistencePayload = {
-              ...remoteAccount,
-              ...merged,
-              user: { ...response.user, lifetimeStats: mergedStats },
-              userName: accountUsername,
-              schemaVersion: DATA_SCHEMA_VERSION,
-              runtime: remoteRuntime,
-              activeMode: remoteMode,
-              timerStarted: typeof remoteAccount.timerStarted === 'boolean' ? remoteAccount.timerStarted : remoteRuntimeRunning,
-              isIdle: typeof remoteAccount.isIdle === 'boolean' ? remoteAccount.isIdle : remoteRuntime.phase === 'idle',
-              allPauseActive: typeof remoteAccount.allPauseActive === 'boolean' ? remoteAccount.allPauseActive : remoteRuntime.phase === 'all-pause',
-              allPauseTime: typeof remoteAccount.allPauseTime === 'number' ? remoteAccount.allPauseTime : 0,
-              allPauseReason: typeof remoteAccount.allPauseReason === 'string' ? remoteAccount.allPauseReason : '',
-              allPauseStartTime: remoteAccount.allPauseStartTime === null || typeof remoteAccount.allPauseStartTime === 'number'
-                ? remoteAccount.allPauseStartTime
-                : null,
-              graceOpen: remoteGraceOpen,
-              graceContext: remoteGraceContext,
-              graceTotal: remoteGraceOpen && typeof remoteAccount.graceTotal === 'number' ? remoteAccount.graceTotal : 0,
-              updatedAt: typeof remoteAccount.updatedAt === 'string' ? remoteAccount.updatedAt : new Date().toISOString(),
-          };
-
-          await saveAccountData(response.token, updatedAccount);
           localStorage.setItem(AUTH_TOKEN_KEY, response.token);
           setAuthToken(response.token);
-          localStorage.setItem(getUserKey(accountUsername), JSON.stringify(updatedAccount));
-          localStorage.setItem('doro_last_user', accountUsername);
+
+          const guestData: TimerPersistencePayload = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
+          const remotePayload = normalizeAccountPayload(
+            response.accountData || {},
+            response.user,
+            {
+              fallbackUserName: normalizeStoredUserName(response.accountData?.userName, accountUsername),
+              revision: getPayloadRevision(response.accountData),
+              updatedAt: typeof response.accountData?.updatedAt === 'string' ? response.accountData.updatedAt : undefined,
+            },
+          );
+          const guestPayload = normalizeAccountPayload(
+            guestData,
+            response.user,
+            {
+              fallbackUserName: normalizeStoredUserName(guestData.userName, remotePayload.userName || accountUsername),
+              revision: getPayloadRevision(guestData),
+              updatedAt: typeof guestData.updatedAt === 'string' ? guestData.updatedAt : undefined,
+            },
+          );
+          const mergedGuestPayload = normalizeAccountPayload(
+            mergeSeedDataIntoAccount(guestPayload, remotePayload),
+            response.user,
+            {
+              fallbackUserName: guestPayload.userName || remotePayload.userName || accountUsername,
+              revision: getPayloadRevision(remotePayload),
+              updatedAt: typeof remotePayload.updatedAt === 'string' ? remotePayload.updatedAt : undefined,
+            },
+          );
+          const shouldPersistGuestImport = JSON.stringify(mergedGuestPayload) !== JSON.stringify(remotePayload);
+          const finalPayload = shouldPersistGuestImport
+            ? await persistAccountPayload(
+                response.token,
+                normalizeAccountPayload(
+                  mergedGuestPayload,
+                  response.user,
+                  {
+                    fallbackUserName: mergedGuestPayload.userName || accountUsername,
+                    revision: getPayloadRevision(remotePayload),
+                    updatedAt: new Date().toISOString(),
+                  },
+                ),
+                response.user,
+              )
+            : remotePayload;
+
+          applyAccountSnapshot(accountUsername, finalPayload);
           hasHydratedCloudForUserRef.current = accountUsername;
-          setUserName(accountUsername);
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
           setAccountSyncError(null);
-          loadData(accountUsername);
           return true;
       } catch (error) {
           setAccountSyncState('error');
@@ -1270,6 +1541,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setAccountSyncState('idle');
       setAccountSyncError(null);
       setLastAccountSyncAt(null);
+      accountRevisionRef.current = 0;
       hasHydratedCloudForUserRef.current = null;
       setUser(null);
       setUserName('');
@@ -1325,9 +1597,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     if (skipSaveRef.current || isCrossTabApplyingRef.current) return;
     const key = getActiveStorageKey();
-    const userDataToSave = user ? { ...user } : null;
+    const userDataToSave = user ? {
+      ...user,
+      lifetimeStats: calculateLifetimeStats(
+        pastSessions,
+        logs,
+        user.joinedAt,
+        categories,
+      ),
+    } : null;
     const dataToSave: TimerPersistencePayload = {
       schemaVersion: DATA_SCHEMA_VERSION,
+      revision: accountRevisionRef.current,
       runtime: runtimeRef.current,
       settings,
       tasks,
@@ -1492,10 +1773,47 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return normalized;
   }, []);
 
+  const getKnownMemberName = useCallback((peerId?: string | null, fallback: string = GROUP_MEMBER_FALLBACK_NAME) => {
+    if (!peerId) return fallback;
+    const known = memberNamesRef.current[peerId];
+    return typeof known === 'string' && known.trim() ? known : fallback;
+  }, []);
+
+  const rememberMemberName = useCallback((peerId: string | null | undefined, rawName: unknown, fallback: string = GROUP_MEMBER_FALLBACK_NAME) => {
+    const normalized = typeof rawName === 'string' && rawName.trim()
+      ? sanitizeGroupMemberName(rawName, fallback)
+      : null;
+    if (peerId && normalized) {
+      memberNamesRef.current[peerId] = normalized;
+      return normalized;
+    }
+    return getKnownMemberName(peerId, fallback);
+  }, [getKnownMemberName]);
+
+  const getConnectionMemberName = useCallback((conn: DataConnection, fallback: string = GROUP_MEMBER_FALLBACK_NAME) => {
+    return rememberMemberName(conn.peer, (conn.metadata as any)?.name, fallback);
+  }, [rememberMemberName]);
+
+  const announceMemberJoin = useCallback((peerId: string, rawName: unknown) => {
+    if (!peerId || announcedPeerIdsRef.current.has(peerId)) return;
+    const actorName = rememberMemberName(peerId, rawName);
+    announcedPeerIdsRef.current.add(peerId);
+    const joinEvent = normalizeGroupEventPayload({
+      type: 'joined',
+      actorId: peerId,
+      actorName,
+      at: Date.now(),
+    }, peerId, actorName);
+    if (joinEvent) {
+      postGroupNotice(joinEvent);
+      sendGroupEvent(joinEvent);
+    }
+  }, [normalizeGroupEventPayload, postGroupNotice, rememberMemberName, sendGroupEvent]);
+
   const emitLocalGroupEvent = useCallback((type: GroupEventType, extras?: { mode?: TimerMode, reason?: string }) => {
     if (!groupSessionId) return;
     const actorId = localPeerIdRef.current;
-    const actorName = userName.trim();
+    const actorName = sanitizeGroupMemberName(userName.trim(), '');
     if (!actorId || !actorName) return;
     const payload: GroupEventPayload = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -1618,6 +1936,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return;
       }
 
+      if (!clientReadyForBroadcastRef.current) return;
       const outboundClientConfig = intersectSyncConfig(hostSyncConfigRef.current, clientSyncConfigRef.current);
       if (!outboundClientConfig.syncTimers) return;
       const roundedWork = Math.round(fullState.workTime * 10) / 10;
@@ -1658,14 +1977,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const updateMembersList = useCallback(() => {
       if (isHost) {
            const openConnections = pruneConnections();
+           const hostId = localPeerIdRef.current || groupSessionId || 'host';
+           const hostName = rememberMemberName(hostId, userName, 'Host');
            const memberList: GroupMember[] = [
-               { id: 'host', name: userName, isHost: true },
-               ...openConnections.map(c => ({ id: c.peer, name: (c.metadata as any)?.name || 'Member', isHost: false }))
+               { id: hostId, name: hostName, isHost: true },
+               ...openConnections.map(c => ({ id: c.peer, name: getConnectionMemberName(c), isHost: false }))
            ];
            setMembers(memberList);
            openConnections.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
       }
-  }, [isHost, userName, pruneConnections]);
+  }, [getConnectionMemberName, groupSessionId, isHost, pruneConnections, rememberMemberName, userName]);
 
   const createGroupSession = async (name: string, config: GroupSyncConfig): Promise<string> => {
       const normalizedConfig = normalizeSyncConfig(config, hostSyncConfigRef.current);
@@ -1676,6 +1997,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       hostSyncConfigRef.current = normalizedConfig;
       setHostSyncConfig(normalizedConfig);
       lastClientTimerBroadcastSignatureRef.current = null;
+      clientReadyForBroadcastRef.current = true;
+      memberNamesRef.current = {};
+      announcedPeerIdsRef.current = new Set();
 
       return new Promise((resolve, reject) => {
           let settled = false;
@@ -1708,16 +2032,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
             peer.on('open', (id: string) => {
                 settle(() => {
+                  const hostName = rememberMemberName(id, name, 'Host');
                   localPeerIdRef.current = id;
                   setGroupSessionId(id);
                   setIsHost(true);
                   setPeerError(null);
-                  setMembers([{ id, name, isHost: true }]);
+                  setMembers([{ id, name: hostName, isHost: true }]);
                   resolve(id);
                 });
             });
 
             peer.on('connection', (conn: DataConnection) => {
+                rememberMemberName(conn.peer, (conn.metadata as any)?.name);
                 connectionsRef.current = connectionsRef.current.filter(existing => {
                   if (existing.peer !== conn.peer) return true;
                   try { existing.close(); } catch {}
@@ -1730,27 +2056,28 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   connectionsRef.current.push(conn);
                   const initialState = buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current);
                   conn.send({ type: 'STATE_UPDATE', state: initialState });
-                  const joinEvent = normalizeGroupEventPayload({
-                    type: 'joined',
-                    actorId: conn.peer,
-                    actorName: (conn.metadata as any)?.name || 'Member',
-                    at: Date.now(),
-                  }, conn.peer, (conn.metadata as any)?.name || 'Member');
-                  if (joinEvent) {
-                    postGroupNotice(joinEvent);
-                    sendGroupEvent(joinEvent);
-                  }
+                  const remoteName = getConnectionMemberName(conn);
                   updateMembersList();
+                  if (remoteName !== GROUP_MEMBER_FALLBACK_NAME) {
+                    announceMemberJoin(conn.peer, remoteName);
+                  }
                 });
 
                 conn.on('data', (data: any) => {
                     if (!data || typeof data !== 'object') return;
+                    if (data.type === 'MEMBER_INTRO') {
+                        const remoteName = rememberMemberName(conn.peer, data.name);
+                        updateMembersList();
+                        announceMemberJoin(conn.peer, remoteName);
+                        return;
+                    }
                     if (data.type === 'GROUP_EVENT') {
+                        const actorName = rememberMemberName(conn.peer, data.event?.actorName ?? (conn.metadata as any)?.name);
                         const forwardedEvent = normalizeGroupEventPayload({
                           ...(data.event || {}),
                           actorId: conn.peer,
-                          actorName: (conn.metadata as any)?.name || 'Member',
-                        }, conn.peer, (conn.metadata as any)?.name || 'Member');
+                          actorName,
+                        }, conn.peer, actorName);
                         if (forwardedEvent) {
                             postGroupNotice(forwardedEvent);
                             sendGroupEvent(forwardedEvent, conn.peer);
@@ -1781,11 +2108,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
                 conn.on('error', () => {
                   connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+                  delete memberNamesRef.current[conn.peer];
+                  announcedPeerIdsRef.current.delete(conn.peer);
                   updateMembersList();
                 });
 
                 conn.on('close', () => {
                   connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
+                  delete memberNamesRef.current[conn.peer];
+                  announcedPeerIdsRef.current.delete(conn.peer);
                   updateMembersList();
                 });
             });
@@ -1831,6 +2162,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       clientSyncConfigRef.current = normalizedConfig;
       setClientSyncConfig(normalizedConfig);
       lastClientTimerBroadcastSignatureRef.current = null;
+      clientReadyForBroadcastRef.current = false;
+      memberNamesRef.current = {};
+      announcedPeerIdsRef.current = new Set();
 
       return new Promise((resolve, reject) => {
           let settled = false;
@@ -1880,24 +2214,42 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const peer = new Peer();
             peerRef.current = peer;
             peer.on('open', (id: string) => {
+                const localName = rememberMemberName(id, name);
                 localPeerIdRef.current = id;
                 setGroupSessionId(sessionId);
                 setIsHost(false);
                 setPeerError(null);
-                conn = peer.connect(sessionId, { metadata: { name } });
+                conn = peer.connect(sessionId, { metadata: { name: localName } });
                 connectionsRef.current = [conn];
                 conn.on('open', () => {
                   connectionsRef.current = [conn!];
+                  conn?.send({ type: 'MEMBER_INTRO', name: localName });
                   succeed();
                 });
                 conn.on('data', (data: any) => {
                     if (!data || typeof data !== 'object') return;
-                    if (data.type === 'STATE_UPDATE') applyRemoteState(data.state, 'full');
-                    else if (data.type === 'TIMER_STATE') applyRemoteState(data.state, 'timer-only');
-                    else if (data.type === 'MEMBERS_UPDATE') setMembers(data.members);
+                    if (data.type === 'STATE_UPDATE') {
+                      clientReadyForBroadcastRef.current = true;
+                      rememberMemberName(sessionId, data.state?.userName ?? data.state?.user?.username ?? data.state?.hostName, 'Host');
+                      applyRemoteState(data.state, 'full');
+                    }
+                    else if (data.type === 'TIMER_STATE') {
+                      clientReadyForBroadcastRef.current = true;
+                      applyRemoteState(data.state, 'timer-only');
+                    }
+                    else if (data.type === 'MEMBERS_UPDATE') {
+                      const normalizedMembers = normalizeGroupMembersPayload(data.members);
+                      normalizedMembers.forEach(member => {
+                        memberNamesRef.current[member.id] = member.name;
+                      });
+                      setMembers(normalizedMembers);
+                    }
                     else if (data.type === 'GROUP_EVENT') {
                       const remoteEvent = normalizeGroupEventPayload(data.event);
-                      if (remoteEvent) postGroupNotice(remoteEvent);
+                      if (remoteEvent) {
+                        rememberMemberName(remoteEvent.actorId, remoteEvent.actorName);
+                        postGroupNotice(remoteEvent);
+                      }
                     }
                 });
                 conn.on('error', (err: any) => {
@@ -1940,6 +2292,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       connectionsRef.current = [];
       lastClientTimerBroadcastSignatureRef.current = null;
       localPeerIdRef.current = null;
+      memberNamesRef.current = {};
+      announcedPeerIdsRef.current = new Set();
+      clientReadyForBroadcastRef.current = true;
       setGroupNotice(null);
       setGroupSessionId(null);
       setIsHost(false);
@@ -2008,6 +2363,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof navigator !== 'undefined' && "vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
   }, []);
 
+  const handleBreakBoundaryReached = useCallback((overflowSeconds: number = 0) => {
+    playAlarm(settings.alarmSound);
+    const roundedDebtMinutes = Math.max(0, Math.ceil(overflowSeconds / 60));
+    sendNotification(
+      'Break Time Ended',
+      roundedDebtMinutes > 0
+        ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
+        : 'Break bank depleted. Timer is now counting break debt.',
+    );
+  }, [settings.alarmSound, sendNotification]);
+
   const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
     const now = Date.now();
@@ -2070,6 +2436,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [workTime, activeMode, timerStarted, isIdle, handleWorkLoopComplete, legacyRuntimeMode]);
 
+  useEffect(() => {
+    const previousBreakTime = previousLegacyBreakTimeRef.current;
+    previousLegacyBreakTimeRef.current = breakTime;
+
+    if (!legacyRuntimeMode) return;
+    if (!timerStarted || isIdle || activeMode !== 'break') return;
+    if (previousBreakTime === null) return;
+    if (previousBreakTime > 0 && breakTime <= 0) {
+      handleBreakBoundaryReached(Math.abs(breakTime));
+    }
+  }, [activeMode, breakTime, handleBreakBoundaryReached, isIdle, legacyRuntimeMode, timerStarted]);
+
   const legacyTick = useCallback((now: number) => {
     if (!lastTickRef.current) { lastTickRef.current = now; return; }
     const delta = (now - lastTickRef.current) / 1000;
@@ -2098,6 +2476,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const derived = deriveRuntimeValues(runtime, now);
 
     if (runtime.phase === 'running-work') {
+      lastBreakBoundaryAlertPhaseRef.current = null;
       if (Math.abs(derived.workTime - workTime) > 0.05) setWorkTime(derived.workTime);
       if (Math.abs(derived.breakTime - breakTime) > 0.05) setBreakTime(derived.breakTime);
       const boundary = detectRuntimeBoundaryCrossing(runtime, now);
@@ -2110,9 +2489,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (runtime.phase === 'running-break') {
       if (Math.abs(derived.workTime - workTime) > 0.05) setWorkTime(derived.workTime);
       if (Math.abs(derived.breakTime - breakTime) > 0.05) setBreakTime(derived.breakTime);
+      const boundary = detectRuntimeBoundaryCrossing(runtime, now);
+      const phaseStart = runtime.phaseStartedAtMs ?? null;
+      if (boundary?.mode === 'break' && phaseStart !== null && lastBreakBoundaryAlertPhaseRef.current !== phaseStart) {
+        lastBreakBoundaryAlertPhaseRef.current = phaseStart;
+        handleBreakBoundaryReached(boundary.overflowSeconds);
+      }
       return;
     }
 
+    lastBreakBoundaryAlertPhaseRef.current = null;
     if (runtime.phase === 'all-pause') {
       if (Math.abs(derived.allPauseTime - allPauseTime) > 0.05) setAllPauseTime(derived.allPauseTime);
       return;
@@ -2130,6 +2516,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     breakTime,
     allPauseTime,
     graceTotal,
+    handleBreakBoundaryReached,
     handleWorkLoopComplete,
   ]);
 
