@@ -32,11 +32,11 @@ vi.mock('@netlify/blobs', () => ({
   }),
 }));
 
-const authRegisterHandler = (await import('./auth-register.js')).default;
+const authRegisterHandler = (await import('../../netlify/functions/auth-register.js')).default;
 const {
   getAccountData,
   requireSession,
-} = await import('./_lib/account-store.js');
+} = await import('../../netlify/functions/_lib/account-store.js');
 
 const makeRequest = (body, method = 'POST') => new Request('https://example.test/auth-register', {
   method,

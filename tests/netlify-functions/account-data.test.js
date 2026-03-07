@@ -32,7 +32,7 @@ vi.mock('@netlify/blobs', () => ({
   }),
 }));
 
-const accountDataHandler = (await import('./account-data.js')).default;
+const accountDataHandler = (await import('../../netlify/functions/account-data.js')).default;
 const {
   buildDefaultAccountData,
   createSession,
@@ -40,7 +40,7 @@ const {
   getAccountData,
   getUserByUsername,
   saveAccountData,
-} = await import('./_lib/account-store.js');
+} = await import('../../netlify/functions/_lib/account-store.js');
 
 const makeAuthedRequest = (token, method, body) => new Request('https://example.test/account-data', {
   method,

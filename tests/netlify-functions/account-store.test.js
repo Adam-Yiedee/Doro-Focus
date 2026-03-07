@@ -41,7 +41,7 @@ const {
   getUserByUsername,
   requireSession,
   saveAccountData,
-} = await import('./account-store.js');
+} = await import('../../netlify/functions/_lib/account-store.js');
 
 describe('account store blob compatibility', () => {
   beforeEach(() => {
