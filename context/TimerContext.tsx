@@ -50,6 +50,11 @@ export interface SessionStats {
   categoryStats: Record<string, number>;
 }
 
+interface AuthResult {
+  ok: boolean;
+  error: string | null;
+}
+
 interface TimerContextType {
   // State
   user: User | null;
@@ -99,8 +104,8 @@ interface TimerContextType {
   lastAccountSyncAt: number | null;
 
   // Actions
-  login: (username: string, password?: string) => Promise<boolean>;
-  register: (username: string, password?: string) => Promise<boolean>;
+  login: (username: string, password?: string) => Promise<AuthResult>;
+  register: (username: string, password?: string) => Promise<AuthResult>;
   logout: () => void;
   syncAccountNow: () => Promise<boolean>;
   refreshAccountFromCloud: (options?: { force?: boolean }) => Promise<boolean>;
@@ -1433,8 +1438,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
   }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, user, userName]);
 
-  const register = async (username: string, password?: string): Promise<boolean> => {
-      if (!password) return false;
+  const register = async (username: string, password?: string): Promise<AuthResult> => {
+      if (!password) {
+          return { ok: false, error: 'Password is required.' };
+      }
       try {
           const guestData: TimerPersistencePayload = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
           const response = await registerAccount(username, password, guestData);
@@ -1457,16 +1464,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
           setAccountSyncError(null);
-          return true;
+          return { ok: true, error: null };
       } catch (error) {
+          const message = error instanceof Error ? error.message : 'Registration failed.';
           setAccountSyncState('error');
-          setAccountSyncError(error instanceof Error ? error.message : 'Registration failed.');
-          return false;
+          setAccountSyncError(message);
+          return { ok: false, error: message };
       }
   };
 
-  const login = async (username: string, password?: string): Promise<boolean> => {
-      if (!password) return false;
+  const login = async (username: string, password?: string): Promise<AuthResult> => {
+      if (!password) {
+          return { ok: false, error: 'Password is required.' };
+      }
       try {
           const response = await loginAccount(username, password);
           const accountUsername = response.user.username;
@@ -1523,11 +1533,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
           setAccountSyncError(null);
-          return true;
+          return { ok: true, error: null };
       } catch (error) {
+          const message = error instanceof Error ? error.message : 'Login failed.';
           setAccountSyncState('error');
-          setAccountSyncError(error instanceof Error ? error.message : 'Login failed.');
-          return false;
+          setAccountSyncError(message);
+          return { ok: false, error: message };
       }
   };
 

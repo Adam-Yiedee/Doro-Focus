@@ -419,14 +419,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setAuthLocalError(null);
     setAccountMessage(null);
 
-    const ok = authMode === 'register'
+    const authResult = authMode === 'register'
       ? await register(username, passwordInput)
       : await login(username, passwordInput);
 
     setAuthBusy(false);
-    if (!ok) {
+    if (!authResult.ok) {
       setAuthLocalError(
-        accountSyncError || (authMode === 'register' ? 'Unable to create account.' : 'Unable to sign in.')
+        authResult.error || (authMode === 'register' ? 'Unable to create account.' : 'Unable to sign in.')
       );
       return;
     }
