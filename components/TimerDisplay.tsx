@@ -1,5 +1,5 @@
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
 const formatTime = (seconds: number) => {
@@ -12,42 +12,16 @@ const formatTime = (seconds: number) => {
 
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
-  const [smoothedPercent, setSmoothedPercent] = useState(percent);
-  const targetPercentRef = useRef(percent);
-
-  useEffect(() => {
-    targetPercentRef.current = percent;
-  }, [percent]);
-
-  useEffect(() => {
-    let rafId = 0;
-    let lastTs = performance.now();
-
-    const animate = (ts: number) => {
-      const dt = Math.min(0.05, Math.max(0, (ts - lastTs) / 1000));
-      lastTs = ts;
-
-      setSmoothedPercent(prev => {
-        const target = targetPercentRef.current;
-        const diff = target - prev;
-        if (Math.abs(diff) < 0.0005) return target;
-
-        // Critically damped-like smoothing for fluid level shifts, including large catch-up jumps.
-        const blend = 1 - Math.exp(-dt * 10);
-        return prev + (diff * blend);
-      });
-
-      rafId = requestAnimationFrame(animate);
-    };
-
-    rafId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(rafId);
-  }, []);
-
   // Range: Start (-300%) to End (-160%). 
   // -300% is completely below the viewport. -160% covers the viewport with the wave crests.
-  const safePercent = Math.max(0, Math.min(1.1, smoothedPercent));
+  const safePercent = Math.max(0, Math.min(1.1, percent));
   const bottomVal = -300 + (safePercent * 140);
+  const waveLevelStyle = {
+    transition: 'bottom 600ms linear',
+    willChange: 'bottom, transform',
+    transform: 'translateZ(0)',
+    backfaceVisibility: 'hidden' as const,
+  };
 
   const waveBase = colorMode === 'red' ? 'bg-red-500' : 'bg-white';
   
@@ -57,21 +31,21 @@ const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { p
   const op3 = colorMode === 'red' ? 'opacity-40' : 'opacity-30'; // Front
 
   return (
-    <div className={`absolute inset-0 z-0 transition-opacity duration-1000 pointer-events-none overflow-hidden rounded-[3rem] ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
+    <div className={`doro-mobile-liquid-mask absolute inset-0 z-0 transition-opacity duration-1000 pointer-events-none overflow-hidden rounded-[3rem] ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
        {/* Wave 1 (Back) - Slowest */}
        <div 
          className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op1} rounded-[45%] animate-wave-slow`}
-         style={{ bottom: `${bottomVal}%` }}
+         style={{ ...waveLevelStyle, bottom: `${bottomVal}%` }}
        />
        {/* Wave 2 (Mid) */}
        <div 
          className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op2} rounded-[47%] animate-wave-med`}
-         style={{ bottom: `${bottomVal - 1.5}%`, animationDelay: '-8s' }}
+         style={{ ...waveLevelStyle, bottom: `${bottomVal - 1.5}%`, animationDelay: '-8s' }}
        />
        {/* Wave 3 (Front) */}
        <div 
          className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${op3} rounded-[46%] animate-wave-fast`}
-         style={{ bottom: `${bottomVal - 3}%`, animationDelay: '-3s' }}
+         style={{ ...waveLevelStyle, bottom: `${bottomVal - 3}%`, animationDelay: '-3s' }}
        />
     </div>
   );
@@ -144,7 +118,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   return (
     <div
       className={`
-        relative w-full aspect-square max-w-[18rem] md:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
+        doro-mobile-liquid-shell relative w-full aspect-square max-w-[18rem] md:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
         transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
@@ -274,6 +248,19 @@ const TimerDisplay: React.FC = () => {
         .animate-wave-slow { animation: wave-rotate 40s linear infinite; }
         .animate-wave-med { animation: wave-rotate 32s linear infinite reverse; }
         .animate-wave-fast { animation: wave-rotate 25s linear infinite; }
+        @media (max-width: 767px) {
+          .doro-mobile-liquid-shell,
+          .doro-mobile-liquid-mask {
+            isolation: isolate;
+            clip-path: inset(0 round 3rem);
+            -webkit-clip-path: inset(0 round 3rem);
+            -webkit-mask-image: -webkit-radial-gradient(white, black);
+            mask-image: radial-gradient(white, black);
+          }
+          .doro-mobile-liquid-mask > div {
+            transform: translateZ(0);
+          }
+        }
         .doro-no-spin::-webkit-outer-spin-button,
         .doro-no-spin::-webkit-inner-spin-button {
           -webkit-appearance: none;

@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, GroupSyncConfig, LogEntry, TimerSettings } from '../../types';
 import { CATEGORY_ICON_OPTIONS, getCategoryIconLabel, getIcon } from '../../utils/icons';
+import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm } from '../../utils/sound';
 
@@ -17,12 +18,11 @@ type GroupFlow = 'menu' | 'host' | 'join';
 type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
 
-const DEFAULT_GROUP_CONFIG: GroupSyncConfig = {
-  syncTimers: true,
-  syncTasks: false,
-  syncSchedule: false,
-  syncHistory: false,
-  syncSettings: false,
+const GROUP_INVITE_BASE_URL = (import.meta.env.VITE_PUBLIC_SITE_URL || 'https://dorofocus.netlify.app').replace(/\/+$/, '');
+
+const buildGroupInviteUrl = (sessionId: string) => {
+  const normalized = sessionId.trim().toUpperCase();
+  return `${GROUP_INVITE_BASE_URL}/?session=${encodeURIComponent(normalized)}`;
 };
 
 const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
@@ -269,6 +269,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [showGroupQr, setShowGroupQr] = useState(false);
   const [hostDraftConfig, setHostDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [joinDraftConfig, setJoinDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
+  const [inviteSessionId, setInviteSessionId] = useState('');
 
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -332,6 +333,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const breakdown = user?.lifetimeStats.categoryBreakdown || {};
     return Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
   }, [user]);
+  const groupInviteUrl = useMemo(() => (
+    groupSessionId ? buildGroupInviteUrl(groupSessionId) : ''
+  ), [groupSessionId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -348,6 +352,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setActiveTab('group');
       setGroupFlow('join');
       setGroupSessionInput(pendingJoinId);
+      setInviteSessionId(pendingJoinId);
+      setGroupLocalError(null);
       setPendingJoinId(null);
     }
   }, [isOpen, pendingJoinId, setPendingJoinId]);
@@ -499,6 +505,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setGroupLocalError(null);
     try {
       await joinGroupSession(sessionId, name, joinDraftConfig);
+      setInviteSessionId(sessionId);
       setPendingJoinId(null);
     } catch (error) {
       setGroupLocalError(error instanceof Error ? error.message : 'Failed to join session.');
@@ -930,7 +937,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     onClick={async () => { await copyToClipboard(groupSessionId); }}
                     className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
                   >
-                    Copy
+                    Copy Code
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => { await copyToClipboard(groupInviteUrl); }}
+                    className="text-[10px] text-blue-300 hover:text-blue-200 font-bold uppercase tracking-[0.14em]"
+                  >
+                    Copy Link
                   </button>
                   <button
                     type="button"
@@ -947,8 +961,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               {showGroupQr && (
-                <div className="flex justify-center p-4 bg-white rounded-xl">
-                  <QRCodeSVG value={groupSessionId} size={180} />
+                <div className="space-y-3">
+                  <div className="flex justify-center p-4 bg-white rounded-xl">
+                    <QRCodeSVG value={groupInviteUrl} size={180} />
+                  </div>
+                  <div className="text-center text-[11px] text-white/55 leading-relaxed">
+                    Scan to open the site and jump into this group invite.
+                  </div>
                 </div>
               )}
 
@@ -1038,6 +1057,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               type="text"
               value={groupName}
               onChange={event => setGroupName(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' && groupFlow === 'join' && groupSessionInput.trim()) {
+                  event.preventDefault();
+                  void handleJoinGroup();
+                }
+              }}
               placeholder="Enter your name"
               className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 text-center font-bold"
             />
@@ -1106,10 +1131,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 </button>
               </div>
 
+              {inviteSessionId && inviteSessionId === groupSessionInput && (
+                <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-100/90">
+                  Invite loaded from QR link. Enter your name and join.
+                </div>
+              )}
+
               <input
                 type="text"
                 value={groupSessionInput}
                 onChange={event => setGroupSessionInput(event.target.value.toUpperCase())}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleJoinGroup();
+                  }
+                }}
                 placeholder="Session ID"
                 className="w-full p-4 bg-black/25 border border-white/10 rounded-xl text-center text-white font-mono tracking-[0.2em] outline-none focus:border-white/30"
               />
@@ -1136,7 +1173,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const renderSettingsTab = () => {
     return (
-      <div className="p-4 md:p-8 space-y-8 max-w-2xl mx-auto">
+      <div className="p-4 pb-24 md:p-8 space-y-8 max-w-2xl mx-auto">
         <div className="space-y-4">
           <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1594,6 +1631,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             {activeTab === 'account' && renderAccountTab()}
             {activeTab === 'settings' && renderSettingsTab()}
           </div>
+
+          {activeTab === 'settings' && (
+            <div className="md:hidden pointer-events-none absolute inset-x-4 bottom-4 z-20 flex justify-center">
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close settings"
+                className={`pointer-events-auto min-h-12 px-5 py-3 rounded-full border shadow-[0_18px_40px_-22px_rgba(15,23,42,0.78)] text-sm font-bold tracking-[0.08em] transition-all active:scale-[0.98] ${
+                  isLightTheme
+                    ? 'bg-white/80 text-slate-900 border-white/70 backdrop-blur-2xl'
+                    : 'bg-black/55 text-white border-white/15 backdrop-blur-2xl'
+                }`}
+              >
+                Done
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>

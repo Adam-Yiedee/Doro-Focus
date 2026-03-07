@@ -34,6 +34,23 @@ import {
   registerAccount,
   saveAccountData,
 } from '../utils/accountApi';
+import {
+  buildHostMemberList,
+  DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_SYNC_CONFIG,
+  GROUP_MEMBER_FALLBACK_NAME,
+  intersectSyncConfig,
+  mergeClientMembers,
+  normalizeGroupMembersPayload,
+  normalizeSyncConfig,
+  pruneLivePeerConnections,
+  removePeerConnectionInstance,
+  resolveRemoteSyncConfig,
+  sanitizeGroupMemberName,
+  shouldAttemptPeerReconnect,
+  shouldBroadcastGroupState,
+  shouldFollowHostTimerSync,
+  TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
+} from '../utils/groupStudy';
 
 export interface ScheduleBreak {
   id: string;
@@ -177,67 +194,10 @@ const DEFAULT_SETTINGS: TimerSettings = {
   themeMode: 'dark'
 };
 
-const DEFAULT_SYNC_CONFIG: GroupSyncConfig = {
-    syncTimers: true,
-    syncTasks: false,
-    syncSchedule: false,
-    syncHistory: false,
-    syncSettings: false
-};
-
 const DATA_SCHEMA_VERSION = 2;
 const LEGACY_RUNTIME_FLAG = 'doro_use_legacy_tick';
 const CROSS_TAB_CHANNEL = 'doro_timer_sync';
 const AUTH_TOKEN_KEY = 'doro_auth_token';
-
-const TIMER_ONLY_SYNC_CONFIG: GroupSyncConfig = {
-  syncTimers: true,
-  syncTasks: false,
-  syncSchedule: false,
-  syncHistory: false,
-  syncSettings: false,
-};
-
-const GROUP_MEMBER_FALLBACK_NAME = 'Member';
-
-const normalizeSyncConfig = (value: Partial<GroupSyncConfig> | undefined | null, fallback: GroupSyncConfig = DEFAULT_SYNC_CONFIG): GroupSyncConfig => ({
-  syncTimers: typeof value?.syncTimers === 'boolean' ? value.syncTimers : fallback.syncTimers,
-  syncTasks: typeof value?.syncTasks === 'boolean' ? value.syncTasks : fallback.syncTasks,
-  syncSchedule: typeof value?.syncSchedule === 'boolean' ? value.syncSchedule : fallback.syncSchedule,
-  syncHistory: typeof value?.syncHistory === 'boolean' ? value.syncHistory : fallback.syncHistory,
-  syncSettings: typeof value?.syncSettings === 'boolean' ? value.syncSettings : fallback.syncSettings,
-});
-
-const sanitizeGroupMemberName = (value: unknown, fallback: string = GROUP_MEMBER_FALLBACK_NAME) => {
-  if (typeof value !== 'string') return fallback;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, 48) : fallback;
-};
-
-const normalizeGroupMembersPayload = (value: unknown): GroupMember[] => {
-  if (!Array.isArray(value)) return [];
-  const byId = new Map<string, GroupMember>();
-  value.forEach((member, index) => {
-    if (!member || typeof member !== 'object') return;
-    const candidate = member as Partial<GroupMember>;
-    const rawId = typeof candidate.id === 'string' ? candidate.id.trim() : '';
-    const id = rawId || `member_${index}`;
-    byId.set(id, {
-      id,
-      name: sanitizeGroupMemberName(candidate.name),
-      isHost: Boolean(candidate.isHost),
-    });
-  });
-  return Array.from(byId.values());
-};
-
-const intersectSyncConfig = (host: GroupSyncConfig, client: GroupSyncConfig): GroupSyncConfig => ({
-  syncTimers: host.syncTimers && client.syncTimers,
-  syncTasks: host.syncTasks && client.syncTasks,
-  syncSchedule: host.syncSchedule && client.syncSchedule,
-  syncHistory: host.syncHistory && client.syncHistory,
-  syncSettings: host.syncSettings && client.syncSettings,
-});
 
 const GROUP_EVENT_TYPES: GroupEventType[] = [
   'joined',
@@ -653,6 +613,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [groupNotice, setGroupNotice] = useState<GroupNotice | null>(null);
   const hostSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const clientSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const groupSessionIdRef = useRef<string | null>(null);
+  const userNameRef = useRef<string>('');
+  const isHostRef = useRef(false);
   const activeModeRef = useRef<TimerMode>('work');
   
   const isRemoteUpdate = useRef(false);
@@ -662,7 +625,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const localPeerIdRef = useRef<string | null>(null);
   const memberNamesRef = useRef<Record<string, string>>({});
   const announcedPeerIdsRef = useRef<Set<string>>(new Set());
+  const seenGroupEventIdsRef = useRef<Set<string>>(new Set());
+  const groupLifecycleRef = useRef(0);
   const clientReadyForBroadcastRef = useRef(true);
+  const currentGroupStateRef = useRef<any>(null);
 
   const lastTickRef = useRef<number | null>(null);
   const shadowTickRef = useRef<number | null>(null);
@@ -701,6 +667,33 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return false;
     }
   });
+
+  groupSessionIdRef.current = groupSessionId;
+  userNameRef.current = userName;
+  isHostRef.current = isHost;
+  currentGroupStateRef.current = {
+    settings,
+    tasks,
+    categories,
+    logs,
+    activeMode,
+    timerStarted,
+    isIdle,
+    workTime,
+    breakTime,
+    pomodoroCount,
+    scheduleBreaks,
+    scheduleStartTime,
+    sessionStartTime,
+    allPauseActive,
+    allPauseTime,
+    allPauseReason,
+    allPauseStartTime,
+    graceOpen,
+    graceContext,
+    graceTotal,
+    userName,
+  };
 
   useEffect(() => {
     hostSyncConfigRef.current = hostSyncConfig;
@@ -1697,12 +1690,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const GROUP_CONNECT_TIMEOUT_MS = 15000;
 
   const pruneConnections = useCallback(() => {
-    const byPeer = new Map<string, DataConnection>();
-    connectionsRef.current.forEach(conn => {
-      if (!conn || !conn.peer || !conn.open) return;
-      if (!byPeer.has(conn.peer)) byPeer.set(conn.peer, conn);
-    });
-    connectionsRef.current = Array.from(byPeer.values());
+    const nextConnections = pruneLivePeerConnections(connectionsRef.current);
+    connectionsRef.current
+      .filter(conn => conn?.open && !nextConnections.includes(conn))
+      .forEach(conn => {
+        try { conn.close(); } catch {}
+      });
+    connectionsRef.current = nextConnections;
     return connectionsRef.current;
   }, []);
 
@@ -1732,6 +1726,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const postGroupNotice = useCallback((event: GroupEventPayload) => {
     if (!event.actorId || !event.actorName) return;
     if (localPeerIdRef.current && event.actorId === localPeerIdRef.current) return;
+    if (seenGroupEventIdsRef.current.has(event.id)) return;
+    seenGroupEventIdsRef.current.add(event.id);
     setGroupNotice({
       id: `${event.id}_${Date.now()}`,
       actorId: event.actorId,
@@ -1743,7 +1739,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [formatGroupEventMessage]);
 
   const sendGroupEvent = useCallback((event: GroupEventPayload, excludeConnId?: string) => {
-    if (!groupSessionId) return;
+    if (!groupSessionIdRef.current) return;
     const openConnections = pruneConnections();
     if (openConnections.length === 0) return;
     openConnections.forEach(conn => {
@@ -1751,7 +1747,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         conn.send({ type: 'GROUP_EVENT', event });
       }
     });
-  }, [groupSessionId, pruneConnections]);
+  }, [pruneConnections]);
 
   const normalizeGroupEventPayload = useCallback((raw: any, fallbackActorId?: string, fallbackActorName?: string): GroupEventPayload | null => {
     if (!raw || typeof raw !== 'object') return null;
@@ -1822,9 +1818,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [normalizeGroupEventPayload, postGroupNotice, rememberMemberName, sendGroupEvent]);
 
   const emitLocalGroupEvent = useCallback((type: GroupEventType, extras?: { mode?: TimerMode, reason?: string }) => {
-    if (!groupSessionId) return;
+    if (!groupSessionIdRef.current) return;
     const actorId = localPeerIdRef.current;
-    const actorName = sanitizeGroupMemberName(userName.trim(), '');
+    const actorName = sanitizeGroupMemberName(userNameRef.current.trim(), '');
     if (!actorId || !actorName) return;
     const payload: GroupEventPayload = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -1836,18 +1832,35 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (extras?.mode === 'work' || extras?.mode === 'break') payload.mode = extras.mode;
     if (typeof extras?.reason === 'string' && extras.reason.trim()) payload.reason = extras.reason.trim().slice(0, 80);
     sendGroupEvent(payload);
-  }, [groupSessionId, userName, sendGroupEvent]);
+  }, [sendGroupEvent]);
+
+  const isFollowingHostTimerSync = useCallback(() => {
+    return shouldFollowHostTimerSync({
+      groupSessionId: groupSessionIdRef.current,
+      isHost: isHostRef.current,
+      hostSyncConfig: hostSyncConfigRef.current,
+      clientSyncConfig: clientSyncConfigRef.current,
+      awaitingInitialHostState: !clientReadyForBroadcastRef.current,
+    });
+  }, []);
+
+  const isAwaitingInitialHostTimerSync = useCallback(() => {
+    return Boolean(
+      groupSessionIdRef.current
+        && !isHostRef.current
+        && clientSyncConfigRef.current.syncTimers
+        && !clientReadyForBroadcastRef.current
+    );
+  }, []);
 
   const getCurrentState = useCallback(() => {
     return {
-       settings, tasks, categories, logs, activeMode, timerStarted, isIdle,
-       workTime, breakTime, pomodoroCount, scheduleBreaks,
-       scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime,
-       allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal,
+       ...currentGroupStateRef.current,
+       userName: userNameRef.current,
        runtime: runtimeRef.current,
-       hostConfig: hostSyncConfigRef.current
+       hostConfig: hostSyncConfigRef.current,
     };
-  }, [settings, tasks, categories, logs, activeMode, timerStarted, isIdle, workTime, breakTime, pomodoroCount, scheduleBreaks, scheduleStartTime, sessionStartTime, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal]);
+  }, []);
 
   const buildFilteredGroupState = useCallback((state: any, config: GroupSyncConfig) => {
       const filteredState: any = { ...state };
@@ -1872,12 +1885,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       isRemoteUpdate.current = true;
 
       const remoteHostConfig = normalizeSyncConfig(remote.hostConfig, hostSyncConfigRef.current);
-      const inboundBaseConfig = isHost
-        ? hostSyncConfigRef.current
-        : intersectSyncConfig(remoteHostConfig, clientSyncConfigRef.current);
-      const config = mode === 'timer-only'
-        ? { ...TIMER_ONLY_SYNC_CONFIG, syncTimers: inboundBaseConfig.syncTimers }
-        : inboundBaseConfig;
+      const config = resolveRemoteSyncConfig({
+        mode,
+        isHost: isHostRef.current,
+        remoteHostConfig,
+        clientSyncConfig: clientSyncConfigRef.current,
+      });
       
       if (mode === 'full' && config.syncSettings && remote.settings) {
           setSettings(prev => ({
@@ -1924,60 +1937,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               currentActivityStartRef.current = remote.runtime.activityStartIso ? new Date(remote.runtime.activityStartIso) : null;
           }
       }
-      if (!isHost && remote.hostConfig) {
+      if (!isHostRef.current && remote.hostConfig) {
           hostSyncConfigRef.current = remoteHostConfig;
           setHostSyncConfig(remoteHostConfig);
       }
       setTimeout(() => { isRemoteUpdate.current = false; }, 120);
-  }, [isHost]);
+  }, []);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
-      if (!groupSessionId) return;
+      if (!shouldBroadcastGroupState({
+        groupSessionId: groupSessionIdRef.current,
+        isHost: isHostRef.current,
+      })) return;
       const openConnections = pruneConnections();
       if (openConnections.length === 0) return;
       const fullState = getCurrentState();
 
-      if (isHost) {
-          const filteredState = buildFilteredGroupState(fullState, hostSyncConfigRef.current);
-          openConnections.forEach(conn => {
-              if (conn.open && conn.peer !== excludeConnId) {
-                  conn.send({ type: 'STATE_UPDATE', state: filteredState });
-              }
-          });
-          return;
-      }
-
-      if (!clientReadyForBroadcastRef.current) return;
-      const outboundClientConfig = intersectSyncConfig(hostSyncConfigRef.current, clientSyncConfigRef.current);
-      if (!outboundClientConfig.syncTimers) return;
-      const roundedWork = Math.round(fullState.workTime * 10) / 10;
-      const roundedBreak = Math.round(fullState.breakTime * 10) / 10;
-      const clientTimerSignature = [
-        runtimeRef.current.updatedAtMs,
-        fullState.activeMode,
-        fullState.timerStarted ? 1 : 0,
-        fullState.isIdle ? 1 : 0,
-        fullState.allPauseActive ? 1 : 0,
-        fullState.allPauseReason || '',
-        fullState.graceOpen ? 1 : 0,
-        fullState.graceContext || '',
-        fullState.pomodoroCount,
-        fullState.timerStarted ? '' : roundedWork,
-        fullState.timerStarted ? '' : roundedBreak,
-      ].join('|');
-      if (lastClientTimerBroadcastSignatureRef.current === clientTimerSignature) return;
-      const timerState = buildFilteredGroupState(fullState, TIMER_ONLY_SYNC_CONFIG);
-      let didSend = false;
+      const filteredState = buildFilteredGroupState(fullState, hostSyncConfigRef.current);
       openConnections.forEach(conn => {
           if (conn.open && conn.peer !== excludeConnId) {
-              conn.send({ type: 'TIMER_STATE', state: timerState });
-              didSend = true;
+              conn.send({ type: 'STATE_UPDATE', state: filteredState });
           }
       });
-      if (didSend) {
-        lastClientTimerBroadcastSignatureRef.current = clientTimerSignature;
-      }
-  }, [groupSessionId, getCurrentState, isHost, buildFilteredGroupState, pruneConnections]);
+  }, [getCurrentState, buildFilteredGroupState, pruneConnections]);
 
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
@@ -1986,24 +1968,40 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [tasks, settings, activeMode, timerStarted, isIdle, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
 
   const updateMembersList = useCallback(() => {
-      if (isHost) {
-           const openConnections = pruneConnections();
-           const hostId = localPeerIdRef.current || groupSessionId || 'host';
-           const hostName = rememberMemberName(hostId, userName, 'Host');
-           const memberList: GroupMember[] = [
-               { id: hostId, name: hostName, isHost: true },
-               ...openConnections.map(c => ({ id: c.peer, name: getConnectionMemberName(c), isHost: false }))
-           ];
-           setMembers(memberList);
-           openConnections.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
-      }
-  }, [getConnectionMemberName, groupSessionId, isHost, pruneConnections, rememberMemberName, userName]);
+      if (!isHostRef.current) return;
+      const openConnections = pruneConnections();
+      const hostId = localPeerIdRef.current || groupSessionIdRef.current || 'host';
+      const hostName = rememberMemberName(hostId, userNameRef.current, 'Host');
+      const memberList = buildHostMemberList(
+        hostId,
+        hostName,
+        openConnections.map(c => ({ id: c.peer, name: getConnectionMemberName(c) })),
+      );
+      setMembers(memberList);
+      openConnections.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
+  }, [getConnectionMemberName, pruneConnections, rememberMemberName]);
+
+  const upsertClientMembers = useCallback((hostId: string, rawHostName: unknown, selfId: string | null | undefined, rawSelfName: unknown) => {
+      const hostName = rememberMemberName(hostId, rawHostName, 'Host');
+      const selfName = rememberMemberName(selfId, rawSelfName);
+      setMembers(prev => mergeClientMembers({
+        existingMembers: prev,
+        hostId,
+        hostName,
+        selfId,
+        selfName,
+      }));
+      return hostName;
+  }, [rememberMemberName]);
 
   const createGroupSession = async (name: string, config: GroupSyncConfig): Promise<string> => {
       const normalizedConfig = normalizeSyncConfig(config, hostSyncConfigRef.current);
-      if (groupSessionId || peerRef.current || connectionsRef.current.length > 0) {
+      if (groupSessionIdRef.current || peerRef.current || connectionsRef.current.length > 0) {
           leaveGroupSession();
       }
+      const lifecycleId = groupLifecycleRef.current + 1;
+      groupLifecycleRef.current = lifecycleId;
+      userNameRef.current = name;
       setUserName(name);
       hostSyncConfigRef.current = normalizedConfig;
       setHostSyncConfig(normalizedConfig);
@@ -2011,16 +2009,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       clientReadyForBroadcastRef.current = true;
       memberNamesRef.current = {};
       announcedPeerIdsRef.current = new Set();
+      seenGroupEventIdsRef.current = new Set();
 
       return new Promise((resolve, reject) => {
           let settled = false;
+          const isStale = () => groupLifecycleRef.current !== lifecycleId;
           const timeoutId = setTimeout(() => {
+              if (isStale()) return;
               if (settled) return;
               settled = true;
               try { peerRef.current?.destroy(); } catch {}
               peerRef.current = null;
               connectionsRef.current = [];
               localPeerIdRef.current = null;
+              groupSessionIdRef.current = null;
+              isHostRef.current = false;
               setGroupSessionId(null);
               setIsHost(false);
               setMembers([]);
@@ -2042,9 +2045,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             peerRef.current = peer;
 
             peer.on('open', (id: string) => {
+                if (isStale()) {
+                  try { peer.destroy(); } catch {}
+                  return;
+                }
+                if (settled) {
+                  localPeerIdRef.current = id;
+                  groupSessionIdRef.current = id;
+                  isHostRef.current = true;
+                  setGroupSessionId(id);
+                  setIsHost(true);
+                  setPeerError(null);
+                  updateMembersList();
+                  broadcastState();
+                  return;
+                }
                 settle(() => {
                   const hostName = rememberMemberName(id, name, 'Host');
                   localPeerIdRef.current = id;
+                  groupSessionIdRef.current = id;
+                  isHostRef.current = true;
                   setGroupSessionId(id);
                   setIsHost(true);
                   setPeerError(null);
@@ -2053,7 +2073,52 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 });
             });
 
+            peer.on('disconnected', () => {
+                if (isStale()) return;
+                setPeerError('Session connection interrupted. Reconnecting...');
+                if (shouldAttemptPeerReconnect({
+                  disconnected: peer.disconnected,
+                  destroyed: peer.destroyed,
+                })) {
+                  try { peer.reconnect(); } catch {}
+                }
+            });
+
+            peer.on('close', () => {
+                if (isStale()) return;
+                const message = 'Group session closed.';
+                if (!settled) {
+                  settle(() => {
+                    peerRef.current = null;
+                    connectionsRef.current = [];
+                    localPeerIdRef.current = null;
+                    groupSessionIdRef.current = null;
+                    isHostRef.current = false;
+                    setGroupSessionId(null);
+                    setIsHost(false);
+                    setMembers([]);
+                    setPeerError(message);
+                    reject(new Error(message));
+                  });
+                  return;
+                }
+                leaveGroupSession({ reason: message, preserveConfigs: true });
+            });
+
             peer.on('connection', (conn: DataConnection) => {
+                if (isStale()) {
+                  try { conn.close(); } catch {}
+                  return;
+                }
+                const cleanupConnection = () => {
+                  const { remainingConnections, hasPeerConnection } = removePeerConnectionInstance(connectionsRef.current, conn);
+                  connectionsRef.current = remainingConnections;
+                  if (!hasPeerConnection) {
+                    delete memberNamesRef.current[conn.peer];
+                    announcedPeerIdsRef.current.delete(conn.peer);
+                  }
+                  updateMembersList();
+                };
                 rememberMemberName(conn.peer, (conn.metadata as any)?.name);
                 connectionsRef.current = connectionsRef.current.filter(existing => {
                   if (existing.peer !== conn.peer) return true;
@@ -2063,6 +2128,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 connectionsRef.current.push(conn);
 
                 conn.on('open', () => {
+                  if (isStale()) return;
                   connectionsRef.current = connectionsRef.current.filter(existing => existing.peer !== conn.peer);
                   connectionsRef.current.push(conn);
                   const initialState = buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current);
@@ -2075,6 +2141,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 });
 
                 conn.on('data', (data: any) => {
+                    if (isStale()) return;
                     if (!data || typeof data !== 'object') return;
                     if (data.type === 'MEMBER_INTRO') {
                         const remoteName = rememberMemberName(conn.peer, data.name);
@@ -2084,6 +2151,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     }
                     if (data.type === 'GROUP_EVENT') {
                         const actorName = rememberMemberName(conn.peer, data.event?.actorName ?? (conn.metadata as any)?.name);
+                        updateMembersList();
                         const forwardedEvent = normalizeGroupEventPayload({
                           ...(data.event || {}),
                           actorId: conn.peer,
@@ -2096,43 +2164,32 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         return;
                     }
                     if (data.type === 'TIMER_STATE' && data.state && hostSyncConfigRef.current.syncTimers) {
-                        const timerState = buildFilteredGroupState(data.state, TIMER_ONLY_SYNC_CONFIG);
-                        applyRemoteState(timerState, 'timer-only');
-                        pruneConnections().forEach(peerConn => {
-                            if (peerConn.open && peerConn.peer !== conn.peer) {
-                                peerConn.send({ type: 'TIMER_STATE', state: timerState });
-                            }
-                        });
+                        if (conn.open) {
+                          conn.send({ type: 'TIMER_STATE', state: buildFilteredGroupState(getCurrentState(), TIMER_ONLY_SYNC_CONFIG) });
+                        }
                         return;
                     }
                     // Backward compatibility for older clients that still send STATE_UPDATE.
                     if (data.type === 'STATE_UPDATE' && data.state && hostSyncConfigRef.current.syncTimers) {
-                        const timerState = buildFilteredGroupState(data.state, TIMER_ONLY_SYNC_CONFIG);
-                        applyRemoteState(timerState, 'timer-only');
-                        pruneConnections().forEach(peerConn => {
-                            if (peerConn.open && peerConn.peer !== conn.peer) {
-                                peerConn.send({ type: 'TIMER_STATE', state: timerState });
-                            }
-                        });
+                        if (conn.open) {
+                          conn.send({ type: 'STATE_UPDATE', state: buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current) });
+                        }
                     }
                 });
 
                 conn.on('error', () => {
-                  connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
-                  delete memberNamesRef.current[conn.peer];
-                  announcedPeerIdsRef.current.delete(conn.peer);
-                  updateMembersList();
+                  if (isStale()) return;
+                  cleanupConnection();
                 });
 
                 conn.on('close', () => {
-                  connectionsRef.current = connectionsRef.current.filter(c => c.peer !== conn.peer);
-                  delete memberNamesRef.current[conn.peer];
-                  announcedPeerIdsRef.current.delete(conn.peer);
-                  updateMembersList();
+                  if (isStale()) return;
+                  cleanupConnection();
                 });
             });
 
             peer.on('error', (err: any) => {
+                if (isStale()) return;
                 const message = err?.type === 'unavailable-id'
                   ? "Session ID collision. Try again."
                   : `Connection Error: ${err?.type || 'unknown'}`;
@@ -2142,6 +2199,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     peerRef.current = null;
                     connectionsRef.current = [];
                     localPeerIdRef.current = null;
+                    groupSessionIdRef.current = null;
+                    isHostRef.current = false;
                     setGroupSessionId(null);
                     setIsHost(false);
                     setMembers([]);
@@ -2166,9 +2225,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const sessionId = hostId.trim().toUpperCase();
       if (!sessionId) throw new Error('Session ID is required.');
       const normalizedConfig = normalizeSyncConfig(config, clientSyncConfigRef.current);
-      if (groupSessionId || peerRef.current || connectionsRef.current.length > 0) {
+      if (groupSessionIdRef.current || peerRef.current || connectionsRef.current.length > 0) {
           leaveGroupSession();
       }
+      const lifecycleId = groupLifecycleRef.current + 1;
+      groupLifecycleRef.current = lifecycleId;
+      userNameRef.current = name;
+      isHostRef.current = false;
       setUserName(name);
       clientSyncConfigRef.current = normalizedConfig;
       setClientSyncConfig(normalizedConfig);
@@ -2176,11 +2239,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       clientReadyForBroadcastRef.current = false;
       memberNamesRef.current = {};
       announcedPeerIdsRef.current = new Set();
+      seenGroupEventIdsRef.current = new Set();
 
       return new Promise((resolve, reject) => {
           let settled = false;
           let conn: DataConnection | null = null;
+          const isStale = () => groupLifecycleRef.current !== lifecycleId;
           const timeoutId = setTimeout(() => {
+              if (isStale()) return;
               if (settled) return;
               settled = true;
               try { conn?.close(); } catch {}
@@ -2188,6 +2254,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               peerRef.current = null;
               connectionsRef.current = [];
               localPeerIdRef.current = null;
+              groupSessionIdRef.current = null;
+              isHostRef.current = false;
               setGroupSessionId(null);
               setIsHost(false);
               setMembers([]);
@@ -2204,6 +2272,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             peerRef.current = null;
             connectionsRef.current = [];
             localPeerIdRef.current = null;
+            groupSessionIdRef.current = null;
+            isHostRef.current = false;
             setGroupSessionId(null);
             setIsHost(false);
             setMembers([]);
@@ -2225,27 +2295,50 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const peer = new Peer();
             peerRef.current = peer;
             peer.on('open', (id: string) => {
+                if (isStale()) {
+                  try { peer.destroy(); } catch {}
+                  return;
+                }
+                if (settled) {
+                  localPeerIdRef.current = id;
+                  setPeerError(null);
+                  return;
+                }
                 const localName = rememberMemberName(id, name);
                 localPeerIdRef.current = id;
+                groupSessionIdRef.current = sessionId;
+                isHostRef.current = false;
                 setGroupSessionId(sessionId);
                 setIsHost(false);
                 setPeerError(null);
                 conn = peer.connect(sessionId, { metadata: { name: localName } });
                 connectionsRef.current = [conn];
+                setMembers([
+                  { id: sessionId, name: 'Host', isHost: true },
+                  { id, name: localName, isHost: false },
+                ]);
                 conn.on('open', () => {
+                  if (isStale()) return;
                   connectionsRef.current = [conn!];
                   conn?.send({ type: 'MEMBER_INTRO', name: localName });
                   succeed();
                 });
                 conn.on('data', (data: any) => {
+                    if (isStale()) return;
                     if (!data || typeof data !== 'object') return;
                     if (data.type === 'STATE_UPDATE') {
                       clientReadyForBroadcastRef.current = true;
-                      rememberMemberName(sessionId, data.state?.userName ?? data.state?.user?.username ?? data.state?.hostName, 'Host');
+                      upsertClientMembers(
+                        sessionId,
+                        data.state?.userName ?? data.state?.user?.username ?? data.state?.hostName,
+                        id,
+                        localName,
+                      );
                       applyRemoteState(data.state, 'full');
                     }
                     else if (data.type === 'TIMER_STATE') {
                       clientReadyForBroadcastRef.current = true;
+                      upsertClientMembers(sessionId, undefined, id, localName);
                       applyRemoteState(data.state, 'timer-only');
                     }
                     else if (data.type === 'MEMBERS_UPDATE') {
@@ -2253,7 +2346,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       normalizedMembers.forEach(member => {
                         memberNamesRef.current[member.id] = member.name;
                       });
-                      setMembers(normalizedMembers);
+                      const resolvedHostName = normalizedMembers.find(member => member.isHost || member.id === sessionId)?.name;
+                      setMembers(mergeClientMembers({
+                        existingMembers: normalizedMembers,
+                        hostId: sessionId,
+                        hostName: resolvedHostName,
+                        selfId: id,
+                        selfName: localName,
+                      }));
                     }
                     else if (data.type === 'GROUP_EVENT') {
                       const remoteEvent = normalizeGroupEventPayload(data.event);
@@ -2264,6 +2364,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     }
                 });
                 conn.on('error', (err: any) => {
+                  if (isStale()) return;
                   const message = `Unable to connect to host (${err?.type || 'error'}).`;
                   if (!settled) {
                     fail(message, err instanceof Error ? err : new Error(message));
@@ -2272,6 +2373,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   leaveGroupSession({ reason: message, preserveConfigs: true });
                 });
                 conn.on('close', () => {
+                  if (isStale()) return;
                   const message = "Disconnected from Host";
                   if (!settled) {
                     fail(message, new Error(message));
@@ -2280,7 +2382,30 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   leaveGroupSession({ reason: message, preserveConfigs: true });
                 });
             });
+
+            peer.on('disconnected', () => {
+              if (isStale()) return;
+              setPeerError('Connection to group service lost. Reconnecting...');
+              if (shouldAttemptPeerReconnect({
+                disconnected: peer.disconnected,
+                destroyed: peer.destroyed,
+              })) {
+                try { peer.reconnect(); } catch {}
+              }
+            });
+
+            peer.on('close', () => {
+              if (isStale()) return;
+              const message = 'Disconnected from Host';
+              if (!settled) {
+                fail(message, new Error(message));
+                return;
+              }
+              leaveGroupSession({ reason: message, preserveConfigs: true });
+            });
+
             peer.on('error', (err: any) => {
+              if (isStale()) return;
               const message = err?.type === 'peer-unavailable'
                 ? 'Host session not found. Check the ID and try again.'
                 : `Connection Failed: ${err?.type || 'unknown'}`;
@@ -2298,13 +2423,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const leaveGroupSession = (options?: { reason?: string, preserveConfigs?: boolean }) => {
+      groupLifecycleRef.current += 1;
       if (peerRef.current) { try { peerRef.current.destroy(); } catch {} peerRef.current = null; }
       connectionsRef.current.forEach(conn => { try { conn.close(); } catch {} });
       connectionsRef.current = [];
       lastClientTimerBroadcastSignatureRef.current = null;
       localPeerIdRef.current = null;
+      groupSessionIdRef.current = null;
+      isHostRef.current = false;
       memberNamesRef.current = {};
       announcedPeerIdsRef.current = new Set();
+      seenGroupEventIdsRef.current = new Set();
       clientReadyForBroadcastRef.current = true;
       setGroupNotice(null);
       setGroupSessionId(null);
@@ -2532,6 +2661,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ]);
 
   const tick = useCallback(() => {
+    if (isAwaitingInitialHostTimerSync()) {
+      return;
+    }
     const now = Date.now();
     if (legacyRuntimeMode) {
       legacyTick(now);
@@ -2568,7 +2700,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
     reconcileFromRuntime(now);
-  }, [legacyRuntimeMode, legacyTick, reconcileFromRuntime, timerStarted, isIdle, isDevMode]);
+  }, [isAwaitingInitialHostTimerSync, legacyRuntimeMode, legacyTick, reconcileFromRuntime, timerStarted, isIdle, isDevMode]);
 
   const applyExternalTimerState = useCallback((payload: Partial<TimerPersistencePayload>, runtime: TimerRuntimeSnapshot) => {
     if (!isRuntimeSnapshot(runtime)) return;
@@ -2741,12 +2873,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [graceOpen, graceContext, workTime, breakTime]);
 
   const startTimer = () => {
+    if (isFollowingHostTimerSync()) return;
     if (timerStarted) return;
     startTimerInternal();
     emitLocalGroupEvent('timer-started');
   };
 
   const stopTimer = (opts?: { silentGroupEvent?: boolean }) => {
+    if (isFollowingHostTimerSync()) return;
     setTimerStarted(false);
     anchorRuntimePhase('idle');
     if (!opts?.silentGroupEvent) emitLocalGroupEvent('timer-stopped');
@@ -2754,6 +2888,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const toggleTimer = () => timerStarted ? stopTimer() : startTimer();
 
   const performSwitch = (targetMode: TimerMode) => {
+    if (isFollowingHostTimerSync()) return;
     playSwitch();
     if (!isIdle && currentActivityStartRef.current) {
         const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
@@ -2773,6 +2908,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const activateMode = (mode: TimerMode) => {
+    if (isFollowingHostTimerSync()) return;
     if (isIdle) performSwitch(mode);
     else if (activeMode !== mode) performSwitch(mode);
     else if (!timerStarted) { startTimer(); playSwitch(); }
@@ -2781,6 +2917,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const switchMode = () => performSwitch(activeMode === 'work' ? 'break' : 'work');
 
   const restartActiveTimer = (customSeconds?: number) => {
+    if (isFollowingHostTimerSync()) return;
     stopTimer({ silentGroupEvent: true });
     const nextWorkTime = activeMode === 'work' ? (customSeconds !== undefined ? customSeconds : settings.workDuration) : workTime;
     const nextBreakTime = activeMode === 'break' ? (customSeconds !== undefined ? customSeconds : breakTime) : breakTime;
@@ -2802,6 +2939,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startAllPause = () => {};
   const confirmAllPause = (reason: string) => {
+    if (isFollowingHostTimerSync()) return;
     stopTimer({ silentGroupEvent: true });
     const pauseStart = Date.now();
     setAllPauseReason(reason);
@@ -2816,6 +2954,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const endAllPause = () => {
+    if (isFollowingHostTimerSync()) return;
     setAllPauseActive(false);
     if (allPauseStartTime) {
       const start = new Date(allPauseStartTime);
@@ -2828,6 +2967,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resumeFromPause = (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => {
+    if (isFollowingHostTimerSync()) return;
     setAllPauseActive(false);
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
@@ -2859,6 +2999,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
+    if (isFollowingHostTimerSync()) return;
     if (isResolvingGraceRef.current) return;
     isResolvingGraceRef.current = true;
 
@@ -2913,6 +3054,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const endSession = () => {
+    if (isFollowingHostTimerSync()) return;
     let pendingActiveDuration = 0;
     let pendingActiveMode: TimerMode | null = null;
     let pendingActiveCategoryId: number | null | undefined = null;
