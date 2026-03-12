@@ -8,6 +8,11 @@ const SummaryView: React.FC = () => {
 
   if (!showSummary || !sessionStats) return null;
 
+  const formatSummaryMinutes = (minutes: number) => {
+    if (!Number.isFinite(minutes) || minutes <= 0) return '0';
+    return `${Math.max(1, Math.round(minutes))}`;
+  };
+
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center p-6 animate-fade-in overflow-hidden">
         {/* Animated Background Elements */}
@@ -26,11 +31,11 @@ const SummaryView: React.FC = () => {
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full">
                 <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 flex flex-col items-center justify-center gap-2 aspect-square">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{Math.floor(sessionStats.totalWorkMinutes)}</span>
+                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{formatSummaryMinutes(sessionStats.totalWorkMinutes)}</span>
                     <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Focus Mins</span>
                 </div>
                 <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 flex flex-col items-center justify-center gap-2 aspect-square">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-teal-200">{Math.floor(sessionStats.totalBreakMinutes)}</span>
+                    <span className="text-4xl md:text-5xl font-mono font-bold text-teal-200">{formatSummaryMinutes(sessionStats.totalBreakMinutes)}</span>
                     <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Break Mins</span>
                 </div>
                 <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 flex flex-col items-center justify-center gap-2 aspect-square">

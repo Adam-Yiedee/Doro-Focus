@@ -1,5 +1,5 @@
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTimer } from '../context/TimerContext';
 
 const formatTime = (seconds: number) => {
@@ -10,14 +10,51 @@ const formatTime = (seconds: number) => {
   return `${sign}${m}:${s.toString().padStart(2, '0')}`;
 };
 
+const clampPercent = (value: number, max: number = 1) => Math.max(0, Math.min(max, value));
+
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
+  const targetPercent = clampPercent(percent, 1.1);
+  const [displayPercent, setDisplayPercent] = useState(targetPercent);
+  const displayPercentRef = useRef(targetPercent);
+
+  useEffect(() => {
+    displayPercentRef.current = displayPercent;
+  }, [displayPercent]);
+
+  useEffect(() => {
+    const nextTarget = clampPercent(percent, 1.1);
+    const startPercent = displayPercentRef.current;
+
+    if (Math.abs(nextTarget - startPercent) < 0.001) {
+      displayPercentRef.current = nextTarget;
+      setDisplayPercent(nextTarget);
+      return;
+    }
+
+    const durationMs = isActive ? 900 : 780;
+    let frameId = 0;
+    let startTime: number | null = null;
+
+    const step = (now: number) => {
+      if (startTime === null) startTime = now;
+      const progress = Math.min(1, (now - startTime) / durationMs);
+      const easedProgress = 1 - Math.pow(1 - progress, 3);
+      const nextPercent = startPercent + ((nextTarget - startPercent) * easedProgress);
+      displayPercentRef.current = nextPercent;
+      setDisplayPercent(nextPercent);
+      if (progress < 1) frameId = window.requestAnimationFrame(step);
+    };
+
+    frameId = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [percent, isActive, isVisible]);
+
   // Range: Start (-300%) to End (-160%). 
   // -300% is completely below the viewport. -160% covers the viewport with the wave crests.
-  const safePercent = Math.max(0, Math.min(1.1, percent));
+  const safePercent = displayPercent;
   const bottomVal = -300 + (safePercent * 140);
   const waveLevelStyle = {
-    transition: 'bottom 600ms linear',
     willChange: 'bottom, transform',
     transform: 'translateZ(0)',
     backfaceVisibility: 'hidden' as const,
@@ -73,22 +110,23 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   let liquidColor: 'default' | 'red' = 'default';
 
   if (type === 'work') {
-      // WORK LOGIC: Fill linearly and only reach full when the timer is actually done.
+      // Ease the visual fill so the work glass does not look nearly full halfway through.
       const safeMax = Math.max(1, maxTime);
-      const ratio = Math.max(0, Math.min(1, time / safeMax));
-      fillPercent = 1 - ratio;
+      const ratio = clampPercent(time / safeMax);
+      const progress = 1 - ratio;
+      fillPercent = Math.pow(progress, 1.35);
       showLiquid = true;
   } else {
       // BREAK LOGIC
       if (time < 0) {
           // Negative break (debt) -> Rise red liquid
           // Visual cap: 10 minutes (600s) of debt fills the container
-          fillPercent = Math.min(1, Math.abs(time) / 600);
+          fillPercent = clampPercent(Math.abs(time) / 600);
           showLiquid = true;
           liquidColor = 'red';
       } else {
           // Normal break: Start Full (100%), Drain to Empty (0%)
-          fillPercent = Math.min(1, time / Math.max(1, 1200)); // Visual cap at 20 mins for fullness
+          fillPercent = clampPercent(time / Math.max(1, 1200)); // Visual cap at 20 mins for fullness
           if (time <= 5) showLiquid = false; // Hide sliver when nearly empty
       }
   }

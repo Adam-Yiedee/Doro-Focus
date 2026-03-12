@@ -15,6 +15,65 @@ export interface RuntimeBoundaryCrossing {
   overflowSeconds: number;
 }
 
+export const getTimerStateFreshnessStamp = ({
+  runtime,
+  payloadUpdatedAtMs = 0,
+}: {
+  runtime?: TimerRuntimeSnapshot | null;
+  payloadUpdatedAtMs?: number;
+}) => {
+  if (runtime && typeof runtime.updatedAtMs === 'number' && Number.isFinite(runtime.updatedAtMs)) {
+    return runtime.updatedAtMs;
+  }
+  return Math.max(0, payloadUpdatedAtMs);
+};
+
+export const shouldApplyIncomingRuntime = ({
+  incomingRuntime,
+  lastAppliedAtMs,
+}: {
+  incomingRuntime?: TimerRuntimeSnapshot | null;
+  lastAppliedAtMs: number;
+}) => {
+  if (!incomingRuntime || typeof incomingRuntime.updatedAtMs !== 'number' || !Number.isFinite(incomingRuntime.updatedAtMs)) {
+    return false;
+  }
+  return incomingRuntime.updatedAtMs > lastAppliedAtMs;
+};
+
+export const getCompletedPhaseDuration = ({
+  snapshot,
+  mode,
+  nowMs,
+  overflowSeconds = 0,
+  activityStartIso = null,
+  fallbackDuration = 0,
+}: {
+  snapshot?: TimerRuntimeSnapshot | null;
+  mode: 'work' | 'break';
+  nowMs: number;
+  overflowSeconds?: number;
+  activityStartIso?: string | null;
+  fallbackDuration?: number;
+}) => {
+  const phase = mode === 'work' ? 'running-work' : 'running-break';
+  const runtimeStartDuration = snapshot?.phase === phase
+    ? (mode === 'work' ? snapshot.phaseStartWorkTime : snapshot.phaseStartBreakTime)
+    : null;
+  if (typeof runtimeStartDuration === 'number' && Number.isFinite(runtimeStartDuration) && runtimeStartDuration > 0) {
+    return Math.max(0, runtimeStartDuration);
+  }
+
+  if (typeof activityStartIso === 'string' && activityStartIso) {
+    const activityStartMs = Date.parse(activityStartIso);
+    if (Number.isFinite(activityStartMs)) {
+      return Math.max(0, ((nowMs - activityStartMs) / 1000) - Math.max(0, overflowSeconds));
+    }
+  }
+
+  return Math.max(0, fallbackDuration);
+};
+
 export type GraceContext = 'afterWork' | 'afterBreak' | null;
 
 interface RuntimeSnapshotInput {

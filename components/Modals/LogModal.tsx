@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, GroupSyncConfig, LogEntry, TimerSettings } from '../../types';
+import { AlarmSound, Category, GroupMember, GroupSyncConfig, LogEntry, TimerSettings, User } from '../../types';
 import { CATEGORY_ICON_OPTIONS, getCategoryIconLabel, getIcon } from '../../utils/icons';
 import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
@@ -40,6 +40,8 @@ const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
   { label: 'News', value: 'news' },
 ];
 
+const MAX_VALID_DATE_MS = 8.64e15;
+
 const formatDuration = (seconds: number) => {
   const safe = Math.max(0, Math.floor(seconds));
   const m = Math.floor(safe / 60);
@@ -47,8 +49,9 @@ const formatDuration = (seconds: number) => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
-const formatDateTime = (iso: string) => {
+const formatDateTime = (iso: string, fallback = 'Unknown') => {
   const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return fallback;
   return dt.toLocaleString([], {
     year: 'numeric',
     month: 'short',
@@ -58,9 +61,24 @@ const formatDateTime = (iso: string) => {
   });
 };
 
-const formatRelativeTimeFromMs = (timestamp: number | null) => {
-  if (!timestamp) return 'Never';
-  const diffMs = Date.now() - timestamp;
+const getSafeTimestamp = (value: unknown): number | null => {
+  const numeric = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric) || Math.abs(numeric) > MAX_VALID_DATE_MS) {
+    return null;
+  }
+  return Number.isNaN(new Date(numeric).getTime()) ? null : numeric;
+};
+
+const formatTimestampDateTime = (timestamp: unknown, fallback = 'Never') => {
+  const safeTimestamp = getSafeTimestamp(timestamp);
+  if (safeTimestamp === null) return fallback;
+  return formatDateTime(new Date(safeTimestamp).toISOString(), fallback);
+};
+
+const formatRelativeTimeFromMs = (timestamp: unknown) => {
+  const safeTimestamp = getSafeTimestamp(timestamp);
+  if (safeTimestamp === null) return 'Never';
+  const diffMs = Date.now() - safeTimestamp;
   if (!Number.isFinite(diffMs) || diffMs < 0) return 'Just now';
 
   const diffMinutes = Math.floor(diffMs / 60_000);
@@ -73,7 +91,7 @@ const formatRelativeTimeFromMs = (timestamp: number | null) => {
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return `${diffDays}d ago`;
 
-  return formatDateTime(new Date(timestamp).toISOString());
+  return formatTimestampDateTime(safeTimestamp, 'Never');
 };
 
 const formatCompactHours = (hours: number) => {
@@ -93,6 +111,17 @@ const ACCOUNT_USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
 const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
 const ACCOUNT_PASSWORD_MAX_LENGTH = 256;
 const ACCOUNT_SYNC_SCOPE_LABELS = ['Live Timer', 'Tasks', 'History', 'Schedule', 'Categories', 'Settings', 'Profile Name'];
+const LOG_ENTRY_TYPES = new Set<LogEntry['type']>(['work', 'break', 'allpause', 'task-complete', 'grace']);
+const EMPTY_ACCOUNT_STATS: User['lifetimeStats'] = {
+  totalFocusHours: 0,
+  totalSessions: 0,
+  totalPomos: 0,
+  activeDays: 0,
+  currentStreak: 0,
+  bestStreak: 0,
+  lastActiveDate: null,
+  categoryBreakdown: {},
+};
 
 const validateAccountUsernameInput = (value: string) => {
   if (!ACCOUNT_USERNAME_REGEX.test(value)) {
@@ -109,6 +138,85 @@ const validateAccountPasswordInput = (value: string) => {
     return `Password must be at most ${ACCOUNT_PASSWORD_MAX_LENGTH} characters.`;
   }
   return null;
+};
+
+const isRenderableLogEntry = (value: unknown): value is LogEntry => {
+  if (!value || typeof value !== 'object') return false;
+  const entry = value as Partial<LogEntry>;
+  return typeof entry.type === 'string'
+    && LOG_ENTRY_TYPES.has(entry.type as LogEntry['type'])
+    && typeof entry.start === 'string'
+    && typeof entry.end === 'string'
+    && typeof entry.duration === 'number'
+    && Number.isFinite(entry.duration);
+};
+
+const isRenderableCategory = (value: unknown): value is Category => {
+  if (!value || typeof value !== 'object') return false;
+  const category = value as Partial<Category>;
+  return typeof category.id === 'number'
+    && Number.isFinite(category.id)
+    && typeof category.name === 'string'
+    && typeof category.color === 'string'
+    && typeof category.icon === 'string';
+};
+
+const isRenderableUser = (value: unknown): value is User => {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<User>;
+  return typeof candidate.username === 'string' && typeof candidate.joinedAt === 'string';
+};
+
+const isRenderableGroupMember = (value: unknown): value is GroupMember => {
+  if (!value || typeof value !== 'object') return false;
+  const member = value as Partial<GroupMember>;
+  return typeof member.id === 'string'
+    && typeof member.name === 'string'
+    && typeof member.isHost === 'boolean';
+};
+
+const getSafeSyncConfig = (value: unknown): GroupSyncConfig => {
+  const candidate = value && typeof value === 'object' ? value as Partial<GroupSyncConfig> : {};
+  return {
+    syncTimers: typeof candidate.syncTimers === 'boolean' ? candidate.syncTimers : DEFAULT_GROUP_CONFIG.syncTimers,
+    syncTasks: typeof candidate.syncTasks === 'boolean' ? candidate.syncTasks : DEFAULT_GROUP_CONFIG.syncTasks,
+    syncSchedule: typeof candidate.syncSchedule === 'boolean' ? candidate.syncSchedule : DEFAULT_GROUP_CONFIG.syncSchedule,
+    syncHistory: typeof candidate.syncHistory === 'boolean' ? candidate.syncHistory : DEFAULT_GROUP_CONFIG.syncHistory,
+    syncSettings: typeof candidate.syncSettings === 'boolean' ? candidate.syncSettings : DEFAULT_GROUP_CONFIG.syncSettings,
+  };
+};
+
+const getSafeText = (value: unknown) => (typeof value === 'string' ? value : '');
+
+const getSafeSessionId = (value: unknown) => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toUpperCase();
+  return normalized || null;
+};
+
+const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
+  const rawStats = user?.lifetimeStats;
+  const rawBreakdown = rawStats?.categoryBreakdown;
+  const safeCategoryBreakdown = rawBreakdown && typeof rawBreakdown === 'object' && !Array.isArray(rawBreakdown)
+    ? Object.fromEntries(
+        Object.entries(rawBreakdown).filter(([name, minutes]) => (
+          typeof name === 'string' && Number.isFinite(Number(minutes)) && Number(minutes) > 0
+        )).map(([name, minutes]) => [name, Number(minutes)]),
+      )
+    : {};
+
+  return {
+    ...EMPTY_ACCOUNT_STATS,
+    ...(rawStats || {}),
+    totalFocusHours: Number(rawStats?.totalFocusHours || 0),
+    totalSessions: Math.max(0, Math.floor(Number(rawStats?.totalSessions || 0))),
+    totalPomos: Math.max(0, Math.floor(Number(rawStats?.totalPomos || 0))),
+    activeDays: Math.max(0, Math.floor(Number(rawStats?.activeDays || 0))),
+    currentStreak: Math.max(0, Math.floor(Number(rawStats?.currentStreak || 0))),
+    bestStreak: Math.max(0, Math.floor(Number(rawStats?.bestStreak || 0))),
+    lastActiveDate: typeof rawStats?.lastActiveDate === 'string' ? rawStats.lastActiveDate : null,
+    categoryBreakdown: safeCategoryBreakdown,
+  };
 };
 
 const clampInt = (value: number, min: number, max: number) => {
@@ -148,6 +256,13 @@ const formatLogDayLabel = (key: string) => {
   yesterday.setDate(yesterday.getDate() - 1);
   if (key === getDateKey(yesterday)) return 'Yesterday';
   return date.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+};
+
+const formatDateKeyLabel = (key: string | null, fallback = 'No focus days yet') => {
+  if (!key) return fallback;
+  const date = parseDateKey(key);
+  if (!date) return fallback;
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
 const formatClockTime = (iso: string) => {
@@ -334,11 +449,31 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const isLightTheme = settings.themeMode !== 'dark';
+  const safeLogs = useMemo(() => (
+    Array.isArray(logs) ? logs.filter(isRenderableLogEntry) : []
+  ), [logs]);
+  const safeCategories = useMemo(() => (
+    Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
+  ), [categories]);
+  const safeUser = useMemo(() => {
+    if (!isRenderableUser(user)) return null;
+    const username = user.username.trim();
+    return { ...user, username: username || 'Account' };
+  }, [user]);
+  const safeMembers = useMemo(() => (
+    Array.isArray(members) ? members.filter(isRenderableGroupMember) : []
+  ), [members]);
+  const safeLifetimeStats = useMemo(() => getSafeLifetimeStats(safeUser), [safeUser]);
+  const safeLastAccountSyncAt = useMemo(() => getSafeTimestamp(lastAccountSyncAt), [lastAccountSyncAt]);
+  const safeHostSyncConfig = useMemo(() => getSafeSyncConfig(hostSyncConfig), [hostSyncConfig]);
+  const safeClientSyncConfig = useMemo(() => getSafeSyncConfig(clientSyncConfig), [clientSyncConfig]);
+  const safeGroupSessionId = useMemo(() => getSafeSessionId(groupSessionId), [groupSessionId]);
+  const safeUserName = useMemo(() => getSafeText(userName), [userName]);
   const orderedLogs = useMemo(() => {
-    return [...logs]
+    return [...safeLogs]
       .filter((entry) => entry.type !== 'task-complete')
       .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
-  }, [logs]);
+  }, [safeLogs]);
   const groupedLogDays = useMemo(() => {
     const groups = new Map<string, LogEntry[]>();
     orderedLogs.forEach((entry) => {
@@ -374,7 +509,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       };
     });
   }, [orderedLogs]);
-  const categoriesById = useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
+  const categoriesById = useMemo(() => new Map(safeCategories.map((category) => [category.id, category])), [safeCategories]);
 
   const accountError = authLocalError || accountSyncError || null;
 
@@ -421,15 +556,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       && !passwordValidationMessage
       && !authBusy,
   );
-  const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(lastAccountSyncAt), [lastAccountSyncAt]);
+  const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(safeLastAccountSyncAt), [safeLastAccountSyncAt]);
 
   const categoryBreakdown = useMemo(() => {
-    const breakdown = user?.lifetimeStats.categoryBreakdown || {};
+    const breakdown = safeLifetimeStats.categoryBreakdown || {};
     return Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
-  }, [user]);
+  }, [safeLifetimeStats]);
   const categoryColorsByName = useMemo(
-    () => new Map(categories.map((category) => [category.name, category.color])),
-    [categories],
+    () => new Map(safeCategories.map((category) => [category.name, category.color])),
+    [safeCategories],
   );
   const accountPrimaryColor = useMemo(() => {
     for (const [name] of categoryBreakdown) {
@@ -439,8 +574,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     return PRESET_COLORS[0];
   }, [categoryBreakdown, categoryColorsByName]);
   const groupInviteUrl = useMemo(() => (
-    groupSessionId ? buildGroupInviteUrl(groupSessionId) : ''
-  ), [groupSessionId]);
+    safeGroupSessionId ? buildGroupInviteUrl(safeGroupSessionId) : ''
+  ), [safeGroupSessionId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -453,12 +588,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     if (!isOpen) return;
-    if (pendingJoinId) {
+    const normalizedPendingJoinId = getSafeSessionId(pendingJoinId);
+    if (normalizedPendingJoinId) {
       inviteAutoJoinKeyRef.current = null;
       setActiveTab('group');
       setGroupFlow('join');
-      setGroupSessionInput(pendingJoinId);
-      setInviteSessionId(pendingJoinId);
+      setGroupSessionInput(normalizedPendingJoinId);
+      setInviteSessionId(normalizedPendingJoinId);
       setGroupLocalError(null);
       setPendingJoinId(null);
     }
@@ -466,24 +602,24 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     if (!isOpen) return;
-    setGroupName(prev => prev || user?.username || userName || '');
-    if (groupSessionId) {
-      setHostDraftConfig(hostSyncConfig || DEFAULT_GROUP_CONFIG);
-      setJoinDraftConfig(clientSyncConfig || DEFAULT_GROUP_CONFIG);
+    setGroupName(prev => prev || safeUser?.username || safeUserName || '');
+    if (safeGroupSessionId) {
+      setHostDraftConfig(safeHostSyncConfig);
+      setJoinDraftConfig(safeClientSyncConfig);
       return;
     }
-    setHostDraftConfig(DEFAULT_GROUP_CONFIG);
-    setJoinDraftConfig(DEFAULT_GROUP_CONFIG);
-  }, [isOpen, user?.username, userName, groupSessionId, hostSyncConfig, clientSyncConfig]);
+    setHostDraftConfig({ ...DEFAULT_GROUP_CONFIG });
+    setJoinDraftConfig({ ...DEFAULT_GROUP_CONFIG });
+  }, [isOpen, safeUser?.username, safeUserName, safeGroupSessionId, safeHostSyncConfig, safeClientSyncConfig]);
 
   useEffect(() => {
     if (!isOpen) return;
-    if (user) {
-      setUsernameInput(user.username);
+    if (safeUser) {
+      setUsernameInput(safeUser.username);
       setPasswordInput('');
       setAuthLocalError(null);
     }
-  }, [isOpen, user]);
+  }, [isOpen, safeUser]);
 
   if (!isOpen) return null;
 
@@ -586,11 +722,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   };
 
   const toggleLiveHostSync = (key: SyncKey) => {
-    updateHostSyncConfig({ ...hostSyncConfig, [key]: !hostSyncConfig[key] });
+    updateHostSyncConfig({ ...safeHostSyncConfig, [key]: !safeHostSyncConfig[key] });
   };
 
   const toggleLiveClientSync = (key: SyncKey) => {
-    updateClientSyncConfig({ ...clientSyncConfig, [key]: !clientSyncConfig[key] });
+    updateClientSyncConfig({ ...safeClientSyncConfig, [key]: !safeClientSyncConfig[key] });
   };
 
   const handleCreateGroup = async () => {
@@ -835,16 +971,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   };
 
   const renderAccountLoggedIn = () => {
-    const stats = user!.lifetimeStats;
-    const joinedAt = formatDateTime(user!.joinedAt);
+    if (!safeUser) return renderAccountSignedOut();
+
+    const stats = safeLifetimeStats;
+    const joinedAt = formatDateTime(safeUser.joinedAt, 'Unknown');
     const activeDays = Math.max(0, Math.floor(stats.activeDays || 0));
     const dailyAvgHours = activeDays > 0 ? stats.totalFocusHours / activeDays : 0;
     const focusHoursLabel = formatCompactHours(stats.totalFocusHours);
-    const displayName = userName.trim();
-    const hasCustomDisplayName = Boolean(displayName && displayName !== user!.username);
-    const lastActiveLabel = stats.lastActiveDate
-      ? new Date(`${stats.lastActiveDate}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
-      : 'No focus days yet';
+    const displayName = safeUserName.trim();
+    const hasCustomDisplayName = Boolean(displayName && displayName !== safeUser.username);
+    const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
     const heroStyle: React.CSSProperties = {
       background: isLightTheme
         ? `linear-gradient(152deg, ${colorToRgba(accountPrimaryColor, 0.26)} 0%, rgba(255, 255, 255, 0.86) 52%, rgba(250, 252, 255, 0.7) 100%)`
@@ -888,7 +1024,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   background: `linear-gradient(145deg, ${colorToRgba(accountPrimaryColor, 0.92)}, ${colorToRgba(accountPrimaryColor, 0.62)})`,
                 }}
               >
-                {user!.username.charAt(0).toUpperCase()}
+                {safeUser.username.charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -897,7 +1033,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     {syncStateMeta.label}
                   </div>
                 </div>
-                <h3 className="mt-3 text-2xl md:text-[2rem] font-bold tracking-tight text-white">{user!.username}</h3>
+                <h3 className="mt-3 text-2xl md:text-[2rem] font-bold tracking-tight text-white">{safeUser.username}</h3>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs text-white/55">
                   <span>Joined {joinedAt}</span>
                   <span>Last sync {lastSyncRelative}</span>
@@ -944,7 +1080,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 </button>
               </div>
               <div className="mt-3 text-[11px] leading-relaxed text-white/45">
-                Server stats are rebuilt from synced logs and session history. Latest cloud check: {lastAccountSyncAt ? formatDateTime(new Date(lastAccountSyncAt).toISOString()) : 'Never'}.
+                Server stats are rebuilt from synced logs and session history. Latest cloud check: {formatTimestampDateTime(safeLastAccountSyncAt, 'Never')}.
               </div>
             </div>
           </div>
@@ -1227,13 +1363,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   };
 
   const renderAccountTab = () => {
-    return user ? renderAccountLoggedIn() : renderAccountSignedOut();
+    return safeUser ? renderAccountLoggedIn() : renderAccountSignedOut();
   };
 
   const renderGroupTab = () => {
     const groupError = groupLocalError || peerError;
-    const hostControls = hostSyncConfig || DEFAULT_GROUP_CONFIG;
-    const clientControls = clientSyncConfig || DEFAULT_GROUP_CONFIG;
+    const hostControls = safeHostSyncConfig;
+    const clientControls = safeClientSyncConfig;
 
     if (groupBusy) {
       return (
@@ -1244,7 +1380,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       );
     }
 
-    if (groupSessionId) {
+    if (safeGroupSessionId) {
       return (
         <div className="p-4 md:p-8 min-h-[520px]">
           <div className="max-w-lg mx-auto space-y-6">
@@ -1259,7 +1395,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 <div className="flex flex-wrap items-center justify-end gap-3">
                   <button
                     type="button"
-                    onClick={async () => { await copyToClipboard(groupSessionId); }}
+                    onClick={async () => { await copyToClipboard(safeGroupSessionId); }}
                     className="px-3 py-1.5 rounded-full border border-blue-400/20 bg-blue-500/10 text-[10px] text-blue-300 hover:text-blue-200 hover:bg-blue-500/15 font-bold uppercase tracking-[0.14em] transition-colors"
                   >
                     Copy Code
@@ -1282,7 +1418,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               <div className="text-xl md:text-2xl font-mono font-bold text-white tracking-wide bg-black/35 p-3 rounded-xl text-center border border-white/10">
-                {groupSessionId}
+                {safeGroupSessionId}
               </div>
 
               {showGroupQr && (
@@ -1298,10 +1434,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
               <div>
                 <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.16em] mb-2">
-                  Members ({members.length})
+                  Members ({safeMembers.length})
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {members.map(member => (
+                  {safeMembers.map(member => (
                     <div
                       key={member.id}
                       className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs ${
@@ -1701,10 +1837,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           )}
 
           <div className="space-y-2">
-            {categories.length === 0 && (
+            {safeCategories.length === 0 && (
               <div className="text-center text-white/35 text-xs italic py-4">No categories created.</div>
             )}
-            {categories.map(category => (
+            {safeCategories.map(category => (
               <div
                 key={category.id}
                 className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/10"

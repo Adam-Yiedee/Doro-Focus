@@ -73,6 +73,9 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
+const DEFAULT_SCHEDULE_LOOKAHEAD_DAYS = 3;
+const EXTENDED_SCHEDULE_LOOKAHEAD_DAYS = 21;
+const HISTORY_LOOKBACK_DAYS = 21;
 
 const colorToRgba = (color: string, alpha: number) => {
   const safeAlpha = Math.max(0, Math.min(1, alpha));
@@ -117,6 +120,7 @@ const ScheduleTaskCard: React.FC<{
   isDragging?: boolean;
   dropHint?: DragInsertPosition | null;
   isDropAnimating?: boolean;
+  isEntering?: boolean;
   registerCardRef?: (taskId: number, node: HTMLDivElement | null) => void;
 }> = ({
   task,
@@ -128,6 +132,7 @@ const ScheduleTaskCard: React.FC<{
   isDragging = false,
   dropHint = null,
   isDropAnimating = false,
+  isEntering = false,
   registerCardRef,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
@@ -190,6 +195,14 @@ const ScheduleTaskCard: React.FC<{
     background: `linear-gradient(90deg, ${colorToRgba(displayColor, isCompleted ? (isLightTheme ? 0.68 : 0.52) : (isLightTheme ? 0.92 : 0.82))} 0%, ${colorToRgba(displayColor, isLightTheme ? 0.36 : 0.2)} 100%)`,
     boxShadow: `0 0 16px ${colorToRgba(displayColor, isLightTheme ? 0.28 : 0.22)}`,
   }), [displayColor, isCompleted, isLightTheme]);
+  const entryGlowStyle = useMemo(() => ({
+    background: isLightTheme
+      ? `radial-gradient(circle at 16% 8%, ${colorToRgba(displayColor, 0.28)} 0%, transparent 42%), linear-gradient(180deg, rgba(255,255,255,0.32), transparent 38%)`
+      : `radial-gradient(circle at 16% 8%, ${colorToRgba(displayColor, 0.24)} 0%, transparent 42%), linear-gradient(180deg, rgba(255,255,255,0.14), transparent 38%)`,
+  }), [displayColor, isLightTheme]);
+  const entrySheenStyle = useMemo(() => ({
+    background: `linear-gradient(112deg, transparent 0%, ${colorToRgba(displayColor, isLightTheme ? 0.16 : 0.2)} 28%, rgba(255,255,255,${isLightTheme ? '0.68' : '0.26'}) 48%, transparent 72%)`,
+  }), [displayColor, isLightTheme]);
   const exitEdit = () => {
     setIsEditing(false);
     setIsSettlingAfterEdit(true);
@@ -303,11 +316,17 @@ const ScheduleTaskCard: React.FC<{
         isCompleted
           ? 'schedule-task-card-completed cursor-default opacity-55'
           : 'cursor-grab active:cursor-grabbing hover:bg-white/[0.08] hover:border-white/20'
-      } ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
+      } ${isDragging ? 'doro-dragging-card' : ''} ${isDropAnimating ? 'doro-drop-pop' : ''} ${isEntering ? 'doro-schedule-create' : ''} ${isSettlingAfterEdit ? 'doro-edit-close-settle' : ''}`}
       style={taskGlassStyle}
     >
       {dropHint && !isDragging && (
         <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.55)]`} />
+      )}
+      {isEntering && (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
+          <div className="absolute inset-0 rounded-xl doro-schedule-create-glow" style={entryGlowStyle} />
+          <div className="absolute -bottom-8 -left-1/2 top-[-18%] w-[72%] doro-schedule-create-sheen" style={entrySheenStyle} />
+        </div>
       )}
       <div className="pointer-events-none absolute inset-0 rounded-xl" style={taskTintStyle} />
       <div className="pointer-events-none absolute left-3 right-10 top-[1px] h-[2px] rounded-full opacity-95" style={taskAccentStyle} />
@@ -347,6 +366,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const [hoveredTaskTarget, setHoveredTaskTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [dropAnimatedTaskId, setDropAnimatedTaskId] = useState<number | null>(null);
   const [dropAnimatedDayKey, setDropAnimatedDayKey] = useState<string | null>(null);
+  const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
   const [hoveredLane, setHoveredLane] = useState<string | null>(null);
   const [addingDate, setAddingDate] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -360,6 +380,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const openAtRef = useRef<number>(0);
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
   const dropAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const entryAnimTimeoutsRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const lastHoverMoveKeyRef = useRef<string | null>(null);
   const lastReorderAtRef = useRef<number>(0);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -381,6 +402,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   useEffect(() => {
     return () => {
       if (dropAnimTimeoutRef.current) clearTimeout(dropAnimTimeoutRef.current);
+      entryAnimTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+      entryAnimTimeoutsRef.current.clear();
     };
   }, []);
 
@@ -391,11 +414,14 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       setHoveredTaskTarget(null);
       setDropAnimatedTaskId(null);
       setDropAnimatedDayKey(null);
+      setEnteringTaskIds([]);
       setAddingDate(null);
       setShowHistory(false);
       setExtendSchedule(false);
       setShowUnscheduled(false);
       lastHoverMoveKeyRef.current = null;
+      entryAnimTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+      entryAnimTimeoutsRef.current.clear();
       previousCardTopsRef.current = new Map();
       openAtRef.current = 0;
       return;
@@ -453,8 +479,10 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     weekStart.setDate(todayDate.getDate() - mondayOffset);
     const weekEnd = addDays(weekStart, 6);
 
-    let start = showHistory ? addDays(todayDate, -21) : new Date(todayDate);
-    let end = extendSchedule ? addDays(weekEnd, 21) : weekEnd;
+    let start = showHistory ? addDays(todayDate, -HISTORY_LOOKBACK_DAYS) : new Date(todayDate);
+    let end = extendSchedule
+      ? addDays(weekEnd, EXTENDED_SCHEDULE_LOOKAHEAD_DAYS)
+      : addDays(weekEnd, DEFAULT_SCHEDULE_LOOKAHEAD_DAYS);
 
     const scheduledKeys = visibleScheduledTasks
       .map(task => task.scheduledDate)
@@ -646,19 +674,34 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     return rootOpenTasks.filter((task) => !task.scheduledDate);
   }, [rootOpenTasks]);
 
+  const triggerLaneFeedback = useCallback((laneKey: string, taskId?: number | null) => {
+    setDropAnimatedDayKey(laneKey);
+    setDropAnimatedTaskId(taskId ?? null);
+    if (dropAnimTimeoutRef.current) clearTimeout(dropAnimTimeoutRef.current);
+    dropAnimTimeoutRef.current = setTimeout(() => {
+      setDropAnimatedTaskId(null);
+      setDropAnimatedDayKey(null);
+    }, 520);
+  }, []);
+
+  const markTaskAsEntering = useCallback((taskId: number) => {
+    setEnteringTaskIds((prev) => (prev.includes(taskId) ? prev : [...prev, taskId]));
+    const existingTimeout = entryAnimTimeoutsRef.current.get(taskId);
+    if (existingTimeout) clearTimeout(existingTimeout);
+    const timeoutId = setTimeout(() => {
+      entryAnimTimeoutsRef.current.delete(taskId);
+      setEnteringTaskIds((prev) => prev.filter((id) => id !== taskId));
+    }, 760);
+    entryAnimTimeoutsRef.current.set(taskId, timeoutId);
+  }, []);
+
   const scheduleTask = (taskId: number, date: string | undefined) => {
     const task = tasks.find((item) => item.id === taskId);
     if (!task) return;
     const normalizedDate = !date && !task.isFuture ? todayKey : date;
     if ((task.scheduledDate || undefined) === normalizedDate) return;
     updateTask({ ...task, scheduledDate: normalizedDate });
-    setDropAnimatedTaskId(taskId);
-    setDropAnimatedDayKey(normalizedDate || 'unscheduled');
-    if (dropAnimTimeoutRef.current) clearTimeout(dropAnimTimeoutRef.current);
-    dropAnimTimeoutRef.current = setTimeout(() => {
-      setDropAnimatedTaskId(null);
-      setDropAnimatedDayKey(null);
-    }, 520);
+    triggerLaneFeedback(normalizedDate || 'unscheduled', taskId);
   };
 
   const clearDragState = useCallback(() => {
@@ -728,13 +771,15 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
 
   const submitDayTask = (dateKey: string) => {
     if (!newTaskName.trim()) return;
-    addDetailedTask({
+    const createdTaskId = addDetailedTask({
       name: newTaskName.trim(),
       estimated: clampEstimate(newTaskEst),
       color: newTaskColor,
       scheduledDate: dateKey,
       isFuture: false,
     });
+    triggerLaneFeedback(dateKey);
+    markTaskAsEntering(createdTaskId);
     setNewTaskName('');
     setNewTaskEst(1);
     setAddingDate(null);
@@ -1010,6 +1055,57 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .doro-drop-pop {
           animation: doro-drop-pop 420ms cubic-bezier(0.2, 0.9, 0.3, 1.08);
         }
+        @keyframes doro-schedule-create {
+          0% {
+            opacity: 0;
+            transform: translateY(16px) scale(0.94);
+            filter: saturate(0.84) blur(1px);
+          }
+          54% {
+            opacity: 1;
+            transform: translateY(-3px) scale(1.018);
+            filter: saturate(1.08) blur(0);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1) blur(0);
+          }
+        }
+        .doro-schedule-create {
+          animation: doro-schedule-create 560ms cubic-bezier(0.16, 0.88, 0.3, 1.12);
+          transform-origin: top center;
+        }
+        @keyframes doro-schedule-create-glow {
+          0% {
+            opacity: 0;
+          }
+          38% {
+            opacity: 1;
+          }
+          100% {
+            opacity: 0;
+          }
+        }
+        .doro-schedule-create-glow {
+          animation: doro-schedule-create-glow 620ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        @keyframes doro-schedule-create-sheen {
+          0% {
+            opacity: 0;
+            transform: translateX(-124%) skewX(-18deg);
+          }
+          28% {
+            opacity: 0.88;
+          }
+          100% {
+            opacity: 0;
+            transform: translateX(228%) skewX(-18deg);
+          }
+        }
+        .doro-schedule-create-sheen {
+          animation: doro-schedule-create-sheen 760ms cubic-bezier(0.19, 1, 0.22, 1);
+        }
         @keyframes doro-edit-close-settle {
           0% {
             transform: translateY(2px) scale(0.985);
@@ -1205,6 +1301,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         isDragging={draggingTaskId === task.id}
                         dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
                         isDropAnimating={dropAnimatedTaskId === task.id}
+                        isEntering={enteringTaskIds.includes(task.id)}
                         registerCardRef={registerCardRef}
                         onDragStart={handleCardDragStart}
                         onDragHover={handleCardDragHover}
@@ -1269,6 +1366,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         isDragging={draggingTaskId === task.id}
                         dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
                         isDropAnimating={dropAnimatedTaskId === task.id}
+                        isEntering={enteringTaskIds.includes(task.id)}
                         registerCardRef={registerCardRef}
                           onDragStart={handleCardDragStart}
                           onDragHover={handleCardDragHover}

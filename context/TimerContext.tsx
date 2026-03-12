@@ -25,7 +25,10 @@ import {
   createRuntimeSnapshot,
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
+  getCompletedPhaseDuration,
+  getTimerStateFreshnessStamp,
   normalizeGraceWindow,
+  shouldApplyIncomingRuntime,
   shouldDiscardRestoredGrace,
 } from '../utils/timerRuntime';
 import {
@@ -158,7 +161,7 @@ interface TimerContextType {
 
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => void;
-  addDetailedTask: (task: Partial<Task> & { name: string, estimated: number }) => void;
+  addDetailedTask: (task: Partial<Task> & { name: string, estimated: number }) => number;
   addSubtasksToTask: (parentId: number, subtasks: { name: string, est: number }[]) => void;
   updateTask: (task: Task) => void;
   deleteTask: (id: number) => void;
@@ -760,6 +763,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const key = overrideKey || getActiveStorageKey();
     const runtimeRunning = snapshot.phase === 'running-work' || snapshot.phase === 'running-break';
     const runtimeMode: TimerMode = snapshot.phase === 'running-break' ? 'break' : activeMode;
+    const runtimeGrace = normalizeGraceWindow({
+      graceOpenCandidate: snapshot.phase === 'grace',
+      rawGraceContext: graceContext,
+      fallbackMode: runtimeMode,
+    });
     try {
       const existingRaw = localStorage.getItem(key);
       const existing: TimerPersistencePayload = existingRaw ? JSON.parse(existingRaw) : {};
@@ -774,9 +782,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         allPauseTime,
         allPauseReason,
         allPauseStartTime,
-        graceOpen: snapshot.phase === 'grace',
-        graceContext,
-        graceTotal,
+        graceOpen: runtimeGrace.graceOpen,
+        graceContext: runtimeGrace.graceContext,
+        graceTotal: runtimeGrace.graceOpen ? snapshot.phaseStartGraceTotal : 0,
       };
       localStorage.setItem(key, JSON.stringify(merged));
     } catch (error) {
@@ -800,9 +808,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const phaseWorkTime = overrides?.phaseStartWorkTime ?? workTime;
     const phaseBreakTime = overrides?.phaseStartBreakTime ?? breakTime;
     const phaseAllPause = overrides?.phaseStartAllPauseTime ?? allPauseTime;
-    const phaseGrace = overrides?.phaseStartGraceTotal ?? graceTotal;
+    const phaseGraceTotal = phase === 'grace' ? (overrides?.phaseStartGraceTotal ?? graceTotal) : 0;
     const phaseImpliesRunning = phase === 'running-work' || phase === 'running-break';
     const phaseMode: TimerMode = phase === 'running-break' ? 'break' : activeMode;
+    const phaseGraceState = normalizeGraceWindow({
+      graceOpenCandidate: phase === 'grace',
+      rawGraceContext: graceContext,
+      fallbackMode: phaseMode,
+    });
     const snapshot = createRuntimeSnapshot({
       sourceTabId: tabIdRef.current,
       phase,
@@ -810,7 +823,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       workTime: phaseWorkTime,
       breakTime: phaseBreakTime,
       allPauseTime: phaseAllPause,
-      graceTotal: phaseGrace,
+      graceTotal: phaseGraceTotal,
       activityStartIso: overrides?.activityStartIso ?? (currentActivityStartRef.current ? currentActivityStartRef.current.toISOString() : null),
     });
     runtimeRef.current = snapshot;
@@ -829,9 +842,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           allPauseTime: phaseAllPause,
           allPauseReason,
           allPauseStartTime,
-          graceOpen: phase === 'grace',
-          graceContext,
-          graceTotal: phaseGrace,
+          graceOpen: phaseGraceState.graceOpen,
+          graceContext: phaseGraceState.graceContext,
+          graceTotal: phaseGraceTotal,
           workTime: phaseWorkTime,
           breakTime: phaseBreakTime,
           pomodoroCount,
@@ -1199,7 +1212,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       localData,
       remoteData,
       prefer,
-      (payload) => Math.max(getPayloadRuntimeUpdatedAtMs(payload), getPayloadUpdatedAtMs(payload)),
+      (payload) => getTimerStateFreshnessStamp({
+        runtime: isRuntimeSnapshot(payload.runtime) ? payload.runtime : null,
+        payloadUpdatedAtMs: getPayloadUpdatedAtMs(payload),
+      }),
     );
 
     return {
@@ -2048,30 +2064,39 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (typeof remote.sessionStartTime === 'string' || remote.sessionStartTime === null) setSessionStartTime(remote.sessionStartTime ?? null);
       }
       if (config.syncTimers) {
-          if (typeof remote.workTime === 'number') setWorkTime(remote.workTime);
-          if (typeof remote.breakTime === 'number') setBreakTime(remote.breakTime);
-          if (remote.activeMode === 'work' || remote.activeMode === 'break') setActiveMode(remote.activeMode);
-          if (typeof remote.timerStarted === 'boolean') setTimerStarted(remote.timerStarted);
-          if (typeof remote.isIdle === 'boolean') setIsIdle(remote.isIdle);
-          if (typeof remote.pomodoroCount === 'number') setPomodoroCount(remote.pomodoroCount);
-          if (typeof remote.allPauseActive === 'boolean') setAllPauseActive(remote.allPauseActive);
-          if (typeof remote.allPauseTime === 'number') setAllPauseTime(remote.allPauseTime);
-          if (typeof remote.allPauseReason === 'string') setAllPauseReason(remote.allPauseReason);
-          if (remote.allPauseStartTime === null || typeof remote.allPauseStartTime === 'number') setAllPauseStartTime(remote.allPauseStartTime ?? null);
-          const remoteMode = remote.activeMode === 'work' || remote.activeMode === 'break' ? remote.activeMode : activeModeRef.current;
-          const remoteGrace = normalizeGraceWindow({
-            graceOpenCandidate: typeof remote.graceOpen === 'boolean' ? remote.graceOpen : false,
-            rawGraceContext: remote.graceContext,
-            fallbackMode: remoteMode,
-          });
-          if (typeof remote.graceOpen === 'boolean') setGraceOpen(remoteGrace.graceOpen);
-          if (remote.graceContext === 'afterWork' || remote.graceContext === 'afterBreak' || remote.graceContext === null) setGraceContext(remoteGrace.graceContext);
-          if (typeof remote.graceTotal === 'number') setGraceTotal(remoteGrace.graceOpen ? remote.graceTotal : 0);
-
-          if (isRuntimeSnapshot(remote.runtime) && remote.runtime.updatedAtMs > lastRuntimeAppliedRef.current) {
-              runtimeRef.current = remote.runtime;
-              lastRuntimeAppliedRef.current = remote.runtime.updatedAtMs;
-              currentActivityStartRef.current = remote.runtime.activityStartIso ? new Date(remote.runtime.activityStartIso) : null;
+          const remoteRuntime = isRuntimeSnapshot(remote.runtime) ? remote.runtime : null;
+          if (shouldApplyIncomingRuntime({
+            incomingRuntime: remoteRuntime,
+            lastAppliedAtMs: lastRuntimeAppliedRef.current,
+          })) {
+              const now = Date.now();
+              const derived = deriveRuntimeValues(remoteRuntime!, now);
+              const runtimeMode: TimerMode = remoteRuntime!.phase === 'running-break'
+                ? 'break'
+                : (remote.activeMode === 'work' || remote.activeMode === 'break' ? remote.activeMode : activeModeRef.current);
+              const remoteGrace = normalizeGraceWindow({
+                graceOpenCandidate: remoteRuntime!.phase === 'grace',
+                rawGraceContext: remote.graceContext,
+                fallbackMode: runtimeMode,
+              });
+              runtimeRef.current = remoteRuntime!;
+              lastRuntimeAppliedRef.current = remoteRuntime!.updatedAtMs;
+              currentActivityStartRef.current = remoteRuntime!.activityStartIso ? new Date(remoteRuntime!.activityStartIso) : null;
+              setWorkTime(derived.workTime);
+              setBreakTime(derived.breakTime);
+              setActiveMode(remoteRuntime!.phase === 'running-work' ? 'work' : remoteRuntime!.phase === 'running-break' ? 'break' : runtimeMode);
+              setTimerStarted(remoteRuntime!.phase === 'running-work' || remoteRuntime!.phase === 'running-break');
+              setIsIdle(remoteRuntime!.phase === 'idle');
+              if (typeof remote.pomodoroCount === 'number') setPomodoroCount(remote.pomodoroCount);
+              setAllPauseActive(remoteRuntime!.phase === 'all-pause');
+              setAllPauseTime(derived.allPauseTime);
+              if (typeof remote.allPauseReason === 'string') setAllPauseReason(remote.allPauseReason);
+              else if (remoteRuntime!.phase !== 'all-pause') setAllPauseReason('');
+              if (remote.allPauseStartTime === null || typeof remote.allPauseStartTime === 'number') setAllPauseStartTime(remote.allPauseStartTime ?? null);
+              else if (remoteRuntime!.phase !== 'all-pause') setAllPauseStartTime(null);
+              setGraceOpen(remoteGrace.graceOpen);
+              setGraceContext(remoteGrace.graceContext);
+              setGraceTotal(remoteGrace.graceOpen ? derived.graceTotal : 0);
           }
       }
       if (!isHostRef.current && remote.hostConfig) {
@@ -2726,11 +2751,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const sendNotification = useCallback((title: string, body: string) => {
     if ("Notification" in window) {
        if (Notification.permission === "granted") {
-           try {
-             new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer', requireInteraction: true, vibrate: [200, 100, 200] } as any);
-           } catch(e) { console.error(e); }
-       } else if (Notification.permission !== "denied") {
-           Notification.requestPermission().then(p => { if (p === "granted") new Notification(title, { body, icon: '/favicon.ico', tag: 'lumina-timer' }); });
+          try {
+            new Notification(title, { body, tag: 'lumina-timer', requireInteraction: true, vibrate: [200, 100, 200] } as any);
+          } catch(e) { console.error(e); }
        }
     }
     if (typeof navigator !== 'undefined' && "vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
@@ -2784,7 +2807,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setWorkTime(0);
 
     if (currentActivityStartRef.current) {
-      logActivity('work', currentActivityStartRef.current, settings.workDuration, 'Pomodoro Complete');
+      logActivity(
+        'work',
+        currentActivityStartRef.current,
+        getCompletedPhaseDuration({
+          snapshot: runtimeRef.current,
+          mode: 'work',
+          nowMs: now,
+          overflowSeconds: initialGraceSeconds,
+          activityStartIso: currentActivityStartRef.current.toISOString(),
+          fallbackDuration: settings.workDuration,
+        }),
+        'Pomodoro Complete',
+      );
       currentActivityStartRef.current = null; 
     }
     
@@ -2989,8 +3024,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       fallbackMode: payloadMode,
     });
     setGraceOpen(payloadGrace.graceOpen);
-    if (payload.graceContext === 'afterWork' || payload.graceContext === 'afterBreak' || payload.graceContext === null) setGraceContext(payloadGrace.graceContext);
-    if (typeof payload.graceTotal === 'number') setGraceTotal(payloadGrace.graceOpen ? payload.graceTotal : 0);
+    setGraceContext(payloadGrace.graceContext);
+    setGraceTotal(
+      payloadGrace.graceOpen
+        ? (typeof payload.graceTotal === 'number' ? payload.graceTotal : runtime.phaseStartGraceTotal)
+        : 0,
+    );
     if (typeof payload.sessionStartTime === 'string' || payload.sessionStartTime === null) setSessionStartTime(payload.sessionStartTime ?? null);
     if (typeof payload.scheduleStartTime === 'string') setScheduleStartTime(payload.scheduleStartTime);
 
@@ -3108,22 +3147,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   useEffect(() => {
     if (!graceOpen || graceContext !== null) return;
-    setGraceOpen(false);
-    setGraceContext(null);
-    setGraceTotal(0);
-    setActiveMode('break');
-    setIsIdle(false);
-    const now = new Date();
-    currentActivityStartRef.current = now;
-    startTimerInternal({
-      mode: 'break',
-      workOverride: workTime,
-      breakOverride: breakTime,
-      forceActivityStart: now,
-      playSound: false,
-      forceStart: true,
+    const normalizedGrace = normalizeGraceWindow({
+      graceOpenCandidate: true,
+      rawGraceContext: null,
+      fallbackMode: activeMode,
     });
-  }, [graceOpen, graceContext, workTime, breakTime]);
+    setGraceContext(normalizedGrace.graceContext);
+  }, [graceOpen, graceContext, activeMode]);
 
   const startTimer = () => {
     if (isFollowingHostTimerSync()) return;
@@ -3151,6 +3181,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsIdle(false);
     setGraceOpen(false);
     setGraceContext(null);
+    setGraceTotal(0);
     currentActivityStartRef.current = new Date();
     setTimerStarted(true);
     lastTickRef.current = Date.now();
@@ -3177,6 +3208,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (activeMode === 'work') setWorkTime(nextWorkTime);
     else setBreakTime(nextBreakTime);
     setGraceOpen(false);
+    setGraceContext(null);
+    setGraceTotal(0);
     setIsIdle(false);
     const now = new Date();
     currentActivityStartRef.current = now;
@@ -3199,6 +3232,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setAllPauseStartTime(pauseStart);
     setAllPauseTime(0);
     setAllPauseActive(true);
+    setGraceOpen(false);
+    setGraceContext(null);
+    setGraceTotal(0);
     anchorRuntimePhase('all-pause', {
       phaseStartAllPauseTime: 0,
       activityStartIso: null,
@@ -3412,6 +3448,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTimerStarted(false);
     setGraceOpen(false);
     setGraceContext(null);
+    setGraceTotal(0);
     setSessionStartTime(null);
     currentActivityStartRef.current = null;
     
@@ -3449,6 +3486,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setAllPauseActive(false);
       setGraceOpen(false);
       setGraceContext(null);
+      setGraceTotal(0);
       setSessionStartTime(null);
       setScheduleBreaks([]);
       setSessionStats(null);
@@ -3490,6 +3528,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
       setTasks(prev => [...prev, newTask]);
+      return newTask.id;
   };
 
   const addSubtasksToTask = (parentId: number, subtasks: { name: string, est: number }[]) => {

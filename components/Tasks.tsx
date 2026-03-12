@@ -50,6 +50,8 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
+const TASK_EDIT_CLOSE_DURATION_MS = 240;
+const TASK_EDIT_SETTLE_DURATION_MS = 280;
 
 interface TaskItemProps {
   task: Task;
@@ -78,6 +80,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
 }) => {
   const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
+  const [editCloseState, setEditCloseState] = useState<'save' | 'cancel' | null>(null);
+  const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
   const [editName, setEditName] = useState(task.name);
   const [editEst, setEditEst] = useState(task.estimated);
   const [editColor, setEditColor] = useState(task.color || PRESET_COLORS[0]);
@@ -88,11 +92,15 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [isCheckAnimating, setIsCheckAnimating] = useState(false);
   const removeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const checkAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editSettleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
       if (removeTimeoutRef.current) clearTimeout(removeTimeoutRef.current);
       if (checkAnimTimeoutRef.current) clearTimeout(checkAnimTimeoutRef.current);
+      if (editTransitionTimeoutRef.current) clearTimeout(editTransitionTimeoutRef.current);
+      if (editSettleTimeoutRef.current) clearTimeout(editSettleTimeoutRef.current);
     };
   }, []);
 
@@ -102,22 +110,45 @@ const TaskItem: React.FC<TaskItemProps> = ({
     if (nextChecked) {
       setIsCheckAnimating(true);
       if (checkAnimTimeoutRef.current) clearTimeout(checkAnimTimeoutRef.current);
-      checkAnimTimeoutRef.current = setTimeout(() => setIsCheckAnimating(false), 460);
+      checkAnimTimeoutRef.current = setTimeout(() => setIsCheckAnimating(false), 390);
     }
     updateTask({ ...task, checked: nextChecked });
+  };
+
+  const settleTaskAfterEdit = () => {
+    if (editTransitionTimeoutRef.current) clearTimeout(editTransitionTimeoutRef.current);
+    editTransitionTimeoutRef.current = setTimeout(() => {
+      setIsEditing(false);
+      setEditCloseState(null);
+      setIsSettlingAfterEdit(true);
+      if (editSettleTimeoutRef.current) clearTimeout(editSettleTimeoutRef.current);
+      editSettleTimeoutRef.current = setTimeout(() => {
+        setIsSettlingAfterEdit(false);
+      }, TASK_EDIT_SETTLE_DURATION_MS);
+    }, TASK_EDIT_CLOSE_DURATION_MS);
   };
 
   const handleSave = () => {
     const safeEst = clampPomoEstimate(editEst);
     updateTask({ ...task, name: editName.trim() || task.name, estimated: safeEst, color: editColor });
-    setIsEditing(false);
+    setEditCloseState('save');
+    settleTaskAfterEdit();
+  };
+
+  const handleCancelEdit = () => {
+    setEditCloseState('cancel');
+    settleTaskAfterEdit();
   };
 
   const startEditing = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (editTransitionTimeoutRef.current) clearTimeout(editTransitionTimeoutRef.current);
+    if (editSettleTimeoutRef.current) clearTimeout(editSettleTimeoutRef.current);
     setEditName(task.name);
     setEditEst(task.estimated);
     setEditColor(task.color || PRESET_COLORS[0]);
+    setEditCloseState(null);
+    setIsSettlingAfterEdit(false);
     setIsEditing(true);
   };
 
@@ -151,7 +182,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
           e.preventDefault();
           handleSave();
         }}
-        className={`doro-soft-expand p-3 bg-white/10 rounded-xl ${containerMargin} flex flex-col gap-3 backdrop-blur-md border border-white/20`}
+        className={`doro-task-edit-shell p-3 bg-white/10 rounded-xl ${containerMargin} flex flex-col gap-3 backdrop-blur-md border border-white/20 ${
+          editCloseState === 'save'
+            ? 'doro-task-edit-close-save'
+            : editCloseState === 'cancel'
+              ? 'doro-task-edit-close-cancel'
+              : 'doro-task-edit-open'
+        }`}
         style={{ marginLeft: depth * 16 }}
       >
         <input
@@ -211,7 +248,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         <div className="flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={() => setIsEditing(false)}
+            onClick={handleCancelEdit}
             className="px-3.5 py-1.5 rounded-lg bg-black/25 hover:bg-black/35 border border-white/20 text-[10px] uppercase tracking-widest font-bold text-white/75 hover:text-white transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_8px_16px_rgba(0,0,0,0.22)] active:translate-y-0 active:scale-95"
           >
             Cancel
@@ -266,6 +303,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2 cursor-grab active:cursor-grabbing' : ''} relative
         transition-[transform,opacity] duration-250 ease-out
         ${isEntering ? 'doro-task-enter' : ''}
+        ${isSettlingAfterEdit ? 'doro-task-edit-return-settle' : ''}
         ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 pointer-events-none' : 'opacity-100 scale-100 translate-x-0'}
       `}
     >
@@ -285,12 +323,12 @@ const TaskItem: React.FC<TaskItemProps> = ({
           }
           ${task.checked ? 'opacity-40' : ''}
           ${isDraggedTask ? 'opacity-45 scale-[0.985]' : ''}
-          ${isCheckAnimating ? 'doro-check-burst scale-[1.015] border-emerald-200/40 bg-emerald-300/10 shadow-[0_12px_30px_-14px_rgba(110,231,183,0.85)]' : ''}
+          ${isCheckAnimating ? 'doro-check-burst scale-[1.015]' : ''}
         `}
       >
         {isCheckAnimating && (
           <span className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg">
-            <span className="doro-check-sheen absolute -left-1/3 top-0 h-full w-1/2 bg-gradient-to-r from-transparent via-emerald-100/45 to-transparent" />
+            <span className="doro-check-pass absolute -left-[42%] top-[-10%] h-[120%] w-[58%] rounded-full bg-[linear-gradient(90deg,rgba(16,185,129,0),rgba(167,243,208,0.18)_26%,rgba(110,231,183,0.45)_48%,rgba(167,243,208,0.2)_70%,rgba(16,185,129,0))] blur-md" />
           </span>
         )}
         {dropHint && !isDraggedTask && (
@@ -720,6 +758,75 @@ const Tasks: React.FC = () => {
           animation: doro-soft-expand 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
           transform-origin: top center;
         }
+        @keyframes doro-task-edit-open {
+          0% {
+            opacity: 0;
+            transform: translateY(10px) scale(0.972);
+            filter: saturate(0.9);
+          }
+          58% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.01);
+            filter: saturate(1.05);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        .doro-task-edit-open {
+          animation: doro-task-edit-open 420ms cubic-bezier(0.16, 0.88, 0.3, 1.08);
+          transform-origin: top center;
+          will-change: transform, opacity, filter;
+        }
+        @keyframes doro-task-edit-close-save {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: brightness(1) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-6px) scale(0.985);
+            filter: brightness(1.08) saturate(1.08);
+          }
+        }
+        .doro-task-edit-close-save {
+          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          pointer-events: none;
+        }
+        @keyframes doro-task-edit-close-cancel {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: brightness(1) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(8px) scale(0.978);
+            filter: brightness(0.96) saturate(0.92);
+          }
+        }
+        .doro-task-edit-close-cancel {
+          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          pointer-events: none;
+        }
+        @keyframes doro-task-edit-return-settle {
+          0% {
+            transform: translateY(3px) scale(0.986);
+          }
+          56% {
+            transform: translateY(-1px) scale(1.01);
+          }
+          100% {
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-task-edit-return-settle {
+          animation: doro-task-edit-return-settle ${TASK_EDIT_SETTLE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1);
+          transform-origin: top center;
+        }
         @keyframes doro-task-enter {
           0% {
             opacity: 0;
@@ -770,21 +877,21 @@ const Tasks: React.FC = () => {
           animation: doro-check-pop 320ms cubic-bezier(0.17, 1, 0.3, 1);
           transform-origin: center;
         }
-        @keyframes doro-check-sheen {
+        @keyframes doro-check-pass {
           0% {
             opacity: 0;
-            transform: translateX(-120%) skewX(-18deg);
+            transform: translateX(0) skewX(-16deg);
           }
-          35% {
-            opacity: 0.45;
+          22% {
+            opacity: 0.96;
           }
           100% {
             opacity: 0;
-            transform: translateX(200%) skewX(-18deg);
+            transform: translateX(270%) skewX(-16deg);
           }
         }
-        .doro-check-sheen {
-          animation: doro-check-sheen 380ms cubic-bezier(0.22, 1, 0.36, 1);
+        .doro-check-pass {
+          animation: doro-check-pass 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         .doro-task-list-drag-active {
           transition: background-color 220ms ease;

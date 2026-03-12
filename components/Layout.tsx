@@ -159,16 +159,43 @@ const Layout: React.FC = () => {
       : 'border-white/5 bg-white/5 text-white backdrop-blur-md shadow-[0_18px_36px_-28px_rgba(0,0,0,0.72)]';
   const mainSurfaceClass = settings.disableBlur
     ? isLightTheme
-      ? 'border-white/40 bg-white/68 shadow-[0_34px_80px_-52px_rgba(66,88,122,0.45)]'
-      : 'border-white/10 bg-black/28 shadow-[0_36px_90px_-58px_rgba(0,0,0,0.72)]'
+      ? 'bg-white/68 shadow-[0_34px_80px_-52px_rgba(66,88,122,0.45)]'
+      : 'bg-black/28 shadow-[0_36px_90px_-58px_rgba(0,0,0,0.72)]'
     : isLightTheme
-      ? 'border-white/45 bg-white/20 backdrop-blur-[24px] shadow-[0_38px_90px_-58px_rgba(66,88,122,0.45)]'
-      : 'border-white/10 bg-white/[0.06] backdrop-blur-[26px] shadow-[0_42px_100px_-64px_rgba(0,0,0,0.78)]';
+      ? 'bg-white/20 backdrop-blur-[24px] shadow-[0_38px_90px_-58px_rgba(66,88,122,0.45)]'
+      : 'bg-white/[0.06] backdrop-blur-[26px] shadow-[0_42px_100px_-64px_rgba(0,0,0,0.78)]';
   const mainSurfaceStyle = useMemo<React.CSSProperties>(() => ({
     backgroundImage: isLightTheme
       ? `linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.06)), linear-gradient(145deg, ${colorToRgba(ambientColor, 0.18)} 0%, rgba(255,255,255,0.48) 48%, ${colorToRgba(secondaryAccent, 0.1)} 100%)`
       : `linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)), linear-gradient(145deg, ${colorToRgba(ambientColor, 0.18)} 0%, rgba(7,10,18,0.52) 48%, ${colorToRgba(secondaryAccent, 0.08)} 100%)`,
   }), [ambientColor, isLightTheme, secondaryAccent]);
+  const mainSurfaceShellStyle = useMemo<React.CSSProperties>(() => ({
+    ...mainSurfaceStyle,
+    isolation: 'isolate',
+    contain: 'paint',
+    transform: 'translateZ(0)',
+    backfaceVisibility: 'hidden',
+    outline: '1px solid transparent',
+    WebkitMaskImage: '-webkit-radial-gradient(white, black)',
+    WebkitMaskRepeat: 'no-repeat',
+    maskImage: 'linear-gradient(white, white)',
+    maskRepeat: 'no-repeat',
+  }), [mainSurfaceStyle]);
+  const mainSurfaceEdgeStyle = useMemo<React.CSSProperties>(() => ({
+    boxShadow: isLightTheme
+      ? 'inset 0 0 0 1px rgba(255,255,255,0.34), inset 0 1px 0 rgba(255,255,255,0.5)'
+      : 'inset 0 0 0 1px rgba(255,255,255,0.14), inset 0 1px 0 rgba(255,255,255,0.22)',
+  }), [isLightTheme]);
+  const mainSurfaceHighlightStyle = useMemo<React.CSSProperties>(() => ({
+    background: isLightTheme
+      ? 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.58), rgba(255,255,255,0))'
+      : 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.28), rgba(255,255,255,0))',
+  }), [isLightTheme]);
+  const mainSurfaceTopGlowStyle = useMemo<React.CSSProperties>(() => ({
+    background: isLightTheme
+      ? 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0))'
+      : 'linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0))',
+  }), [isLightTheme]);
   const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
 
   return (
@@ -267,11 +294,13 @@ const Layout: React.FC = () => {
         {/* Main Content Area */}
         <div className="w-full max-w-5xl z-10">
           <div
-            className={`relative overflow-hidden rounded-[2rem] md:rounded-[2.6rem] border px-4 py-5 md:px-7 md:py-7 ${mainSurfaceClass}`}
-            style={mainSurfaceStyle}
+            className={`relative overflow-hidden rounded-[2rem] md:rounded-[2.6rem] px-4 py-5 md:px-7 md:py-7 ${mainSurfaceClass}`}
+            style={mainSurfaceShellStyle}
           >
-            <div className="absolute inset-0 opacity-80 bg-[radial-gradient(circle_at_14%_-8%,rgba(255,255,255,0.22),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent_24%,rgba(255,255,255,0.03)_100%)]" />
-            <div className="absolute inset-x-10 top-0 h-px bg-white/40" />
+            <div className="pointer-events-none absolute inset-0" style={{ borderRadius: 'inherit', ...mainSurfaceEdgeStyle }} />
+            <div className="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] md:rounded-[calc(2.6rem-1px)] opacity-80 bg-[radial-gradient(circle_at_14%_-8%,rgba(255,255,255,0.22),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent_24%,rgba(255,255,255,0.03)_100%)]" />
+            <div className="pointer-events-none absolute inset-x-12 top-[1px] h-px opacity-80" style={mainSurfaceHighlightStyle} />
+            <div className="pointer-events-none absolute left-16 right-16 top-0 h-14 opacity-65 blur-md" style={mainSurfaceTopGlowStyle} />
             <div className="relative flex flex-col gap-12">
               {/* Timer Section */}
               <div className="w-full flex justify-center animate-slide-up py-6 md:py-8">

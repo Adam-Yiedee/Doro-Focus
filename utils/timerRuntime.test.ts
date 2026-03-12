@@ -4,9 +4,12 @@ import {
   createRuntimeSnapshot,
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
+  getCompletedPhaseDuration,
+  getTimerStateFreshnessStamp,
   getGraceCompensation,
   getPauseCompensation,
   normalizeGraceWindow,
+  shouldApplyIncomingRuntime,
   shouldDiscardRestoredGrace,
 } from './timerRuntime';
 
@@ -131,6 +134,85 @@ describe('boundary catch-up policy', () => {
 
     const crossing = detectRuntimeBoundaryCrossing(snapshot, BASE_NOW + 45_000);
     expect(crossing).toBeNull();
+  });
+
+  it('uses the runtime phase start duration when logging a completed work block', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-work',
+      nowMs: BASE_NOW,
+      workTime: 900,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    expect(getCompletedPhaseDuration({
+      snapshot,
+      mode: 'work',
+      nowMs: BASE_NOW + 960_000,
+      overflowSeconds: 60,
+      activityStartIso: new Date(BASE_NOW).toISOString(),
+      fallbackDuration: 1500,
+    })).toBe(900);
+  });
+
+  it('falls back to elapsed activity time when the runtime snapshot is unavailable', () => {
+    expect(getCompletedPhaseDuration({
+      snapshot: null,
+      mode: 'work',
+      nowMs: BASE_NOW + 1_520_000,
+      overflowSeconds: 20,
+      activityStartIso: new Date(BASE_NOW).toISOString(),
+      fallbackDuration: 1500,
+    })).toBeCloseTo(1500, 2);
+  });
+});
+
+describe('runtime freshness policy', () => {
+  it('prefers runtime timestamps over payload updatedAt when comparing timer state freshness', () => {
+    const runtime = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-work',
+      nowMs: BASE_NOW,
+      workTime: 1500,
+      breakTime: 0,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    expect(getTimerStateFreshnessStamp({
+      runtime,
+      payloadUpdatedAtMs: BASE_NOW + 60_000,
+    })).toBe(BASE_NOW);
+  });
+
+  it('falls back to payload updatedAt when a timer payload has no runtime snapshot', () => {
+    expect(getTimerStateFreshnessStamp({
+      runtime: null,
+      payloadUpdatedAtMs: BASE_NOW + 45_000,
+    })).toBe(BASE_NOW + 45_000);
+  });
+
+  it('rejects stale incoming runtimes for sync application', () => {
+    const incoming = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-break',
+      nowMs: BASE_NOW,
+      workTime: 1200,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    expect(shouldApplyIncomingRuntime({
+      incomingRuntime: incoming,
+      lastAppliedAtMs: BASE_NOW,
+    })).toBe(false);
+    expect(shouldApplyIncomingRuntime({
+      incomingRuntime: incoming,
+      lastAppliedAtMs: BASE_NOW - 1,
+    })).toBe(true);
   });
 });
 
