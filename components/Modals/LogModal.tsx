@@ -4,6 +4,7 @@ import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
 import { CATEGORY_ICON_OPTIONS, getCategoryIconLabel, getIcon } from '../../utils/icons';
+import { computeAccountInsights } from '../../utils/accountInsights';
 import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
 import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
@@ -107,6 +108,24 @@ const formatCompactMinutes = (minutes: number) => {
     return `${(safe / 60).toFixed(safe >= 120 ? 0 : 1)}h`;
   }
   return `${Math.max(1, Math.round(safe))}m`;
+};
+
+const formatHourWindow = (hour: number | null) => {
+  if (hour === null || !Number.isFinite(hour)) return '--';
+  const normalized = ((Math.round(hour) % 24) + 24) % 24;
+  const suffix = normalized >= 12 ? 'PM' : 'AM';
+  const base = normalized % 12 || 12;
+  return `${base} ${suffix}`;
+};
+
+const formatClockMinutes = (minutes: number | null) => {
+  if (minutes === null || !Number.isFinite(minutes)) return '--';
+  const normalized = ((Math.round(minutes) % 1440) + 1440) % 1440;
+  const hour24 = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  const suffix = hour24 >= 12 ? 'PM' : 'AM';
+  const hour12 = hour24 % 12 || 12;
+  return `${hour12}:${mins.toString().padStart(2, '0')} ${suffix}`;
 };
 
 const ACCOUNT_USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
@@ -1103,6 +1122,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (!safeUser) return renderAccountSignedOut();
 
     const stats = safeLifetimeStats;
+    const insights = computeAccountInsights({
+      logs: safeLogs,
+      categories: safeCategories,
+      joinedAt: safeUser.joinedAt,
+    });
     const joinedAt = formatDateTime(safeUser.joinedAt, 'Unknown');
     const activeDays = Math.max(0, Math.floor(stats.activeDays || 0));
     const dailyAvgHours = activeDays > 0 ? stats.totalFocusHours / activeDays : 0;
@@ -1117,28 +1141,34 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const syncScopeLabel = `${ACCOUNT_SYNC_SCOPE_LABELS.length} synced areas`;
     const syncScopeSummary = 'Live timer, tasks, history, schedule, categories, settings, and profile name.';
     const statCards = [
-      { label: 'Focus Time', value: focusHoursLabel, helper: 'Across synced work', color: accountPrimaryColor },
-      { label: 'Pomodoros', value: `${stats.totalPomos}`, helper: 'Completed cycles', color: PRESET_COLORS[2] },
-      { label: 'Sessions', value: `${stats.totalSessions}`, helper: 'Saved sessions', color: PRESET_COLORS[1] },
+      { label: 'Focus Time', value: focusHoursLabel, color: accountPrimaryColor },
+      { label: 'Pomodoros', value: `${stats.totalPomos}`, color: PRESET_COLORS[2] },
+      { label: 'Sessions', value: `${stats.totalSessions}`, color: PRESET_COLORS[1] },
       {
         label: 'Current Streak',
         value: `${stats.currentStreak}`,
-        helper: `${stats.currentStreak === 1 ? 'Day' : 'Days'} in a row`,
         color: PRESET_COLORS[3],
       },
       {
         label: 'Best Streak',
         value: `${stats.bestStreak}`,
-        helper: `${stats.bestStreak === 1 ? 'Day' : 'Days'} best run`,
         color: PRESET_COLORS[4],
       },
       {
         label: 'Active-Day Average',
         value: formatCompactHours(dailyAvgHours),
-        helper: `${activeDays} active day${activeDays === 1 ? '' : 's'}`,
         color: PRESET_COLORS[6],
       },
     ];
+    const todayStatCards = [
+      { label: 'Focus Today', value: insights.today.focusMinutes > 0 ? formatCompactMinutes(insights.today.focusMinutes) : '0m', color: accountPrimaryColor },
+      { label: 'Pomodoros', value: `${insights.today.pomodoros}`, color: PRESET_COLORS[2] },
+      { label: 'Sessions', value: `${insights.today.sessions}`, color: PRESET_COLORS[1] },
+      { label: 'Peak Window', value: formatHourWindow(insights.today.peakHour), color: PRESET_COLORS[3] },
+    ];
+    const todayMeta = insights.today.firstStartMinutes !== null
+      ? `First start ${formatClockMinutes(insights.today.firstStartMinutes)}`
+      : null;
 
     return (
       <div className="p-4 md:p-8 space-y-5">
@@ -1157,68 +1187,83 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {statCards.map((card) => (
-            <div
-              key={card.label}
-              className="relative overflow-hidden rounded-[1.45rem] border border-white/10 p-4"
-              style={{
-                background: isLightTheme
-                  ? `linear-gradient(160deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
-                  : `linear-gradient(160deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
-                boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.24 : 0.6)}`,
-              }}
-            >
-              <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 12%, ${colorToRgba(card.color, 0.18)}, transparent 26%)` }} />
-              <div className="relative">
-                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
-                  {card.label}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end justify-between gap-3 px-1">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Today</div>
+              <div className="mt-1 text-lg font-bold tracking-tight text-white">Current snapshot</div>
+            </div>
+            {todayMeta && (
+              <div className="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[11px] font-bold text-white/70">
+                {todayMeta}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            {todayStatCards.map((card) => (
+              <div
+                key={card.label}
+                className="relative overflow-hidden rounded-[1.35rem] border border-white/10 px-4 py-4"
+                style={{
+                  background: isLightTheme
+                    ? `linear-gradient(165deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
+                    : `linear-gradient(165deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
+                  boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.22 : 0.6)}`,
+                }}
+              >
+                <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 10%, ${colorToRgba(card.color, 0.16)}, transparent 26%)` }} />
+                <div className="relative">
+                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                    {card.label}
+                  </div>
+                  <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
                 </div>
-                <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
-                <div className="mt-1 text-[11px] leading-relaxed text-white/45">{card.helper}</div>
-                <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: '100%',
-                      background: `linear-gradient(90deg, ${colorToRgba(card.color, 0.98)}, ${colorToRgba(card.color, 0.58)})`,
-                    }}
-                  />
-                </div>
-                <div className={`mt-4 grid gap-3 ${hasCustomDisplayName ? 'sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]' : 'sm:grid-cols-1'}`}>
-                  {hasCustomDisplayName && (
-                    <div className="rounded-[1.15rem] border border-white/12 bg-white/8 px-4 py-3">
-                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Group Identity</div>
-                      <div className="mt-1 text-sm font-bold text-white/88">{displayName}</div>
-                      <div className="mt-1 text-[11px] leading-relaxed text-white/55">Used when you show up in shared sessions.</div>
-                    </div>
-                  )}
-                  <div className="rounded-[1.15rem] border border-white/12 bg-black/10 px-4 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Protected Data</div>
-                      <div className="rounded-full border border-white/12 bg-white/8 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/70">
-                        {syncScopeLabel}
-                      </div>
-                    </div>
-                    <div className="mt-2 text-sm font-bold text-white/88">Cloud state travels with this account</div>
-                    <div className="mt-1 text-[11px] leading-relaxed text-white/55">
-                      {syncScopeSummary}
-                    </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end justify-between gap-3 px-1">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">All Time</div>
+              <div className="mt-1 text-lg font-bold tracking-tight text-white">Lifetime totals</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {statCards.map((card) => (
+              <div
+                key={card.label}
+                className="relative overflow-hidden rounded-[1.45rem] border border-white/10 p-4"
+                style={{
+                  background: isLightTheme
+                    ? `linear-gradient(160deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
+                    : `linear-gradient(160deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
+                  boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.24 : 0.6)}`,
+                }}
+              >
+                <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 12%, ${colorToRgba(card.color, 0.18)}, transparent 26%)` }} />
+                <div className="relative">
+                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                    {card.label}
+                  </div>
+                  <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+                  <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: '100%',
+                        background: `linear-gradient(90deg, ${colorToRgba(card.color, 0.98)}, ${colorToRgba(card.color, 0.58)})`,
+                      }}
+                    />
                   </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap items-end justify-between gap-3 px-1">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Analytics View</div>
-            <div className="mt-1 text-lg font-bold tracking-tight text-white">Your saved focus stats</div>
-          </div>
-          <div className="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[11px] font-bold text-white/70">
-            Built from live history on this device
+            ))}
           </div>
         </div>
 
@@ -1228,6 +1273,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           joinedAt={safeUser.joinedAt}
           accentColor={accountPrimaryColor}
           isLightTheme={isLightTheme}
+          showTodayStats={false}
         />
 
         <div className="space-y-3">

@@ -14,6 +14,7 @@ interface AccountInsightsProps {
   joinedAt: string;
   accentColor: string;
   isLightTheme: boolean;
+  showTodayStats?: boolean;
 }
 
 type CategorySliceWithColor = { name: string; minutes: number; share: number; color: string };
@@ -147,7 +148,7 @@ const Card: React.FC<{
   </div>
 );
 
-const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joinedAt, accentColor, isLightTheme }) => {
+const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joinedAt, accentColor, isLightTheme, showTodayStats = true }) => {
   const insights = useMemo(() => computeAccountInsights({ logs, categories, joinedAt }), [categories, joinedAt, logs]);
   const categoryColors = useMemo(() => new Map(categories.map((category) => [category.name, category.color])), [categories]);
   const categorySlices = useMemo<CategorySliceWithColor[]>(() => (
@@ -415,45 +416,47 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </div>
       </div>
 
-      <Card title="Today's Stats" subtitle="Today so far." accent={accentColor} isLightTheme={isLightTheme}>
-        <div className="grid gap-3 md:grid-cols-2">
-          {todaySummaryCards.map((card) => (
-            <div
-              key={card.label}
-              className="relative overflow-hidden rounded-[1.3rem] border border-white/10 px-4 py-4"
-              style={{
-                background: isLightTheme
-                  ? `linear-gradient(165deg, rgba(255,255,255,0.9) 0%, ${rgba(card.color, 0.12)} 100%)`
-                  : `linear-gradient(165deg, rgba(255,255,255,0.05) 0%, ${rgba(card.color, 0.1)} 100%)`,
-                boxShadow: `0 22px 40px -30px ${rgba(card.color, isLightTheme ? 0.2 : 0.54)}`,
-              }}
-            >
-              <div className="absolute inset-0 opacity-55" style={{ background: `radial-gradient(circle at 18% 0%, ${rgba(card.color, 0.18)}, transparent 34%)` }} />
-              <div className="absolute -right-6 top-4 h-20 w-20 rounded-full blur-2xl" style={{ backgroundColor: rgba(card.color, 0.12) }} />
-              <div className="relative flex h-full flex-col">
-                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
-                  {card.label}
-                </div>
-                <div className="mt-3 text-[1.75rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
-                <div className="mt-1 text-[11px] leading-relaxed text-white/48">{card.helper}</div>
-                <div className="mt-4">
-                  <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                    <div
-                      className="h-full rounded-full transition-[width] duration-500"
-                      style={{
-                        width: `${card.fill}%`,
-                        background: `linear-gradient(90deg, ${rgba(card.color, 0.98)}, ${rgba(card.color, 0.64)})`,
-                      }}
-                    />
+      {showTodayStats && (
+        <Card title="Today's Stats" subtitle="Today so far." accent={accentColor} isLightTheme={isLightTheme}>
+          <div className="grid gap-3 md:grid-cols-2">
+            {todaySummaryCards.map((card) => (
+              <div
+                key={card.label}
+                className="relative overflow-hidden rounded-[1.3rem] border border-white/10 px-4 py-4"
+                style={{
+                  background: isLightTheme
+                    ? `linear-gradient(165deg, rgba(255,255,255,0.9) 0%, ${rgba(card.color, 0.12)} 100%)`
+                    : `linear-gradient(165deg, rgba(255,255,255,0.05) 0%, ${rgba(card.color, 0.1)} 100%)`,
+                  boxShadow: `0 22px 40px -30px ${rgba(card.color, isLightTheme ? 0.2 : 0.54)}`,
+                }}
+              >
+                <div className="absolute inset-0 opacity-55" style={{ background: `radial-gradient(circle at 18% 0%, ${rgba(card.color, 0.18)}, transparent 34%)` }} />
+                <div className="absolute -right-6 top-4 h-20 w-20 rounded-full blur-2xl" style={{ backgroundColor: rgba(card.color, 0.12) }} />
+                <div className="relative flex h-full flex-col">
+                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                    {card.label}
                   </div>
-                  <div className="mt-2 text-[10px] font-bold uppercase tracking-[0.14em] text-white/40">{card.trail}</div>
+                  <div className="mt-3 text-[1.75rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+                  <div className="mt-1 text-[11px] leading-relaxed text-white/48">{card.helper}</div>
+                  <div className="mt-4">
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full transition-[width] duration-500"
+                        style={{
+                          width: `${card.fill}%`,
+                          background: `linear-gradient(90deg, ${rgba(card.color, 0.98)}, ${rgba(card.color, 0.64)})`,
+                        }}
+                      />
+                    </div>
+                    <div className="mt-2 text-[10px] font-bold uppercase tracking-[0.14em] text-white/40">{card.trail}</div>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      </Card>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <div className="space-y-4">
         <Card title="Recent Momentum" subtitle="Last 14 days." accent={accentColor} isLightTheme={isLightTheme}>
