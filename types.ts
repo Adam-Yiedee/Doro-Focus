@@ -150,3 +150,10 @@ export interface GroupNotice {
   message: string;
   createdAt: number;
 }
+
+export interface GuestTimerLockNotice {
+  id: string;
+  title: string;
+  message: string;
+  createdAt: number;
+}

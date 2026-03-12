@@ -156,7 +156,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   return (
     <div
       className={`
-        doro-mobile-liquid-shell relative w-full aspect-square max-w-[18rem] md:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
+        doro-mobile-liquid-shell relative w-full aspect-square max-w-[19rem] sm:max-w-[20rem] md:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
         transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
@@ -199,7 +199,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       {/* Time Display */}
       <div className={`
         z-20 pointer-events-none font-sans tabular-nums font-bold tracking-tighter transition-all duration-500 leading-none relative
-        text-6xl md:text-8xl lg:text-9xl
+        text-[4.35rem] sm:text-[4.85rem] md:text-8xl lg:text-9xl
         ${textClasses}
         ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}
       `}>

@@ -1,15 +1,23 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
+import { shouldFollowHostTimerSync } from '../../utils/groupStudy';
+import { LONG_GRACE_SESSION_TIMEOUT_MS } from '../../utils/timerRuntime';
 
-const GRACE_INACTIVITY_PROMPT_MS = 60 * 60 * 1000;
-const GRACE_INACTIVITY_NOTIFICATION_TAG = 'doro-grace-inactivity';
+const LONG_GRACE_RESPONSE_WINDOW_MS = 30 * 1000;
 
 const formatDuration = (seconds: number) => {
   const s = Math.floor(seconds);
   const m = Math.floor(s / 60);
   const rem = s % 60;
   return `(${m}:${rem.toString().padStart(2, '0')})`;
+};
+
+const formatCountdown = (ms: number) => {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
 const WORK_COMPLETE_MESSAGES = [
@@ -111,54 +119,26 @@ const GraceModal: React.FC = () => {
     clientSyncConfig,
   } = useTimer();
   const [showOptions, setShowOptions] = useState(false);
-  const [showInactivityPrompt, setShowInactivityPrompt] = useState(false);
+  const [showLongGracePrompt, setShowLongGracePrompt] = useState(false);
+  const [isFollowerGraceDismissed, setIsFollowerGraceDismissed] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [sessionKey, setSessionKey] = useState<string | null>(sessionStartTime);
   const [workMessageQueue, setWorkMessageQueue] = useState<string[]>(() => shuffleMessages(WORK_COMPLETE_MESSAGES));
   const [breakMessageQueue, setBreakMessageQueue] = useState<string[]>(() => shuffleMessages(BREAK_COMPLETE_MESSAGES));
-  const lastInteractionAtRef = useRef<number>(Date.now());
-  const inactivityNotificationRef = useRef<Notification | null>(null);
-  const inactivityNotificationSentRef = useRef(false);
-  const canOfferNewSessionPrompt = !groupSessionId || isHost || !clientSyncConfig.syncTimers || !hostSyncConfig.syncTimers;
-
-  const closeInactivityNotification = useCallback((resetSentState: boolean = false) => {
-    if (inactivityNotificationRef.current) {
-      inactivityNotificationRef.current.close();
-      inactivityNotificationRef.current = null;
-    }
-    if (resetSentState) {
-      inactivityNotificationSentRef.current = false;
-    }
-  }, []);
-
-  const notifyGraceInactivity = useCallback(() => {
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    if (document.visibilityState === 'visible' && document.hasFocus()) return;
-    if (inactivityNotificationSentRef.current) return;
-
-    closeInactivityNotification();
-
-    const notification = new Notification('Grace Menu Still Open', {
-      body: 'Grace has been idle for over an hour. Open Doro to start a new session or keep the current one.',
-      tag: GRACE_INACTIVITY_NOTIFICATION_TAG,
-      requireInteraction: true,
-    });
-
-    notification.onclick = () => {
-      lastInteractionAtRef.current = Date.now();
-      setShowInactivityPrompt(true);
-      notification.close();
-      window.focus();
-    };
-    notification.onclose = () => {
-      if (inactivityNotificationRef.current === notification) {
-        inactivityNotificationRef.current = null;
-      }
-    };
-
-    inactivityNotificationRef.current = notification;
-    inactivityNotificationSentRef.current = true;
-  }, [closeInactivityNotification]);
+  const [graceStartedAtMs, setGraceStartedAtMs] = useState<number | null>(null);
+  const [longGraceDeadlineMs, setLongGraceDeadlineMs] = useState<number | null>(null);
+  const [longGraceCountdownMs, setLongGraceCountdownMs] = useState(LONG_GRACE_RESPONSE_WINDOW_MS);
+  const [hasKeptCurrentGraceOpen, setHasKeptCurrentGraceOpen] = useState(false);
+  const wasGraceOpenRef = useRef(false);
+  const hasAutoEndedLongGraceRef = useRef(false);
+  const isFollowingSharedGrace = shouldFollowHostTimerSync({
+    groupSessionId,
+    isHost,
+    hostSyncConfig,
+    clientSyncConfig,
+    awaitingInitialHostState: false,
+  });
+  const canResolveLongGraceLocally = !isFollowingSharedGrace;
 
   const consumeMessage = (isAfterWork: boolean) => {
     if (isAfterWork) {
@@ -185,15 +165,27 @@ const GraceModal: React.FC = () => {
   }, [graceOpen]);
 
   useEffect(() => {
-    if (graceOpen && graceContext === 'afterWork') {
-      lastInteractionAtRef.current = Date.now();
-      setShowInactivityPrompt(false);
-      closeInactivityNotification(true);
-      return;
+    setIsFollowerGraceDismissed(false);
+  }, [graceContext, graceOpen, sessionStartTime]);
+
+  useEffect(() => {
+    if (graceOpen && !wasGraceOpenRef.current) {
+      setGraceStartedAtMs(Date.now() - (Math.max(0, graceTotal) * 1000));
+      setHasKeptCurrentGraceOpen(false);
+      setShowLongGracePrompt(false);
+      setLongGraceDeadlineMs(null);
+      setLongGraceCountdownMs(LONG_GRACE_RESPONSE_WINDOW_MS);
+      hasAutoEndedLongGraceRef.current = false;
+    } else if (!graceOpen && wasGraceOpenRef.current) {
+      setGraceStartedAtMs(null);
+      setHasKeptCurrentGraceOpen(false);
+      setShowLongGracePrompt(false);
+      setLongGraceDeadlineMs(null);
+      setLongGraceCountdownMs(LONG_GRACE_RESPONSE_WINDOW_MS);
+      hasAutoEndedLongGraceRef.current = false;
     }
-    setShowInactivityPrompt(false);
-    closeInactivityNotification(true);
-  }, [closeInactivityNotification, graceContext, graceOpen, sessionStartTime]);
+    wasGraceOpenRef.current = graceOpen;
+  }, [graceOpen, graceTotal]);
 
   useEffect(() => {
     if (sessionStartTime !== sessionKey) {
@@ -215,53 +207,78 @@ const GraceModal: React.FC = () => {
     }
   }, [graceTotal, graceOpen, showOptions]);
 
-  const evaluateInactivityPrompt = useCallback(() => {
-    if (!graceOpen || graceContext !== 'afterWork' || !canOfferNewSessionPrompt) return;
-    if (Date.now() - lastInteractionAtRef.current >= GRACE_INACTIVITY_PROMPT_MS) {
-      setShowInactivityPrompt(true);
-      notifyGraceInactivity();
-    }
-  }, [canOfferNewSessionPrompt, graceContext, graceOpen, notifyGraceInactivity]);
+  const handleEndLongGraceSession = useCallback(() => {
+    if (hasAutoEndedLongGraceRef.current) return;
+    hasAutoEndedLongGraceRef.current = true;
+    setShowLongGracePrompt(false);
+    setLongGraceDeadlineMs(null);
+    setLongGraceCountdownMs(0);
+    endSession({
+      effectiveEndMs: graceStartedAtMs ?? (Date.now() - Math.max(0, graceTotal) * 1000),
+      showSummary: false,
+    });
+  }, [endSession, graceStartedAtMs, graceTotal]);
 
   useEffect(() => {
-    if (!graceOpen || graceContext !== 'afterWork' || !canOfferNewSessionPrompt) return;
+    if (!graceOpen || !canResolveLongGraceLocally || hasKeptCurrentGraceOpen || hasAutoEndedLongGraceRef.current) return;
+    if ((graceTotal * 1000) < LONG_GRACE_SESSION_TIMEOUT_MS) {
+      setShowLongGracePrompt(false);
+      setLongGraceDeadlineMs(null);
+      setLongGraceCountdownMs(LONG_GRACE_RESPONSE_WINDOW_MS);
+      return;
+    }
 
-    const markInteraction = () => {
-      lastInteractionAtRef.current = Date.now();
-      closeInactivityNotification(true);
-    };
-    const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'visible') {
-        evaluateInactivityPrompt();
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+      handleEndLongGraceSession();
+      return;
+    }
+
+    setShowLongGracePrompt(true);
+    setLongGraceDeadlineMs(prev => prev ?? (Date.now() + LONG_GRACE_RESPONSE_WINDOW_MS));
+  }, [
+    canResolveLongGraceLocally,
+    graceOpen,
+    graceTotal,
+    handleEndLongGraceSession,
+    hasKeptCurrentGraceOpen,
+  ]);
+
+  useEffect(() => {
+    if (!graceOpen || hasKeptCurrentGraceOpen || hasAutoEndedLongGraceRef.current) return;
+
+    const handleVisibilityChange = () => {
+      if ((graceTotal * 1000) >= LONG_GRACE_SESSION_TIMEOUT_MS && (document.visibilityState !== 'visible' || !document.hasFocus())) {
+        handleEndLongGraceSession();
       }
     };
 
-    const intervalId = window.setInterval(evaluateInactivityPrompt, 30_000);
-    window.addEventListener('pointerdown', markInteraction, { passive: true });
-    window.addEventListener('keydown', markInteraction);
-    window.addEventListener('wheel', markInteraction, { passive: true });
-    window.addEventListener('touchstart', markInteraction, { passive: true });
-    window.addEventListener('focus', handleVisibilityOrFocus);
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('blur', handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('pointerdown', markInteraction);
-      window.removeEventListener('keydown', markInteraction);
-      window.removeEventListener('wheel', markInteraction);
-      window.removeEventListener('touchstart', markInteraction);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('blur', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [canOfferNewSessionPrompt, closeInactivityNotification, evaluateInactivityPrompt, graceContext, graceOpen]);
+  }, [graceOpen, graceTotal, handleEndLongGraceSession, hasKeptCurrentGraceOpen]);
 
   useEffect(() => {
-    return () => {
-      closeInactivityNotification();
+    if (!showLongGracePrompt || longGraceDeadlineMs === null || hasKeptCurrentGraceOpen || hasAutoEndedLongGraceRef.current) return;
+
+    const syncCountdown = () => {
+      const remainingMs = Math.max(0, longGraceDeadlineMs - Date.now());
+      setLongGraceCountdownMs(remainingMs);
+      if (remainingMs <= 0) {
+        handleEndLongGraceSession();
+      }
     };
-  }, [closeInactivityNotification]);
+
+    syncCountdown();
+    const intervalId = window.setInterval(syncCountdown, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [handleEndLongGraceSession, hasKeptCurrentGraceOpen, longGraceDeadlineMs, showLongGracePrompt]);
 
   if (!graceOpen || (graceContext !== 'afterWork' && graceContext !== 'afterBreak')) return null;
+  if (isFollowingSharedGrace && isFollowerGraceDismissed) return null;
 
   const isAfterWork = graceContext === 'afterWork';
   
@@ -280,16 +297,15 @@ const GraceModal: React.FC = () => {
       resolveGrace(nextMode, { logGraceAs: 'grace' });
   };
 
-  const handleDismissInactivityPrompt = () => {
-    lastInteractionAtRef.current = Date.now();
-    closeInactivityNotification(true);
-    setShowInactivityPrompt(false);
+  const handleDismissFollowerGrace = () => {
+    setIsFollowerGraceDismissed(true);
   };
 
-  const handleStartNewSession = () => {
-    closeInactivityNotification(true);
-    setShowInactivityPrompt(false);
-    endSession();
+  const handleKeepCurrentGraceOpen = () => {
+    setHasKeptCurrentGraceOpen(true);
+    setShowLongGracePrompt(false);
+    setLongGraceDeadlineMs(null);
+    setLongGraceCountdownMs(LONG_GRACE_RESPONSE_WINDOW_MS);
   };
 
   const addToBankAmount = graceTotal / 5;
@@ -318,89 +334,112 @@ const GraceModal: React.FC = () => {
            </p>
         </div>
 
-        {/* Buttons */}
-        <div className="flex flex-row items-center justify-center gap-4">
-          
-          {/* Button: Work */}
-          <button 
-            onClick={showOptions ? handleWasWorking : () => resolveGrace('work')} 
-            className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(248,113,113,0.2)] hover:shadow-[0_0_50px_-5px_rgba(248,113,113,0.4)]`}
-          >
-            <div className="absolute inset-0 bg-gradient-to-br from-red-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-            
-            <div className="relative z-10 flex flex-col items-center text-center px-2">
-                <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">
-                   {showOptions ? "I WAS WORKING" : (isAfterWork ? "CONTINUE WORKING" : "START FOCUS")}
-                </span>
-                
-                {showOptions ? (
-                  <span className="text-[10px] font-mono font-medium text-red-200/80 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                    Add {formatDuration(addToBankAmount)}
-                  </span>
-                ) : (
-                  <div className="w-8 h-0.5 bg-white/20 rounded-full mt-2 group-hover:w-12 group-hover:bg-red-400 transition-all" />
-                )}
-            </div>
-          </button>
-
-          {/* Button: Rest */}
-          <button 
-            onClick={showOptions ? handleWasResting : () => resolveGrace('break')} 
-            className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(45,212,191,0.2)] hover:shadow-[0_0_50px_-5px_rgba(45,212,191,0.4)]`}
-          >
-             <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-
-            <div className="relative z-10 flex flex-col items-center text-center px-2">
-                <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">
-                   {showOptions ? "I WAS RESTING" : (isAfterWork ? "START BREAK" : "CONTINUE RESTING")}
-                </span>
-
-                {showOptions ? (
-                  <span className="text-[10px] font-mono font-medium text-teal-200/80 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                    Use {formatDuration(deductFromBankAmount)}
-                  </span>
-                ) : (
-                  <div className="w-8 h-0.5 bg-white/20 rounded-full mt-2 group-hover:w-12 group-hover:bg-teal-400 transition-all" />
-                )}
-            </div>
-          </button>
-        </div>
-
-        {/* Neutral Option */}
-        {showOptions && (
-            <button 
-                onClick={handleNeutral}
-                className="text-[10px] font-bold uppercase tracking-widest text-white/30 hover:text-white transition-colors"
-            >
-                Start {isAfterWork ? 'Break' : 'Focus'} (No Adjustment)
-            </button>
-        )}
-
-        {showInactivityPrompt && (
-          <div className="w-full max-w-xl rounded-[1.6rem] border border-amber-300/20 bg-white/8 backdrop-blur-2xl px-5 py-4 text-center shadow-[0_24px_60px_-36px_rgba(15,23,42,0.85)]">
-            <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-100/70">
-              Inactive Grace Menu
+        {isFollowingSharedGrace ? (
+          <div className="w-full max-w-xl rounded-[1.8rem] border border-white/10 bg-white/8 backdrop-blur-2xl px-6 py-5 text-center shadow-[0_24px_60px_-36px_rgba(15,23,42,0.85)]">
+            <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/45">
+              Host Controlled Grace
             </div>
             <div className="mt-2 text-lg md:text-xl font-bold tracking-tight text-white">
-              Hey, it&apos;s been a while. Start New Session?
+              Waiting for the host to choose the next timer state.
+            </div>
+            <div className="mt-2 text-sm leading-relaxed text-white/58">
+              Your timer is synced to the host in this group session, so the host resolves grace for everyone.
+            </div>
+            <button
+              type="button"
+              onClick={handleDismissFollowerGrace}
+              className="mt-5 rounded-full border border-white/12 bg-white/8 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+            >
+              Dismiss For Now
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Buttons */}
+            <div className="flex flex-row items-center justify-center gap-4">
+              
+              {/* Button: Work */}
+              <button 
+                onClick={showOptions ? handleWasWorking : () => resolveGrace('work')} 
+                className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(248,113,113,0.2)] hover:shadow-[0_0_50px_-5px_rgba(248,113,113,0.4)]`}
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-red-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                
+                <div className="relative z-10 flex flex-col items-center text-center px-2">
+                    <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">
+                       {showOptions ? "I WAS WORKING" : (isAfterWork ? "CONTINUE WORKING" : "START FOCUS")}
+                    </span>
+                    
+                    {showOptions ? (
+                      <span className="text-[10px] font-mono font-medium text-red-200/80 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        Add {formatDuration(addToBankAmount)}
+                      </span>
+                    ) : (
+                      <div className="w-8 h-0.5 bg-white/20 rounded-full mt-2 group-hover:w-12 group-hover:bg-red-400 transition-all" />
+                    )}
+                </div>
+              </button>
+
+              {/* Button: Rest */}
+              <button 
+                onClick={showOptions ? handleWasResting : () => resolveGrace('break')} 
+                className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(45,212,191,0.2)] hover:shadow-[0_0_50px_-5px_rgba(45,212,191,0.4)]`}
+              >
+                 <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+
+                <div className="relative z-10 flex flex-col items-center text-center px-2">
+                    <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">
+                       {showOptions ? "I WAS RESTING" : (isAfterWork ? "START BREAK" : "CONTINUE RESTING")}
+                    </span>
+
+                    {showOptions ? (
+                      <span className="text-[10px] font-mono font-medium text-teal-200/80 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        Use {formatDuration(deductFromBankAmount)}
+                      </span>
+                    ) : (
+                      <div className="w-8 h-0.5 bg-white/20 rounded-full mt-2 group-hover:w-12 group-hover:bg-teal-400 transition-all" />
+                    )}
+                </div>
+              </button>
+            </div>
+
+            {/* Neutral Option */}
+            {showOptions && (
+                <button 
+                    onClick={handleNeutral}
+                    className="text-[10px] font-bold uppercase tracking-widest text-white/30 hover:text-white transition-colors"
+                >
+                    Start {isAfterWork ? 'Break' : 'Focus'} (No Adjustment)
+                </button>
+            )}
+          </>
+        )}
+
+        {showLongGracePrompt && (
+          <div className="w-full max-w-xl rounded-[1.6rem] border border-amber-300/20 bg-white/8 backdrop-blur-2xl px-5 py-4 text-center shadow-[0_24px_60px_-36px_rgba(15,23,42,0.85)]">
+            <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-100/70">
+              Long Grace Detected
+            </div>
+            <div className="mt-2 text-lg md:text-xl font-bold tracking-tight text-white">
+              This grace period has been open for over 3 hours.
             </div>
             <div className="mt-2 text-sm leading-relaxed text-white/60">
-              This will wrap up the current session and return you to a fresh timer without changing any grace calculations unless you choose it.
+              Unless you keep it open, Doro will end this session from when grace started. Auto-ending in {formatCountdown(longGraceCountdownMs)}.
             </div>
             <div className="mt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
               <button
                 type="button"
-                onClick={handleStartNewSession}
+                onClick={handleKeepCurrentGraceOpen}
                 className="w-full sm:w-auto rounded-full border border-white/15 bg-white px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-white/90 active:scale-[0.98]"
               >
-                Start New Session
+                Keep Session Open
               </button>
               <button
                 type="button"
-                onClick={handleDismissInactivityPrompt}
+                onClick={handleEndLongGraceSession}
                 className="w-full sm:w-auto rounded-full border border-white/12 bg-white/8 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/72 transition-colors hover:bg-white/12 hover:text-white"
               >
-                Keep Current Session
+                End Session Now
               </button>
             </div>
           </div>

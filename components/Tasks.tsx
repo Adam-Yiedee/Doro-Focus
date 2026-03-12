@@ -898,11 +898,11 @@ const Tasks: React.FC = () => {
         }
       `}</style>
       <div 
-        className="w-full max-w-lg mx-auto transition-opacity duration-250"
+        className="w-full max-w-lg mx-auto min-h-[24rem] md:min-h-[25rem] transition-opacity duration-250"
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-      <div className="relative flex flex-col">
+      <div className="relative flex min-h-[24rem] md:min-h-[25rem] flex-col">
         {/* Header */}
         <div className={`flex justify-between items-center mb-4 px-2 transition-opacity duration-250 ${blurClass}`}>
           <h2 className="text-[10px] font-bold text-white/50 tracking-[0.2em] uppercase">Task List</h2>
@@ -957,8 +957,8 @@ const Tasks: React.FC = () => {
             </div>
             
             <div className={`
-              overflow-hidden transition-all duration-300 ease-in-out border-t border-white/5
-              ${isInputFocused ? 'doro-soft-expand max-h-40 opacity-100 py-2 px-4' : 'max-h-0 opacity-0 border-none'}
+              overflow-hidden border-t transition-[max-height,opacity,padding,border-color] duration-300 ease-in-out
+              ${isInputFocused ? 'doro-soft-expand max-h-40 border-white/5 opacity-100 py-2 px-4' : 'max-h-0 border-white/0 opacity-0 py-0 px-4'}
             `}>
               <div className="flex flex-col gap-3">
                   {/* Category & Color Selection */}
@@ -1056,7 +1056,7 @@ const Tasks: React.FC = () => {
             event.preventDefault();
             clearDragState();
           }}
-          className={`space-y-1 pb-8 min-h-[100px] transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
+          className={`flex-1 min-h-0 space-y-1 overflow-y-auto pb-8 pr-1 scrollbar-hide transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
         >
           {filteredTasks.map(task => (
             <TaskItem
@@ -1079,7 +1079,7 @@ const Tasks: React.FC = () => {
         
         {/* Permanent Pomo Counter Footer */}
         <div className={`
-            mt-auto pt-3 pb-1 border-t border-white/5 grid grid-cols-3 items-center gap-1
+            pt-3 pb-1 border-t border-white/5 grid grid-cols-3 items-center gap-1
             text-center whitespace-nowrap [font-size:clamp(7px,1.8vw,10px)] uppercase tracking-[0.13em] font-bold text-white/45
             transition-opacity duration-250 ${blurClass}
         `}>
