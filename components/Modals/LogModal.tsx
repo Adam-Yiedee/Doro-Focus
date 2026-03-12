@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, Category, GroupMember, GroupSyncConfig, LogEntry, TimerSettings, User } from '../../types';
+import { AlarmSound, Category, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerSettings, User } from '../../types';
+import AccountInsights from './AccountInsights';
 import { CATEGORY_ICON_OPTIONS, getCategoryIconLabel, getIcon } from '../../utils/icons';
 import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
+import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm } from '../../utils/sound';
 
@@ -183,6 +185,16 @@ const isRenderableCategory = (value: unknown): value is Category => {
     && typeof category.icon === 'string';
 };
 
+const isRenderableSessionRecord = (value: unknown): value is SessionRecord => {
+  if (!value || typeof value !== 'object') return false;
+  const session = value as Partial<SessionRecord>;
+  return typeof session.id === 'string'
+    && typeof session.startTime === 'string'
+    && typeof session.endTime === 'string'
+    && Boolean(session.stats)
+    && typeof session.stats === 'object';
+};
+
 const isRenderableUser = (value: unknown): value is User => {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<User>;
@@ -219,6 +231,7 @@ const getSafeSessionId = (value: unknown) => {
 const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
   const rawStats = user?.lifetimeStats;
   const rawBreakdown = rawStats?.categoryBreakdown;
+  const safeTotalFocusHours = Number(rawStats?.totalFocusHours);
   const safeCategoryBreakdown = rawBreakdown && typeof rawBreakdown === 'object' && !Array.isArray(rawBreakdown)
     ? Object.fromEntries(
         Object.entries(rawBreakdown).filter(([name, minutes]) => (
@@ -230,7 +243,7 @@ const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
   return {
     ...EMPTY_ACCOUNT_STATS,
     ...(rawStats || {}),
-    totalFocusHours: Number(rawStats?.totalFocusHours || 0),
+    totalFocusHours: Number.isFinite(safeTotalFocusHours) && safeTotalFocusHours > 0 ? safeTotalFocusHours : 0,
     totalSessions: Math.max(0, Math.floor(Number(rawStats?.totalSessions || 0))),
     totalPomos: Math.max(0, Math.floor(Number(rawStats?.totalPomos || 0))),
     activeDays: Math.max(0, Math.floor(Number(rawStats?.activeDays || 0))),
@@ -413,6 +426,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     settings,
     updateSettings,
     hardReset,
+    pastSessions,
     categories,
     addCategory,
     deleteCategory,
@@ -474,6 +488,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeLogs = useMemo(() => (
     Array.isArray(logs) ? logs.map(getSafeLogEntry).filter((entry): entry is LogEntry => Boolean(entry)) : []
   ), [logs]);
+  const safePastSessions = useMemo(() => (
+    Array.isArray(pastSessions) ? pastSessions.filter(isRenderableSessionRecord) : []
+  ), [pastSessions]);
   const safeCategories = useMemo(() => (
     Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
   ), [categories]);
@@ -485,7 +502,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeMembers = useMemo(() => (
     Array.isArray(members) ? members.filter(isRenderableGroupMember) : []
   ), [members]);
-  const safeLifetimeStats = useMemo(() => getSafeLifetimeStats(safeUser), [safeUser]);
+  const safeLifetimeStats = useMemo(() => {
+    if (!safeUser) return getSafeLifetimeStats(null);
+    return getSafeLifetimeStats({
+      ...safeUser,
+      lifetimeStats: calculateLifetimeStatsFromData(safePastSessions, safeLogs, safeCategories),
+    });
+  }, [safeCategories, safeLogs, safePastSessions, safeUser]);
   const safeLastAccountSyncAt = useMemo(() => getSafeTimestamp(lastAccountSyncAt), [lastAccountSyncAt]);
   const safeHostSyncConfig = useMemo(() => getSafeSyncConfig(hostSyncConfig), [hostSyncConfig]);
   const safeClientSyncConfig = useMemo(() => getSafeSyncConfig(clientSyncConfig), [clientSyncConfig]);
@@ -534,35 +557,58 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const categoriesById = useMemo(() => new Map(safeCategories.map((category) => [category.id, category])), [safeCategories]);
 
   const accountError = authLocalError || accountSyncError || null;
+  const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(safeLastAccountSyncAt), [safeLastAccountSyncAt]);
 
   const syncStateMeta = useMemo(() => {
     if (accountSyncState === 'syncing') {
       return {
         label: 'Syncing',
-        detail: 'Pushing local changes and checking cloud state.',
+        detail: 'Pushing queued changes and checking cloud state now.',
         className: 'text-blue-200 bg-blue-500/15 border-blue-400/30',
+        accent: '#60A5FA',
+      };
+    }
+    if (accountSyncState === 'pending' && accountError) {
+      return {
+        label: 'Retry Pending',
+        detail: 'Unsynced account changes are queued after the last sync problem.',
+        className: 'text-amber-100 bg-amber-500/15 border-amber-400/30',
+        accent: '#F59E0B',
+      };
+    }
+    if (accountSyncState === 'pending') {
+      return {
+        label: 'Changes Queued',
+        detail: 'This device changed locally and will push the update automatically.',
+        className: 'text-amber-100 bg-amber-500/15 border-amber-400/30',
+        accent: '#F59E0B',
       };
     }
     if (accountSyncState === 'synced') {
       return {
         label: 'Synced',
-        detail: 'Cloud data and this device are aligned.',
+        detail: safeLastAccountSyncAt !== null
+          ? `Cloud data and this device matched ${lastSyncRelative}.`
+          : 'Cloud data and this device are aligned.',
         className: 'text-emerald-200 bg-emerald-500/15 border-emerald-400/30',
+        accent: '#34D399',
       };
     }
-    if (accountSyncState === 'error') {
+    if (accountSyncState === 'error' || accountError) {
       return {
         label: 'Needs Attention',
         detail: 'The latest sync did not complete cleanly.',
         className: 'text-red-200 bg-red-500/15 border-red-400/30',
+        accent: '#F87171',
       };
     }
     return {
       label: 'Ready',
-      detail: 'Your account is available on this device.',
+      detail: 'Your account is signed in on this device and ready to sync.',
       className: 'text-white/70 bg-white/10 border-white/15',
+      accent: '#94A3B8',
     };
-  }, [accountSyncState]);
+  }, [accountError, accountSyncState, lastSyncRelative, safeLastAccountSyncAt]);
 
   const normalizedUsernameInput = usernameInput.trim().toLowerCase();
   const usernameValidationMessage = normalizedUsernameInput
@@ -578,7 +624,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       && !passwordValidationMessage
       && !authBusy,
   );
-  const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(safeLastAccountSyncAt), [safeLastAccountSyncAt]);
 
   const categoryBreakdown = useMemo(() => {
     const breakdown = safeLifetimeStats.categoryBreakdown || {};
@@ -595,6 +640,62 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
     return PRESET_COLORS[0];
   }, [categoryBreakdown, categoryColorsByName]);
+  const syncHealthFacts = useMemo(() => {
+    const queueState = accountSyncState === 'syncing'
+      ? {
+          value: 'In Flight',
+          helper: 'The cloud request is active right now.',
+          color: '#60A5FA',
+        }
+      : accountSyncState === 'pending'
+        ? {
+            value: accountError ? 'Retrying' : 'Queued',
+            helper: accountError
+              ? 'Unsynced changes are waiting for the next successful attempt.'
+              : 'Meaningful local changes are waiting for auto-sync.',
+            color: '#F59E0B',
+          }
+        : accountError
+          ? {
+              value: 'Blocked',
+              helper: 'The last sync failed and needs another attempt.',
+              color: '#F87171',
+            }
+          : {
+              value: 'Clean',
+              helper: 'No queued account changes at the moment.',
+              color: '#34D399',
+            };
+
+    return [
+      {
+        label: 'Local Queue',
+        ...queueState,
+      },
+      {
+        label: 'Cloud Check',
+        value: safeLastAccountSyncAt !== null ? lastSyncRelative : 'Never',
+        helper: safeLastAccountSyncAt !== null
+          ? formatTimestampDateTime(safeLastAccountSyncAt, 'Never')
+          : 'No successful cloud check yet.',
+        color: PRESET_COLORS[5],
+      },
+      {
+        label: 'Stats Source',
+        value: 'Live History',
+        helper: 'This page rebuilds from the device history in memory first.',
+        color: accountPrimaryColor,
+      },
+      {
+        label: 'Sync Mode',
+        value: accountError ? 'Manual Retry' : 'Automatic',
+        helper: accountError
+          ? 'Use Sync Now after the current account issue is resolved.'
+          : 'Important account changes push automatically after updates.',
+        color: accountError ? '#F87171' : PRESET_COLORS[2],
+      },
+    ];
+  }, [accountError, accountPrimaryColor, accountSyncState, lastSyncRelative, safeLastAccountSyncAt]);
   const groupInviteUrl = useMemo(() => (
     safeGroupSessionId ? buildGroupInviteUrl(safeGroupSessionId) : ''
   ), [safeGroupSessionId]);
@@ -621,6 +722,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setPendingJoinId(null);
     }
   }, [isOpen, pendingJoinId, setPendingJoinId]);
+
+  useEffect(() => {
+    if (accountSyncState === 'pending') {
+      setAccountMessage(null);
+    }
+  }, [accountSyncState]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1003,6 +1110,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const displayName = safeUserName.trim();
     const hasCustomDisplayName = Boolean(displayName && displayName !== safeUser.username);
     const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
+    const accountMeta = [
+      { label: 'Joined', value: joinedAt },
+      { label: 'Cloud Check', value: lastSyncRelative },
+      { label: 'Last Active', value: lastActiveLabel },
+    ];
+    const syncScopeLabel = `${ACCOUNT_SYNC_SCOPE_LABELS.length} synced areas`;
+    const syncScopeSummary = 'Live timer, tasks, history, schedule, categories, settings, and profile name.';
     const heroStyle: React.CSSProperties = {
       background: isLightTheme
         ? `linear-gradient(152deg, ${colorToRgba(accountPrimaryColor, 0.26)} 0%, rgba(255, 255, 255, 0.86) 52%, rgba(250, 252, 255, 0.7) 100%)`
@@ -1032,7 +1146,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         color: PRESET_COLORS[6],
       },
     ];
-    const topCategories = categoryBreakdown.slice(0, 5);
 
     return (
       <div className="p-4 md:p-8 space-y-5">
@@ -1056,33 +1169,84 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   </div>
                 </div>
                 <h3 className="mt-3 text-2xl md:text-[2rem] font-bold tracking-tight text-white">{safeUser.username}</h3>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs text-white/55">
-                  <span>Joined {joinedAt}</span>
-                  <span>Last sync {lastSyncRelative}</span>
-                  <span>Last active {lastActiveLabel}</span>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {hasCustomDisplayName && (
-                    <div className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white/85">
-                      Group name: {displayName}
-                    </div>
-                  )}
-                  {ACCOUNT_SYNC_SCOPE_LABELS.map((label) => (
+                <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                  {accountMeta.map((item) => (
                     <div
-                      key={label}
-                      className="rounded-full border border-white/12 bg-black/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/60"
+                      key={item.label}
+                      className="rounded-[1.05rem] border border-white/10 bg-black/10 px-3 py-2.5"
                     >
-                      {label}
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">{item.label}</div>
+                      <div className="mt-1 text-[12px] font-medium leading-snug text-white/78">{item.value}</div>
                     </div>
                   ))}
+                </div>
+                <div className={`mt-4 grid gap-3 ${hasCustomDisplayName ? 'sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]' : 'sm:grid-cols-1'}`}>
+                  {hasCustomDisplayName && (
+                    <div className="rounded-[1.15rem] border border-white/12 bg-white/8 px-4 py-3">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Group Identity</div>
+                      <div className="mt-1 text-sm font-bold text-white/88">{displayName}</div>
+                      <div className="mt-1 text-[11px] leading-relaxed text-white/55">Used when you show up in shared sessions.</div>
+                    </div>
+                  )}
+                  <div className="rounded-[1.15rem] border border-white/12 bg-black/10 px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Protected Data</div>
+                      <div className="rounded-full border border-white/12 bg-white/8 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/70">
+                        {syncScopeLabel}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm font-bold text-white/88">Cloud state travels with this account</div>
+                    <div className="mt-1 text-[11px] leading-relaxed text-white/55">
+                      {syncScopeSummary}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="shrink-0 rounded-[1.4rem] border border-white/12 bg-black/10 p-4 md:w-[18rem]">
-              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">Sync Health</div>
-              <div className="mt-2 text-lg font-bold text-white">Cloud {syncStateMeta.label}</div>
-              <div className="mt-1 text-sm leading-relaxed text-white/60">{syncStateMeta.detail}</div>
+            <div
+              className="shrink-0 rounded-[1.45rem] border border-white/12 bg-black/10 p-4 md:w-[19rem]"
+              style={{
+                boxShadow: `0 24px 44px -34px ${colorToRgba(syncStateMeta.accent, isLightTheme ? 0.28 : 0.7)}`,
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">Sync Health</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${accountSyncState === 'syncing' ? 'animate-pulse' : ''}`}
+                      style={{
+                        backgroundColor: syncStateMeta.accent,
+                        boxShadow: `0 0 0 5px ${colorToRgba(syncStateMeta.accent, 0.16)}`,
+                      }}
+                    />
+                    <div className="text-lg font-bold text-white">{syncStateMeta.label}</div>
+                  </div>
+                </div>
+                <div className={`rounded-full border px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${syncStateMeta.className}`}>
+                  Cloud
+                </div>
+              </div>
+              <div className="mt-2 text-sm leading-relaxed text-white/60">{syncStateMeta.detail}</div>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                {syncHealthFacts.map((fact) => (
+                  <div
+                    key={fact.label}
+                    className="rounded-[1rem] border border-white/10 bg-white/6 px-3 py-2.5"
+                    style={{
+                      boxShadow: `0 16px 28px -26px ${colorToRgba(fact.color, isLightTheme ? 0.22 : 0.56)}`,
+                    }}
+                  >
+                    <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.14em] text-white/42">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: fact.color }} />
+                      {fact.label}
+                    </div>
+                    <div className="mt-2 text-sm font-bold text-white">{fact.value}</div>
+                    <div className="mt-1 text-[10px] leading-relaxed text-white/48">{fact.helper}</div>
+                  </div>
+                ))}
+              </div>
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -1101,8 +1265,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   {accountActionBusy === 'refresh' ? 'Pulling...' : 'Pull Cloud'}
                 </button>
               </div>
-              <div className="mt-3 text-[11px] leading-relaxed text-white/45">
-                Server stats are rebuilt from synced logs and session history. Latest cloud check: {formatTimestampDateTime(safeLastAccountSyncAt, 'Never')}.
+              <div className="mt-3 rounded-[1rem] border border-white/10 bg-white/6 px-3 py-2.5 text-[11px] leading-relaxed text-white/50">
+                This page rebuilds account numbers from the local history already on this device, then the same history is verified in cloud sync. Latest successful cloud check: {formatTimestampDateTime(safeLastAccountSyncAt, 'Never')}.
               </div>
             </div>
           </div>
@@ -1127,65 +1291,55 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           {statCards.map((card) => (
             <div
               key={card.label}
-              className="rounded-[1.4rem] border border-white/10 bg-white/5 p-4"
+              className="relative overflow-hidden rounded-[1.45rem] border border-white/10 p-4"
               style={{
+                background: isLightTheme
+                  ? `linear-gradient(160deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
+                  : `linear-gradient(160deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
                 boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.24 : 0.6)}`,
               }}
             >
-              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
-                {card.label}
+              <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 12%, ${colorToRgba(card.color, 0.18)}, transparent 26%)` }} />
+              <div className="relative">
+                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                  {card.label}
+                </div>
+                <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+                <div className="mt-1 text-[11px] leading-relaxed text-white/45">{card.helper}</div>
+                <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: '100%',
+                      background: `linear-gradient(90deg, ${colorToRgba(card.color, 0.98)}, ${colorToRgba(card.color, 0.58)})`,
+                    }}
+                  />
+                </div>
               </div>
-              <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
-              <div className="mt-1 text-[11px] leading-relaxed text-white/45">{card.helper}</div>
             </div>
           ))}
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-[1.08fr_0.92fr]">
-          <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Category Focus</div>
-                <div className="mt-2 text-lg font-bold text-white">Where your time is going</div>
-              </div>
-              <div className="text-[11px] text-white/45">Last active {lastActiveLabel}</div>
-            </div>
-
-            {topCategories.length > 0 ? (
-              <div className="mt-5 space-y-3.5">
-                {topCategories.map(([name, minutes]) => {
-                  const accentColor = categoryColorsByName.get(name) || accountPrimaryColor;
-                  const pct = Math.min(100, Math.round((minutes / Math.max(1, stats.totalFocusHours * 60)) * 100));
-                  return (
-                    <div key={name} className="space-y-2">
-                      <div className="flex items-center justify-between gap-3 text-sm">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: accentColor }} />
-                          <span className="truncate font-bold text-white">{name}</span>
-                        </div>
-                        <div className="shrink-0 font-mono text-white/55">{formatCompactMinutes(minutes)}</div>
-                      </div>
-                      <div className="h-2.5 overflow-hidden rounded-full bg-white/10">
-                        <div
-                          className="h-full rounded-full"
-                          style={{
-                            width: `${pct}%`,
-                            background: `linear-gradient(90deg, ${colorToRgba(accentColor, 0.98)}, ${colorToRgba(accentColor, 0.62)})`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="mt-5 rounded-2xl border border-white/10 bg-black/10 px-4 py-4 text-sm leading-relaxed text-white/55">
-                Your category focus will appear here once work blocks are saved to history.
-              </div>
-            )}
+        <div className="flex flex-wrap items-end justify-between gap-3 px-1">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Analytics View</div>
+            <div className="mt-1 text-lg font-bold tracking-tight text-white">Your saved focus signature</div>
           </div>
+          <div className="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[11px] font-bold text-white/70">
+            Interactive charts rebuild from live history on this device
+          </div>
+        </div>
 
+        <AccountInsights
+          logs={safeLogs}
+          categories={safeCategories}
+          joinedAt={safeUser.joinedAt}
+          accentColor={accountPrimaryColor}
+          isLightTheme={isLightTheme}
+        />
+
+        <div className="grid gap-3 lg:grid-cols-[1.08fr_0.92fr]">
           <div className="rounded-[1.6rem] border border-white/10 bg-black/10 p-5">
             <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account Snapshot</div>
             <div className="mt-2 text-lg font-bold text-white">What this account protects</div>
@@ -1194,13 +1348,20 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 Live timer state, active mode, pauses, grace windows, and current durations.
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                Tasks, schedule items, categories, and settings that shape your workflow on every device.
+                Tasks, schedule items, categories, settings, and profile identity across every signed-in device.
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                Full history and lifetime stats rebuilt from synced logs and saved sessions.
+                Synced logs power the analytics above, including time-of-day patterns, weekly comparisons, and category share.
               </div>
             </div>
+          </div>
 
+          <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
+            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account Controls</div>
+            <div className="mt-2 text-lg font-bold text-white">Manage this device</div>
+            <div className="mt-3 text-sm leading-relaxed text-white/58">
+              Signed in as <span className="font-bold text-white/82">{safeUser.username}</span>. Your cloud history stays intact if you sign out here.
+            </div>
             <button
               type="button"
               onClick={logout}
@@ -2106,48 +2267,54 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           className={`doro-settings-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} relative w-full max-w-3xl bg-[#0F0F11]/90 backdrop-blur-2xl rounded-[2rem] md:rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col h-[90vh] md:h-[85vh]`}
           onClick={event => event.stopPropagation()}
         >
-          {activeTab === 'settings' && (
-            <div className="md:hidden absolute top-[4.7rem] right-4 z-30">
+          <div className="settings-tabbar flex shrink-0 border-b border-white/10">
+            <div className="min-w-0 flex-1 overflow-x-auto scrollbar-hide">
+              <div className="flex min-w-full">
+                {([
+                  { id: 'log', label: 'Log' },
+                  { id: 'schedule', label: 'Schedule' },
+                  { id: 'group', label: 'Group Study' },
+                  { id: 'account', label: 'Account' },
+                  { id: 'settings', label: 'Settings' },
+                ] as Array<{ id: TabButton; label: string }>).map(tab => {
+                  const isActive = tab.id !== 'schedule' && activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => handleTabClick(tab.id)}
+                      className={`flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${
+                        isActive ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div
+              className={`md:hidden w-[4.5rem] shrink-0 flex items-center justify-center border-l ${
+                isLightTheme ? 'border-slate-300/60 bg-white/35' : 'border-white/10 bg-white/[0.03]'
+              }`}
+            >
               <button
                 type="button"
                 onClick={onClose}
-                aria-label="Close settings"
-                className={`flex h-11 w-11 items-center justify-center rounded-full border transition-all active:scale-[0.96] shadow-[0_22px_42px_-24px_rgba(15,23,42,0.72)] ${
+                aria-label="Close menu"
+                className={`flex h-11 w-11 items-center justify-center rounded-full border transition-all duration-200 active:scale-[0.96] ${
                   isLightTheme
-                    ? 'border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(241,247,255,0.42))] text-slate-800 backdrop-blur-[22px]'
-                    : 'border-white/15 bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(0,0,0,0.26))] text-white/90 backdrop-blur-[18px]'
+                    ? 'border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(235,241,248,0.58))] text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_16px_28px_-22px_rgba(15,23,42,0.42)]'
+                    : 'border-white/18 bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.18),rgba(255,255,255,0.02)_72%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(0,0,0,0.3))] text-white/88 shadow-[inset_0_1px_0_rgba(255,255,255,0.16),0_18px_30px_-24px_rgba(0,0,0,0.9)]'
                 }`}
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M18 6 6 18" />
                   <path d="m6 6 12 12" />
                 </svg>
               </button>
             </div>
-          )}
-
-          <div className="settings-tabbar flex border-b border-white/10 overflow-x-auto shrink-0 scrollbar-hide">
-            {([
-              { id: 'log', label: 'Log' },
-              { id: 'schedule', label: 'Schedule' },
-              { id: 'group', label: 'Group Study' },
-              { id: 'account', label: 'Account' },
-              { id: 'settings', label: 'Settings' },
-            ] as Array<{ id: TabButton; label: string }>).map(tab => {
-              const isActive = tab.id !== 'schedule' && activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => handleTabClick(tab.id)}
-                  className={`flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${
-                    isActive ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
           </div>
 
           <div className="settings-body flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">

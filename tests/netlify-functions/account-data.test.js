@@ -156,4 +156,49 @@ describe('account-data function', () => {
       },
     });
   });
+
+  it('rebuilds pomodoro totals from synced work logs when no session summary exists yet', async () => {
+    const user = await createUser('Dana', 'password123');
+    const publicUser = {
+      username: user.username,
+      joinedAt: user.joinedAt,
+      lifetimeStats: user.lifetimeStats,
+    };
+    const existing = buildDefaultAccountData(publicUser);
+    await saveAccountData(user.id, existing);
+
+    const token = await createSession(user);
+    const response = await accountDataHandler(makeAuthedRequest(token, 'PUT', {
+      accountData: {
+        ...existing,
+        revision: existing.revision,
+        pastSessions: [],
+        logs: [
+          {
+            type: 'work',
+            start: '2026-03-12T09:00:00.000Z',
+            end: '2026-03-12T09:25:00.000Z',
+            duration: 1500,
+            reason: 'Pomodoro Complete',
+            task: null,
+            color: undefined,
+            categoryId: null,
+          },
+        ],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.user.lifetimeStats).toMatchObject({
+      totalFocusHours: 25 / 60,
+      totalSessions: 0,
+      totalPomos: 1,
+    });
+
+    const storedUser = await getUserByUsername('dana');
+    expect(storedUser.lifetimeStats).toMatchObject({
+      totalPomos: 1,
+    });
+  });
 });

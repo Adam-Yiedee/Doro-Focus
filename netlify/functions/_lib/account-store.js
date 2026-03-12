@@ -96,6 +96,22 @@ const isPauseCreditedWorkLog = (entry) => {
   return reason.startsWith('paused') || reason.includes('pause credit');
 };
 
+const isCompletedPomodoroLog = (entry) => {
+  if (!entry || entry.type !== 'work') return false;
+  if (isPauseCreditedWorkLog(entry)) return false;
+  return cleanString(entry.reason).trim().toLowerCase() === 'pomodoro complete';
+};
+
+const getSessionWorkMinutes = (session) => {
+  const mins = Number(session?.stats?.totalWorkMinutes || 0);
+  return Number.isFinite(mins) && mins > 0 ? mins : 0;
+};
+
+const getSessionPomodoros = (session) => {
+  const pomos = Number(session?.stats?.pomosCompleted || 0);
+  return Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
+};
+
 export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories) => {
   const safeSessions = Array.isArray(sessions) ? sessions : [];
   const safeLogs = Array.isArray(logs) ? logs : [];
@@ -106,12 +122,19 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
     return !isPauseCreditedWorkLog(entry);
   });
+  const completedPomodoroLogs = productiveLogs.filter((entry) => isCompletedPomodoroLog(entry));
 
   const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
-  const workMinutesFromSessions = safeSessions.reduce((acc, session) => {
-    const mins = Number(session?.stats?.totalWorkMinutes || 0);
-    return acc + (Number.isFinite(mins) && mins > 0 ? mins : 0);
-  }, 0);
+  const productiveLogDateKeys = new Set();
+  productiveLogs.forEach((entry) => {
+    const key = getLocalDateKeyFromIso(entry.start);
+    if (key) productiveLogDateKeys.add(key);
+  });
+  const fallbackSessions = safeSessions.filter((session) => {
+    const sessionDateKey = getLocalDateKeyFromIso(session?.startTime);
+    return !sessionDateKey || !productiveLogDateKeys.has(sessionDateKey);
+  });
+  const workMinutesFromFallbackSessions = fallbackSessions.reduce((acc, session) => acc + getSessionWorkMinutes(session), 0);
 
   const categoryMap = new Map();
   safeCategories.forEach((category) => {
@@ -121,41 +144,35 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   });
 
   const categoryBreakdown = {};
-  if (productiveLogs.length > 0) {
-    productiveLogs.forEach((entry) => {
-      const minutes = Math.max(0, entry.duration / 60);
-      if (minutes <= 0) return;
-      const key = typeof entry.categoryId === 'number'
-        ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
-        : 'Uncategorized';
-      categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
+  productiveLogs.forEach((entry) => {
+    const minutes = Math.max(0, entry.duration / 60);
+    if (minutes <= 0) return;
+    const key = typeof entry.categoryId === 'number'
+      ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
+      : 'Uncategorized';
+    categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
+  });
+  fallbackSessions.forEach((session) => {
+    const categoryStats = session?.stats?.categoryStats;
+    if (!categoryStats || typeof categoryStats !== 'object') return;
+    Object.entries(categoryStats).forEach(([name, minutes]) => {
+      const safeMinutes = Number(minutes);
+      if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+      categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
     });
-  } else {
-    safeSessions.forEach((session) => {
-      const categoryStats = session?.stats?.categoryStats;
-      if (!categoryStats || typeof categoryStats !== 'object') return;
-      Object.entries(categoryStats).forEach(([name, minutes]) => {
-        const safeMinutes = Number(minutes);
-        if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
-        categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
-      });
-    });
-  }
+  });
 
   const productiveDates = new Set();
-  if (productiveLogs.length > 0) {
-    productiveLogs.forEach((entry) => {
-      const key = getLocalDateKeyFromIso(entry.start);
-      if (key) productiveDates.add(key);
-    });
-  } else {
-    safeSessions.forEach((session) => {
-      const mins = Number(session?.stats?.totalWorkMinutes || 0);
-      if (!Number.isFinite(mins) || mins <= 0) return;
-      const key = getLocalDateKeyFromIso(session.startTime);
-      if (key) productiveDates.add(key);
-    });
-  }
+  productiveLogs.forEach((entry) => {
+    const key = getLocalDateKeyFromIso(entry.start);
+    if (key) productiveDates.add(key);
+  });
+  fallbackSessions.forEach((session) => {
+    const mins = getSessionWorkMinutes(session);
+    if (mins <= 0) return;
+    const key = getLocalDateKeyFromIso(session?.startTime);
+    if (key) productiveDates.add(key);
+  });
 
   const sortedDates = Array.from(productiveDates).sort();
 
@@ -188,12 +205,9 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
 
   return {
     ...defaultLifetimeStats(),
-    totalFocusHours: productiveLogs.length > 0 ? workSecondsFromLogs / 3600 : workMinutesFromSessions / 60,
+    totalFocusHours: (workSecondsFromLogs / 3600) + (workMinutesFromFallbackSessions / 60),
     totalSessions: safeSessions.length,
-    totalPomos: safeSessions.reduce((acc, session) => {
-      const pomos = Number(session?.stats?.pomosCompleted || 0);
-      return acc + Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
-    }, 0),
+    totalPomos: completedPomodoroLogs.length + fallbackSessions.reduce((acc, session) => acc + getSessionPomodoros(session), 0),
     activeDays: sortedDates.length,
     currentStreak,
     bestStreak,

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useReducer, useRef } from 'react';
 import {
   TimerMode,
   Task,
@@ -11,6 +11,7 @@ import {
   GroupEventType,
   GroupEventPayload,
   GroupNotice,
+  GuestTimerLockNotice,
   User,
   SessionRecord,
   TimerRuntimePhase,
@@ -28,6 +29,7 @@ import {
   getCompletedPhaseDuration,
   getTimerStateFreshnessStamp,
   normalizeGraceWindow,
+  resetPersistedTimerSessionState,
   shouldApplyIncomingRuntime,
   shouldDiscardRestoredGrace,
 } from '../utils/timerRuntime';
@@ -60,6 +62,7 @@ import {
   shouldRefreshMembersAfterPeerCleanup,
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
+import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 
 export interface ScheduleBreak {
   id: string;
@@ -125,7 +128,8 @@ interface TimerContextType {
   clientSyncConfig: GroupSyncConfig; // What the joiner chooses to accept
   pendingJoinId: string | null;
   groupNotice: GroupNotice | null;
-  accountSyncState: 'idle' | 'syncing' | 'synced' | 'error';
+  guestTimerLockNotice: GuestTimerLockNotice | null;
+  accountSyncState: 'idle' | 'pending' | 'syncing' | 'synced' | 'error';
   accountSyncError: string | null;
   lastAccountSyncAt: number | null;
 
@@ -147,7 +151,7 @@ interface TimerContextType {
   resumeFromPause: (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => void;
   restartActiveTimer: (customSeconds?: number) => void;
   resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => void;
-  endSession: () => void;
+  endSession: (options?: { effectiveEndMs?: number; showSummary?: boolean }) => void;
   closeSummary: () => void;
   hardReset: () => void;
   
@@ -158,6 +162,7 @@ interface TimerContextType {
   updateHostSyncConfig: (config: GroupSyncConfig) => void;
   updateClientSyncConfig: (config: GroupSyncConfig) => void;
   setPendingJoinId: (id: string | null) => void;
+  dismissGuestTimerLockNotice: () => void;
 
   // Data Management
   addTask: (name: string, est: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => void;
@@ -229,6 +234,12 @@ const getDateKey = (date: Date) => {
   const m = `${date.getMonth() + 1}`.padStart(2, '0');
   const d = `${date.getDate()}`.padStart(2, '0');
   return `${y}-${m}-${d}`;
+};
+
+const getScheduleStartLabel = (date: Date) => {
+  const h = date.getHours().toString().padStart(2, '0');
+  const m = date.getMinutes().toString().padStart(2, '0');
+  return `${h}:${m}`;
 };
 
 const isDeferredTaskFromToday = (task: Pick<Task, 'isFuture' | 'scheduledDate'>, todayKey: string = getDateKey(new Date())) => {
@@ -386,156 +397,10 @@ const removeCompletedTasks = (tasks: Task[]): Task[] => {
         }));
 };
 
-const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
-  totalFocusHours: 0,
-  totalSessions: 0,
-  totalPomos: 0,
-  activeDays: 0,
-  currentStreak: 0,
-  bestStreak: 0,
-  lastActiveDate: null,
-  categoryBreakdown: {},
-};
-
 const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
   if (entry.type !== 'work') return false;
   const reason = (entry.reason || '').trim().toLowerCase();
   return reason.startsWith('paused') || reason.includes('pause credit');
-};
-
-const getLocalDateKeyFromIso = (iso: string): string | null => {
-  const dt = new Date(iso);
-  if (Number.isNaN(dt.getTime())) return null;
-  return getDateKey(dt);
-};
-
-const parseDateKey = (value: string): Date | null => {
-  const parts = value.split('-').map(Number);
-  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
-  return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
-};
-
-const getDayDiff = (fromKey: string, toKey: string): number | null => {
-  const from = parseDateKey(fromKey);
-  const to = parseDateKey(toKey);
-  if (!from || !to) return null;
-  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
-};
-
-const calculateLifetimeStatsFromData = (
-  sessions: SessionRecord[],
-  currentLogs: LogEntry[],
-  categories: Category[],
-): User['lifetimeStats'] => {
-  const safeSessions = Array.isArray(sessions) ? sessions : [];
-  const safeLogs = Array.isArray(currentLogs) ? currentLogs : [];
-  const safeCategories = Array.isArray(categories) ? categories : [];
-
-  const productiveLogs = safeLogs.filter((entry) => {
-    if (entry.type !== 'work') return false;
-    if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
-    return !isPauseCreditedWorkLog(entry);
-  });
-
-  const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
-  const workHoursFromLogs = workSecondsFromLogs / 3600;
-  const workMinutesFromSessions = safeSessions.reduce((acc, session) => {
-    const mins = Number(session.stats?.totalWorkMinutes || 0);
-    return acc + (Number.isFinite(mins) && mins > 0 ? mins : 0);
-  }, 0);
-  const workHoursFromSessions = workMinutesFromSessions / 60;
-  const totalFocusHours = productiveLogs.length > 0 ? workHoursFromLogs : workHoursFromSessions;
-
-  const totalSessions = safeSessions.length;
-  const totalPomos = safeSessions.reduce((acc, session) => {
-    const pomos = Number(session.stats?.pomosCompleted || 0);
-    return acc + Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
-  }, 0);
-
-  const categoryMap = new Map<number, string>();
-  safeCategories.forEach((cat) => {
-    if (typeof cat.id === 'number' && Number.isFinite(cat.id) && cat.name) {
-      categoryMap.set(cat.id, cat.name);
-    }
-  });
-
-  const categoryBreakdown: Record<string, number> = {};
-  if (productiveLogs.length > 0) {
-    productiveLogs.forEach((entry) => {
-      const minutes = Math.max(0, entry.duration / 60);
-      if (minutes <= 0) return;
-      const key = typeof entry.categoryId === 'number'
-        ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
-        : 'Uncategorized';
-      categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
-    });
-  } else {
-    safeSessions.forEach((session) => {
-      if (!session.stats?.categoryStats) return;
-      Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
-        const safeMinutes = Number(minutes);
-        if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
-        categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
-      });
-    });
-  }
-
-  const productiveDates = new Set<string>();
-  if (productiveLogs.length > 0) {
-    productiveLogs.forEach((entry) => {
-      const key = getLocalDateKeyFromIso(entry.start);
-      if (key) productiveDates.add(key);
-    });
-  } else {
-    safeSessions.forEach((session) => {
-      const mins = Number(session.stats?.totalWorkMinutes || 0);
-      if (!Number.isFinite(mins) || mins <= 0) return;
-      const key = getLocalDateKeyFromIso(session.startTime);
-      if (key) productiveDates.add(key);
-    });
-  }
-
-  const sortedDates = Array.from(productiveDates).sort();
-  const activeDays = sortedDates.length;
-
-  let bestStreak = 0;
-  let runningStreak = 0;
-  for (let i = 0; i < sortedDates.length; i += 1) {
-    if (i === 0) {
-      runningStreak = 1;
-    } else {
-      const diff = getDayDiff(sortedDates[i - 1], sortedDates[i]);
-      runningStreak = diff === 1 ? runningStreak + 1 : 1;
-    }
-    if (runningStreak > bestStreak) bestStreak = runningStreak;
-  }
-
-  let currentStreak = 0;
-  if (sortedDates.length > 0) {
-    const todayKey = getDateKey(new Date());
-    const lastKey = sortedDates[sortedDates.length - 1];
-    const diffToToday = getDayDiff(lastKey, todayKey);
-    if (diffToToday !== null && diffToToday <= 1) {
-      currentStreak = 1;
-      for (let i = sortedDates.length - 1; i > 0; i -= 1) {
-        const diff = getDayDiff(sortedDates[i - 1], sortedDates[i]);
-        if (diff === 1) currentStreak += 1;
-        else break;
-      }
-    }
-  }
-
-  return {
-    ...EMPTY_LIFETIME_STATS,
-    totalFocusHours,
-    totalSessions,
-    totalPomos,
-    activeDays,
-    currentStreak,
-    bestStreak,
-    lastActiveDate: sortedDates.length > 0 ? sortedDates[sortedDates.length - 1] : null,
-    categoryBreakdown,
-  };
 };
 
 interface TimerPersistencePayload {
@@ -612,9 +477,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const isDevMode = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
-  const [accountSyncState, setAccountSyncState] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [accountSyncState, setAccountSyncState] = useState<'idle' | 'pending' | 'syncing' | 'synced' | 'error'>('idle');
   const [accountSyncError, setAccountSyncError] = useState<string | null>(null);
   const [lastAccountSyncAt, setLastAccountSyncAt] = useState<number | null>(null);
+  const [accountTimerSyncNonce, bumpAccountTimerSyncNonce] = useReducer((value: number) => value + 1, 0);
   
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [workTime, setWorkTime] = useState(1500);
@@ -657,6 +523,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [clientSyncConfig, setClientSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [pendingJoinId, setPendingJoinId] = useState<string | null>(null);
   const [groupNotice, setGroupNotice] = useState<GroupNotice | null>(null);
+  const [guestTimerLockNotice, setGuestTimerLockNotice] = useState<GuestTimerLockNotice | null>(null);
   const hostSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const clientSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const groupSessionIdRef = useRef<string | null>(null);
@@ -853,6 +720,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         },
       });
     }
+    bumpAccountTimerSyncNonce();
   }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, timerStarted, isIdle, allPauseActive, allPauseReason, allPauseStartTime, graceOpen, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
 
   // Load Data Helper
@@ -912,9 +780,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 if (parsed.scheduleStartTime) setScheduleStartTime(parsed.scheduleStartTime);
             } else {
                  const now = new Date();
-                 const h = now.getHours().toString().padStart(2, '0');
-                 const m = now.getMinutes().toString().padStart(2, '0');
-                 setScheduleStartTime(`${h}:${m}`);
+                 setScheduleStartTime(getScheduleStartLabel(now));
             }
 
             const hasRuntime = parsed.schemaVersion === DATA_SCHEMA_VERSION && isRuntimeSnapshot(parsed.runtime);
@@ -1031,9 +897,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setGraceContext(null);
           setGraceTotal(0);
           const now = new Date();
-          const h = now.getHours().toString().padStart(2, '0');
-          const m = now.getMinutes().toString().padStart(2, '0');
-          setScheduleStartTime(`${h}:${m}`);
+          setScheduleStartTime(getScheduleStartLabel(now));
            if (username) {
                setUser({ 
                    username, 
@@ -1110,6 +974,28 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const resetAccountSession = useCallback((reason?: string) => {
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem('doro_last_user');
+    const now = new Date();
+    const guestKey = getGuestKey();
+    try {
+      const guestRaw = localStorage.getItem(guestKey);
+      const parsedGuest: TimerPersistencePayload = guestRaw ? JSON.parse(guestRaw) : {};
+      const sanitizedGuest = resetPersistedTimerSessionState(parsedGuest, {
+        sourceTabId: tabIdRef.current,
+        nowMs: now.getTime(),
+        fallbackWorkDuration: DEFAULT_SETTINGS.workDuration,
+        scheduleStartTime: getScheduleStartLabel(now),
+      });
+      localStorage.setItem(guestKey, JSON.stringify(sanitizedGuest));
+    } catch (error) {
+      const sanitizedGuest = resetPersistedTimerSessionState({} as TimerPersistencePayload, {
+        sourceTabId: tabIdRef.current,
+        nowMs: now.getTime(),
+        fallbackWorkDuration: DEFAULT_SETTINGS.workDuration,
+        scheduleStartTime: getScheduleStartLabel(now),
+      });
+      localStorage.setItem(guestKey, JSON.stringify(sanitizedGuest));
+      console.error('Failed to sanitize guest timer state during account reset', error);
+    }
     setAuthToken(null);
     setLastAccountSyncAt(null);
     accountRevisionRef.current = 0;
@@ -1716,6 +1602,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
       if (!user || !authToken) return;
       if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
+      setAccountSyncState((prev) => (prev === 'syncing' ? prev : 'pending'));
+      // Debounce signed-in saves from timer phase transitions, not per-second countdown ticks.
       const timeout = setTimeout(() => { void syncAccountNow(); }, 2500);
       return () => clearTimeout(timeout);
   }, [
@@ -1727,21 +1615,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       categories,
       logs,
       pomodoroCount,
-      workTime,
-      breakTime,
       activeMode,
       timerStarted,
       isIdle,
       allPauseActive,
-      allPauseTime,
       allPauseReason,
       allPauseStartTime,
       graceOpen,
       graceContext,
-      graceTotal,
       scheduleBreaks,
       scheduleStartTime,
       sessionStartTime,
+      userName,
+      accountTimerSyncNonce,
       syncAccountNow,
   ]);
 
@@ -2000,6 +1886,27 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         && !clientReadyForBroadcastRef.current
     );
   }, []);
+
+  const dismissGuestTimerLockNotice = useCallback(() => {
+    setGuestTimerLockNotice(null);
+  }, []);
+
+  const blockGuestTimerControl = useCallback(() => {
+    if (!isFollowingHostTimerSync()) return false;
+    const now = Date.now();
+    setGuestTimerLockNotice({
+      id: `guest_timer_lock_${now}`,
+      title: 'Timer controlled by host',
+      message: 'You joined this group as a guest. Only the host can change the shared timer. Leave the group session if you want to control your own timer.',
+      createdAt: now,
+    });
+    return true;
+  }, [isFollowingHostTimerSync]);
+
+  useEffect(() => {
+    if (isFollowingHostTimerSync()) return;
+    setGuestTimerLockNotice(null);
+  }, [groupSessionId, isHost, hostSyncConfig.syncTimers, clientSyncConfig.syncTimers, isFollowingHostTimerSync]);
 
   const getCurrentState = useCallback(() => {
     return {
@@ -2668,6 +2575,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       seenGroupEventIdsRef.current = new Set();
       clientReadyForBroadcastRef.current = true;
       setGroupNotice(null);
+      setGuestTimerLockNotice(null);
       setGroupSessionId(null);
       setIsHost(false);
       setMembers([]);
@@ -3156,14 +3064,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [graceOpen, graceContext, activeMode]);
 
   const startTimer = () => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     if (timerStarted) return;
     startTimerInternal();
     emitLocalGroupEvent('timer-started');
   };
 
   const stopTimer = (opts?: { silentGroupEvent?: boolean }) => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     setTimerStarted(false);
     anchorRuntimePhase('idle');
     if (!opts?.silentGroupEvent) emitLocalGroupEvent('timer-stopped');
@@ -3171,7 +3079,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const toggleTimer = () => timerStarted ? stopTimer() : startTimer();
 
   const performSwitch = (targetMode: TimerMode) => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     playSwitch();
     if (!isIdle && currentActivityStartRef.current) {
         const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
@@ -3192,7 +3100,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const activateMode = (mode: TimerMode) => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     if (isIdle) performSwitch(mode);
     else if (activeMode !== mode) performSwitch(mode);
     else if (!timerStarted) { startTimer(); playSwitch(); }
@@ -3201,7 +3109,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const switchMode = () => performSwitch(activeMode === 'work' ? 'break' : 'work');
 
   const restartActiveTimer = (customSeconds?: number) => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     stopTimer({ silentGroupEvent: true });
     const nextWorkTime = activeMode === 'work' ? (customSeconds !== undefined ? customSeconds : settings.workDuration) : workTime;
     const nextBreakTime = activeMode === 'break' ? (customSeconds !== undefined ? customSeconds : breakTime) : breakTime;
@@ -3225,7 +3133,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const startAllPause = () => {};
   const confirmAllPause = (reason: string) => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     stopTimer({ silentGroupEvent: true });
     const pauseStart = Date.now();
     setAllPauseReason(reason);
@@ -3243,7 +3151,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const endAllPause = () => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     setAllPauseActive(false);
     if (allPauseStartTime) {
       const start = new Date(allPauseStartTime);
@@ -3256,7 +3164,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resumeFromPause = (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     setAllPauseActive(false);
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
@@ -3288,7 +3196,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
-    if (isFollowingHostTimerSync()) return;
+    if (blockGuestTimerControl()) return;
     if (isResolvingGraceRef.current) return;
     isResolvingGraceRef.current = true;
 
@@ -3342,25 +3250,45 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTimeout(() => { isResolvingGraceRef.current = false; }, 300);
   };
 
-  const endSession = () => {
-    if (isFollowingHostTimerSync()) return;
+  const endSession = useCallback((options?: { effectiveEndMs?: number; showSummary?: boolean }) => {
+    if (blockGuestTimerControl()) return;
+
+    const effectiveEndMs = typeof options?.effectiveEndMs === 'number' && Number.isFinite(options.effectiveEndMs)
+      ? options.effectiveEndMs
+      : Date.now();
+    const effectiveEndDate = new Date(effectiveEndMs);
+    const effectiveEndIso = effectiveEndDate.toISOString();
+
     let pendingActiveDuration = 0;
     let pendingActiveMode: TimerMode | null = null;
     let pendingActiveCategoryId: number | null | undefined = null;
     let pendingActiveStartIso: string | null = null;
+
     if (!isIdle && currentActivityStartRef.current) {
-      const elapsed = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
+      const elapsed = (effectiveEndMs - currentActivityStartRef.current.getTime()) / 1000;
       if (Number.isFinite(elapsed) && elapsed > 0.5) {
         pendingActiveDuration = elapsed;
         pendingActiveMode = activeMode;
         pendingActiveCategoryId = activeTask?.categoryId;
         pendingActiveStartIso = currentActivityStartRef.current.toISOString();
-        logActivity(activeMode, currentActivityStartRef.current, elapsed, 'Session End', activeTask || undefined);
+        const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+        const sessionEndEntry: LogEntry = {
+          type: activeMode,
+          start: pendingActiveStartIso,
+          end: effectiveEndIso,
+          duration: elapsed,
+          reason: 'Session End',
+          task: selectedTask,
+          color: activeColor,
+          categoryId: pendingActiveCategoryId ?? null,
+        };
+        setLogs(prev => [sessionEndEntry, ...prev]);
       }
     }
 
     stopTimer({ silentGroupEvent: true });
     setAllPauseActive(false);
+
     const sessionFloor = sessionStartTime || '';
     const workLogs = logs.filter((l) => l.type === 'work' && l.start >= sessionFloor && !isPauseCreditedWorkLog(l));
     const breakLogs = logs.filter((l) => l.type === 'break' && l.start >= sessionFloor);
@@ -3369,7 +3297,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const totalWork = (workLogs.reduce((acc, l) => acc + l.duration, 0) + pendingWorkSeconds) / 60;
     const totalBreak = (breakLogs.reduce((acc, l) => acc + l.duration, 0) + pendingBreakSeconds) / 60;
     const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
-    
+
     // Calculate Category Stats
     const catStats: Record<string, number> = {};
     workLogs.forEach(l => {
@@ -3395,7 +3323,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const record: SessionRecord = {
             id: Date.now().toString(),
             startTime: sessionStartTime,
-            endTime: new Date().toISOString(),
+            endTime: effectiveEndIso,
             stats: {
                 totalWorkMinutes: totalWork,
                 totalBreakMinutes: totalBreak,
@@ -3404,18 +3332,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 categoryStats: catStats
             }
         };
-        
+
         setPastSessions(prev => [record, ...prev]);
 
         // Recalculate lifetime stats from canonical history each time.
         if (user) {
             setUser(prev => {
                 if (!prev) return null;
-                const pendingSessionLogs = pendingActiveDuration > 0
+                const pendingSessionLogs = pendingActiveDuration > 0 && pendingActiveStartIso
                   ? [{
                       type: pendingActiveMode === 'work' ? 'work' : 'break',
-                      start: pendingActiveStartIso || new Date().toISOString(),
-                      end: new Date().toISOString(),
+                      start: pendingActiveStartIso,
+                      end: effectiveEndIso,
                       duration: pendingActiveDuration,
                       reason: 'Session End',
                       task: activeTask ? { id: activeTask.id, name: activeTask.name } : null,
@@ -3440,7 +3368,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         categoryStats: catStats
     });
 
-    setTasks(prev => removeCompletedTasks(prev)); 
+    setTasks(prev => removeCompletedTasks(prev));
     setPomodoroCount(0);
     setWorkTime(settings.workDuration);
     setBreakTime(0);
@@ -3451,10 +3379,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceTotal(0);
     setSessionStartTime(null);
     currentActivityStartRef.current = null;
-    
-    const now = new Date();
-    const h = now.getHours().toString().padStart(2, '0');
-    const m = now.getMinutes().toString().padStart(2, '0');
+
+    const resetNow = new Date();
+    const h = resetNow.getHours().toString().padStart(2, '0');
+    const m = resetNow.getMinutes().toString().padStart(2, '0');
     setScheduleStartTime(`${h}:${m}`);
     anchorRuntimePhase('idle', {
       phaseStartWorkTime: settings.workDuration,
@@ -3463,9 +3391,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       phaseStartGraceTotal: 0,
       activityStartIso: null,
     });
-    
-    setShowSummary(true);
-  };
+
+    setShowSummary(options?.showSummary !== false);
+  }, [
+    activeColor,
+    activeMode,
+    activeTask,
+    anchorRuntimePhase,
+    blockGuestTimerControl,
+    calculateLifetimeStats,
+    categories,
+    isIdle,
+    logs,
+    pastSessions,
+    pomodoroCount,
+    sessionStartTime,
+    settings.workDuration,
+    stopTimer,
+    tasks,
+    user,
+  ]);
 
   const closeSummary = () => { setShowSummary(false); setSessionStats(null); };
 
@@ -3669,12 +3614,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, groupNotice,
+      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, groupNotice, guestTimerLockNotice,
       accountSyncState, accountSyncError, lastAccountSyncAt,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
-      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId,
+      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, dismissGuestTimerLockNotice,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       toggleTaskFuture, setTaskSchedule,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,

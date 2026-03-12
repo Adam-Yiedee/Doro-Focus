@@ -35,6 +35,7 @@ vi.mock('@netlify/blobs', () => ({
 const {
   attachPublicUserToData,
   buildDefaultAccountData,
+  calculateLifetimeStatsFromAccountData,
   createSession,
   createUser,
   getAccountData,
@@ -144,6 +145,82 @@ describe('account store blob compatibility', () => {
       totalFocusHours: 25 / 60,
       totalSessions: 1,
       totalPomos: 1,
+    });
+  });
+
+  it('counts completed pomodoros from work logs even before a session summary exists', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        duration: 1500,
+        reason: 'Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+    ], []);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 25 / 60,
+      totalSessions: 0,
+      totalPomos: 1,
+      activeDays: 1,
+    });
+  });
+
+  it('keeps older archived session days when newer synced logs exist on different dates', () => {
+    const stats = calculateLifetimeStatsFromAccountData([
+      {
+        id: 'session-1',
+        startTime: '2026-03-10T08:00:00.000Z',
+        endTime: '2026-03-10T09:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 50,
+          totalBreakMinutes: 10,
+          pomosCompleted: 2,
+          tasksCompleted: 0,
+          categoryStats: { Study: 50 },
+        },
+      },
+      {
+        id: 'session-2',
+        startTime: '2026-03-12T08:00:00.000Z',
+        endTime: '2026-03-12T08:45:00.000Z',
+        stats: {
+          totalWorkMinutes: 30,
+          totalBreakMinutes: 5,
+          pomosCompleted: 1,
+          tasksCompleted: 0,
+          categoryStats: { Writing: 30 },
+        },
+      },
+    ], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        duration: 1500,
+        reason: 'Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: 1,
+      },
+    ], [
+      { id: 1, name: 'Writing', color: '#C86D80', icon: 'pen' },
+      { id: 2, name: 'Study', color: '#4FAE9B', icon: 'book' },
+    ]);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 75 / 60,
+      totalSessions: 2,
+      totalPomos: 3,
+      activeDays: 2,
+      categoryBreakdown: {
+        Study: 50,
+        Writing: 25,
+      },
     });
   });
 });

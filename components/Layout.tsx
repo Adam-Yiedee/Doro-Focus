@@ -15,6 +15,10 @@ import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } fro
 
 type GroupBannerItem = GroupNotice & { exiting: boolean };
 
+const GROUP_BANNER_EXIT_MS = 600;
+const GROUP_BANNER_VISIBLE_MS = 5600;
+const GROUP_BANNER_TOTAL_MS = GROUP_BANNER_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
+
 const colorToRgba = (value: string | undefined, alpha: number) => {
   const safeAlpha = Math.max(0, Math.min(1, alpha));
   const normalized = (value || '').trim().replace('#', '');
@@ -39,7 +43,7 @@ const colorToRgba = (value: string | undefined, alpha: number) => {
 };
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId } = useTimer();
+  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
   const [groupBanners, setGroupBanners] = useState<GroupBannerItem[]>([]);
@@ -90,12 +94,12 @@ const Layout: React.FC = () => {
 
     const exitTimer = setTimeout(() => {
       setGroupBanners(prev => prev.map(item => item.id === id ? { ...item, exiting: true } : item));
-    }, 2600);
+    }, GROUP_BANNER_VISIBLE_MS);
 
     const removeTimer = setTimeout(() => {
       setGroupBanners(prev => prev.filter(item => item.id !== id));
       clearBannerTimer(id);
-    }, 3200);
+    }, GROUP_BANNER_TOTAL_MS);
 
     bannerTimersRef.current[id] = { exit: exitTimer, remove: removeTimer };
   }, [groupNotice]);
@@ -217,7 +221,7 @@ const Layout: React.FC = () => {
         }
         .doro-group-banner-progress {
           transform-origin: left;
-          animation: doroGroupBannerProgress 3.2s linear forwards;
+          animation: doroGroupBannerProgress ${GROUP_BANNER_TOTAL_MS}ms linear forwards;
         }
       `}</style>
 
@@ -265,6 +269,48 @@ const Layout: React.FC = () => {
             }`} />
           </div>
         ))}
+        {guestTimerLockNotice && (
+          <div
+            key={guestTimerLockNotice.id}
+            className={`doro-group-banner pointer-events-auto relative overflow-hidden rounded-[1.65rem] border px-4 py-4 shadow-[0_22px_52px_-30px_rgba(15,23,42,0.9)] ${
+              settings.disableBlur
+                ? 'border-amber-200/35 bg-black/85'
+                : 'border-amber-100/20 bg-[linear-gradient(160deg,rgba(255,245,230,0.14),rgba(255,255,255,0.06))] backdrop-blur-2xl'
+            }`}
+          >
+            <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_10%_-10%,rgba(251,191,36,0.28),transparent_46%)]" />
+            <div className="relative">
+              <div className="text-[10px] uppercase tracking-[0.18em] font-bold text-amber-100/70">
+                Guest Timer Lock
+              </div>
+              <div className="mt-1 text-sm font-bold text-white/95">
+                {guestTimerLockNotice.title}
+              </div>
+              <div className="mt-1 text-sm leading-relaxed text-white/68">
+                {guestTimerLockNotice.message}
+              </div>
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={dismissGuestTimerLockNotice}
+                  className="rounded-full border border-white/12 bg-white/8 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/72 transition-colors hover:bg-white/12 hover:text-white"
+                >
+                  Stay in Group
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismissGuestTimerLockNotice();
+                    leaveGroupSession();
+                  }}
+                  className="rounded-full border border-amber-200/20 bg-amber-100 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-950 transition-colors hover:bg-amber-50"
+                >
+                  Leave Group
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div

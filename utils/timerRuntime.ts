@@ -1,7 +1,8 @@
 import { TimerRuntimePhase, TimerRuntimeSnapshot, TimerSettings } from '../types';
 
 export const TIMER_RUNTIME_VERSION = 2 as const;
-const RESTORED_GRACE_MAX_AGE_MS = 60 * 60 * 1000;
+export const LONG_GRACE_SESSION_TIMEOUT_SECONDS = 3 * 60 * 60;
+export const LONG_GRACE_SESSION_TIMEOUT_MS = LONG_GRACE_SESSION_TIMEOUT_SECONDS * 1000;
 
 export interface RuntimeDerivedValues {
   workTime: number;
@@ -14,6 +15,69 @@ export interface RuntimeBoundaryCrossing {
   mode: 'work' | 'break';
   overflowSeconds: number;
 }
+
+export interface ResetPersistedTimerSessionStateOptions {
+  sourceTabId: string;
+  nowMs: number;
+  fallbackWorkDuration: number;
+  scheduleStartTime: string;
+}
+
+type ResettablePersistedTimerSessionState = {
+  settings?: Pick<TimerSettings, 'workDuration'> | null;
+  workTime?: number;
+  breakTime?: number;
+  activeMode?: 'work' | 'break';
+  timerStarted?: boolean;
+  isIdle?: boolean;
+  pomodoroCount?: number;
+  allPauseActive?: boolean;
+  allPauseTime?: number;
+  allPauseReason?: string;
+  allPauseStartTime?: number | null;
+  graceOpen?: boolean;
+  graceContext?: GraceContext;
+  graceTotal?: number;
+  sessionStartTime?: string | null;
+  scheduleStartTime?: string;
+  runtime?: TimerRuntimeSnapshot | null;
+};
+
+type ResetPersistedTimerSessionStateResult<T> = Omit<T,
+  | 'runtime'
+  | 'workTime'
+  | 'breakTime'
+  | 'activeMode'
+  | 'timerStarted'
+  | 'isIdle'
+  | 'pomodoroCount'
+  | 'allPauseActive'
+  | 'allPauseTime'
+  | 'allPauseReason'
+  | 'allPauseStartTime'
+  | 'graceOpen'
+  | 'graceContext'
+  | 'graceTotal'
+  | 'sessionStartTime'
+  | 'scheduleStartTime'
+> & {
+  runtime: TimerRuntimeSnapshot;
+  workTime: number;
+  breakTime: number;
+  activeMode: 'work';
+  timerStarted: false;
+  isIdle: true;
+  pomodoroCount: number;
+  allPauseActive: false;
+  allPauseTime: number;
+  allPauseReason: string;
+  allPauseStartTime: null;
+  graceOpen: false;
+  graceContext: null;
+  graceTotal: 0;
+  sessionStartTime: null;
+  scheduleStartTime: string;
+};
 
 export const getTimerStateFreshnessStamp = ({
   runtime,
@@ -39,6 +103,55 @@ export const shouldApplyIncomingRuntime = ({
     return false;
   }
   return incomingRuntime.updatedAtMs > lastAppliedAtMs;
+};
+
+export const resetPersistedTimerSessionState = <T extends ResettablePersistedTimerSessionState>(
+  payload: T,
+  {
+    sourceTabId,
+    nowMs,
+    fallbackWorkDuration,
+    scheduleStartTime,
+  }: ResetPersistedTimerSessionStateOptions,
+): ResetPersistedTimerSessionStateResult<T> => {
+  const configuredWorkDuration = payload?.settings?.workDuration;
+  const payloadWorkTime = payload?.workTime;
+  const nextWorkDuration = (
+    typeof configuredWorkDuration === 'number' && Number.isFinite(configuredWorkDuration) && configuredWorkDuration > 0
+      ? configuredWorkDuration
+      : typeof payloadWorkTime === 'number' && Number.isFinite(payloadWorkTime) && payloadWorkTime > 0
+        ? payloadWorkTime
+        : fallbackWorkDuration
+  );
+
+  return {
+    ...payload,
+    runtime: createRuntimeSnapshot({
+      sourceTabId,
+      phase: 'idle',
+      nowMs,
+      workTime: nextWorkDuration,
+      breakTime: 0,
+      allPauseTime: 0,
+      graceTotal: 0,
+      activityStartIso: null,
+    }),
+    workTime: nextWorkDuration,
+    breakTime: 0,
+    activeMode: 'work',
+    timerStarted: false,
+    isIdle: true,
+    pomodoroCount: 0,
+    allPauseActive: false,
+    allPauseTime: 0,
+    allPauseReason: '',
+    allPauseStartTime: null,
+    graceOpen: false,
+    graceContext: null,
+    graceTotal: 0,
+    sessionStartTime: null,
+    scheduleStartTime,
+  };
 };
 
 export const getCompletedPhaseDuration = ({
@@ -217,7 +330,7 @@ export const shouldDiscardRestoredGrace = ({
   sessionStartTime,
   graceOpen = false,
   nowMs,
-  maxAgeMs = RESTORED_GRACE_MAX_AGE_MS,
+  maxAgeMs,
 }: {
   snapshot?: TimerRuntimeSnapshot | null;
   sessionStartTime?: string | null;
@@ -230,6 +343,7 @@ export const shouldDiscardRestoredGrace = ({
   if (!snapshot || snapshot.phase !== 'grace') return false;
   if (!hasSessionAnchor) return true;
   if (typeof snapshot.phaseStartedAtMs !== 'number') return true;
+  if (typeof maxAgeMs !== 'number' || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return false;
   return nowMs - snapshot.phaseStartedAtMs > maxAgeMs;
 };
 

@@ -9,6 +9,7 @@ import {
   getGraceCompensation,
   getPauseCompensation,
   normalizeGraceWindow,
+  resetPersistedTimerSessionState,
   shouldApplyIncomingRuntime,
   shouldDiscardRestoredGrace,
 } from './timerRuntime';
@@ -235,7 +236,7 @@ describe('restored grace sanitization', () => {
     })).toBe(true);
   });
 
-  it('discards restored grace when the persisted grace snapshot is stale', () => {
+  it('keeps restored grace by default so abandoned sessions can be finalized explicitly', () => {
     const snapshot = createRuntimeSnapshot({
       sourceTabId: TAB_ID,
       phase: 'grace',
@@ -250,7 +251,7 @@ describe('restored grace sanitization', () => {
       snapshot,
       sessionStartTime: '2026-03-07T10:00:00.000Z',
       nowMs: BASE_NOW + (60 * 60 * 1000) + 1,
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it('keeps fresh restored grace when the session is still active', () => {
@@ -269,6 +270,90 @@ describe('restored grace sanitization', () => {
       sessionStartTime: '2026-03-07T10:00:00.000Z',
       nowMs: BASE_NOW + 30 * 60 * 1000,
     })).toBe(false);
+  });
+
+  it('still supports explicit max-age pruning when a caller opts into it', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 0,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 5,
+    });
+
+    expect(shouldDiscardRestoredGrace({
+      snapshot,
+      sessionStartTime: '2026-03-07T10:00:00.000Z',
+      nowMs: BASE_NOW + (60 * 60 * 1000) + 1,
+      maxAgeMs: 60 * 60 * 1000,
+    })).toBe(true);
+  });
+});
+
+describe('persisted session reset', () => {
+  it('clears transient timer and grace state while preserving durable payload data', () => {
+    const payload = {
+      settings: { workDuration: 1800 },
+      workTime: 42,
+      breakTime: 300,
+      activeMode: 'break' as const,
+      timerStarted: true,
+      isIdle: false,
+      pomodoroCount: 7,
+      allPauseActive: true,
+      allPauseTime: 55,
+      allPauseReason: 'Away',
+      allPauseStartTime: BASE_NOW - 5000,
+      graceOpen: true,
+      graceContext: 'afterBreak' as const,
+      graceTotal: 7200,
+      sessionStartTime: '2026-03-12T09:00:00.000Z',
+      scheduleStartTime: '09:00',
+      tasks: [{ id: 1, name: 'Preserved' }],
+    };
+
+    const reset = resetPersistedTimerSessionState(payload, {
+      sourceTabId: TAB_ID,
+      nowMs: BASE_NOW,
+      fallbackWorkDuration: 1500,
+      scheduleStartTime: '13:37',
+    });
+
+    expect(reset.tasks).toEqual(payload.tasks);
+    expect(reset.runtime?.phase).toBe('idle');
+    expect(reset.workTime).toBe(1800);
+    expect(reset.breakTime).toBe(0);
+    expect(reset.activeMode).toBe('work');
+    expect(reset.timerStarted).toBe(false);
+    expect(reset.isIdle).toBe(true);
+    expect(reset.pomodoroCount).toBe(0);
+    expect(reset.allPauseActive).toBe(false);
+    expect(reset.allPauseTime).toBe(0);
+    expect(reset.allPauseReason).toBe('');
+    expect(reset.allPauseStartTime).toBeNull();
+    expect(reset.graceOpen).toBe(false);
+    expect(reset.graceContext).toBeNull();
+    expect(reset.graceTotal).toBe(0);
+    expect(reset.sessionStartTime).toBeNull();
+    expect(reset.scheduleStartTime).toBe('13:37');
+  });
+
+  it('falls back to the provided work duration when persisted work time is invalid', () => {
+    const reset = resetPersistedTimerSessionState({
+      settings: { workDuration: 0 },
+      workTime: -20,
+    }, {
+      sourceTabId: TAB_ID,
+      nowMs: BASE_NOW,
+      fallbackWorkDuration: 1500,
+      scheduleStartTime: '08:15',
+    });
+
+    expect(reset.workTime).toBe(1500);
+    expect(reset.runtime?.phaseStartWorkTime).toBe(1500);
+    expect(reset.scheduleStartTime).toBe('08:15');
   });
 });
 
