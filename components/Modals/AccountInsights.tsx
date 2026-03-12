@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Category, LogEntry } from '../../types';
 import {
   computeAccountInsights,
-  DAY_PART_LABELS,
   DayPartKey,
   WEEKDAY_LABELS,
   WEEKDAY_SHORT_LABELS,
@@ -80,13 +79,13 @@ const formatClockMinutes = (minutes: number | null) => {
 };
 
 const formatHourList = (hours: number[]) => {
-  if (hours.length === 0) return 'No completed pomodoros yet';
+  if (hours.length === 0) return 'No focus yet';
   if (hours.length <= 3) return hours.map(formatHour).join(' / ');
   return `${hours.slice(0, 3).map(formatHour).join(' / ')} +${hours.length - 3}`;
 };
 
 const formatWeekdayList = (days: number[]) => {
-  if (days.length === 0) return 'Not enough pomodoros yet';
+  if (days.length === 0) return 'Not enough focus yet';
   if (days.length <= 3) return days.map((day) => WEEKDAY_LABELS[day]).join(' / ');
   return `${days.slice(0, 3).map((day) => WEEKDAY_LABELS[day]).join(' / ')} +${days.length - 3}`;
 };
@@ -107,6 +106,8 @@ const formatSessionRange = (startMs: number, endMs: number | null) => {
 const getDateFromKey = (dateKey: string) => new Date(`${dateKey}T12:00:00`);
 const formatDateKeyShort = (dateKey: string) => getDateFromKey(dateKey).toLocaleDateString([], { weekday: 'short' });
 const formatDateKeyStamp = (dateKey: string) => getDateFromKey(dateKey).toLocaleDateString([], { month: 'short', day: 'numeric' });
+const formatDateKeyFullStamp = (dateKey: string) => getDateFromKey(dateKey).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+const formatDateKeyAxisStamp = (dateKey: string) => getDateFromKey(dateKey).toLocaleDateString([], { month: 'numeric', day: 'numeric' });
 
 const dayPartLabels: Record<DayPartKey, string> = {
   morning: 'Morning',
@@ -160,7 +161,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
 
   const [activeCategoryName, setActiveCategoryName] = useState<string | null>(categorySlices[0]?.name ?? null);
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
-  const [hoveredHeatCell, setHoveredHeatCell] = useState<{ weekday: number; hour: number } | null>(null);
   const [hoveredTrendDateKey, setHoveredTrendDateKey] = useState<string | null>(null);
   const [hoveredSessionLaneKey, setHoveredSessionLaneKey] = useState<string | null>(null);
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
@@ -197,13 +197,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const dominantDayPartsLabel = insights.dominantDayParts.length > 0
     ? insights.dominantDayParts.map((part) => dayPartLabels[part]).join(' / ')
     : 'No focus rhythm yet';
-  const highlightedHour = hoveredHour ?? insights.today.peakHour ?? insights.hourlyFocusMinutes.findIndex((minutes) => minutes === Math.max(...insights.hourlyFocusMinutes));
-  const activeHeatCell = hoveredHeatCell
-    ? {
-        label: `${WEEKDAY_LABELS[hoveredHeatCell.weekday]} ${formatHour(hoveredHeatCell.hour)}`,
-        minutes: insights.weekdayHourHeatmap[hoveredHeatCell.weekday][hoveredHeatCell.hour],
-      }
-    : null;
 
   const donutSegments = useMemo(() => {
     const radius = 46;
@@ -228,11 +221,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     ['Sessions', insights.weekComparison.thisWeek.sessions, insights.weekComparison.lastWeek.sessions, `${insights.weekComparison.thisWeek.sessions}`, `${insights.weekComparison.lastWeek.sessions}`, formatSignedCount(insights.weekComparison.sessionDelta), insights.weekComparison.sessionDeltaPct, PRESET_COLORS[5]],
   ] as const;
 
-  const maxRhythmMinutes = Math.max(0, ...insights.hourlyFocusMinutes);
   const trendMaxFocus = Math.max(1, ...insights.dailyFocusTrend.map((point) => point.focusMinutes));
   const trendPoints = useMemo(() => (
     insights.dailyFocusTrend.map((point, index, array) => {
-      const x = array.length <= 1 ? 50 : (index / (array.length - 1)) * 100;
+      const edgePadding = 4;
+      const x = array.length <= 1
+        ? 50
+        : edgePadding + ((index / (array.length - 1)) * (100 - (edgePadding * 2)));
       const y = 86 - ((point.focusMinutes / trendMaxFocus) * 54);
       return { ...point, x, y };
     })
@@ -251,6 +246,20 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const trendMaxPomos = Math.max(1, ...insights.dailyFocusTrend.map((point) => point.pomodoros));
   const trendMaxSessions = Math.max(1, ...insights.dailyFocusTrend.map((point) => point.sessions));
   const activeTrendDayCount = insights.dailyFocusTrend.filter((point) => point.focusMinutes > 0).length;
+  const bestHourRows = useMemo(() => (
+    insights.hourlyFocusMinutes
+      .map((minutes, hour) => ({ hour, minutes }))
+      .filter((entry) => entry.minutes > 0)
+      .sort((left, right) => right.minutes - left.minutes || left.hour - right.hour)
+      .slice(0, 6)
+  ), [insights.hourlyFocusMinutes]);
+  const activeBestHour = bestHourRows.find((entry) => entry.hour === hoveredHour) || bestHourRows[0] || null;
+  const bestHourMaxMinutes = Math.max(1, ...bestHourRows.map((entry) => entry.minutes));
+  const focusPhaseRows = (Object.entries(dayPartLabels) as Array<[DayPartKey, string]>).map(([key, label]) => ({
+    key,
+    label,
+    minutes: insights.dayPartTotals[key],
+  }));
 
   const activeSessionLane = insights.sessionLanes.find((lane) => lane.dateKey === hoveredSessionLaneKey)
     || insights.sessionLanes.find((lane) => lane.sessions.length > 0)
@@ -269,8 +278,8 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     ? WEEKDAY_LABELS[insights.mostProductiveWeekdays.weekdays[0]]
     : 'Still forming';
   const profileHeadline = recentFocusTotal > 0
-    ? `${formatMinutesCompact(recentFocusTotal)} saved recently, with ${dominantDayPartsLabel.toLowerCase()} carrying the strongest rhythm.`
-    : 'Your focus profile will sharpen here once saved work starts stacking up.';
+    ? `${formatMinutesCompact(recentFocusTotal)} of focus in the last 14 days.`
+    : 'Saved focus will start building your account profile here.';
   const focusProfileTiles = [
     {
       label: '14-Day Focus',
@@ -278,29 +287,27 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       helper: `${activeTrendDayCount}/${insights.dailyFocusTrend.length} active days`,
       color: accentColor,
     },
-    {
+    ...(insights.topCategory ? [{
       label: 'Top Category',
-      value: insights.topCategory?.name || 'Open canvas',
-      helper: insights.topCategory
-        ? `${formatPct(insights.topCategory.share)} of categorized work`
-        : 'Save categorized focus to light this up',
-      color: insights.topCategory
-        ? (categoryColors.get(insights.topCategory.name) || PRESET_COLORS[1])
-        : PRESET_COLORS[1],
-    },
+      value: insights.topCategory.name,
+      helper: `${formatPct(insights.topCategory.share)} share`,
+      color: categoryColors.get(insights.topCategory.name) || PRESET_COLORS[1],
+    }] : []),
     {
       label: 'Best Weekday',
       value: bestWeekdayLabel,
-      helper: insights.mostProductiveWeekdays.averagePomos > 0
-        ? `${insights.mostProductiveWeekdays.averagePomos.toFixed(1)} pomos on average`
-        : 'Needs more completed pomodoros',
+      helper: insights.mostProductiveWeekdays.averageFocusMinutes > 0
+        ? `${formatMinutesCompact(insights.mostProductiveWeekdays.averageFocusMinutes)} avg focus on ${bestWeekdayLabel}`
+        : 'Needs more history',
       color: PRESET_COLORS[4],
     },
     {
       label: 'Typical Stop',
       value: formatQuitBucketList(insights.mostCommonQuitTimes.bucketMinutes),
-      helper: insights.mostCommonQuitTimes.count > 0
-        ? `${insights.mostCommonQuitTimes.count} closed session${insights.mostCommonQuitTimes.count === 1 ? '' : 's'} there`
+      helper: insights.mostCommonQuitTimes.sourceBucketCount > 2
+        ? `Average of ${insights.mostCommonQuitTimes.sourceBucketCount} tied stop times`
+        : insights.mostCommonQuitTimes.count > 0
+        ? `${insights.mostCommonQuitTimes.count} closed session${insights.mostCommonQuitTimes.count === 1 ? '' : 's'}`
         : 'No closed sessions yet',
       color: PRESET_COLORS[5],
     },
@@ -309,7 +316,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     {
       label: 'Focus Today',
       value: formatMinutesCompact(insights.today.focusMinutes),
-      helper: insights.today.focusMinutes > 0 ? `${formatMinutesPrecise(insights.today.focusMinutes)} saved` : 'No focus blocks saved yet',
+      helper: insights.today.focusMinutes > 0 ? `${formatMinutesPrecise(insights.today.focusMinutes)} saved` : 'No saved focus yet',
       trail: insights.today.focusMinutes > 0 ? `${Math.round((insights.today.focusMinutes / trendMaxFocus) * 100)}% of best day` : 'Waiting on focus',
       fill: insights.today.focusMinutes > 0 ? Math.max(10, (insights.today.focusMinutes / trendMaxFocus) * 100) : 0,
       color: accentColor,
@@ -317,7 +324,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     {
       label: 'Pomodoros',
       value: `${insights.today.pomodoros}`,
-      helper: insights.today.pomodoros > 0 ? 'Completed today' : 'No finished pomodoros yet',
+      helper: insights.today.pomodoros > 0 ? 'Completed today' : 'No pomodoros yet',
       trail: insights.today.pomodoros > 0 ? `${Math.round((insights.today.pomodoros / trendMaxPomos) * 100)}% of top day` : 'No completions',
       fill: insights.today.pomodoros > 0 ? Math.max(10, (insights.today.pomodoros / trendMaxPomos) * 100) : 0,
       color: PRESET_COLORS[2],
@@ -325,7 +332,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     {
       label: 'Sessions',
       value: `${insights.today.sessions}`,
-      helper: insights.today.sessions > 0 ? 'Sessions started today' : 'No session starts today',
+      helper: insights.today.sessions > 0 ? 'Started today' : 'No starts today',
       trail: insights.today.sessions > 0 ? `${Math.round((insights.today.sessions / trendMaxSessions) * 100)}% of top day` : 'No starts logged',
       fill: insights.today.sessions > 0 ? Math.max(10, (insights.today.sessions / trendMaxSessions) * 100) : 0,
       color: PRESET_COLORS[5],
@@ -333,7 +340,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     {
       label: 'Peak Window',
       value: formatHourWindow(insights.today.peakHour),
-      helper: insights.today.firstStartMinutes !== null ? `First start ${formatClockMinutes(insights.today.firstStartMinutes)}` : 'No start time logged today',
+      helper: insights.today.firstStartMinutes !== null ? `First start ${formatClockMinutes(insights.today.firstStartMinutes)}` : 'No start logged',
       trail: insights.today.peakHour !== null ? 'Window found' : 'Waiting on data',
       fill: insights.today.peakHour !== null ? 100 : 0,
       color: PRESET_COLORS[3],
@@ -358,37 +365,35 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           }}
         />
         <div className="pointer-events-none absolute -right-10 top-8 h-40 w-40 rounded-full blur-3xl" style={{ backgroundColor: rgba(PRESET_COLORS[2], 0.16) }} />
-        <div className="relative grid gap-5 xl:grid-cols-[1.08fr_0.92fr] xl:items-start">
-          <div>
-            <div className="inline-flex rounded-full border border-white/14 bg-black/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/60">
-              Focus Profile
-            </div>
-            <div className="mt-4 max-w-2xl text-[1.65rem] font-bold tracking-tight text-white md:text-[2rem]">
-              {profileHeadline}
-            </div>
-            <div className="mt-3 max-w-2xl text-sm leading-relaxed text-white/60">
-              {recentFocusTotal > 0
-                ? `Average start ${formatClockMinutes(insights.averageStartMinutes)}, strongest weekday ${bestWeekdayLabel}, and ${recentPomoTotal} completed pomodoros across the latest momentum window.`
-                : 'Once your account has enough saved work, this turns into a compact read on your pace, timing, and category habits.'}
-            </div>
-            <div className="mt-5 flex flex-wrap gap-2">
-              {[
-                ['Prime Rhythm', dominantDayPartsLabel],
-                ['Best Hour', formatHourList(insights.mostProductiveHours.hours)],
-                ['Top Category', insights.topCategory?.name || 'Not enough category data'],
-              ].map(([label, value], index) => (
-                <div
-                  key={label}
-                  className="rounded-full border border-white/12 bg-black/12 px-3 py-1.5 text-[11px] font-bold text-white/74"
-                  style={{ boxShadow: `0 14px 28px -24px ${rgba(PRESET_COLORS[index % PRESET_COLORS.length], 0.56)}` }}
-                >
-                  {label}: <span className="text-white">{value}</span>
-                </div>
-              ))}
-            </div>
+        <div className="relative">
+          <div className="inline-flex rounded-full border border-white/14 bg-black/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white/60">
+            Focus Profile
+          </div>
+          <div className="mt-4 max-w-2xl text-[1.65rem] font-bold tracking-tight text-white md:text-[2rem]">
+            {profileHeadline}
+          </div>
+          <div className="mt-3 max-w-2xl text-sm leading-relaxed text-white/60">
+            {recentFocusTotal > 0
+              ? `Average start ${formatClockMinutes(insights.averageStartMinutes)}, best weekday ${bestWeekdayLabel}, ${recentPomoTotal} pomodoros in the last 14 days.`
+              : 'Once you save more work, this becomes a quick read on your timing and pace.'}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {[
+              ['Prime Rhythm', dominantDayPartsLabel],
+              ['Best Hour', formatHourList(insights.mostProductiveHours.hours)],
+              ...(insights.topCategory ? [['Top Category', insights.topCategory.name] as const] : []),
+            ].map(([label, value], index) => (
+              <div
+                key={label}
+                className="rounded-full border border-white/12 bg-black/12 px-3 py-1.5 text-[11px] font-bold text-white/74"
+                style={{ boxShadow: `0 14px 28px -24px ${rgba(PRESET_COLORS[index % PRESET_COLORS.length], 0.56)}` }}
+              >
+                {label}: <span className="text-white">{value}</span>
+              </div>
+            ))}
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
             {focusProfileTiles.map((tile) => (
               <div
                 key={tile.label}
@@ -410,8 +415,8 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </div>
       </div>
 
-      <Card title="Today's Stats" subtitle="Saved focus so far today, plus the window where you have been sharpest." accent={accentColor} isLightTheme={isLightTheme}>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <Card title="Today's Stats" subtitle="Today so far." accent={accentColor} isLightTheme={isLightTheme}>
+        <div className="grid gap-3 md:grid-cols-2">
           {todaySummaryCards.map((card) => (
             <div
               key={card.label}
@@ -450,8 +455,8 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </div>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
-        <Card title="Recent Momentum" subtitle="A 14-day line view of how much focus you actually saved, with pomodoros and session starts layered into each point." accent={accentColor} isLightTheme={isLightTheme}>
+      <div className="space-y-4">
+        <Card title="Recent Momentum" subtitle="Last 14 days." accent={accentColor} isLightTheme={isLightTheme}>
           <div
             className="relative overflow-hidden rounded-[1.45rem] border border-white/10 px-4 py-4 md:px-5"
             style={{
@@ -462,18 +467,18 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="text-lg font-bold tracking-tight text-white">{activeTrendPoint ? formatDateKeyStamp(activeTrendPoint.dateKey) : 'Recent activity'}</div>
+                <div className="text-lg font-bold tracking-tight text-white">{activeTrendPoint ? formatDateKeyFullStamp(activeTrendPoint.dateKey) : 'Recent activity'}</div>
                 <div className="mt-1 text-sm text-white/58">
                   {activeTrendPoint
-                    ? `${formatDateKeyShort(activeTrendPoint.dateKey)} captured ${formatMinutesPrecise(activeTrendPoint.focusMinutes)} across ${activeTrendPoint.pomodoros} completed pomo${activeTrendPoint.pomodoros === 1 ? '' : 's'}.`
-                    : 'Hover a point to inspect one specific day.'}
+                    ? `${formatMinutesPrecise(activeTrendPoint.focusMinutes)} saved, ${activeTrendPoint.pomodoros} pomodoros, ${activeTrendPoint.sessions} start${activeTrendPoint.sessions === 1 ? '' : 's'}.`
+                    : 'Hover a point to inspect one day.'}
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 {[
-                  ['14-Day Focus', formatMinutesCompact(recentFocusTotal), accentColor],
+                  ['Focus', formatMinutesCompact(recentFocusTotal), accentColor],
                   ['Pomodoros', `${recentPomoTotal}`, PRESET_COLORS[2]],
-                  ['Session Starts', `${insights.dailyFocusTrend.reduce((acc, point) => acc + point.sessions, 0)}`, PRESET_COLORS[5]],
+                  ['Starts', `${insights.dailyFocusTrend.reduce((acc, point) => acc + point.sessions, 0)}`, PRESET_COLORS[5]],
                 ].map(([label, value, color]) => (
                   <div key={label} className="rounded-full border border-white/12 bg-black/12 px-3 py-1.5 text-[11px] font-bold text-white/76" style={{ boxShadow: `0 14px 28px -24px ${rgba(color as string, 0.62)}` }}>
                     {label}: <span className="text-white">{value}</span>
@@ -527,25 +532,29 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               })}
             </div>
 
-            <div className="mt-4 grid gap-1.5 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-white/42" style={{ gridTemplateColumns: `repeat(${insights.dailyFocusTrend.length}, minmax(0, 1fr))` }}>
-              {insights.dailyFocusTrend.map((point, index) => (
-                <button
-                  key={point.dateKey}
-                  type="button"
-                  onMouseEnter={() => setHoveredTrendDateKey(point.dateKey)}
-                  onMouseLeave={() => setHoveredTrendDateKey(null)}
-                  onFocus={() => setHoveredTrendDateKey(point.dateKey)}
-                  onBlur={() => setHoveredTrendDateKey(null)}
-                  className={`rounded-lg py-1 transition-colors ${activeTrendPoint?.dateKey === point.dateKey ? 'bg-white/10 text-white/82' : 'hover:bg-white/6'}`}
-                >
-                  {index % 2 === 0 || insights.dailyFocusTrend.length <= 8 ? formatDateKeyShort(point.dateKey) : ''}
-                </button>
-              ))}
+            <div className="relative mt-4 h-12">
+              {trendPoints.map((point) => {
+                const active = activeTrendPoint?.dateKey === point.dateKey;
+                return (
+                  <button
+                    key={point.dateKey}
+                    type="button"
+                    onMouseEnter={() => setHoveredTrendDateKey(point.dateKey)}
+                    onMouseLeave={() => setHoveredTrendDateKey(null)}
+                    onFocus={() => setHoveredTrendDateKey(point.dateKey)}
+                    onBlur={() => setHoveredTrendDateKey(null)}
+                    className={`absolute top-0 -translate-x-1/2 rounded-lg px-1 py-1 text-center text-[9px] font-bold tracking-[0.02em] transition-colors ${active ? 'bg-white/10 text-white/82' : 'text-white/42 hover:bg-white/6'}`}
+                    style={{ left: `${point.x}%`, minWidth: '2.1rem' }}
+                  >
+                    {formatDateKeyAxisStamp(point.dateKey)}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </Card>
 
-        <Card title="Session Clock" subtitle="A one-week runway showing where your sessions actually landed across the day. Hover any block to inspect it." accent={PRESET_COLORS[5]} isLightTheme={isLightTheme}>
+        <Card title="Session Clock" subtitle="Last 7 days." accent={PRESET_COLORS[5]} isLightTheme={isLightTheme}>
           <div
             className="relative overflow-hidden rounded-[1.45rem] border border-white/10 px-4 py-4 md:px-5"
             style={{
@@ -558,13 +567,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               <div>
                 <div className="text-lg font-bold tracking-tight text-white">
                   {selectedSessionEntry
-                    ? `${formatDateKeyStamp(selectedSessionEntry.lane.dateKey)} · ${formatSessionRange(selectedSessionEntry.session.startMs, selectedSessionEntry.session.endMs)}`
+                    ? `${formatDateKeyStamp(selectedSessionEntry.lane.dateKey)} - ${formatSessionRange(selectedSessionEntry.session.startMs, selectedSessionEntry.session.endMs)}`
                     : 'No recent sessions'}
                 </div>
                 <div className="mt-1 text-sm text-white/58">
                   {selectedSessionEntry
-                    ? `${formatMinutesPrecise(selectedSessionEntry.session.durationMinutes)} long, ${selectedSessionEntry.session.closed ? 'closed cleanly' : 'still open'}, with ${formatMinutesCompact(selectedSessionEntry.lane.totalFocusMinutes)} saved that day.`
-                    : 'Session blocks appear here once the account has enough saved history.'}
+                    ? `${formatMinutesPrecise(selectedSessionEntry.session.durationMinutes)} active time, ${selectedSessionEntry.session.closed ? 'closed' : 'still open'}, ${formatMinutesCompact(selectedSessionEntry.lane.totalFocusMinutes)} saved that day.`
+                    : 'Session blocks show up here once there is enough history.'}
                 </div>
               </div>
               {activeSessionLane && (
@@ -652,14 +661,14 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </Card>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[0.98fr_1.02fr]">
-        <Card title="Focus Patterns" subtitle="When you tend to finish pomodoros, start sessions, and call it for the day." accent={PRESET_COLORS[4]} isLightTheme={isLightTheme}>
-          <div className="grid gap-3 sm:grid-cols-2">
+      <div className="space-y-4">
+        <Card title="Focus Patterns" subtitle="What stands out." accent={PRESET_COLORS[4]} isLightTheme={isLightTheme}>
+          <div className="grid gap-3 md:grid-cols-2">
             {[
-              ['Most Productive Hour', formatHourList(insights.mostProductiveHours.hours), insights.mostProductiveHours.count > 0 ? `${insights.mostProductiveHours.count} completed pomo${insights.mostProductiveHours.count === 1 ? '' : 's'} in that window` : 'Needs completed pomodoros'],
-              ['Best Weekday', formatWeekdayList(insights.mostProductiveWeekdays.weekdays), insights.mostProductiveWeekdays.averagePomos > 0 ? `${insights.mostProductiveWeekdays.averagePomos.toFixed(1)} pomos on average` : 'Waiting on enough weekly history'],
-              ['Average Start Time', formatClockMinutes(insights.averageStartMinutes), insights.sessions.length > 0 ? `Across ${insights.sessions.length} session${insights.sessions.length === 1 ? '' : 's'}` : 'No session starts logged yet'],
-              ['Most Common Quit Time', formatQuitBucketList(insights.mostCommonQuitTimes.bucketMinutes), insights.mostCommonQuitTimes.count > 0 ? `${insights.mostCommonQuitTimes.count} session${insights.mostCommonQuitTimes.count === 1 ? '' : 's'} ended around there` : 'No closed sessions yet'],
+              ['Best Hour', formatHourList(insights.mostProductiveHours.hours), insights.mostProductiveHours.focusMinutes > 0 ? `${formatMinutesCompact(insights.mostProductiveHours.focusMinutes)} saved there` : 'No focus yet'],
+              ['Best Weekday', formatWeekdayList(insights.mostProductiveWeekdays.weekdays), insights.mostProductiveWeekdays.averageFocusMinutes > 0 ? `${formatMinutesCompact(insights.mostProductiveWeekdays.averageFocusMinutes)} avg focus on that day` : 'Needs more history'],
+              ['Average Start', formatClockMinutes(insights.averageStartMinutes), insights.sessions.length > 0 ? `${insights.sessions.length} session${insights.sessions.length === 1 ? '' : 's'}` : 'No session starts yet'],
+              ['Typical Stop', formatQuitBucketList(insights.mostCommonQuitTimes.bucketMinutes), insights.mostCommonQuitTimes.count > 0 ? `${insights.mostCommonQuitTimes.count} closed session${insights.mostCommonQuitTimes.count === 1 ? '' : 's'}` : 'No closed sessions yet'],
             ].map(([label, value, helper]) => (
               <div key={label} className="rounded-[1.25rem] border border-white/10 bg-black/12 p-4">
                 <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">{label}</div>
@@ -678,7 +687,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                   : `linear-gradient(150deg, ${rgba(accentColor, 0.18)} 0%, rgba(255,255,255,0.04) 100%)`,
               }}
             >
-              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">Category With Most Total Minutes</div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">Top Category</div>
               <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <div className="text-xl font-bold tracking-tight text-white">{insights.topCategory.name}</div>
@@ -692,7 +701,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           )}
         </Card>
 
-        <Card title="This Week Vs Last Week" subtitle="A fast read on whether your current week is climbing, holding, or slipping." accent={PRESET_COLORS[2]} isLightTheme={isLightTheme}>
+        <Card title="This Week Vs Last Week" subtitle="A quick comparison." accent={PRESET_COLORS[2]} isLightTheme={isLightTheme}>
           <div className="space-y-4">
             {comparisonRows.map(([label, current, previous, currentLabel, previousLabel, deltaLabel, pct, color]) => {
               const rowMax = Math.max(1, current as number, previous as number);
@@ -736,88 +745,89 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </Card>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.04fr_0.96fr]">
-        <Card title="Productivity Rhythm" subtitle="A 24-hour view of where your focus minutes naturally pile up." accent={accentColor} isLightTheme={isLightTheme}>
-          <div
-            className="relative overflow-hidden rounded-[1.35rem] border border-white/10 px-4 py-4"
-            style={{
-              background: isLightTheme
-                ? 'linear-gradient(90deg, rgba(15,23,42,0.08) 0%, rgba(125,211,252,0.14) 24%, rgba(255,255,255,0.64) 48%, rgba(251,191,36,0.18) 72%, rgba(15,23,42,0.1) 100%)'
-                : 'linear-gradient(90deg, rgba(2,6,23,0.92) 0%, rgba(59,130,246,0.18) 24%, rgba(255,255,255,0.08) 48%, rgba(251,191,36,0.16) 72%, rgba(2,6,23,0.92) 100%)',
-            }}
-          >
-            <div className="absolute inset-x-0 top-0 h-full">
-              {[5, 12, 18].map((hour) => (
-                <div key={hour} className="absolute top-0 bottom-0 w-px bg-white/10" style={{ left: `${(hour / 24) * 100}%` }} />
-              ))}
-            </div>
-            <div className="relative">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="text-lg font-bold text-white">{dominantDayPartsLabel}</div>
-                  <div className="mt-1 text-sm text-white/58">
-                    {hoveredHour !== null
-                      ? `${formatHour(hoveredHour)} holds ${formatMinutesPrecise(insights.hourlyFocusMinutes[hoveredHour])}`
-                      : 'Hover the bars to inspect a specific hour.'}
-                  </div>
+      <div className="space-y-4">
+        <Card title="Best Hours" subtitle="Where the most saved focus lives." accent={accentColor} isLightTheme={isLightTheme}>
+          {bestHourRows.length > 0 ? (
+            <div className="space-y-4">
+              <div className="rounded-[1.35rem] border border-white/10 bg-black/12 px-4 py-4">
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">Selected Hour</div>
+                <div className="mt-2 text-xl font-bold tracking-tight text-white">
+                  {activeBestHour ? formatHour(activeBestHour.hour) : '--'}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {DAY_PART_LABELS.map((part) => (
-                    <div key={part} className="rounded-full border border-white/12 bg-black/12 px-3 py-1.5 text-[11px] font-bold text-white/72">
-                      {dayPartLabels[part]} {formatMinutesCompact(insights.dayPartTotals[part])}
-                    </div>
-                  ))}
+                <div className="mt-1 text-sm text-white/58">
+                  {activeBestHour
+                    ? `${formatMinutesPrecise(activeBestHour.minutes)} saved in this hour.`
+                    : 'Hover a row to inspect an hour.'}
                 </div>
               </div>
 
-              <div className="mt-6 grid h-52 grid-cols-24 items-end gap-1.5">
-                {insights.hourlyFocusMinutes.map((minutes, hour) => {
-                  const height = maxRhythmMinutes > 0 ? Math.max(8, (minutes / maxRhythmMinutes) * 100) : 6;
-                  const active = highlightedHour === hour;
+              <div className="space-y-2.5">
+                {bestHourRows.map((entry, index) => {
+                  const active = activeBestHour?.hour === entry.hour;
                   return (
                     <button
-                      key={hour}
+                      key={entry.hour}
                       type="button"
-                      onMouseEnter={() => setHoveredHour(hour)}
+                      onMouseEnter={() => setHoveredHour(entry.hour)}
                       onMouseLeave={() => setHoveredHour(null)}
-                      onFocus={() => setHoveredHour(hour)}
+                      onFocus={() => setHoveredHour(entry.hour)}
                       onBlur={() => setHoveredHour(null)}
-                      className="flex h-full items-end focus:outline-none"
-                      aria-label={`${formatHour(hour)} ${formatMinutesPrecise(minutes)}`}
+                      className={`w-full rounded-[1.15rem] border px-4 py-3 text-left transition-all ${active ? 'border-white/20 bg-white/10' : 'border-white/10 bg-black/10 hover:bg-white/6'}`}
                     >
-                      <div
-                        className={`w-full rounded-[0.85rem] transition-all duration-300 ${active ? 'translate-y-[-2px]' : ''}`}
-                        style={{
-                          height: `${height}%`,
-                          background: active
-                            ? `linear-gradient(180deg, ${rgba(accentColor, 0.98)} 0%, ${rgba(accentColor, 0.72)} 100%)`
-                            : `linear-gradient(180deg, ${rgba(accentColor, 0.58)} 0%, ${rgba(accentColor, 0.28)} 100%)`,
-                          boxShadow: active ? `0 18px 36px -24px ${rgba(accentColor, 0.78)}` : 'none',
-                        }}
-                      />
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/16 text-[11px] font-bold text-white/78">
+                            {index + 1}
+                          </div>
+                          <div>
+                            <div className="text-sm font-bold text-white">{formatHour(entry.hour)}</div>
+                            <div className="text-[11px] text-white/48">{formatMinutesPrecise(entry.minutes)}</div>
+                          </div>
+                        </div>
+                        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/52">
+                          {Math.round((entry.minutes / bestHourMaxMinutes) * 100)}%
+                        </div>
+                      </div>
+                      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-white/8">
+                        <div
+                          className="h-full rounded-full transition-[width] duration-300"
+                          style={{
+                            width: `${(entry.minutes / bestHourMaxMinutes) * 100}%`,
+                            background: active
+                              ? `linear-gradient(90deg, ${rgba(accentColor, 0.98)}, ${rgba(accentColor, 0.62)})`
+                              : `linear-gradient(90deg, ${rgba(accentColor, 0.72)}, ${rgba(accentColor, 0.38)})`,
+                          }}
+                        />
+                      </div>
                     </button>
                   );
                 })}
               </div>
 
-              <div className="mt-3 grid grid-cols-4 text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">
-                <div>12a</div>
-                <div className="text-center">6a</div>
-                <div className="text-center">12p</div>
-                <div className="text-right">6p</div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {focusPhaseRows.map((phase) => (
+                  <div key={phase.key} className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">{phase.label}</div>
+                    <div className="mt-2 text-lg font-bold text-white">{formatMinutesCompact(phase.minutes)}</div>
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-5 text-sm leading-relaxed text-white/58">
+              Best hours will appear once enough saved focus exists to compare them.
+            </div>
+          )}
         </Card>
 
         <Card
           title="Category Share"
-          subtitle={insights.hasCategorizedWork ? 'Hover or tap a slice to see how your focus time is divided.' : 'Once you save work blocks into categories, this turns into an interactive breakdown.'}
+          subtitle={insights.hasCategorizedWork ? 'Saved focus by category.' : 'This will populate once work is saved into categories.'}
           accent={PRESET_COLORS[1]}
           isLightTheme={isLightTheme}
         >
           {categorySlices.length > 0 ? (
-            <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="grid gap-5 md:grid-cols-[0.9fr_1.1fr]">
               <div className="flex items-center justify-center">
                 <div className="relative h-60 w-60">
                   <svg viewBox="0 0 120 120" className="h-full w-full">
@@ -893,72 +903,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           )}
         </Card>
       </div>
-
-      <Card
-        title="Productivity Heatmap"
-        subtitle="Work minutes by weekday and hour, so you can see the exact pockets where focus tends to stack up."
-        accent={PRESET_COLORS[6]}
-        isLightTheme={isLightTheme}
-      >
-        {insights.heatmapMaxMinutes > 0 ? (
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="text-sm text-white/62">
-                {activeHeatCell
-                  ? `${activeHeatCell.label} - ${formatMinutesPrecise(activeHeatCell.minutes)}`
-                  : 'Hover any cell to inspect the exact weekday-hour pocket.'}
-              </div>
-              <div className="rounded-full border border-white/12 bg-black/10 px-3 py-1.5 text-[11px] font-bold text-white/72">
-                Strongest pockets glow brighter
-              </div>
-            </div>
-
-            <div className="overflow-x-auto pb-1">
-              <div className="min-w-[42rem]">
-                <div className="grid grid-cols-[4rem_repeat(24,minmax(0,1fr))] gap-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">
-                  <div />
-                  {Array.from({ length: 24 }, (_, hour) => (
-                    <div key={`heat-label-${hour}`} className="text-center">
-                      {hour % 6 === 0 ? `${hour === 0 ? '12a' : hour === 12 ? '12p' : hour < 12 ? `${hour}a` : `${hour - 12}p`}` : ''}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-2 space-y-1.5">
-                  {insights.weekdayHourHeatmap.map((row, weekday) => (
-                    <div key={WEEKDAY_SHORT_LABELS[weekday]} className="grid grid-cols-[4rem_repeat(24,minmax(0,1fr))] gap-1.5 items-center">
-                      <div className="pr-2 text-[11px] font-bold text-white/48">{WEEKDAY_SHORT_LABELS[weekday]}</div>
-                      {row.map((minutes, hour) => {
-                        const intensity = insights.heatmapMaxMinutes > 0 ? minutes / insights.heatmapMaxMinutes : 0;
-                        const active = hoveredHeatCell?.weekday === weekday && hoveredHeatCell?.hour === hour;
-                        return (
-                          <div
-                            key={`${weekday}-${hour}`}
-                            onMouseEnter={() => setHoveredHeatCell({ weekday, hour })}
-                            onMouseLeave={() => setHoveredHeatCell(null)}
-                            className={`h-5 rounded-[0.45rem] border transition-all ${active ? 'scale-[1.08]' : ''}`}
-                            style={{
-                              borderColor: active ? rgba(accentColor, 0.42) : rgba(accentColor, 0.12),
-                              background: minutes > 0
-                                ? `linear-gradient(180deg, ${rgba(accentColor, 0.22 + intensity * 0.58)} 0%, ${rgba(accentColor, 0.12 + intensity * 0.38)} 100%)`
-                                : (isLightTheme ? 'rgba(148, 163, 184, 0.08)' : 'rgba(255, 255, 255, 0.04)'),
-                              boxShadow: active ? `0 10px 22px -16px ${rgba(accentColor, 0.72)}` : 'none',
-                            }}
-                          />
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-5 text-sm leading-relaxed text-white/58">
-            Detailed hour-by-hour heat shows up once enough focus history exists to plot real patterns.
-          </div>
-        )}
-      </Card>
     </div>
   );
 };

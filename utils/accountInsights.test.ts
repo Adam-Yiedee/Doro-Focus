@@ -108,10 +108,10 @@ describe('computeAccountInsights', () => {
 
     expect(insights.mostProductiveHours).toEqual({
       hours: [9],
-      count: 2,
+      focusMinutes: 50,
     });
     expect(insights.mostProductiveWeekdays.weekdays).toEqual([new Date(`${monday}T12:00:00`).getDay()]);
-    expect(insights.mostProductiveWeekdays.averagePomos).toBe(2);
+    expect(insights.mostProductiveWeekdays.averageFocusMinutes).toBe(50);
     expect(insights.topCategory).toMatchObject({
       name: 'Writing',
       minutes: 50,
@@ -231,6 +231,130 @@ describe('computeAccountInsights', () => {
       closed: true,
       startMinutes: 8 * 60,
       endMinutes: 8 * 60 + 35,
+    });
+  });
+
+  it('does not let neutral grace inflate session duration stats', () => {
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-14T00:00:00',
+      nowMs: Date.parse('2026-01-14T23:00:00'),
+      categories,
+      logs: [
+        makeLog({
+          start: '2026-01-14T09:00:00',
+          end: '2026-01-14T09:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'grace',
+          start: '2026-01-14T09:25:00',
+          end: '2026-01-14T09:35:00',
+          reason: 'Grace Period',
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-01-14T09:35:00',
+          end: '2026-01-14T09:40:00',
+          reason: 'Session End',
+        }),
+      ],
+    });
+
+    const todayLane = insights.sessionLanes.find((lane) => lane.dateKey === '2026-01-14');
+    expect(todayLane?.sessions[0]).toMatchObject({
+      startMinutes: 9 * 60,
+      endMinutes: 9 * 60 + 40,
+      durationMinutes: 30,
+    });
+  });
+
+  it('uses saved focus minutes for best hour and weekday stats', () => {
+    const monday = '2026-01-05';
+    const tuesday = '2026-01-06';
+    const insights = computeAccountInsights({
+      joinedAt: `${monday}T00:00:00`,
+      nowMs: Date.parse(`${tuesday}T23:00:00`),
+      categories,
+      logs: [
+        makeLog({
+          start: `${monday}T09:00:00`,
+          end: `${monday}T09:25:00`,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: `${monday}T09:30:00`,
+          end: `${monday}T09:55:00`,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: `${tuesday}T10:00:00`,
+          end: `${tuesday}T10:58:00`,
+          reason: 'Manual Work Log',
+          categoryId: 2,
+        }),
+      ],
+    });
+
+    expect(insights.mostProductiveHours).toEqual({
+      hours: [10],
+      focusMinutes: 58,
+    });
+    expect(insights.mostProductiveWeekdays.weekdays).toEqual([new Date(`${tuesday}T12:00:00`).getDay()]);
+    expect(insights.mostProductiveWeekdays.averageFocusMinutes).toBe(58);
+  });
+
+  it('averages tied quit windows when more than two stop times are equally common', () => {
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-05T00:00:00',
+      nowMs: Date.parse('2026-01-09T23:00:00'),
+      categories,
+      logs: [
+        makeLog({
+          start: '2026-01-05T12:35:00',
+          end: '2026-01-05T13:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-01-05T13:25:00',
+          end: '2026-01-05T13:30:00',
+          reason: 'Session End',
+        }),
+        makeLog({
+          start: '2026-01-06T14:05:00',
+          end: '2026-01-06T14:55:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-01-06T14:55:00',
+          end: '2026-01-06T15:00:00',
+          reason: 'Session End',
+        }),
+        makeLog({
+          start: '2026-01-07T16:35:00',
+          end: '2026-01-07T17:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 2,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-01-07T17:25:00',
+          end: '2026-01-07T17:30:00',
+          reason: 'Session End',
+        }),
+      ],
+    });
+
+    expect(insights.mostCommonQuitTimes).toEqual({
+      bucketMinutes: [15 * 60 + 20],
+      count: 1,
+      sourceBucketCount: 3,
     });
   });
 });

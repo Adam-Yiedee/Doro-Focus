@@ -1112,21 +1112,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
     const accountMeta = [
       { label: 'Joined', value: joinedAt },
-      { label: 'Cloud Check', value: lastSyncRelative },
       { label: 'Last Active', value: lastActiveLabel },
     ];
     const syncScopeLabel = `${ACCOUNT_SYNC_SCOPE_LABELS.length} synced areas`;
     const syncScopeSummary = 'Live timer, tasks, history, schedule, categories, settings, and profile name.';
-    const heroStyle: React.CSSProperties = {
-      background: isLightTheme
-        ? `linear-gradient(152deg, ${colorToRgba(accountPrimaryColor, 0.26)} 0%, rgba(255, 255, 255, 0.86) 52%, rgba(250, 252, 255, 0.7) 100%)`
-        : `linear-gradient(152deg, ${colorToRgba(accountPrimaryColor, 0.34)} 0%, rgba(11, 15, 24, 0.9) 52%, rgba(255, 255, 255, 0.06) 100%)`,
-      boxShadow: `0 32px 60px -42px ${colorToRgba(accountPrimaryColor, isLightTheme ? 0.32 : 0.72)}`,
-    };
     const statCards = [
-      { label: 'Focus Time', value: focusHoursLabel, helper: 'Across all synced work blocks', color: accountPrimaryColor },
-      { label: 'Pomodoros', value: `${stats.totalPomos}`, helper: 'Completed focus cycles', color: PRESET_COLORS[2] },
-      { label: 'Sessions', value: `${stats.totalSessions}`, helper: 'Saved summary sessions', color: PRESET_COLORS[1] },
+      { label: 'Focus Time', value: focusHoursLabel, helper: 'Across synced work', color: accountPrimaryColor },
+      { label: 'Pomodoros', value: `${stats.totalPomos}`, helper: 'Completed cycles', color: PRESET_COLORS[2] },
+      { label: 'Sessions', value: `${stats.totalSessions}`, helper: 'Saved sessions', color: PRESET_COLORS[1] },
       {
         label: 'Current Streak',
         value: `${stats.currentStreak}`,
@@ -1149,129 +1142,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
     return (
       <div className="p-4 md:p-8 space-y-5">
-        <div className="relative overflow-hidden rounded-[1.85rem] border border-white/10 p-5 md:p-6" style={heroStyle}>
-          <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_18%_-8%,rgba(255,255,255,0.34),transparent_34%),radial-gradient(circle_at_90%_8%,rgba(255,255,255,0.16),transparent_24%)]" />
-          <div className="relative flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
-            <div className="flex items-start gap-4">
-              <div
-                className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[1.35rem] border border-white/20 text-2xl font-bold text-white shadow-[0_24px_44px_-28px_rgba(15,23,42,0.85)]"
-                style={{
-                  background: `linear-gradient(145deg, ${colorToRgba(accountPrimaryColor, 0.92)}, ${colorToRgba(accountPrimaryColor, 0.62)})`,
-                }}
-              >
-                {safeUser.username.charAt(0).toUpperCase()}
-              </div>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">Cloud Account</div>
-                  <div className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] ${syncStateMeta.className}`}>
-                    {syncStateMeta.label}
-                  </div>
-                </div>
-                <h3 className="mt-3 text-2xl md:text-[2rem] font-bold tracking-tight text-white">{safeUser.username}</h3>
-                <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                  {accountMeta.map((item) => (
-                    <div
-                      key={item.label}
-                      className="rounded-[1.05rem] border border-white/10 bg-black/10 px-3 py-2.5"
-                    >
-                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">{item.label}</div>
-                      <div className="mt-1 text-[12px] font-medium leading-snug text-white/78">{item.value}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className={`mt-4 grid gap-3 ${hasCustomDisplayName ? 'sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]' : 'sm:grid-cols-1'}`}>
-                  {hasCustomDisplayName && (
-                    <div className="rounded-[1.15rem] border border-white/12 bg-white/8 px-4 py-3">
-                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Group Identity</div>
-                      <div className="mt-1 text-sm font-bold text-white/88">{displayName}</div>
-                      <div className="mt-1 text-[11px] leading-relaxed text-white/55">Used when you show up in shared sessions.</div>
-                    </div>
-                  )}
-                  <div className="rounded-[1.15rem] border border-white/12 bg-black/10 px-4 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Protected Data</div>
-                      <div className="rounded-full border border-white/12 bg-white/8 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/70">
-                        {syncScopeLabel}
-                      </div>
-                    </div>
-                    <div className="mt-2 text-sm font-bold text-white/88">Cloud state travels with this account</div>
-                    <div className="mt-1 text-[11px] leading-relaxed text-white/55">
-                      {syncScopeSummary}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div
-              className="shrink-0 rounded-[1.45rem] border border-white/12 bg-black/10 p-4 md:w-[19rem]"
-              style={{
-                boxShadow: `0 24px 44px -34px ${colorToRgba(syncStateMeta.accent, isLightTheme ? 0.28 : 0.7)}`,
-              }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">Sync Health</div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <span
-                      className={`h-2.5 w-2.5 rounded-full ${accountSyncState === 'syncing' ? 'animate-pulse' : ''}`}
-                      style={{
-                        backgroundColor: syncStateMeta.accent,
-                        boxShadow: `0 0 0 5px ${colorToRgba(syncStateMeta.accent, 0.16)}`,
-                      }}
-                    />
-                    <div className="text-lg font-bold text-white">{syncStateMeta.label}</div>
-                  </div>
-                </div>
-                <div className={`rounded-full border px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] ${syncStateMeta.className}`}>
-                  Cloud
-                </div>
-              </div>
-              <div className="mt-2 text-sm leading-relaxed text-white/60">{syncStateMeta.detail}</div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                {syncHealthFacts.map((fact) => (
-                  <div
-                    key={fact.label}
-                    className="rounded-[1rem] border border-white/10 bg-white/6 px-3 py-2.5"
-                    style={{
-                      boxShadow: `0 16px 28px -26px ${colorToRgba(fact.color, isLightTheme ? 0.22 : 0.56)}`,
-                    }}
-                  >
-                    <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.14em] text-white/42">
-                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: fact.color }} />
-                      {fact.label}
-                    </div>
-                    <div className="mt-2 text-sm font-bold text-white">{fact.value}</div>
-                    <div className="mt-1 text-[10px] leading-relaxed text-white/48">{fact.helper}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={accountActionBusy !== null}
-                  onClick={handleSyncNow}
-                  className="rounded-xl border border-blue-400/30 bg-blue-500/15 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-blue-100 transition-colors hover:bg-blue-500/24 disabled:opacity-55"
-                >
-                  {accountActionBusy === 'sync' ? 'Syncing...' : 'Sync Now'}
-                </button>
-                <button
-                  type="button"
-                  disabled={accountActionBusy !== null}
-                  onClick={handleRefreshCloud}
-                  className="rounded-xl border border-white/15 bg-white/8 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white transition-colors hover:bg-white/14 disabled:opacity-55"
-                >
-                  {accountActionBusy === 'refresh' ? 'Pulling...' : 'Pull Cloud'}
-                </button>
-              </div>
-              <div className="mt-3 rounded-[1rem] border border-white/10 bg-white/6 px-3 py-2.5 text-[11px] leading-relaxed text-white/50">
-                This page rebuilds account numbers from the local history already on this device, then the same history is verified in cloud sync. Latest successful cloud check: {formatTimestampDateTime(safeLastAccountSyncAt, 'Never')}.
-              </div>
-            </div>
-          </div>
-        </div>
-
         {(accountError || accountMessage) && (
           <div className="grid gap-3 md:grid-cols-2">
             {accountError && (
@@ -1287,7 +1157,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {statCards.map((card) => (
             <div
               key={card.label}
@@ -1324,10 +1194,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         <div className="flex flex-wrap items-end justify-between gap-3 px-1">
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Analytics View</div>
-            <div className="mt-1 text-lg font-bold tracking-tight text-white">Your saved focus signature</div>
+            <div className="mt-1 text-lg font-bold tracking-tight text-white">Your saved focus stats</div>
           </div>
           <div className="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[11px] font-bold text-white/70">
-            Interactive charts rebuild from live history on this device
+            Built from live history on this device
           </div>
         </div>
 
@@ -1339,36 +1209,123 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           isLightTheme={isLightTheme}
         />
 
-        <div className="grid gap-3 lg:grid-cols-[1.08fr_0.92fr]">
-          <div className="rounded-[1.6rem] border border-white/10 bg-black/10 p-5">
-            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account Snapshot</div>
-            <div className="mt-2 text-lg font-bold text-white">What this account protects</div>
-            <div className="mt-4 space-y-3 text-sm text-white/60">
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                Live timer state, active mode, pauses, grace windows, and current durations.
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                Tasks, schedule items, categories, settings, and profile identity across every signed-in device.
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                Synced logs power the analytics above, including time-of-day patterns, weekly comparisons, and category share.
-              </div>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end justify-between gap-3 px-1">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Account & Sync</div>
+              <div className="mt-1 text-lg font-bold tracking-tight text-white">{safeUser.username}</div>
+            </div>
+            <div className={`rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] ${syncStateMeta.className}`}>
+              {syncStateMeta.label}
             </div>
           </div>
 
-          <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
-            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account Controls</div>
-            <div className="mt-2 text-lg font-bold text-white">Manage this device</div>
-            <div className="mt-3 text-sm leading-relaxed text-white/58">
-              Signed in as <span className="font-bold text-white/82">{safeUser.username}</span>. Your cloud history stays intact if you sign out here.
+          <div className="grid gap-3 lg:grid-cols-[0.92fr_1.08fr]">
+            <div className="rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
+              <div className="flex items-start gap-3">
+                <div
+                  className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1rem] border border-white/16 text-lg font-bold text-white"
+                  style={{
+                    background: `linear-gradient(145deg, ${colorToRgba(accountPrimaryColor, 0.92)}, ${colorToRgba(accountPrimaryColor, 0.62)})`,
+                  }}
+                >
+                  {safeUser.username.charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account</div>
+                  <div className="mt-1 text-xl font-bold text-white">{safeUser.username}</div>
+                  {hasCustomDisplayName && (
+                    <div className="mt-1 text-[11px] text-white/55">Group name: {displayName}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                {accountMeta.map((item) => (
+                  <div key={item.label} className="rounded-[1rem] border border-white/10 bg-black/10 px-3 py-2.5">
+                    <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">{item.label}</div>
+                    <div className="mt-1 text-[12px] font-medium leading-snug text-white/78">{item.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-white/42">Sync Scope</div>
+                  <div className="rounded-full border border-white/12 bg-white/8 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/70">
+                    {syncScopeLabel}
+                  </div>
+                </div>
+                <div className="mt-2 text-sm leading-relaxed text-white/58">{syncScopeSummary}</div>
+              </div>
+
+              <button
+                type="button"
+                onClick={logout}
+                className="mt-5 w-full rounded-2xl border border-red-500/28 bg-red-500/12 py-3 text-xs font-bold uppercase tracking-[0.16em] text-red-200 transition-colors hover:bg-red-500/20"
+              >
+                Sign Out
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={logout}
-              className="mt-5 w-full rounded-2xl border border-red-500/28 bg-red-500/12 py-3 text-xs font-bold uppercase tracking-[0.16em] text-red-200 transition-colors hover:bg-red-500/20"
+
+            <div
+              className="rounded-[1.6rem] border border-white/12 bg-black/10 p-5"
+              style={{
+                boxShadow: `0 24px 44px -34px ${colorToRgba(syncStateMeta.accent, isLightTheme ? 0.28 : 0.7)}`,
+              }}
             >
-              Sign Out
-            </button>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/50">Sync</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${accountSyncState === 'syncing' ? 'animate-pulse' : ''}`}
+                      style={{
+                        backgroundColor: syncStateMeta.accent,
+                        boxShadow: `0 0 0 5px ${colorToRgba(syncStateMeta.accent, 0.16)}`,
+                      }}
+                    />
+                    <div className="text-lg font-bold text-white">{syncStateMeta.label}</div>
+                  </div>
+                  <div className="mt-2 text-sm leading-relaxed text-white/60">{syncStateMeta.detail}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {syncHealthFacts.map((fact) => (
+                  <div key={fact.label} className="flex items-center justify-between gap-3 rounded-[1rem] border border-white/10 bg-white/6 px-3 py-2.5">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-white/42">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: fact.color }} />
+                      {fact.label}
+                    </div>
+                    <div className="text-sm font-bold text-white">{fact.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  disabled={accountActionBusy !== null}
+                  onClick={handleSyncNow}
+                  className="rounded-xl border border-blue-400/30 bg-blue-500/15 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-blue-100 transition-colors hover:bg-blue-500/24 disabled:opacity-55"
+                >
+                  {accountActionBusy === 'sync' ? 'Syncing...' : 'Sync Now'}
+                </button>
+                <button
+                  type="button"
+                  disabled={accountActionBusy !== null}
+                  onClick={handleRefreshCloud}
+                  className="rounded-xl border border-white/15 bg-white/8 px-3 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white transition-colors hover:bg-white/14 disabled:opacity-55"
+                >
+                  {accountActionBusy === 'refresh' ? 'Pulling...' : 'Pull Cloud'}
+                </button>
+              </div>
+
+              <div className="mt-3 text-[11px] leading-relaxed text-white/50">
+                Local history first. Last cloud check: {formatTimestampDateTime(safeLastAccountSyncAt, 'Never')}.
+              </div>
+            </div>
           </div>
         </div>
       </div>

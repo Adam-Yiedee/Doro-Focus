@@ -50,6 +50,7 @@ export interface AccountInsightSession {
   startMs: number;
   endMs: number | null;
   closed: boolean;
+  activeDurationMinutes: number;
 }
 
 export interface AccountDailyTrendPoint {
@@ -80,11 +81,11 @@ export interface AccountInsights {
   today: AccountTodayStats;
   mostProductiveHours: {
     hours: number[];
-    count: number;
+    focusMinutes: number;
   };
   mostProductiveWeekdays: {
     weekdays: number[];
-    averagePomos: number;
+    averageFocusMinutes: number;
   };
   topCategory: {
     name: string;
@@ -97,6 +98,7 @@ export interface AccountInsights {
   mostCommonQuitTimes: {
     bucketMinutes: number[];
     count: number;
+    sourceBucketCount: number;
   };
   dayPartTotals: Record<DayPartKey, number>;
   dominantDayParts: DayPartKey[];
@@ -129,6 +131,11 @@ const isGraceLike = (entry: LogEntry) => {
 const isNeutralGraceBoundary = (entry: LogEntry) => {
   const reason = (entry.reason || '').trim().toLowerCase();
   return isGraceLike(entry) && reason === 'grace period' && Number.isFinite(entry.duration) && entry.duration > SESSION_SPLIT_GRACE_SECONDS;
+};
+
+const isNeutralGraceWindow = (entry: LogEntry) => {
+  const reason = (entry.reason || '').trim().toLowerCase();
+  return isGraceLike(entry) && reason === 'grace period';
 };
 
 const isSessionEndLog = (entry: LogEntry) => {
@@ -230,10 +237,21 @@ const averageTimeOfDayMinutes = (values: number[]) => {
   return (angle / (Math.PI * 2)) * 1440;
 };
 
+const averageClockMinutes = (values: number[]) => {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const linearRange = sorted[sorted.length - 1] - sorted[0];
+  if (linearRange <= 12 * 60) {
+    return sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
+  }
+  return averageTimeOfDayMinutes(sorted);
+};
+
 const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightSession[] => {
   const sessions: AccountInsightSession[] = [];
   let currentStartMs: number | null = null;
   let currentLastEndMs: number | null = null;
+  let currentActiveDurationMs = 0;
   let pendingStartMs: number | null = null;
 
   windows.forEach((window) => {
@@ -243,11 +261,17 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
           startMs: currentStartMs,
           endMs: window.startMs,
           closed: true,
+          activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
         });
       }
       currentStartMs = null;
       currentLastEndMs = null;
+      currentActiveDurationMs = 0;
       pendingStartMs = window.endMs;
+      return;
+    }
+
+    if (isNeutralGraceWindow(window.entry)) {
       return;
     }
 
@@ -256,23 +280,27 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
     }
     pendingStartMs = null;
     currentLastEndMs = Math.max(currentLastEndMs ?? window.endMs, window.endMs);
+    currentActiveDurationMs += Math.max(0, window.endMs - window.startMs);
 
     if (isSessionEndLog(window.entry) && currentStartMs !== null && currentLastEndMs > currentStartMs) {
       sessions.push({
         startMs: currentStartMs,
         endMs: currentLastEndMs,
         closed: true,
+        activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
       });
       currentStartMs = null;
       currentLastEndMs = null;
+      currentActiveDurationMs = 0;
     }
   });
 
-  if (currentStartMs !== null) {
+  if (currentStartMs !== null && currentLastEndMs !== null && currentLastEndMs > currentStartMs) {
     sessions.push({
       startMs: currentStartMs,
       endMs: currentLastEndMs,
       closed: false,
+      activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
     });
   }
 
@@ -376,6 +404,7 @@ export const computeAccountInsights = ({
   const sessionLaneMap = new Map(sessionLanes.map((lane) => [lane.dateKey, lane]));
 
   const hourlyFocusMinutes = new Array<number>(24).fill(0);
+  const weekdayFocusMinutes = new Array<number>(7).fill(0);
   const todayHourlyFocusMinutes = new Array<number>(24).fill(0);
   const weekdayHourHeatmap = Array.from({ length: 7 }, () => new Array<number>(24).fill(0));
   const dayPartTotals: Record<DayPartKey, number> = {
@@ -422,6 +451,7 @@ export const computeAccountInsights = ({
       const hour = date.getHours();
       const weekday = date.getDay();
       hourlyFocusMinutes[hour] += minutes;
+      weekdayFocusMinutes[weekday] += minutes;
       weekdayHourHeatmap[weekday][hour] += minutes;
       dayPartTotals[getDayPart(hour)] += minutes;
       if (date.getTime() >= todayStartMs && date.getTime() < tomorrowStartMs) {
@@ -430,17 +460,12 @@ export const computeAccountInsights = ({
     });
   });
 
-  const pomoHourCounts = new Array<number>(24).fill(0);
-  const pomoWeekdayCounts = new Array<number>(7).fill(0);
   let todayPomos = 0;
   let thisWeekPomos = 0;
   let lastWeekPomos = 0;
 
   completedPomos.forEach((window) => {
-    const endDate = new Date(window.endMs);
     const endDateKey = getLocalDateKey(window.endMs);
-    pomoHourCounts[endDate.getHours()] += 1;
-    pomoWeekdayCounts[endDate.getDay()] += 1;
     const trendPoint = dailyTrendMap.get(endDateKey);
     if (trendPoint) trendPoint.pomodoros += 1;
     if (window.endMs >= todayStartMs && window.endMs < tomorrowStartMs) todayPomos += 1;
@@ -460,27 +485,33 @@ export const computeAccountInsights = ({
   });
 
   const quitCountMax = Math.max(0, ...Array.from(quitBucketCounts.values()));
-  const mostCommonQuitBuckets = quitCountMax > 0
+  const rawMostCommonQuitBuckets = quitCountMax > 0
     ? Array.from(quitBucketCounts.entries())
         .filter(([, count]) => count === quitCountMax)
         .map(([bucket]) => bucket)
         .sort((a, b) => a - b)
     : [];
+  const mostCommonQuitBuckets = rawMostCommonQuitBuckets.length > 2
+    ? [Math.round(averageClockMinutes(rawMostCommonQuitBuckets) ?? rawMostCommonQuitBuckets[0] ?? 0)]
+    : rawMostCommonQuitBuckets;
 
-  const mostProductiveHourCount = Math.max(0, ...pomoHourCounts);
-  const mostProductiveHours = mostProductiveHourCount > 0
-    ? pomoHourCounts.map((count, hour) => ({ count, hour })).filter((item) => item.count === mostProductiveHourCount).map((item) => item.hour)
+  const mostProductiveHourFocusMinutes = Math.max(0, ...hourlyFocusMinutes);
+  const mostProductiveHours = mostProductiveHourFocusMinutes > 0
+    ? hourlyFocusMinutes
+        .map((minutes, hour) => ({ minutes, hour }))
+        .filter((item) => item.minutes === mostProductiveHourFocusMinutes)
+        .map((item) => item.hour)
     : [];
 
-  const weekdayAverages = pomoWeekdayCounts.map((count, weekday) => {
+  const weekdayAverages = weekdayFocusMinutes.map((minutes, weekday) => {
     const occurrences = weekdayOccurrences[weekday] || 0;
-    return occurrences > 0 ? count / occurrences : 0;
+    return occurrences > 0 ? minutes / occurrences : 0;
   });
   const mostProductiveWeekdayAverage = Math.max(0, ...weekdayAverages);
   const mostProductiveWeekdays = mostProductiveWeekdayAverage > 0
     ? weekdayAverages
-        .map((averagePomos, weekday) => ({ averagePomos, weekday }))
-        .filter((item) => item.averagePomos === mostProductiveWeekdayAverage)
+        .map((averageFocusMinutes, weekday) => ({ averageFocusMinutes, weekday }))
+        .filter((item) => item.averageFocusMinutes === mostProductiveWeekdayAverage)
         .map((item) => item.weekday)
     : [];
 
@@ -532,7 +563,7 @@ export const computeAccountInsights = ({
       closed: session.closed,
       startMinutes,
       endMinutes: Math.max(startMinutes + 1, endMinutes),
-      durationMinutes: Math.max(1, ((sessionEndMs ?? session.startMs) - session.startMs) / 60_000),
+      durationMinutes: Math.max(1, session.activeDurationMinutes),
     });
   });
 
@@ -552,11 +583,11 @@ export const computeAccountInsights = ({
     },
     mostProductiveHours: {
       hours: mostProductiveHours,
-      count: mostProductiveHourCount,
+      focusMinutes: mostProductiveHourFocusMinutes,
     },
     mostProductiveWeekdays: {
       weekdays: mostProductiveWeekdays,
-      averagePomos: mostProductiveWeekdayAverage,
+      averageFocusMinutes: mostProductiveWeekdayAverage,
     },
     topCategory: topCategory
       ? {
@@ -571,6 +602,7 @@ export const computeAccountInsights = ({
     mostCommonQuitTimes: {
       bucketMinutes: mostCommonQuitBuckets,
       count: quitCountMax,
+      sourceBucketCount: rawMostCommonQuitBuckets.length,
     },
     dayPartTotals,
     dominantDayParts,
