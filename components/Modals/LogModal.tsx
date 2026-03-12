@@ -151,6 +151,28 @@ const isRenderableLogEntry = (value: unknown): value is LogEntry => {
     && Number.isFinite(entry.duration);
 };
 
+const getSafeLogEntry = (value: unknown): LogEntry | null => {
+  if (!isRenderableLogEntry(value)) return null;
+  const entry = value as LogEntry;
+  const safeTask = entry.task && typeof entry.task === 'object'
+    ? {
+        id: typeof entry.task.id === 'number' && Number.isFinite(entry.task.id) ? entry.task.id : -1,
+        name: typeof entry.task.name === 'string' ? entry.task.name.trim() : '',
+      }
+    : null;
+
+  return {
+    type: entry.type as LogEntry['type'],
+    start: entry.start,
+    end: entry.end,
+    duration: entry.duration,
+    reason: typeof entry.reason === 'string' ? entry.reason : undefined,
+    task: safeTask && safeTask.name ? safeTask : null,
+    color: typeof entry.color === 'string' ? entry.color : undefined,
+    categoryId: typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId) ? entry.categoryId : null,
+  };
+};
+
 const isRenderableCategory = (value: unknown): value is Category => {
   if (!value || typeof value !== 'object') return false;
   const category = value as Partial<Category>;
@@ -225,7 +247,7 @@ const clampInt = (value: number, min: number, max: number) => {
 };
 
 const isGraceLike = (entry: LogEntry) => {
-  return entry.type === 'grace' || Boolean(entry.reason?.startsWith('Grace Period'));
+  return entry.type === 'grace' || (typeof entry.reason === 'string' && entry.reason.startsWith('Grace Period'));
 };
 
 const getDateKey = (date: Date) => {
@@ -281,7 +303,7 @@ const getLogBlockHeight = (seconds: number) => {
 };
 
 const getLogDisplayReason = (entry: LogEntry) => {
-  const reason = entry.reason?.trim() || '';
+  const reason = typeof entry.reason === 'string' ? entry.reason.trim() : '';
   if (!reason) return '';
 
   const normalized = reason.toLowerCase();
@@ -295,7 +317,7 @@ const getLogDisplayReason = (entry: LogEntry) => {
 
 const getLogBlockTitle = (entry: LogEntry, categoryName?: string) => {
   const detail = getLogDisplayReason(entry);
-  if (entry.task?.name) return entry.task.name;
+  if (typeof entry.task?.name === 'string' && entry.task.name.trim()) return entry.task.name;
   if (categoryName) return categoryName;
   if (detail) return detail;
   if (entry.type === 'break') return 'Reset Window';
@@ -308,7 +330,7 @@ const getLogBlockSubtitle = (entry: LogEntry, categoryName?: string) => {
   const detail = getLogDisplayReason(entry);
   const parts: string[] = [];
 
-  if (categoryName && entry.task?.name && categoryName !== entry.task.name) parts.push(categoryName);
+  if (categoryName && typeof entry.task?.name === 'string' && categoryName !== entry.task.name) parts.push(categoryName);
   if (detail && detail !== categoryName) parts.push(detail);
 
   return parts.join(' / ');
@@ -450,7 +472,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const isLightTheme = settings.themeMode !== 'dark';
   const safeLogs = useMemo(() => (
-    Array.isArray(logs) ? logs.filter(isRenderableLogEntry) : []
+    Array.isArray(logs) ? logs.map(getSafeLogEntry).filter((entry): entry is LogEntry => Boolean(entry)) : []
   ), [logs]);
   const safeCategories = useMemo(() => (
     Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
@@ -620,8 +642,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setAuthLocalError(null);
     }
   }, [isOpen, safeUser]);
-
-  if (!isOpen) return null;
 
   const updateTimerSettings = (patch: Partial<TimerSettings>) => {
     updateSettings({ ...settings, ...patch });
@@ -793,6 +813,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       inviteAutoJoinKeyRef.current = null;
     }
   }, [groupSessionId]);
+
+  if (!isOpen) return null;
 
   const handleCreateCategory = () => {
     const name = newCategoryName.trim();

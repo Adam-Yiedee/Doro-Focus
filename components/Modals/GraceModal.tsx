@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
 
 const GRACE_INACTIVITY_PROMPT_MS = 60 * 60 * 1000;
+const GRACE_INACTIVITY_NOTIFICATION_TAG = 'doro-grace-inactivity';
 
 const formatDuration = (seconds: number) => {
   const s = Math.floor(seconds);
@@ -116,7 +117,48 @@ const GraceModal: React.FC = () => {
   const [workMessageQueue, setWorkMessageQueue] = useState<string[]>(() => shuffleMessages(WORK_COMPLETE_MESSAGES));
   const [breakMessageQueue, setBreakMessageQueue] = useState<string[]>(() => shuffleMessages(BREAK_COMPLETE_MESSAGES));
   const lastInteractionAtRef = useRef<number>(Date.now());
+  const inactivityNotificationRef = useRef<Notification | null>(null);
+  const inactivityNotificationSentRef = useRef(false);
   const canOfferNewSessionPrompt = !groupSessionId || isHost || !clientSyncConfig.syncTimers || !hostSyncConfig.syncTimers;
+
+  const closeInactivityNotification = useCallback((resetSentState: boolean = false) => {
+    if (inactivityNotificationRef.current) {
+      inactivityNotificationRef.current.close();
+      inactivityNotificationRef.current = null;
+    }
+    if (resetSentState) {
+      inactivityNotificationSentRef.current = false;
+    }
+  }, []);
+
+  const notifyGraceInactivity = useCallback(() => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (document.visibilityState === 'visible' && document.hasFocus()) return;
+    if (inactivityNotificationSentRef.current) return;
+
+    closeInactivityNotification();
+
+    const notification = new Notification('Grace Menu Still Open', {
+      body: 'Grace has been idle for over an hour. Open Doro to start a new session or keep the current one.',
+      tag: GRACE_INACTIVITY_NOTIFICATION_TAG,
+      requireInteraction: true,
+    });
+
+    notification.onclick = () => {
+      lastInteractionAtRef.current = Date.now();
+      setShowInactivityPrompt(true);
+      notification.close();
+      window.focus();
+    };
+    notification.onclose = () => {
+      if (inactivityNotificationRef.current === notification) {
+        inactivityNotificationRef.current = null;
+      }
+    };
+
+    inactivityNotificationRef.current = notification;
+    inactivityNotificationSentRef.current = true;
+  }, [closeInactivityNotification]);
 
   const consumeMessage = (isAfterWork: boolean) => {
     if (isAfterWork) {
@@ -146,10 +188,12 @@ const GraceModal: React.FC = () => {
     if (graceOpen && graceContext === 'afterWork') {
       lastInteractionAtRef.current = Date.now();
       setShowInactivityPrompt(false);
+      closeInactivityNotification(true);
       return;
     }
     setShowInactivityPrompt(false);
-  }, [graceContext, graceOpen, sessionStartTime]);
+    closeInactivityNotification(true);
+  }, [closeInactivityNotification, graceContext, graceOpen, sessionStartTime]);
 
   useEffect(() => {
     if (sessionStartTime !== sessionKey) {
@@ -175,14 +219,16 @@ const GraceModal: React.FC = () => {
     if (!graceOpen || graceContext !== 'afterWork' || !canOfferNewSessionPrompt) return;
     if (Date.now() - lastInteractionAtRef.current >= GRACE_INACTIVITY_PROMPT_MS) {
       setShowInactivityPrompt(true);
+      notifyGraceInactivity();
     }
-  }, [canOfferNewSessionPrompt, graceContext, graceOpen]);
+  }, [canOfferNewSessionPrompt, graceContext, graceOpen, notifyGraceInactivity]);
 
   useEffect(() => {
     if (!graceOpen || graceContext !== 'afterWork' || !canOfferNewSessionPrompt) return;
 
     const markInteraction = () => {
       lastInteractionAtRef.current = Date.now();
+      closeInactivityNotification(true);
     };
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -207,7 +253,13 @@ const GraceModal: React.FC = () => {
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
-  }, [canOfferNewSessionPrompt, evaluateInactivityPrompt, graceContext, graceOpen]);
+  }, [canOfferNewSessionPrompt, closeInactivityNotification, evaluateInactivityPrompt, graceContext, graceOpen]);
+
+  useEffect(() => {
+    return () => {
+      closeInactivityNotification();
+    };
+  }, [closeInactivityNotification]);
 
   if (!graceOpen || (graceContext !== 'afterWork' && graceContext !== 'afterBreak')) return null;
 
@@ -230,10 +282,12 @@ const GraceModal: React.FC = () => {
 
   const handleDismissInactivityPrompt = () => {
     lastInteractionAtRef.current = Date.now();
+    closeInactivityNotification(true);
     setShowInactivityPrompt(false);
   };
 
   const handleStartNewSession = () => {
+    closeInactivityNotification(true);
     setShowInactivityPrompt(false);
     endSession();
   };
