@@ -1187,41 +1187,53 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         )}
 
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-end justify-between gap-3 px-1">
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Today</div>
-              <div className="mt-1 text-lg font-bold tracking-tight text-white">Current snapshot</div>
-            </div>
-            {todayMeta && (
-              <div className="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[11px] font-bold text-white/70">
-                {todayMeta}
+        <div
+          className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
+          style={{
+            borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+            background: isLightTheme
+              ? `linear-gradient(160deg, rgba(255,255,255,0.95) 0%, ${colorToRgba(accountPrimaryColor, 0.09)} 100%)`
+              : `linear-gradient(160deg, rgba(255,255,255,0.05) 0%, ${colorToRgba(accountPrimaryColor, 0.08)} 100%)`,
+            boxShadow: `0 28px 56px -42px ${colorToRgba(accountPrimaryColor, isLightTheme ? 0.24 : 0.64)}`,
+          }}
+        >
+          <div className="pointer-events-none absolute inset-0 opacity-70" style={{ background: `radial-gradient(circle at 14% -10%, ${colorToRgba(accountPrimaryColor, 0.2)} 0%, transparent 34%), radial-gradient(circle at 88% 12%, ${colorToRgba(PRESET_COLORS[2], 0.08)} 0%, transparent 24%)` }} />
+          <div className="relative space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Today</div>
+                <div className="mt-1 text-lg font-bold tracking-tight text-white">Current snapshot</div>
               </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-            {todayStatCards.map((card) => (
-              <div
-                key={card.label}
-                className="relative overflow-hidden rounded-[1.35rem] border border-white/10 px-4 py-4"
-                style={{
-                  background: isLightTheme
-                    ? `linear-gradient(165deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
-                    : `linear-gradient(165deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
-                  boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.22 : 0.6)}`,
-                }}
-              >
-                <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 10%, ${colorToRgba(card.color, 0.16)}, transparent 26%)` }} />
-                <div className="relative">
-                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
-                    {card.label}
-                  </div>
-                  <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+              {todayMeta && (
+                <div className="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-[11px] font-bold text-white/70">
+                  {todayMeta}
                 </div>
-              </div>
-            ))}
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+              {todayStatCards.map((card) => (
+                <div
+                  key={card.label}
+                  className="relative overflow-hidden rounded-[1.35rem] border border-white/10 px-4 py-4"
+                  style={{
+                    background: isLightTheme
+                      ? `linear-gradient(165deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
+                      : `linear-gradient(165deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
+                    boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.22 : 0.6)}`,
+                  }}
+                >
+                  <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 10%, ${colorToRgba(card.color, 0.16)}, transparent 26%)` }} />
+                  <div className="relative">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                      {card.label}
+                    </div>
+                    <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 

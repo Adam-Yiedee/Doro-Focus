@@ -347,9 +347,95 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       color: PRESET_COLORS[3],
     },
   ] as const;
+  const categoryShareCard = (
+    <Card
+      title="Category Share"
+      subtitle={insights.hasCategorizedWork ? 'Focus by category.' : 'Shows up after you save categorized work.'}
+      accent={PRESET_COLORS[1]}
+      isLightTheme={isLightTheme}
+    >
+      {categorySlices.length > 0 ? (
+        <div className="grid gap-5 md:grid-cols-[0.9fr_1.1fr]">
+          <div className="flex items-center justify-center">
+            <div className="relative h-60 w-60">
+              <svg viewBox="0 0 120 120" className="h-full w-full">
+                <defs>
+                  <filter id="doroPieGlow" x="-40%" y="-40%" width="180%" height="180%">
+                    <feGaussianBlur stdDeviation="3.6" result="blur" />
+                    <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                  </filter>
+                </defs>
+                <circle cx="60" cy="60" r="46" fill="none" stroke={isLightTheme ? 'rgba(15,23,42,0.08)' : 'rgba(255,255,255,0.08)'} strokeWidth="16" />
+                {donutSegments.map((segment) => {
+                  const active = activeCategory?.name === segment.name;
+                  return (
+                    <circle
+                      key={segment.name}
+                      cx="60"
+                      cy="60"
+                      r={segment.radius}
+                      fill="none"
+                      stroke={segment.color}
+                      strokeWidth={active ? 20 : 16}
+                      strokeLinecap="round"
+                      strokeDasharray={`${Math.max(0, segment.dash - 2)} ${segment.circumference}`}
+                      strokeDashoffset={segment.offset}
+                      filter={active ? 'url(#doroPieGlow)' : undefined}
+                      transform="rotate(-90 60 60)"
+                      className="cursor-pointer transition-all duration-300"
+                      onMouseEnter={() => setActiveCategoryName(segment.name)}
+                    />
+                  );
+                })}
+              </svg>
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <div className="text-center">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">{activeCategory ? activeCategory.name : 'Focus Share'}</div>
+                  <div className="mt-2 text-[1.7rem] font-bold tracking-tight text-white">{activeCategory ? formatPct(activeCategory.share) : '--'}</div>
+                  <div className="mt-1 text-[11px] text-white/55">{activeCategory ? formatMinutesPrecise(activeCategory.minutes) : 'No category data yet'}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2.5 max-h-[22rem] overflow-auto pr-1">
+            {categorySlices.map((slice) => {
+              const active = activeCategory?.name === slice.name;
+              return (
+                <button
+                  key={slice.name}
+                  type="button"
+                  onClick={() => setActiveCategoryName(slice.name)}
+                  onMouseEnter={() => setActiveCategoryName(slice.name)}
+                  className={`w-full rounded-[1.15rem] border px-4 py-3 text-left transition-all ${active ? 'border-white/22 bg-white/10' : 'border-white/10 bg-black/10 hover:bg-white/6'}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
+                      <span className="truncate text-sm font-bold text-white">{slice.name}</span>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-sm font-mono font-bold text-white">{formatPct(slice.share)}</div>
+                      <div className="text-[11px] text-white/52">{formatMinutesCompact(slice.minutes)}</div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-5 text-sm leading-relaxed text-white/58">
+          Categorized focus time has not been logged yet.
+        </div>
+      )}
+    </Card>
+  );
 
   return (
     <div className="space-y-4">
+      {categoryShareCard}
+
       <div
         className="relative overflow-hidden rounded-[1.9rem] border border-white/10 px-5 py-5 md:px-6 md:py-6"
         style={{
@@ -819,89 +905,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           ) : (
             <div className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-5 text-sm leading-relaxed text-white/58">
               Best hours will appear once enough saved focus exists to compare them.
-            </div>
-          )}
-        </Card>
-
-        <Card
-          title="Category Share"
-          subtitle={insights.hasCategorizedWork ? 'Saved focus by category.' : 'This will populate once work is saved into categories.'}
-          accent={PRESET_COLORS[1]}
-          isLightTheme={isLightTheme}
-        >
-          {categorySlices.length > 0 ? (
-            <div className="grid gap-5 md:grid-cols-[0.9fr_1.1fr]">
-              <div className="flex items-center justify-center">
-                <div className="relative h-60 w-60">
-                  <svg viewBox="0 0 120 120" className="h-full w-full">
-                    <defs>
-                      <filter id="doroPieGlow" x="-40%" y="-40%" width="180%" height="180%">
-                        <feGaussianBlur stdDeviation="3.6" result="blur" />
-                        <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-                      </filter>
-                    </defs>
-                    <circle cx="60" cy="60" r="46" fill="none" stroke={isLightTheme ? 'rgba(15,23,42,0.08)' : 'rgba(255,255,255,0.08)'} strokeWidth="16" />
-                    {donutSegments.map((segment) => {
-                      const active = activeCategory?.name === segment.name;
-                      return (
-                        <circle
-                          key={segment.name}
-                          cx="60"
-                          cy="60"
-                          r={segment.radius}
-                          fill="none"
-                          stroke={segment.color}
-                          strokeWidth={active ? 20 : 16}
-                          strokeLinecap="round"
-                          strokeDasharray={`${Math.max(0, segment.dash - 2)} ${segment.circumference}`}
-                          strokeDashoffset={segment.offset}
-                          filter={active ? 'url(#doroPieGlow)' : undefined}
-                          transform="rotate(-90 60 60)"
-                          className="cursor-pointer transition-all duration-300"
-                          onMouseEnter={() => setActiveCategoryName(segment.name)}
-                        />
-                      );
-                    })}
-                  </svg>
-                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                    <div className="text-center">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">{activeCategory ? activeCategory.name : 'Focus Share'}</div>
-                      <div className="mt-2 text-[1.7rem] font-bold tracking-tight text-white">{activeCategory ? formatPct(activeCategory.share) : '--'}</div>
-                      <div className="mt-1 text-[11px] text-white/55">{activeCategory ? formatMinutesPrecise(activeCategory.minutes) : 'No category data yet'}</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2.5 max-h-[22rem] overflow-auto pr-1">
-                {categorySlices.map((slice) => {
-                  const active = activeCategory?.name === slice.name;
-                  return (
-                    <button
-                      key={slice.name}
-                      type="button"
-                      onClick={() => setActiveCategoryName(slice.name)}
-                      onMouseEnter={() => setActiveCategoryName(slice.name)}
-                      className={`w-full rounded-[1.15rem] border px-4 py-3 text-left transition-all ${active ? 'border-white/22 bg-white/10' : 'border-white/10 bg-black/10 hover:bg-white/6'}`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
-                          <span className="truncate text-sm font-bold text-white">{slice.name}</span>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <div className="text-sm font-mono font-bold text-white">{formatPct(slice.share)}</div>
-                          <div className="text-[11px] text-white/52">{formatMinutesCompact(slice.minutes)}</div>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-5 text-sm leading-relaxed text-white/58">
-              Categorized focus time has not been logged yet, so there is nothing accurate to chart here.
             </div>
           )}
         </Card>
