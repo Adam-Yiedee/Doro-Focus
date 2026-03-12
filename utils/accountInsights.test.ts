@@ -108,10 +108,17 @@ describe('computeAccountInsights', () => {
 
     expect(insights.mostProductiveHours).toEqual({
       hours: [9],
+<<<<<<< HEAD
       focusMinutes: 50,
     });
     expect(insights.mostProductiveWeekdays.weekdays).toEqual([new Date(`${monday}T12:00:00`).getDay()]);
     expect(insights.mostProductiveWeekdays.averageFocusMinutes).toBe(50);
+=======
+      count: 2,
+    });
+    expect(insights.mostProductiveWeekdays.weekdays).toEqual([new Date(`${monday}T12:00:00`).getDay()]);
+    expect(insights.mostProductiveWeekdays.averagePomos).toBe(2);
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     expect(insights.topCategory).toMatchObject({
       name: 'Writing',
       minutes: 50,
@@ -233,6 +240,7 @@ describe('computeAccountInsights', () => {
       endMinutes: 8 * 60 + 35,
     });
   });
+<<<<<<< HEAD
 
   it('does not let neutral grace inflate session duration stats', () => {
     const insights = computeAccountInsights({
@@ -357,4 +365,6 @@ describe('computeAccountInsights', () => {
       sourceBucketCount: 3,
     });
   });
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
 });

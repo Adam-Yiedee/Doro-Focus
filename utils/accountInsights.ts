@@ -50,7 +50,10 @@ export interface AccountInsightSession {
   startMs: number;
   endMs: number | null;
   closed: boolean;
+<<<<<<< HEAD
   activeDurationMinutes: number;
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
 }
 
 export interface AccountDailyTrendPoint {
@@ -81,11 +84,19 @@ export interface AccountInsights {
   today: AccountTodayStats;
   mostProductiveHours: {
     hours: number[];
+<<<<<<< HEAD
     focusMinutes: number;
   };
   mostProductiveWeekdays: {
     weekdays: number[];
     averageFocusMinutes: number;
+=======
+    count: number;
+  };
+  mostProductiveWeekdays: {
+    weekdays: number[];
+    averagePomos: number;
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
   };
   topCategory: {
     name: string;
@@ -98,7 +109,10 @@ export interface AccountInsights {
   mostCommonQuitTimes: {
     bucketMinutes: number[];
     count: number;
+<<<<<<< HEAD
     sourceBucketCount: number;
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
   };
   dayPartTotals: Record<DayPartKey, number>;
   dominantDayParts: DayPartKey[];
@@ -133,11 +147,14 @@ const isNeutralGraceBoundary = (entry: LogEntry) => {
   return isGraceLike(entry) && reason === 'grace period' && Number.isFinite(entry.duration) && entry.duration > SESSION_SPLIT_GRACE_SECONDS;
 };
 
+<<<<<<< HEAD
 const isNeutralGraceWindow = (entry: LogEntry) => {
   const reason = (entry.reason || '').trim().toLowerCase();
   return isGraceLike(entry) && reason === 'grace period';
 };
 
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
 const isSessionEndLog = (entry: LogEntry) => {
   return (entry.reason || '').trim().toLowerCase() === 'session end';
 };
@@ -237,6 +254,7 @@ const averageTimeOfDayMinutes = (values: number[]) => {
   return (angle / (Math.PI * 2)) * 1440;
 };
 
+<<<<<<< HEAD
 const averageClockMinutes = (values: number[]) => {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -247,11 +265,16 @@ const averageClockMinutes = (values: number[]) => {
   return averageTimeOfDayMinutes(sorted);
 };
 
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
 const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightSession[] => {
   const sessions: AccountInsightSession[] = [];
   let currentStartMs: number | null = null;
   let currentLastEndMs: number | null = null;
+<<<<<<< HEAD
   let currentActiveDurationMs = 0;
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
   let pendingStartMs: number | null = null;
 
   windows.forEach((window) => {
@@ -261,32 +284,45 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
           startMs: currentStartMs,
           endMs: window.startMs,
           closed: true,
+<<<<<<< HEAD
           activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
         });
       }
       currentStartMs = null;
       currentLastEndMs = null;
+<<<<<<< HEAD
       currentActiveDurationMs = 0;
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
       pendingStartMs = window.endMs;
       return;
     }
 
+<<<<<<< HEAD
     if (isNeutralGraceWindow(window.entry)) {
       return;
     }
 
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     if (currentStartMs === null) {
       currentStartMs = pendingStartMs ?? window.startMs;
     }
     pendingStartMs = null;
     currentLastEndMs = Math.max(currentLastEndMs ?? window.endMs, window.endMs);
+<<<<<<< HEAD
     currentActiveDurationMs += Math.max(0, window.endMs - window.startMs);
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
 
     if (isSessionEndLog(window.entry) && currentStartMs !== null && currentLastEndMs > currentStartMs) {
       sessions.push({
         startMs: currentStartMs,
         endMs: currentLastEndMs,
         closed: true,
+<<<<<<< HEAD
         activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
       });
       currentStartMs = null;
@@ -296,11 +332,23 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
   });
 
   if (currentStartMs !== null && currentLastEndMs !== null && currentLastEndMs > currentStartMs) {
+=======
+      });
+      currentStartMs = null;
+      currentLastEndMs = null;
+    }
+  });
+
+  if (currentStartMs !== null) {
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     sessions.push({
       startMs: currentStartMs,
       endMs: currentLastEndMs,
       closed: false,
+<<<<<<< HEAD
       activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     });
   }
 
@@ -404,7 +452,10 @@ export const computeAccountInsights = ({
   const sessionLaneMap = new Map(sessionLanes.map((lane) => [lane.dateKey, lane]));
 
   const hourlyFocusMinutes = new Array<number>(24).fill(0);
+<<<<<<< HEAD
   const weekdayFocusMinutes = new Array<number>(7).fill(0);
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
   const todayHourlyFocusMinutes = new Array<number>(24).fill(0);
   const weekdayHourHeatmap = Array.from({ length: 7 }, () => new Array<number>(24).fill(0));
   const dayPartTotals: Record<DayPartKey, number> = {
@@ -451,7 +502,10 @@ export const computeAccountInsights = ({
       const hour = date.getHours();
       const weekday = date.getDay();
       hourlyFocusMinutes[hour] += minutes;
+<<<<<<< HEAD
       weekdayFocusMinutes[weekday] += minutes;
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
       weekdayHourHeatmap[weekday][hour] += minutes;
       dayPartTotals[getDayPart(hour)] += minutes;
       if (date.getTime() >= todayStartMs && date.getTime() < tomorrowStartMs) {
@@ -460,12 +514,24 @@ export const computeAccountInsights = ({
     });
   });
 
+<<<<<<< HEAD
+=======
+  const pomoHourCounts = new Array<number>(24).fill(0);
+  const pomoWeekdayCounts = new Array<number>(7).fill(0);
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
   let todayPomos = 0;
   let thisWeekPomos = 0;
   let lastWeekPomos = 0;
 
   completedPomos.forEach((window) => {
+<<<<<<< HEAD
     const endDateKey = getLocalDateKey(window.endMs);
+=======
+    const endDate = new Date(window.endMs);
+    const endDateKey = getLocalDateKey(window.endMs);
+    pomoHourCounts[endDate.getHours()] += 1;
+    pomoWeekdayCounts[endDate.getDay()] += 1;
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     const trendPoint = dailyTrendMap.get(endDateKey);
     if (trendPoint) trendPoint.pomodoros += 1;
     if (window.endMs >= todayStartMs && window.endMs < tomorrowStartMs) todayPomos += 1;
@@ -485,12 +551,17 @@ export const computeAccountInsights = ({
   });
 
   const quitCountMax = Math.max(0, ...Array.from(quitBucketCounts.values()));
+<<<<<<< HEAD
   const rawMostCommonQuitBuckets = quitCountMax > 0
+=======
+  const mostCommonQuitBuckets = quitCountMax > 0
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     ? Array.from(quitBucketCounts.entries())
         .filter(([, count]) => count === quitCountMax)
         .map(([bucket]) => bucket)
         .sort((a, b) => a - b)
     : [];
+<<<<<<< HEAD
   const mostCommonQuitBuckets = rawMostCommonQuitBuckets.length > 2
     ? [Math.round(averageClockMinutes(rawMostCommonQuitBuckets) ?? rawMostCommonQuitBuckets[0] ?? 0)]
     : rawMostCommonQuitBuckets;
@@ -506,12 +577,28 @@ export const computeAccountInsights = ({
   const weekdayAverages = weekdayFocusMinutes.map((minutes, weekday) => {
     const occurrences = weekdayOccurrences[weekday] || 0;
     return occurrences > 0 ? minutes / occurrences : 0;
+=======
+
+  const mostProductiveHourCount = Math.max(0, ...pomoHourCounts);
+  const mostProductiveHours = mostProductiveHourCount > 0
+    ? pomoHourCounts.map((count, hour) => ({ count, hour })).filter((item) => item.count === mostProductiveHourCount).map((item) => item.hour)
+    : [];
+
+  const weekdayAverages = pomoWeekdayCounts.map((count, weekday) => {
+    const occurrences = weekdayOccurrences[weekday] || 0;
+    return occurrences > 0 ? count / occurrences : 0;
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
   });
   const mostProductiveWeekdayAverage = Math.max(0, ...weekdayAverages);
   const mostProductiveWeekdays = mostProductiveWeekdayAverage > 0
     ? weekdayAverages
+<<<<<<< HEAD
         .map((averageFocusMinutes, weekday) => ({ averageFocusMinutes, weekday }))
         .filter((item) => item.averageFocusMinutes === mostProductiveWeekdayAverage)
+=======
+        .map((averagePomos, weekday) => ({ averagePomos, weekday }))
+        .filter((item) => item.averagePomos === mostProductiveWeekdayAverage)
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
         .map((item) => item.weekday)
     : [];
 
@@ -563,7 +650,11 @@ export const computeAccountInsights = ({
       closed: session.closed,
       startMinutes,
       endMinutes: Math.max(startMinutes + 1, endMinutes),
+<<<<<<< HEAD
       durationMinutes: Math.max(1, session.activeDurationMinutes),
+=======
+      durationMinutes: Math.max(1, ((sessionEndMs ?? session.startMs) - session.startMs) / 60_000),
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     });
   });
 
@@ -583,11 +674,19 @@ export const computeAccountInsights = ({
     },
     mostProductiveHours: {
       hours: mostProductiveHours,
+<<<<<<< HEAD
       focusMinutes: mostProductiveHourFocusMinutes,
     },
     mostProductiveWeekdays: {
       weekdays: mostProductiveWeekdays,
       averageFocusMinutes: mostProductiveWeekdayAverage,
+=======
+      count: mostProductiveHourCount,
+    },
+    mostProductiveWeekdays: {
+      weekdays: mostProductiveWeekdays,
+      averagePomos: mostProductiveWeekdayAverage,
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     },
     topCategory: topCategory
       ? {
@@ -602,7 +701,10 @@ export const computeAccountInsights = ({
     mostCommonQuitTimes: {
       bucketMinutes: mostCommonQuitBuckets,
       count: quitCountMax,
+<<<<<<< HEAD
       sourceBucketCount: rawMostCommonQuitBuckets.length,
+=======
+>>>>>>> d0572b4f2fc42c25884fe47c1e18769356bd9b20
     },
     dayPartTotals,
     dominantDayParts,
