@@ -4,6 +4,7 @@ import {
   Task,
   Category,
   LogEntry,
+  SessionCategoryStat,
   TimerSettings,
   AlarmSound,
   GroupSyncConfig,
@@ -64,6 +65,7 @@ import {
 } from '../utils/groupStudy';
 import { buildCategorySnapshot, resolveLogEntryCategory } from '../utils/categoryTracking';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
+import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
 
 export interface ScheduleBreak {
   id: string;
@@ -187,6 +189,7 @@ interface TimerContextType {
   addCategory: (name: string, color: string, icon: string) => void;
   updateCategory: (cat: Category) => void;
   deleteCategory: (id: number) => void;
+  moveCategory: (fromId: number, toId: number) => void;
   selectCategory: (id: number | null) => void;
   updateSettings: (newSettings: TimerSettings) => void;
   clearLogs: () => void;
@@ -1110,30 +1113,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return Array.from(sessionMap.values()).sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
   };
 
-  const mergeByIdWithPreference = <T extends { id: number | string }>(
-    remoteItems: T[] = [],
-    localItems: T[] = [],
-    prefer: 'local' | 'remote' = 'local',
-  ) => {
-    const merged = new Map<number | string, T>();
-    const first = prefer === 'local' ? remoteItems : localItems;
-    const second = prefer === 'local' ? localItems : remoteItems;
-    first.forEach((item) => merged.set(item.id, item));
-    second.forEach((item) => merged.set(item.id, item));
-    return Array.from(merged.values());
-  };
-
   const mergeSeedDataIntoAccount = (guestData: TimerPersistencePayload, remoteData: TimerPersistencePayload): TimerPersistencePayload => {
     const guestUpdatedAt = getPayloadUpdatedAtMs(guestData);
     const remoteUpdatedAt = getPayloadUpdatedAtMs(remoteData);
     return {
       ...remoteData,
       settings: { ...DEFAULT_SETTINGS, ...(remoteData.settings || {}) },
-      tasks: mergeByIdWithPreference<Task>(remoteData.tasks, guestData.tasks, 'local'),
-      categories: mergeByIdWithPreference<Category>(remoteData.categories, guestData.categories, 'local'),
+      tasks: mergeTaskLists(remoteData.tasks, guestData.tasks, 'local'),
+      categories: mergeOrderedEntitiesById<Category>(remoteData.categories, guestData.categories, 'local'),
       logs: mergeLogs(remoteData.logs, guestData.logs),
       pastSessions: mergeSessions(remoteData.pastSessions, guestData.pastSessions),
-      scheduleBreaks: mergeByIdWithPreference<ScheduleBreak>(remoteData.scheduleBreaks, guestData.scheduleBreaks, 'local'),
+      scheduleBreaks: mergeOrderedEntitiesById<ScheduleBreak>(remoteData.scheduleBreaks, guestData.scheduleBreaks, 'local'),
       userName: normalizeStoredUserName(guestData.userName, normalizeStoredUserName(remoteData.userName)),
       updatedAt: guestUpdatedAt >= remoteUpdatedAt ? guestData.updatedAt : remoteData.updatedAt,
     };
@@ -1159,8 +1149,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       schemaVersion: DATA_SCHEMA_VERSION,
       revision: Math.max(getPayloadRevision(localData), getPayloadRevision(remoteData)),
       settings: { ...DEFAULT_SETTINGS, ...(dataWinner.settings || {}) },
-      tasks: Array.isArray(dataWinner.tasks) ? dataWinner.tasks : [],
-      categories: Array.isArray(dataWinner.categories) ? dataWinner.categories : [],
+      tasks: mergeTaskLists(remoteData.tasks, localData.tasks, prefer),
+      categories: mergeOrderedEntitiesById<Category>(remoteData.categories, localData.categories, prefer),
       logs: mergeLogs(remoteData.logs, localData.logs),
       pastSessions: mergeSessions(remoteData.pastSessions, localData.pastSessions),
       runtime: isRuntimeSnapshot(timerWinner.runtime) ? timerWinner.runtime : dataWinner.runtime,
@@ -1181,7 +1171,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ? timerWinner.graceContext
         : null,
       graceTotal: typeof timerWinner.graceTotal === 'number' ? timerWinner.graceTotal : 0,
-      scheduleBreaks: Array.isArray(dataWinner.scheduleBreaks) ? dataWinner.scheduleBreaks : [],
+      scheduleBreaks: mergeOrderedEntitiesById<ScheduleBreak>(remoteData.scheduleBreaks, localData.scheduleBreaks, prefer),
       scheduleStartTime: typeof timerWinner.scheduleStartTime === 'string' && timerWinner.scheduleStartTime
         ? timerWinner.scheduleStartTime
         : (typeof dataWinner.scheduleStartTime === 'string' && dataWinner.scheduleStartTime ? dataWinner.scheduleStartTime : '08:00'),
@@ -1637,6 +1627,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
       resetAccountSession();
   };
+
+  useEffect(() => {
+    if (selectedCategoryId === null) return;
+    if (categories.some((category) => category.id === selectedCategoryId)) return;
+    setSelectedCategoryId(null);
+  }, [categories, selectedCategoryId]);
 
   useEffect(() => {
       if (!user || !authToken) return;
@@ -3363,21 +3359,54 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
 
     // Calculate Category Stats
-    const catStats: Record<string, number> = {};
-    workLogs.forEach(l => {
-        const minutes = l.duration / 60;
-        const key = resolveLogEntryCategory(l, categories).name || 'Uncategorized';
-        catStats[key] = (catStats[key] || 0) + minutes;
+    const categoryDetailsByKey = new Map<string, SessionCategoryStat>();
+    const addSessionCategoryMinutes = (
+      entry: Pick<LogEntry, 'categoryId' | 'categoryName' | 'categoryColor' | 'categoryIcon'>,
+      rawMinutes: number,
+    ) => {
+      const safeMinutes = Number(rawMinutes);
+      if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+
+      const resolvedCategory = resolveLogEntryCategory(entry, categories);
+      const resolvedName = resolvedCategory.name || 'Uncategorized';
+      const detailKey = typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId)
+        ? `id:${entry.categoryId}`
+        : `name:${resolvedName}`;
+      const existing = categoryDetailsByKey.get(detailKey);
+
+      if (existing) {
+        existing.minutes += safeMinutes;
+        if (!existing.categoryName && resolvedName) existing.categoryName = resolvedName;
+        if (!existing.categoryColor && resolvedCategory.color) existing.categoryColor = resolvedCategory.color;
+        if (!existing.categoryIcon && resolvedCategory.icon) existing.categoryIcon = resolvedCategory.icon;
+        return;
+      }
+
+      categoryDetailsByKey.set(detailKey, {
+        categoryId: typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId) ? entry.categoryId : null,
+        categoryName: resolvedName,
+        categoryColor: resolvedCategory.color || undefined,
+        categoryIcon: resolvedCategory.icon || undefined,
+        minutes: safeMinutes,
+      });
+    };
+
+    workLogs.forEach((logEntry) => {
+      addSessionCategoryMinutes(logEntry, logEntry.duration / 60);
     });
-    if (pendingWorkSeconds > 0 && typeof pendingActiveCategoryId === 'number') {
-      const key = resolveLogEntryCategory({
+    if (pendingWorkSeconds > 0) {
+      addSessionCategoryMinutes({
         categoryId: pendingActiveCategoryId ?? null,
         ...pendingActiveCategorySnapshot,
-      }, categories).name || 'Uncategorized';
-      catStats[key] = (catStats[key] || 0) + (pendingWorkSeconds / 60);
-    } else if (pendingWorkSeconds > 0) {
-      catStats.Uncategorized = (catStats.Uncategorized || 0) + (pendingWorkSeconds / 60);
+      }, pendingWorkSeconds / 60);
     }
+
+    const categoryDetails = Array.from(categoryDetailsByKey.values());
+    const catStats = categoryDetails.reduce<Record<string, number>>((acc, detail) => {
+      const key = detail.categoryName || 'Uncategorized';
+      acc[key] = (acc[key] || 0) + detail.minutes;
+      return acc;
+    }, {});
 
     // Archive Session
     if (sessionStartTime) {
@@ -3390,7 +3419,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 totalBreakMinutes: totalBreak,
                 pomosCompleted: pomodoroCount,
                 tasksCompleted: completedTasksCount,
-                categoryStats: catStats
+                categoryStats: catStats,
+                categoryDetails,
             }
         };
 
@@ -3661,6 +3691,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setTasks(prev => clearCategoryFromTasks(prev, id));
     if (selectedCategoryId === id) setSelectedCategoryId(null);
   };
+  const moveCategory = (fromId: number, toId: number) => {
+    setCategories(prev => {
+      const nextCategories = [...prev];
+      const fromIndex = nextCategories.findIndex(category => category.id === fromId);
+      if (fromIndex === -1) return prev;
+      const [movedCategory] = nextCategories.splice(fromIndex, 1);
+      const toIndex = nextCategories.findIndex(category => category.id === toId);
+      if (toIndex === -1) {
+        nextCategories.push(movedCategory);
+      } else {
+        nextCategories.splice(toIndex, 0, movedCategory);
+      }
+      return nextCategories;
+    });
+  };
 
   const addScheduleBreak = (brk: ScheduleBreak) => setScheduleBreaks(prev => [...prev, brk].sort((a,b) => a.startTime.localeCompare(b.startTime)));
   const deleteScheduleBreak = (id: string) => setScheduleBreaks(prev => prev.filter(b => b.id !== id));
@@ -3693,7 +3738,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       toggleTaskFuture, setTaskSchedule,
-      addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,
+      addCategory, updateCategory, deleteCategory, moveCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
       updateSettings, clearLogs, resetTimers, setPomodoroCount
     }}>

@@ -174,4 +174,38 @@ describe('calculateLifetimeStatsFromData', () => {
 
     expect(stats.categoryBreakdown).toEqual({ 'Deep Writing': 25 });
   });
+
+  it('resolves renamed categories from archived session details when raw logs are unavailable', () => {
+    const renamedCategories: Category[] = [
+      { id: 2, name: 'Deep Study', color: '#4FAE9B', icon: 'book' },
+    ];
+
+    const sessions: SessionRecord[] = [
+      {
+        id: 'session-rename-detail',
+        startTime: '2026-03-11T08:00:00.000Z',
+        endTime: '2026-03-11T08:25:00.000Z',
+        stats: {
+          totalWorkMinutes: 25,
+          totalBreakMinutes: 5,
+          pomosCompleted: 1,
+          tasksCompleted: 0,
+          categoryStats: { Study: 25 },
+          categoryDetails: [
+            {
+              categoryId: 2,
+              categoryName: 'Study',
+              categoryColor: '#4FAE9B',
+              categoryIcon: 'book',
+              minutes: 25,
+            },
+          ],
+        },
+      },
+    ];
+
+    const stats = calculateLifetimeStatsFromData(sessions, [], renamedCategories);
+
+    expect(stats.categoryBreakdown).toEqual({ 'Deep Study': 25 });
+  });
 });

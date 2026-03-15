@@ -112,6 +112,15 @@ const getSessionPomodoros = (session) => {
   return Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
 };
 
+const getResolvedCategoryName = (entry, categoryMap) => {
+  if (typeof entry?.categoryId === 'number' && Number.isFinite(entry.categoryId)) {
+    const liveName = categoryMap.get(entry.categoryId);
+    if (liveName) return liveName;
+  }
+  const snapshotName = cleanString(entry?.categoryName);
+  return snapshotName || 'Uncategorized';
+};
+
 export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories) => {
   const safeSessions = Array.isArray(sessions) ? sessions : [];
   const safeLogs = Array.isArray(logs) ? logs : [];
@@ -147,12 +156,20 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   productiveLogs.forEach((entry) => {
     const minutes = Math.max(0, entry.duration / 60);
     if (minutes <= 0) return;
-    const key = typeof entry.categoryId === 'number'
-      ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
-      : 'Uncategorized';
+    const key = getResolvedCategoryName(entry, categoryMap);
     categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
   });
   fallbackSessions.forEach((session) => {
+    const categoryDetails = Array.isArray(session?.stats?.categoryDetails) ? session.stats.categoryDetails : [];
+    if (categoryDetails.length > 0) {
+      categoryDetails.forEach((detail) => {
+        const safeMinutes = Number(detail?.minutes);
+        if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+        const key = getResolvedCategoryName(detail, categoryMap);
+        categoryBreakdown[key] = (categoryBreakdown[key] || 0) + safeMinutes;
+      });
+      return;
+    }
     const categoryStats = session?.stats?.categoryStats;
     if (!categoryStats || typeof categoryStats !== 'object') return;
     Object.entries(categoryStats).forEach(([name, minutes]) => {

@@ -474,7 +474,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 };
 
 const Tasks: React.FC = () => {
-  const { tasks, addTask, moveTask, selectedCategoryId, pomodoroCount, settings, setWeeklyScheduleOpen, categories, requestNewCategoryFlow } = useTimer();
+  const { tasks, addTask, moveTask, pomodoroCount, settings, setWeeklyScheduleOpen, categories, requestNewCategoryFlow } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
@@ -499,7 +499,6 @@ const Tasks: React.FC = () => {
   const filteredTasks = tasks.filter(t => 
     !t.isFuture
     && (!t.scheduledDate || t.scheduledDate <= todayKey)
-    && (selectedCategoryId ? t.categoryId === selectedCategoryId : true)
   );
   const filteredTaskIds = useMemo(() => filteredTasks.map(task => task.id), [filteredTasks]);
   const filteredTaskOrderKey = useMemo(() => filteredTaskIds.join('|'), [filteredTaskIds]);
@@ -708,7 +707,7 @@ const Tasks: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
-    addTask(newName, clampPomoEstimate(newEst), newCatId || selectedCategoryId, undefined, newColor);
+    addTask(newName, clampPomoEstimate(newEst), newCatId, undefined, newColor);
     setNewName('');
     setNewEst(1);
   };

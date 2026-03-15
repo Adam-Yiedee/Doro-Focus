@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerSettings, User } from '../../types';
@@ -23,6 +23,7 @@ type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
 type SettingsPanelTransitionPhase = 'idle' | 'leaving' | 'entering';
 type SettingsPanelTransitionDirection = 'forward' | 'backward';
+type DragInsertPosition = 'before' | 'after';
 
 const GROUP_INVITE_BASE_URL = (import.meta.env.VITE_PUBLIC_SITE_URL || 'https://dorofocus.netlify.app').replace(/\/+$/, '');
 
@@ -137,6 +138,13 @@ const ACCOUNT_PASSWORD_MAX_LENGTH = 256;
 const ACCOUNT_SYNC_SCOPE_LABELS = ['Live Timer', 'Tasks', 'History', 'Schedule', 'Categories', 'Settings', 'Profile Name'];
 const CATEGORY_EDITOR_CLOSE_DURATION_MS = 220;
 const SETTINGS_PANEL_TRANSITION_MS = 240;
+const CATEGORY_DRAG_HOLD_MS = 180;
+const CATEGORY_DRAG_CANCEL_DISTANCE_PX = 8;
+const CATEGORY_DRAG_DEAD_ZONE_MIN_PX = 14;
+const CATEGORY_DRAG_DEAD_ZONE_RATIO = 0.34;
+const CATEGORY_REORDER_MIN_INTERVAL_MS = 96;
+const CATEGORY_FLIP_ANIMATION_DURATION_MS = 165;
+const CATEGORY_FLIP_MAX_ITEMS = 24;
 const LOG_ENTRY_TYPES = new Set<LogEntry['type']>(['work', 'break', 'allpause', 'task-complete', 'grace']);
 const EMPTY_ACCOUNT_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
@@ -262,6 +270,14 @@ const TAB_ORDER: Record<TabButton, number> = {
   account: 3,
   settings: 4,
 };
+
+const SETTINGS_TAB_BUTTONS: Array<{ id: TabButton; label: string }> = [
+  { id: 'log', label: 'Log' },
+  { id: 'schedule', label: 'Schedule' },
+  { id: 'group', label: 'Group Study' },
+  { id: 'account', label: 'Account' },
+  { id: 'settings', label: 'Settings' },
+];
 
 const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
   const rawStats = user?.lifetimeStats;
@@ -466,6 +482,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     addCategory,
     updateCategory,
     deleteCategory,
+    moveCategory,
     user,
     login,
     register,
@@ -519,8 +536,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const settingsTabListRef = useRef<HTMLDivElement | null>(null);
+  const settingsTabButtonRefsRef = useRef(new Map<TabButton, HTMLButtonElement>());
   const settingsPanelTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCategoryCommitRef = useRef<(() => void) | null>(null);
+  const [settingsTabIndicatorStyle, setSettingsTabIndicatorStyle] = useState({ left: 0, width: 0, opacity: 0 });
 
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -529,8 +549,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [categoryFormError, setCategoryFormError] = useState<string | null>(null);
   const [categoryEditorCloseState, setCategoryEditorCloseState] = useState<'save' | 'cancel' | null>(null);
+  const [draggingCategoryId, setDraggingCategoryId] = useState<number | null>(null);
+  const [categoryDropHint, setCategoryDropHint] = useState<{ categoryId: number; position: DragInsertPosition } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const categoryEditorTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const categoryCardRefsRef = useRef(new Map<number, HTMLDivElement>());
+  const previousCategoryTopsRef = useRef<Map<number, number>>(new Map());
+  const categoryFlipAnimationsRef = useRef(new Map<number, Animation>());
+  const lastCategoryHoverMoveKeyRef = useRef<string | null>(null);
+  const lastCategoryReorderAtRef = useRef(0);
+  const categoryHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeCategoryPointerIdRef = useRef<number | null>(null);
+  const pressedCategoryIdRef = useRef<number | null>(null);
+  const pressedCategoryStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const isLightTheme = settings.themeMode !== 'dark';
   const safeLogs = useMemo(() => (
@@ -542,6 +573,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeCategories = useMemo(() => (
     Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
   ), [categories]);
+  const safeCategoryIds = useMemo(() => safeCategories.map((category) => category.id), [safeCategories]);
+  const safeCategoryOrderKey = useMemo(() => safeCategoryIds.join('|'), [safeCategoryIds]);
   const activeCategoryPreviewLabel = useMemo(() => {
     const trimmed = newCategoryName.trim();
     if (trimmed) return trimmed;
@@ -775,6 +808,47 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
   }, []);
 
+  const registerSettingsTabButton = useCallback((tab: TabButton, node: HTMLButtonElement | null) => {
+    if (node) settingsTabButtonRefsRef.current.set(tab, node);
+    else settingsTabButtonRefsRef.current.delete(tab);
+  }, []);
+
+  const updateSettingsTabIndicator = useCallback(() => {
+    if (!isOpen) {
+      setSettingsTabIndicatorStyle((prev) => (prev.opacity === 0 ? prev : { ...prev, opacity: 0 }));
+      return;
+    }
+
+    const activeButton = settingsTabButtonRefsRef.current.get(activeTab);
+    if (!activeButton) {
+      setSettingsTabIndicatorStyle((prev) => (prev.opacity === 0 ? prev : { ...prev, opacity: 0 }));
+      return;
+    }
+
+    const nextLeft = activeButton.offsetLeft;
+    const nextWidth = activeButton.offsetWidth;
+    setSettingsTabIndicatorStyle((prev) => {
+      if (
+        prev.opacity === 1
+        && Math.abs(prev.left - nextLeft) < 0.5
+        && Math.abs(prev.width - nextWidth) < 0.5
+      ) {
+        return prev;
+      }
+      return { left: nextLeft, width: nextWidth, opacity: 1 };
+    });
+  }, [activeTab, isOpen]);
+
+  const scrollActiveSettingsTabIntoView = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const activeButton = settingsTabButtonRefsRef.current.get(activeTab);
+    if (!activeButton) return;
+    activeButton.scrollIntoView({
+      behavior,
+      block: 'nearest',
+      inline: 'center',
+    });
+  }, [activeTab]);
+
   const syncDisplayedTabImmediately = useCallback((tab: ModalTab) => {
     clearSettingsPanelTransitionTimeout();
     setActiveTab(tab);
@@ -784,19 +858,239 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = 0;
   }, [clearSettingsPanelTransitionTimeout]);
 
+  const clearCategoryHoldTimer = useCallback(() => {
+    if (categoryHoldTimerRef.current) {
+      clearTimeout(categoryHoldTimerRef.current);
+      categoryHoldTimerRef.current = null;
+    }
+  }, []);
+
+  const registerCategoryRef = useCallback((categoryId: number, node: HTMLDivElement | null) => {
+    if (node) categoryCardRefsRef.current.set(categoryId, node);
+    else categoryCardRefsRef.current.delete(categoryId);
+  }, []);
+
+  const cancelCategoryFlipAnimations = useCallback(() => {
+    categoryFlipAnimationsRef.current.forEach((animation) => {
+      try {
+        animation.cancel();
+      } catch {
+        // no-op
+      }
+    });
+    categoryFlipAnimationsRef.current.clear();
+    categoryCardRefsRef.current.forEach((node) => {
+      node.style.transform = '';
+      node.style.transition = '';
+      node.style.willChange = '';
+    });
+  }, []);
+
+  const snapshotCategoryRects = useCallback(() => {
+    const tops = new Map<number, number>();
+    const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
+    safeCategoryIds.forEach((categoryId) => {
+      const node = categoryCardRefsRef.current.get(categoryId);
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      tops.set(categoryId, rect.top + windowScrollY);
+    });
+    previousCategoryTopsRef.current = tops;
+  }, [safeCategoryIds]);
+
+  const clearCategoryDragState = useCallback(() => {
+    clearCategoryHoldTimer();
+    cancelCategoryFlipAnimations();
+    activeCategoryPointerIdRef.current = null;
+    pressedCategoryIdRef.current = null;
+    pressedCategoryStartRef.current = null;
+    setDraggingCategoryId(null);
+    setCategoryDropHint(null);
+    lastCategoryHoverMoveKeyRef.current = null;
+    lastCategoryReorderAtRef.current = 0;
+  }, [cancelCategoryFlipAnimations, clearCategoryHoldTimer]);
+
+  const handleCategoryDragStart = useCallback((categoryId: number) => {
+    cancelCategoryFlipAnimations();
+    snapshotCategoryRects();
+    setDraggingCategoryId(categoryId);
+    setCategoryDropHint(null);
+    lastCategoryHoverMoveKeyRef.current = null;
+    lastCategoryReorderAtRef.current = 0;
+  }, [cancelCategoryFlipAnimations, snapshotCategoryRects]);
+
+  const handleCategoryDragHover = useCallback((targetCategoryId: number, position: DragInsertPosition) => {
+    if (!draggingCategoryId || draggingCategoryId === targetCategoryId) return;
+
+    setCategoryDropHint((prev) => (
+      prev && prev.categoryId === targetCategoryId && prev.position === position
+        ? prev
+        : { categoryId: targetCategoryId, position }
+    ));
+
+    const categoryIdsWithoutDragged = safeCategoryIds.filter((id) => id !== draggingCategoryId);
+    const targetIndex = categoryIdsWithoutDragged.indexOf(targetCategoryId);
+    if (targetIndex === -1) return;
+
+    const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+    const toId = insertIndex >= categoryIdsWithoutDragged.length ? -1 : categoryIdsWithoutDragged[insertIndex];
+    const moveKey = `${draggingCategoryId}:${toId}`;
+    if (lastCategoryHoverMoveKeyRef.current === moveKey) return;
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - lastCategoryReorderAtRef.current < CATEGORY_REORDER_MIN_INTERVAL_MS) return;
+
+    lastCategoryHoverMoveKeyRef.current = moveKey;
+    lastCategoryReorderAtRef.current = now;
+    moveCategory(draggingCategoryId, toId);
+  }, [draggingCategoryId, moveCategory, safeCategoryIds]);
+
   useEffect(() => {
     return () => {
       clearSettingsPanelTransitionTimeout();
     };
   }, [clearSettingsPanelTransitionTimeout]);
 
+  useLayoutEffect(() => {
+    updateSettingsTabIndicator();
+  }, [activeTab, isOpen, updateSettingsTabIndicator]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const tabList = settingsTabListRef.current;
+    const activeButton = settingsTabButtonRefsRef.current.get(activeTab);
+    if (!tabList || !activeButton) return;
+
+    const frameId = requestAnimationFrame(() => {
+      updateSettingsTabIndicator();
+      scrollActiveSettingsTabIntoView(activeTab === 'log' ? 'auto' : 'smooth');
+    });
+
+    const handleResize = () => updateSettingsTabIndicator();
+    window.addEventListener('resize', handleResize);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => updateSettingsTabIndicator());
+      resizeObserver.observe(tabList);
+      resizeObserver.observe(activeButton);
+    }
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', handleResize);
+      resizeObserver?.disconnect();
+    };
+  }, [activeTab, isOpen, scrollActiveSettingsTabIntoView, updateSettingsTabIndicator]);
+
+  useEffect(() => {
+    return () => {
+      clearCategoryHoldTimer();
+      cancelCategoryFlipAnimations();
+    };
+  }, [cancelCategoryFlipAnimations, clearCategoryHoldTimer]);
+
   useEffect(() => {
     if (!isOpen) {
       clearSettingsPanelTransitionTimeout();
       setDisplayedTab(activeTab);
       setSettingsPanelTransitionPhase('idle');
+      clearCategoryDragState();
     }
-  }, [activeTab, clearSettingsPanelTransitionTimeout, isOpen]);
+  }, [activeTab, clearCategoryDragState, clearSettingsPanelTransitionTimeout, isOpen]);
+
+  useEffect(() => {
+    if (displayedTab !== 'settings') {
+      clearCategoryDragState();
+    }
+  }, [clearCategoryDragState, displayedTab]);
+
+  useEffect(() => {
+    if (draggingCategoryId && !safeCategoryIds.includes(draggingCategoryId)) {
+      clearCategoryDragState();
+    }
+  }, [clearCategoryDragState, draggingCategoryId, safeCategoryIds]);
+
+  useLayoutEffect(() => {
+    const nextTops = new Map<number, number>();
+    const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
+    safeCategoryIds.forEach((categoryId) => {
+      const node = categoryCardRefsRef.current.get(categoryId);
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      nextTops.set(categoryId, rect.top + windowScrollY);
+    });
+
+    if (draggingCategoryId === null) {
+      previousCategoryTopsRef.current = nextTops;
+      return;
+    }
+
+    if (safeCategoryIds.length > CATEGORY_FLIP_MAX_ITEMS) {
+      previousCategoryTopsRef.current = nextTops;
+      return;
+    }
+
+    if (previousCategoryTopsRef.current.size === 0) {
+      previousCategoryTopsRef.current = nextTops;
+      return;
+    }
+
+    nextTops.forEach((nextTop, categoryId) => {
+      if (categoryId === draggingCategoryId) return;
+      const prevTop = previousCategoryTopsRef.current.get(categoryId);
+      const node = categoryCardRefsRef.current.get(categoryId);
+      if (typeof prevTop !== 'number' || !node) return;
+
+      const deltaY = prevTop - nextTop;
+      if (Math.abs(deltaY) < 0.75 || Math.abs(deltaY) > 320) return;
+
+      const existing = categoryFlipAnimationsRef.current.get(categoryId);
+      if (existing) {
+        try {
+          existing.cancel();
+        } catch {
+          // no-op
+        }
+      }
+
+      node.style.willChange = 'transform';
+      if (typeof node.animate === 'function') {
+        const animation = node.animate(
+          [
+            { transform: `translateY(${deltaY}px)` },
+            { transform: 'translateY(0)' },
+          ],
+          {
+            duration: CATEGORY_FLIP_ANIMATION_DURATION_MS,
+            easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            fill: 'both',
+          },
+        );
+        categoryFlipAnimationsRef.current.set(categoryId, animation);
+        animation.onfinish = () => {
+          if (categoryFlipAnimationsRef.current.get(categoryId) === animation) categoryFlipAnimationsRef.current.delete(categoryId);
+          node.style.willChange = '';
+          node.style.transform = '';
+        };
+        animation.oncancel = () => {
+          if (categoryFlipAnimationsRef.current.get(categoryId) === animation) categoryFlipAnimationsRef.current.delete(categoryId);
+          node.style.willChange = '';
+          node.style.transform = '';
+        };
+      } else {
+        node.style.transition = 'transform 0s';
+        node.style.transform = `translateY(${deltaY}px)`;
+        requestAnimationFrame(() => {
+          node.style.transition = `transform ${CATEGORY_FLIP_ANIMATION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+          node.style.transform = 'translateY(0)';
+        });
+      }
+    });
+
+    previousCategoryTopsRef.current = nextTops;
+  }, [draggingCategoryId, safeCategoryIds, safeCategoryOrderKey]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1132,6 +1426,108 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       closeCategoryFormImmediately();
     }
   };
+
+  const handleCategoryPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, categoryId: number) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-category-action="true"]')) return;
+    if (event.button !== 0 && event.pointerType === 'mouse') return;
+
+    clearCategoryHoldTimer();
+    activeCategoryPointerIdRef.current = event.pointerId;
+    pressedCategoryIdRef.current = categoryId;
+    pressedCategoryStartRef.current = { x: event.clientX, y: event.clientY };
+    categoryHoldTimerRef.current = setTimeout(() => {
+      if (pressedCategoryIdRef.current !== categoryId) return;
+      handleCategoryDragStart(categoryId);
+    }, CATEGORY_DRAG_HOLD_MS);
+  }, [clearCategoryHoldTimer, handleCategoryDragStart]);
+
+  const releaseCategoryPointer = useCallback((pointerId?: number) => {
+    if (typeof pointerId === 'number' && activeCategoryPointerIdRef.current !== null && pointerId !== activeCategoryPointerIdRef.current) {
+      return;
+    }
+
+    if (draggingCategoryId !== null) {
+      clearCategoryDragState();
+      return;
+    }
+
+    clearCategoryHoldTimer();
+    activeCategoryPointerIdRef.current = null;
+    pressedCategoryIdRef.current = null;
+    pressedCategoryStartRef.current = null;
+  }, [clearCategoryDragState, clearCategoryHoldTimer, draggingCategoryId]);
+
+  useEffect(() => {
+    if (activeCategoryPointerIdRef.current === null && draggingCategoryId === null) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (activeCategoryPointerIdRef.current !== null && event.pointerId !== activeCategoryPointerIdRef.current) return;
+
+      const start = pressedCategoryStartRef.current;
+      if (start && draggingCategoryId === null) {
+        const distanceX = Math.abs(event.clientX - start.x);
+        const distanceY = Math.abs(event.clientY - start.y);
+        if (distanceX > CATEGORY_DRAG_CANCEL_DISTANCE_PX || distanceY > CATEGORY_DRAG_CANCEL_DISTANCE_PX) {
+          clearCategoryHoldTimer();
+          activeCategoryPointerIdRef.current = null;
+          pressedCategoryIdRef.current = null;
+          pressedCategoryStartRef.current = null;
+        }
+        return;
+      }
+
+      if (draggingCategoryId === null) return;
+      event.preventDefault();
+
+      const targetCategory = safeCategories.find((category) => {
+        if (category.id === draggingCategoryId) return false;
+        const node = categoryCardRefsRef.current.get(category.id);
+        if (!node) return false;
+        const rect = node.getBoundingClientRect();
+        return event.clientY >= rect.top && event.clientY <= rect.bottom;
+      });
+
+      if (!targetCategory) return;
+      const targetNode = categoryCardRefsRef.current.get(targetCategory.id);
+      if (!targetNode) return;
+      const rect = targetNode.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      const deadZone = Math.max(CATEGORY_DRAG_DEAD_ZONE_MIN_PX, rect.height * CATEGORY_DRAG_DEAD_ZONE_RATIO);
+      if (Math.abs(event.clientY - midpoint) <= deadZone) return;
+
+      const position: DragInsertPosition = event.clientY < midpoint ? 'before' : 'after';
+      handleCategoryDragHover(targetCategory.id, position);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      releaseCategoryPointer(event.pointerId);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [clearCategoryHoldTimer, draggingCategoryId, handleCategoryDragHover, releaseCategoryPointer, safeCategories]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (draggingCategoryId === null) return undefined;
+
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grabbing';
+
+    return () => {
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+    };
+  }, [draggingCategoryId]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -1934,7 +2330,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           <div className="text-center space-y-2">
             <h3 className="text-3xl font-bold text-white tracking-tight">Group Study</h3>
             <p className="text-white/45 text-xs uppercase tracking-[0.14em]">
-              Timer sync is enabled by default. Task/history sync stays off unless you enable it.
+              Sync timers and study with friends.
             </p>
           </div>
 
@@ -2359,17 +2755,37 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             {safeCategories.map(category => (
               <div
                 key={category.id}
-                className={`relative overflow-hidden flex justify-between items-center gap-3 p-3 rounded-xl border transition-all duration-300 ${
+                ref={(node) => registerCategoryRef(category.id, node)}
+                onPointerDown={(event) => handleCategoryPointerDown(event, category.id)}
+                className={`relative overflow-hidden flex justify-between items-center gap-3 p-3 rounded-xl border transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out ${
                   editingCategoryId === category.id
                     ? 'bg-white/12 border-white/25 shadow-[0_18px_34px_-26px_rgba(255,255,255,0.34)] -translate-y-[1px]'
                     : 'bg-white/5 border-white/10 hover:bg-white/[0.075]'
-                }`}
-                style={editingCategoryId === category.id ? { boxShadow: `0 20px 34px -28px ${colorToRgba(category.color, 0.7)}` } : undefined}
+                } ${draggingCategoryId === category.id ? 'opacity-45 scale-[0.985] cursor-grabbing' : 'cursor-grab active:cursor-grabbing'}`}
+                style={{
+                  touchAction: draggingCategoryId === category.id ? 'none' : 'pan-y',
+                  boxShadow: editingCategoryId === category.id ? `0 20px 34px -28px ${colorToRgba(category.color, 0.7)}` : undefined,
+                }}
               >
+                {categoryDropHint && draggingCategoryId !== category.id && categoryDropHint.categoryId === category.id && (
+                  <div
+                    className={`pointer-events-none absolute left-2 right-2 ${categoryDropHint.position === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`}
+                  />
+                )}
                 {editingCategoryId === category.id && (
                   <div className="absolute inset-y-0 left-0 w-1.5" style={{ backgroundColor: category.color }} />
                 )}
                 <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex h-8 w-4 shrink-0 items-center justify-center text-white/24">
+                    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+                      <circle cx="2" cy="2" r="1.1" />
+                      <circle cx="8" cy="2" r="1.1" />
+                      <circle cx="2" cy="7" r="1.1" />
+                      <circle cx="8" cy="7" r="1.1" />
+                      <circle cx="2" cy="12" r="1.1" />
+                      <circle cx="8" cy="12" r="1.1" />
+                    </svg>
+                  </div>
                   <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: category.color }}>
                     {getIcon(category.icon)}
                   </div>
@@ -2378,6 +2794,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
+                    data-category-action="true"
                     onClick={() => openCategoryEditor(category)}
                     className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
                   >
@@ -2385,6 +2802,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   </button>
                   <button
                     type="button"
+                    data-category-action="true"
                     onClick={() => handleDeleteCategory(category.id)}
                     className="text-white/30 hover:text-red-400 p-1 transition-colors"
                     aria-label={`Delete ${category.name}`}
@@ -2618,6 +3036,78 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-panel-enter-backward {
           animation: doro-settings-panel-enter-backward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.16, 0.88, 0.3, 1.04);
         }
+        .settings-tablist {
+          isolation: isolate;
+        }
+        .settings-tab-indicator {
+          position: absolute;
+          top: 0.38rem;
+          bottom: 0.38rem;
+          left: 0;
+          border-radius: 999px;
+          pointer-events: none;
+          will-change: transform, width, opacity;
+          transition:
+            transform 360ms cubic-bezier(0.2, 0.95, 0.25, 1),
+            width 360ms cubic-bezier(0.2, 0.95, 0.25, 1),
+            opacity 180ms ease;
+          overflow: hidden;
+        }
+        .settings-tab-indicator::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(112deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.2) 42%, rgba(255,255,255,0.08) 58%, rgba(255,255,255,0) 100%);
+          opacity: 0.72;
+          transform: translateX(-110%);
+          animation: doro-settings-tab-sheen 680ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        @keyframes doro-settings-tab-sheen {
+          0% {
+            transform: translateX(-110%);
+          }
+          100% {
+            transform: translateX(120%);
+          }
+        }
+        .settings-tab-btn {
+          position: relative;
+          z-index: 1;
+          border-radius: 999px;
+          border: 1px solid transparent;
+          background: transparent !important;
+          transition:
+            transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+            color 220ms ease,
+            border-color 180ms ease,
+            box-shadow 220ms ease,
+            opacity 200ms ease;
+        }
+        .settings-tab-btn:hover {
+          transform: translateY(-1px);
+        }
+        .settings-tab-btn:active {
+          transform: translateY(0) scale(0.985);
+        }
+        .settings-tab-label {
+          position: relative;
+          display: block;
+          transform: translateY(0.5px);
+          opacity: 0.76;
+          transition:
+            transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 220ms ease,
+            letter-spacing 260ms ease,
+            text-shadow 220ms ease;
+        }
+        .settings-tab-btn:hover .settings-tab-label {
+          transform: translateY(-0.5px);
+          opacity: 0.92;
+        }
+        .settings-tab-btn.is-active .settings-tab-label {
+          transform: translateY(-1px);
+          opacity: 1;
+        }
         .settings-close-slot {
           transition: background-color 180ms ease, border-color 180ms ease;
         }
@@ -2703,27 +3193,24 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           -webkit-backdrop-filter: blur(18px) saturate(180%);
           box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.28);
         }
-        .doro-settings-shell.theme-light .settings-tabbar button {
-          position: relative;
-          border: 1px solid transparent;
-          border-radius: 999px;
-          background: transparent !important;
+        .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn {
           color: #6b7a90 !important;
           text-shadow: 0 1px 0 rgba(255, 255, 255, 0.28);
-          transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease, border-color 180ms ease, box-shadow 220ms ease, color 180ms ease;
         }
-        .doro-settings-shell.theme-light .settings-tabbar button:hover {
-          transform: translateY(-1px);
+        .doro-settings-shell.theme-light .settings-tab-indicator {
+          border: 1px solid rgba(255, 255, 255, 0.58);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(243, 248, 255, 0.34));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 20px 30px -26px rgba(77, 93, 123, 0.44);
+        }
+        .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn:hover {
           color: #102133 !important;
           border-color: rgba(255, 255, 255, 0.34);
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(244, 248, 255, 0.16)) !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.64), 0 18px 28px -26px rgba(77, 93, 123, 0.42);
+          box-shadow: 0 18px 28px -26px rgba(77, 93, 123, 0.24);
         }
-        .doro-settings-shell.theme-light .settings-tabbar button[class*='bg-white/10'] {
+        .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn.is-active {
           color: #102133 !important;
-          border-color: rgba(255, 255, 255, 0.58) !important;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(243, 248, 255, 0.32)) !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 20px 30px -26px rgba(77, 93, 123, 0.44);
+          border-color: transparent !important;
+          box-shadow: none;
         }
         .doro-settings-shell.theme-light .settings-close-slot {
           border-color: rgba(255, 255, 255, 0.22) !important;
@@ -2806,6 +3293,27 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-shell.theme-light [class*='text-white/'] {
           color: #667990 !important;
         }
+        .doro-settings-shell.theme-dark .settings-tab-indicator {
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background:
+            radial-gradient(circle at 20% 24%, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03) 54%, rgba(255, 255, 255, 0.015) 100%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(0, 0, 0, 0.16));
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 18px 24px -24px rgba(0, 0, 0, 0.78);
+        }
+        .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn {
+          color: rgba(255, 255, 255, 0.42);
+        }
+        .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn:hover {
+          color: rgba(255, 255, 255, 0.72);
+          border-color: rgba(255, 255, 255, 0.08);
+        }
+        .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn.is-active {
+          color: rgba(255, 255, 255, 0.94);
+          border-color: transparent;
+        }
+        .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn.is-active .settings-tab-label {
+          text-shadow: 0 1px 12px rgba(255, 255, 255, 0.12);
+        }
         .doro-settings-shell.theme-dark .settings-close-slot {
           border-color: rgba(255, 255, 255, 0.08);
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
@@ -2841,25 +3349,32 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         >
           <div className="settings-tabbar flex shrink-0 border-b border-white/10">
             <div className="min-w-0 flex-1 overflow-x-auto scrollbar-hide">
-              <div className="flex min-w-full">
-                {([
-                  { id: 'log', label: 'Log' },
-                  { id: 'schedule', label: 'Schedule' },
-                  { id: 'group', label: 'Group Study' },
-                  { id: 'account', label: 'Account' },
-                  { id: 'settings', label: 'Settings' },
-                ] as Array<{ id: TabButton; label: string }>).map(tab => {
+              <div
+                ref={settingsTabListRef}
+                className="settings-tablist relative flex min-w-full"
+              >
+                <div
+                  aria-hidden="true"
+                  className="settings-tab-indicator"
+                  style={{
+                    width: settingsTabIndicatorStyle.width,
+                    opacity: settingsTabIndicatorStyle.opacity,
+                    transform: `translate3d(${settingsTabIndicatorStyle.left}px, 0, 0)`,
+                  }}
+                />
+                {SETTINGS_TAB_BUTTONS.map(tab => {
                   const isActive = tab.id !== 'schedule' && activeTab === tab.id;
                   return (
                     <button
                       key={tab.id}
+                      ref={(node) => registerSettingsTabButton(tab.id, node)}
                       type="button"
                       onClick={() => handleTabClick(tab.id)}
-                      className={`flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] transition-colors whitespace-nowrap ${
-                        isActive ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                      className={`settings-tab-btn flex-1 py-4 md:py-5 px-4 font-bold text-[10px] md:text-xs uppercase tracking-[0.2em] whitespace-nowrap ${
+                        isActive ? 'is-active text-white' : 'text-white/40 hover:text-white/70'
                       }`}
                     >
-                      {tab.label}
+                      <span className="settings-tab-label">{tab.label}</span>
                     </button>
                   );
                 })}

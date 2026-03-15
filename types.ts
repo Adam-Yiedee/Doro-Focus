@@ -52,6 +52,14 @@ export interface TimerSettings {
   themeMode: 'light' | 'dark';
 }
 
+export interface SessionCategoryStat {
+  categoryId?: number | null;
+  categoryName?: string;
+  categoryColor?: string;
+  categoryIcon?: string;
+  minutes: number;
+}
+
 export interface SessionRecord {
     id: string;
     startTime: string;
@@ -62,6 +70,7 @@ export interface SessionRecord {
         pomosCompleted: number;
         tasksCompleted: number;
         categoryStats?: Record<string, number>; // Category Name -> Minutes
+        categoryDetails?: SessionCategoryStat[];
     };
 }
 

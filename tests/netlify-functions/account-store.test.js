@@ -223,4 +223,60 @@ describe('account store blob compatibility', () => {
       },
     });
   });
+
+  it('keeps category attribution stable when a category is renamed after archived sessions were saved', () => {
+    const stats = calculateLifetimeStatsFromAccountData([
+      {
+        id: 'session-rename-detail',
+        startTime: '2026-03-11T08:00:00.000Z',
+        endTime: '2026-03-11T08:25:00.000Z',
+        stats: {
+          totalWorkMinutes: 25,
+          totalBreakMinutes: 5,
+          pomosCompleted: 1,
+          tasksCompleted: 0,
+          categoryStats: { Study: 25 },
+          categoryDetails: [
+            {
+              categoryId: 2,
+              categoryName: 'Study',
+              categoryColor: '#4FAE9B',
+              categoryIcon: 'book',
+              minutes: 25,
+            },
+          ],
+        },
+      },
+    ], [], [
+      { id: 2, name: 'Deep Study', color: '#4FAE9B', icon: 'book' },
+    ]);
+
+    expect(stats).toMatchObject({
+      categoryBreakdown: {
+        'Deep Study': 25,
+      },
+    });
+  });
+
+  it('uses saved category snapshots for productive logs when the original category no longer exists', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        duration: 1500,
+        reason: 'Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: 99,
+        categoryName: 'Archived Reading',
+      },
+    ], []);
+
+    expect(stats).toMatchObject({
+      categoryBreakdown: {
+        'Archived Reading': 25,
+      },
+    });
+  });
 });

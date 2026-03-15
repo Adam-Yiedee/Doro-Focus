@@ -1,4 +1,4 @@
-import { Category, LogEntry, SessionRecord, User } from '../types';
+import { Category, LogEntry, SessionCategoryStat, SessionRecord, User } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
@@ -111,6 +111,19 @@ export const calculateLifetimeStatsFromData = (
     categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
   });
   fallbackSessions.forEach((session) => {
+    const categoryDetails = Array.isArray(session.stats?.categoryDetails)
+      ? session.stats.categoryDetails
+      : [];
+    if (categoryDetails.length > 0) {
+      categoryDetails.forEach((detail) => {
+        const safeDetail = detail as SessionCategoryStat;
+        const safeMinutes = Number(safeDetail.minutes);
+        if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+        const key = resolveLogEntryCategory(safeDetail, categoryMap).name || 'Uncategorized';
+        categoryBreakdown[key] = (categoryBreakdown[key] || 0) + safeMinutes;
+      });
+      return;
+    }
     if (!session.stats?.categoryStats) return;
     Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
       const safeMinutes = Number(minutes);
