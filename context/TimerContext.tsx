@@ -64,6 +64,7 @@ import {
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
 import { buildCategorySnapshot, resolveLogEntryCategory } from '../utils/categoryTracking';
+import { selectLocalPayloadForAccountSync } from '../utils/accountSync';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
 
@@ -796,6 +797,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(parsedTasks));
             setPastSessions(parsedSessions);
             setCategories(parsedCategories);
+            lastCategoryIdSeed = Math.max(lastCategoryIdSeed, getMaxCategoryId(parsedCategories));
             setLogs(parsedLogs);
             setPomodoroCount(parsed.pomodoroCount || 0);
             setScheduleBreaks(parsed.scheduleBreaks || []);
@@ -1018,6 +1020,77 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ) => {
     return calculateLifetimeStatsFromData(sessions, currentLogs, sourceCategories || categories);
   };
+
+  const buildPersistencePayload = useCallback((options?: {
+    updatedAt?: string;
+    revision?: number;
+    userOverride?: User | null;
+  }): TimerPersistencePayload => {
+    const effectiveUser = options?.userOverride === undefined ? user : options.userOverride;
+    const nextLifetimeStats = effectiveUser
+      ? calculateLifetimeStatsFromData(pastSessions, logs, categories)
+      : null;
+    const payloadUser = effectiveUser
+      ? {
+          ...effectiveUser,
+          lifetimeStats: nextLifetimeStats || effectiveUser.lifetimeStats,
+        }
+      : null;
+
+    return {
+      schemaVersion: DATA_SCHEMA_VERSION,
+      revision: options?.revision ?? accountRevisionRef.current,
+      runtime: runtimeRef.current,
+      settings,
+      tasks,
+      pastSessions,
+      categories,
+      logs,
+      pomodoroCount,
+      workTime,
+      breakTime,
+      activeMode,
+      timerStarted,
+      isIdle,
+      allPauseActive,
+      allPauseTime,
+      allPauseReason,
+      allPauseStartTime,
+      graceOpen,
+      graceContext,
+      graceTotal,
+      scheduleBreaks,
+      scheduleStartTime,
+      sessionStartTime,
+      userName,
+      user: payloadUser,
+      updatedAt: options?.updatedAt ?? new Date().toISOString(),
+    };
+  }, [
+    activeMode,
+    allPauseActive,
+    allPauseReason,
+    allPauseStartTime,
+    allPauseTime,
+    breakTime,
+    categories,
+    graceContext,
+    graceOpen,
+    graceTotal,
+    isIdle,
+    logs,
+    pastSessions,
+    pomodoroCount,
+    scheduleBreaks,
+    scheduleStartTime,
+    sessionStartTime,
+    settings,
+    tasks,
+    timerStarted,
+    user,
+    userName,
+    workTime,
+  ]);
 
   const normalizeStoredUserName = (value: unknown, fallback = '') => {
     if (typeof value !== 'string') return fallback;
@@ -1361,14 +1434,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!user || !authToken || isApplyingCloudSnapshotRef.current) return false;
       if (isCloudSyncInFlightRef.current) return false;
 
-      const localStr = localStorage.getItem(getUserKey(user.username));
-      if (!localStr) return false;
-
       try {
           isCloudSyncInFlightRef.current = true;
           setAccountSyncState('syncing');
           setAccountSyncError(null);
-          const rawPayload: TimerPersistencePayload = JSON.parse(localStr);
+          const rawPayload = buildPersistencePayload({
+            updatedAt: new Date().toISOString(),
+            userOverride: user,
+          });
           const payloadUser: User = {
             ...(rawPayload.user || user),
             username: user.username,
@@ -1381,7 +1454,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             {
               fallbackUserName: normalizeStoredUserName(rawPayload.userName, userName || user.username),
               revision: Math.max(accountRevisionRef.current, getPayloadRevision(rawPayload)),
-              updatedAt: new Date().toISOString(),
+              updatedAt: rawPayload.updatedAt,
             },
           );
           const persisted = await persistAccountPayload(authToken, normalizedPayload, payloadUser);
@@ -1401,7 +1474,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } finally {
           isCloudSyncInFlightRef.current = false;
       }
-  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
+  }, [authToken, applyAccountSnapshot, buildPersistencePayload, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
 
   const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
       if (!user || !authToken) return false;
@@ -1415,7 +1488,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const remote = await fetchAccountData(authToken);
           const cloudUser = remote.user;
           const localCacheKey = getUserKey(cloudUser.username);
-          const localRaw: TimerPersistencePayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
+          const cachedLocalRaw: TimerPersistencePayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
+          const liveLocalRaw = buildPersistencePayload({
+            updatedAt: new Date().toISOString(),
+            userOverride: user.username === cloudUser.username
+              ? { ...user, username: cloudUser.username, joinedAt: user.joinedAt || cloudUser.joinedAt }
+              : user,
+          });
+          const localRaw = selectLocalPayloadForAccountSync<TimerPersistencePayload>({
+            activeUsername: user.username,
+            targetUsername: cloudUser.username,
+            livePayload: liveLocalRaw,
+            cachedPayload: cachedLocalRaw,
+          }) || {};
           const localPayload = normalizeAccountPayload(
             localRaw,
             {
@@ -1514,7 +1599,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setAccountSyncError(error instanceof Error ? error.message : 'Failed to refresh from cloud.');
           return false;
       }
-  }, [authToken, applyAccountSnapshot, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
+  }, [authToken, applyAccountSnapshot, buildPersistencePayload, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
 
   const register = async (username: string, password?: string): Promise<AuthResult> => {
       if (!password) {
@@ -1680,71 +1765,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Save Effect
   useEffect(() => {
-    if (skipSaveRef.current || isCrossTabApplyingRef.current) return;
+    if (isCrossTabApplyingRef.current) return;
+
+    if (skipSaveRef.current) {
+      const retryTimeout = setTimeout(() => {
+        if (skipSaveRef.current || isCrossTabApplyingRef.current) return;
+        const key = getActiveStorageKey();
+        localStorage.setItem(key, JSON.stringify(buildPersistencePayload()));
+      }, 140);
+      return () => clearTimeout(retryTimeout);
+    }
+
     const key = getActiveStorageKey();
-    const userDataToSave = user ? {
-      ...user,
-      lifetimeStats: calculateLifetimeStats(
-        pastSessions,
-        logs,
-        user.joinedAt,
-        categories,
-      ),
-    } : null;
-    const dataToSave: TimerPersistencePayload = {
-      schemaVersion: DATA_SCHEMA_VERSION,
-      revision: accountRevisionRef.current,
-      runtime: runtimeRef.current,
-      settings,
-      tasks,
-      pastSessions,
-      categories,
-      logs,
-      pomodoroCount,
-      workTime,
-      breakTime,
-      activeMode,
-      timerStarted,
-      isIdle,
-      allPauseActive,
-      allPauseTime,
-      allPauseReason,
-      allPauseStartTime,
-      graceOpen,
-      graceContext,
-      graceTotal,
-      scheduleBreaks,
-      scheduleStartTime,
-      sessionStartTime,
-      userName,
-      user: userDataToSave,
-      updatedAt: new Date().toISOString(),
-    };
-    localStorage.setItem(key, JSON.stringify(dataToSave));
+    localStorage.setItem(key, JSON.stringify(buildPersistencePayload()));
   }, [
-    settings,
-    tasks,
-    pastSessions,
-    categories,
-    logs,
-    pomodoroCount,
-    workTime,
-    breakTime,
-    activeMode,
-    timerStarted,
-    isIdle,
-    allPauseActive,
-    allPauseTime,
-    allPauseReason,
-    allPauseStartTime,
-    graceOpen,
-    graceContext,
-    graceTotal,
-    scheduleBreaks,
-    scheduleStartTime,
-    sessionStartTime,
-    userName,
-    user,
+    buildPersistencePayload,
     getActiveStorageKey,
   ]);
 

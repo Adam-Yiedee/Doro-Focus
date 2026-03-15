@@ -279,4 +279,28 @@ describe('account store blob compatibility', () => {
       },
     });
   });
+
+  it('prefers the current category name for productive logs when a category is renamed', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        duration: 1500,
+        reason: 'Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: 2,
+        categoryName: 'Study',
+      },
+    ], [
+      { id: 2, name: 'Deep Study', color: '#4FAE9B', icon: 'book' },
+    ]);
+
+    expect(stats).toMatchObject({
+      categoryBreakdown: {
+        'Deep Study': 25,
+      },
+    });
+  });
 });
