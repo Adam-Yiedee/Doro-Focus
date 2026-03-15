@@ -511,8 +511,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setWeeklyScheduleOpen,
   } = useTimer();
 
-  const [activeTab, setActiveTab] = useState<ModalTab>('log');
-  const [displayedTab, setDisplayedTab] = useState<ModalTab>('log');
+  const [activeTab, setActiveTab] = useState<ModalTab>('settings');
+  const [displayedTab, setDisplayedTab] = useState<ModalTab>('settings');
   const [settingsPanelTransitionPhase, setSettingsPanelTransitionPhase] = useState<SettingsPanelTransitionPhase>('idle');
   const [settingsPanelTransitionDirection, setSettingsPanelTransitionDirection] = useState<SettingsPanelTransitionDirection>('forward');
 
@@ -994,11 +994,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     if (!isOpen) {
       clearSettingsPanelTransitionTimeout();
-      setDisplayedTab(activeTab);
+      setActiveTab('settings');
+      setDisplayedTab('settings');
       setSettingsPanelTransitionPhase('idle');
+      setSettingsPanelTransitionDirection('forward');
       clearCategoryDragState();
     }
-  }, [activeTab, clearCategoryDragState, clearSettingsPanelTransitionTimeout, isOpen]);
+  }, [clearCategoryDragState, clearSettingsPanelTransitionTimeout, isOpen]);
 
   useEffect(() => {
     if (displayedTab !== 'settings') {
@@ -3036,9 +3038,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-panel-enter-backward {
           animation: doro-settings-panel-enter-backward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.16, 0.88, 0.3, 1.04);
         }
+        .settings-tabbar {
+          overflow: visible;
+        }
         .settings-tablist {
           isolation: isolate;
           overflow: visible;
+          padding-left: 0.04rem;
+          padding-right: 0.28rem;
           padding-top: 0.04rem;
           padding-bottom: 0.04rem;
         }
@@ -3104,7 +3111,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             letter-spacing 260ms ease,
             text-shadow 220ms ease;
         }
-        .settings-tab-btn:hover .settings-tab-label {
+        .settings-tab-btn:not(.is-active):hover .settings-tab-label {
           transform: translateY(-0.15px);
           opacity: 0.88;
         }
@@ -3113,6 +3120,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           opacity: 1;
         }
         .settings-close-slot {
+          background: transparent;
+          box-shadow: none;
           transition: background-color 180ms ease, border-color 180ms ease, box-shadow 220ms ease;
         }
         .settings-close-btn {
@@ -3209,7 +3218,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(243, 248, 255, 0.34));
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 20px 30px -26px rgba(77, 93, 123, 0.44);
         }
-        .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn:hover {
+        .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn:not(.is-active):hover {
           color: #102133 !important;
           border-color: rgba(255, 255, 255, 0.24);
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(244, 248, 255, 0.08)) !important;
@@ -3222,7 +3231,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-light .settings-close-slot {
           border-color: rgba(255, 255, 255, 0.22) !important;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(244, 248, 255, 0.06)) !important;
+          background: transparent !important;
         }
         .doro-settings-shell.theme-light .settings-close-btn {
           border-color: rgba(255, 255, 255, 0.34) !important;
@@ -3320,7 +3329,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn {
           color: rgba(255, 255, 255, 0.42);
         }
-        .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn:hover {
+        .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn:not(.is-active):hover {
           color: rgba(255, 255, 255, 0.72);
           border-color: rgba(255, 255, 255, 0.07);
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0.012)) !important;
@@ -3335,7 +3344,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-dark .settings-close-slot {
           border-color: rgba(255, 255, 255, 0.08);
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012));
+          background: transparent;
         }
         .doro-settings-shell.theme-dark .settings-close-btn {
           border-color: rgba(255, 255, 255, 0.11);
@@ -3402,7 +3411,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
 
             <div
-              className="settings-close-slot md:hidden w-[4.35rem] shrink-0 flex items-center justify-center border-l"
+              className="settings-close-slot md:hidden ml-1 w-[4.2rem] shrink-0 flex items-center justify-center border-l"
             >
               <button
                 type="button"
