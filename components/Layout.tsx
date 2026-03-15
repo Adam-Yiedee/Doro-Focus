@@ -114,38 +114,20 @@ const Layout: React.FC = () => {
   const surfaceColor = activeMode === 'break'
     ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
     : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
-  const ambientColor = activeMode === 'break'
-    ? DEFAULT_BREAK_SURFACE
-    : activeColor || DEFAULT_WORK_SURFACE;
-  const secondaryAccent = activeMode === 'break' ? DEFAULT_WORK_SURFACE : DEFAULT_BREAK_SURFACE;
-  const ambientStyles = useMemo(() => {
-    const primaryGlow = colorToRgba(ambientColor, isLightTheme ? 0.28 : 0.22);
-    const secondaryGlow = colorToRgba(secondaryAccent, isLightTheme ? 0.22 : 0.18);
-    const tertiaryGlow = colorToRgba(surfaceColor, isLightTheme ? 0.24 : 0.12);
 
+  useEffect(() => {
+    document.documentElement.style.backgroundColor = surfaceColor;
+    document.body.style.background = surfaceColor;
+  }, [surfaceColor]);
+
+  const ambientStyles = useMemo(() => {
     return {
       container: {
         backgroundColor: surfaceColor,
-        backgroundImage: isLightTheme
-          ? `linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(255, 255, 255, 0.08)), radial-gradient(circle at 14% 10%, ${primaryGlow} 0%, transparent 34%), radial-gradient(circle at 84% 18%, ${secondaryGlow} 0%, transparent 30%), radial-gradient(circle at 50% 115%, ${tertiaryGlow} 0%, transparent 42%)`
-          : `linear-gradient(180deg, rgba(7, 10, 18, 0.36), rgba(7, 10, 18, 0.08)), radial-gradient(circle at 14% 10%, ${primaryGlow} 0%, transparent 34%), radial-gradient(circle at 84% 18%, ${secondaryGlow} 0%, transparent 30%), radial-gradient(circle at 50% 115%, ${tertiaryGlow} 0%, transparent 42%)`,
-      } as React.CSSProperties,
-      topLeft: {
-        background: `radial-gradient(circle, ${colorToRgba(ambientColor, isLightTheme ? 0.4 : 0.24)} 0%, transparent 68%)`,
-      } as React.CSSProperties,
-      topRight: {
-        background: `radial-gradient(circle, ${colorToRgba(secondaryAccent, isLightTheme ? 0.34 : 0.22)} 0%, transparent 68%)`,
-      } as React.CSSProperties,
-      bottomGlow: {
-        background: `radial-gradient(circle, ${colorToRgba(ambientColor, isLightTheme ? 0.22 : 0.16)} 0%, transparent 70%)`,
-      } as React.CSSProperties,
-      sheen: {
-        background: isLightTheme
-          ? 'linear-gradient(140deg, rgba(255,255,255,0.42), rgba(255,255,255,0) 28%, rgba(255,255,255,0.12) 72%, rgba(255,255,255,0.24))'
-          : 'linear-gradient(140deg, rgba(255,255,255,0.08), rgba(255,255,255,0) 28%, rgba(255,255,255,0.04) 72%, rgba(255,255,255,0.08))',
+        backgroundImage: 'none',
       } as React.CSSProperties,
     };
-  }, [ambientColor, isLightTheme, secondaryAccent, surfaceColor]);
+  }, [surfaceColor]);
 
   const containerStyle: React.CSSProperties = ambientStyles.container;
   const contentStyle: React.CSSProperties = {
@@ -163,16 +145,17 @@ const Layout: React.FC = () => {
       : 'border-white/5 bg-white/5 text-white backdrop-blur-md shadow-[0_18px_36px_-28px_rgba(0,0,0,0.72)]';
   const mainSurfaceClass = settings.disableBlur
     ? isLightTheme
-      ? 'bg-white/68 shadow-[0_34px_80px_-52px_rgba(66,88,122,0.45)]'
-      : 'bg-black/28 shadow-[0_36px_90px_-58px_rgba(0,0,0,0.72)]'
+      ? 'shadow-[0_34px_80px_-52px_rgba(66,88,122,0.45)]'
+      : 'shadow-[0_36px_90px_-58px_rgba(0,0,0,0.72)]'
     : isLightTheme
-      ? 'bg-white/20 backdrop-blur-[24px] shadow-[0_38px_90px_-58px_rgba(66,88,122,0.45)]'
-      : 'bg-white/[0.06] backdrop-blur-[26px] shadow-[0_42px_100px_-64px_rgba(0,0,0,0.78)]';
+      ? 'backdrop-blur-[24px] shadow-[0_38px_90px_-58px_rgba(66,88,122,0.45)]'
+      : 'backdrop-blur-[26px] shadow-[0_42px_100px_-64px_rgba(0,0,0,0.78)]';
   const mainSurfaceStyle = useMemo<React.CSSProperties>(() => ({
-    backgroundImage: isLightTheme
-      ? `linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.06)), linear-gradient(145deg, ${colorToRgba(ambientColor, 0.18)} 0%, rgba(255,255,255,0.48) 48%, ${colorToRgba(secondaryAccent, 0.1)} 100%)`
-      : `linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)), linear-gradient(145deg, ${colorToRgba(ambientColor, 0.18)} 0%, rgba(7,10,18,0.52) 48%, ${colorToRgba(secondaryAccent, 0.08)} 100%)`,
-  }), [ambientColor, isLightTheme, secondaryAccent]);
+    backgroundColor: colorToRgba(surfaceColor, settings.disableBlur
+      ? (isLightTheme ? 0.84 : 0.56)
+      : (isLightTheme ? 0.72 : 0.44)),
+    backgroundImage: 'none',
+  }), [isLightTheme, settings.disableBlur, surfaceColor]);
   const mainSurfaceShellStyle = useMemo<React.CSSProperties>(() => ({
     ...mainSurfaceStyle,
     isolation: 'isolate',
@@ -189,16 +172,6 @@ const Layout: React.FC = () => {
     boxShadow: isLightTheme
       ? 'inset 0 0 0 1px rgba(255,255,255,0.34), inset 0 1px 0 rgba(255,255,255,0.5)'
       : 'inset 0 0 0 1px rgba(255,255,255,0.14), inset 0 1px 0 rgba(255,255,255,0.22)',
-  }), [isLightTheme]);
-  const mainSurfaceHighlightStyle = useMemo<React.CSSProperties>(() => ({
-    background: isLightTheme
-      ? 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.58), rgba(255,255,255,0))'
-      : 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.28), rgba(255,255,255,0))',
-  }), [isLightTheme]);
-  const mainSurfaceTopGlowStyle = useMemo<React.CSSProperties>(() => ({
-    background: isLightTheme
-      ? 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0))'
-      : 'linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0))',
   }), [isLightTheme]);
   const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
 
@@ -224,18 +197,6 @@ const Layout: React.FC = () => {
           animation: doroGroupBannerProgress ${GROUP_BANNER_TOTAL_MS}ms linear forwards;
         }
       `}</style>
-
-      {/* Ambient Background Elements (Conditional) */}
-      {!settings.disableBlur && (
-        <>
-          <div className="pointer-events-none fixed inset-0 overflow-hidden">
-            <div className="absolute -top-[22vh] -left-[16vw] h-[46rem] w-[46rem] rounded-full blur-[128px]" style={ambientStyles.topLeft} />
-            <div className="absolute -top-[14vh] right-[-14vw] h-[40rem] w-[40rem] rounded-full blur-[132px]" style={ambientStyles.topRight} />
-            <div className="absolute bottom-[-28vh] left-1/2 h-[42rem] w-[54rem] -translate-x-1/2 rounded-full blur-[150px]" style={ambientStyles.bottomGlow} />
-            <div className="absolute inset-0 opacity-70" style={ambientStyles.sheen} />
-          </div>
-        </>
-      )}
 
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,34rem)] pointer-events-none flex flex-col gap-2">
         {groupBanners.map((notice, i) => (
@@ -344,9 +305,6 @@ const Layout: React.FC = () => {
             style={mainSurfaceShellStyle}
           >
             <div className="pointer-events-none absolute inset-0" style={{ borderRadius: 'inherit', ...mainSurfaceEdgeStyle }} />
-            <div className="pointer-events-none absolute inset-[1px] rounded-[calc(2rem-1px)] md:rounded-[calc(2.6rem-1px)] opacity-80 bg-[radial-gradient(circle_at_14%_-8%,rgba(255,255,255,0.22),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent_24%,rgba(255,255,255,0.03)_100%)]" />
-            <div className="pointer-events-none absolute inset-x-12 top-[1px] h-px opacity-80" style={mainSurfaceHighlightStyle} />
-            <div className="pointer-events-none absolute left-16 right-16 top-0 h-14 opacity-65 blur-md" style={mainSurfaceTopGlowStyle} />
             <div className="relative flex flex-col gap-12">
               {/* Timer Section */}
               <div className="w-full flex justify-center animate-slide-up py-6 md:py-8">

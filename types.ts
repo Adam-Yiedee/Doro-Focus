@@ -35,6 +35,9 @@ export interface LogEntry {
   task?: { id: number; name: string } | null;
   color?: string;
   categoryId?: number | null;
+  categoryName?: string;
+  categoryColor?: string;
+  categoryIcon?: string;
 }
 
 export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood' | 'marimba' | 'crystal' | 'blade' | 'cosmic' | 'ripple' | 'news';

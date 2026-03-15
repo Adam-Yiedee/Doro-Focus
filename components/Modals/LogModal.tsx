@@ -3,8 +3,9 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
-import { CATEGORY_ICON_OPTIONS, getCategoryIconLabel, getIcon } from '../../utils/icons';
+import { CATEGORY_ICON_OPTIONS, getIcon } from '../../utils/icons';
 import { computeAccountInsights } from '../../utils/accountInsights';
+import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
 import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
@@ -20,6 +21,8 @@ type TabButton = ModalTab | 'schedule';
 type GroupFlow = 'menu' | 'host' | 'join';
 type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
+type SettingsPanelTransitionPhase = 'idle' | 'leaving' | 'entering';
+type SettingsPanelTransitionDirection = 'forward' | 'backward';
 
 const GROUP_INVITE_BASE_URL = (import.meta.env.VITE_PUBLIC_SITE_URL || 'https://dorofocus.netlify.app').replace(/\/+$/, '');
 
@@ -132,6 +135,8 @@ const ACCOUNT_USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
 const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
 const ACCOUNT_PASSWORD_MAX_LENGTH = 256;
 const ACCOUNT_SYNC_SCOPE_LABELS = ['Live Timer', 'Tasks', 'History', 'Schedule', 'Categories', 'Settings', 'Profile Name'];
+const CATEGORY_EDITOR_CLOSE_DURATION_MS = 220;
+const SETTINGS_PANEL_TRANSITION_MS = 240;
 const LOG_ENTRY_TYPES = new Set<LogEntry['type']>(['work', 'break', 'allpause', 'task-complete', 'grace']);
 const EMPTY_ACCOUNT_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
@@ -191,6 +196,9 @@ const getSafeLogEntry = (value: unknown): LogEntry | null => {
     task: safeTask && safeTask.name ? safeTask : null,
     color: typeof entry.color === 'string' ? entry.color : undefined,
     categoryId: typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId) ? entry.categoryId : null,
+    categoryName: typeof entry.categoryName === 'string' ? entry.categoryName : undefined,
+    categoryColor: typeof entry.categoryColor === 'string' ? entry.categoryColor : undefined,
+    categoryIcon: typeof entry.categoryIcon === 'string' ? entry.categoryIcon : undefined,
   };
 };
 
@@ -245,6 +253,14 @@ const getSafeSessionId = (value: unknown) => {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toUpperCase();
   return normalized || null;
+};
+
+const TAB_ORDER: Record<TabButton, number> = {
+  log: 0,
+  schedule: 1,
+  group: 2,
+  account: 3,
+  settings: 4,
 };
 
 const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
@@ -448,6 +464,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     pastSessions,
     categories,
     addCategory,
+    updateCategory,
     deleteCategory,
     user,
     login,
@@ -476,6 +493,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   } = useTimer();
 
   const [activeTab, setActiveTab] = useState<ModalTab>('log');
+  const [displayedTab, setDisplayedTab] = useState<ModalTab>('log');
+  const [settingsPanelTransitionPhase, setSettingsPanelTransitionPhase] = useState<SettingsPanelTransitionPhase>('idle');
+  const [settingsPanelTransitionDirection, setSettingsPanelTransitionDirection] = useState<SettingsPanelTransitionDirection>('forward');
 
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [usernameInput, setUsernameInput] = useState('');
@@ -496,12 +516,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [inviteSessionId, setInviteSessionId] = useState('');
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
+  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const settingsPanelTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryColor, setNewCategoryColor] = useState(PRESET_COLORS[0]);
   const [newCategoryIcon, setNewCategoryIcon] = useState('star');
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [categoryFormError, setCategoryFormError] = useState<string | null>(null);
+  const [categoryEditorCloseState, setCategoryEditorCloseState] = useState<'save' | 'cancel' | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const categoryEditorTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isLightTheme = settings.themeMode !== 'dark';
   const safeLogs = useMemo(() => (
@@ -513,6 +539,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeCategories = useMemo(() => (
     Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
   ), [categories]);
+  const activeCategoryPreviewLabel = useMemo(() => {
+    const trimmed = newCategoryName.trim();
+    if (trimmed) return trimmed;
+    return editingCategoryId !== null ? 'Edit Category' : 'New Category';
+  }, [editingCategoryId, newCategoryName]);
   const safeUser = useMemo(() => {
     if (!isRenderableUser(user)) return null;
     const username = user.username.trim();
@@ -573,7 +604,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       };
     });
   }, [orderedLogs]);
-  const categoriesById = useMemo(() => new Map(safeCategories.map((category) => [category.id, category])), [safeCategories]);
+  const categoriesById = useMemo(() => getCategoryMapById(safeCategories), [safeCategories]);
 
   const accountError = authLocalError || accountSyncError || null;
   const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(safeLastAccountSyncAt), [safeLastAccountSyncAt]);
@@ -648,10 +679,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const breakdown = safeLifetimeStats.categoryBreakdown || {};
     return Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
   }, [safeLifetimeStats]);
-  const categoryColorsByName = useMemo(
-    () => new Map(safeCategories.map((category) => [category.name, category.color])),
-    [safeCategories],
-  );
+  const categoryColorsByName = useMemo(() => {
+    const map = new Map<string, string>(safeCategories.map((category) => [category.name, category.color]));
+    safeLogs.forEach((entry) => {
+      const resolvedCategory = resolveLogEntryCategory(entry, categoriesById);
+      if (resolvedCategory.name && resolvedCategory.color && !map.has(resolvedCategory.name)) {
+        map.set(resolvedCategory.name, resolvedCategory.color);
+      }
+    });
+    return map;
+  }, [categoriesById, safeCategories, safeLogs]);
   const accountPrimaryColor = useMemo(() => {
     for (const [name] of categoryBreakdown) {
       const categoryColor = categoryColorsByName.get(name);
@@ -728,19 +765,49 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isOpen, onClose]);
 
+  const clearSettingsPanelTransitionTimeout = useCallback(() => {
+    if (settingsPanelTransitionTimeoutRef.current) {
+      clearTimeout(settingsPanelTransitionTimeoutRef.current);
+      settingsPanelTransitionTimeoutRef.current = null;
+    }
+  }, []);
+
+  const syncDisplayedTabImmediately = useCallback((tab: ModalTab) => {
+    clearSettingsPanelTransitionTimeout();
+    setActiveTab(tab);
+    setDisplayedTab(tab);
+    setSettingsPanelTransitionPhase('idle');
+    setSettingsPanelTransitionDirection('forward');
+    if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = 0;
+  }, [clearSettingsPanelTransitionTimeout]);
+
+  useEffect(() => {
+    return () => {
+      clearSettingsPanelTransitionTimeout();
+    };
+  }, [clearSettingsPanelTransitionTimeout]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      clearSettingsPanelTransitionTimeout();
+      setDisplayedTab(activeTab);
+      setSettingsPanelTransitionPhase('idle');
+    }
+  }, [activeTab, clearSettingsPanelTransitionTimeout, isOpen]);
+
   useEffect(() => {
     if (!isOpen) return;
     const normalizedPendingJoinId = getSafeSessionId(pendingJoinId);
     if (normalizedPendingJoinId) {
       inviteAutoJoinKeyRef.current = null;
-      setActiveTab('group');
+      syncDisplayedTabImmediately('group');
       setGroupFlow('join');
       setGroupSessionInput(normalizedPendingJoinId);
       setInviteSessionId(normalizedPendingJoinId);
       setGroupLocalError(null);
       setPendingJoinId(null);
     }
-  }, [isOpen, pendingJoinId, setPendingJoinId]);
+  }, [isOpen, pendingJoinId, setPendingJoinId, syncDisplayedTabImmediately]);
 
   useEffect(() => {
     if (accountSyncState === 'pending') {
@@ -792,12 +859,36 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   };
 
   const handleTabClick = (tab: TabButton) => {
+    if (settingsPanelTransitionPhase !== 'idle') return;
+    const direction: SettingsPanelTransitionDirection = TAB_ORDER[tab] >= TAB_ORDER[activeTab] ? 'forward' : 'backward';
+    setSettingsPanelTransitionDirection(direction);
+
     if (tab === 'schedule') {
-      setWeeklyScheduleOpen(true);
-      onClose();
+      setSettingsPanelTransitionPhase('leaving');
+      clearSettingsPanelTransitionTimeout();
+      settingsPanelTransitionTimeoutRef.current = setTimeout(() => {
+        settingsPanelTransitionTimeoutRef.current = null;
+        setSettingsPanelTransitionPhase('idle');
+        setWeeklyScheduleOpen(true);
+        onClose();
+      }, SETTINGS_PANEL_TRANSITION_MS);
       return;
     }
+
+    if (tab === activeTab && displayedTab === tab) return;
+
     setActiveTab(tab);
+    setSettingsPanelTransitionPhase('leaving');
+    clearSettingsPanelTransitionTimeout();
+    settingsPanelTransitionTimeoutRef.current = setTimeout(() => {
+      setDisplayedTab(tab);
+      if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = 0;
+      setSettingsPanelTransitionPhase('entering');
+      settingsPanelTransitionTimeoutRef.current = setTimeout(() => {
+        settingsPanelTransitionTimeoutRef.current = null;
+        setSettingsPanelTransitionPhase('idle');
+      }, SETTINGS_PANEL_TRANSITION_MS);
+    }, SETTINGS_PANEL_TRANSITION_MS);
   };
 
   const handleAuthSubmit = async (event: React.FormEvent) => {
@@ -940,17 +1031,96 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
   }, [groupSessionId]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    return () => {
+      if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    };
+  }, []);
 
-  const handleCreateCategory = () => {
-    const name = newCategoryName.trim();
-    if (!name) return;
-    addCategory(name, newCategoryColor, newCategoryIcon);
+  const resetCategoryForm = useCallback(() => {
     setNewCategoryName('');
     setNewCategoryColor(PRESET_COLORS[0]);
     setNewCategoryIcon('star');
+    setEditingCategoryId(null);
+    setCategoryFormError(null);
+    setCategoryEditorCloseState(null);
+  }, []);
+
+  const closeCategoryFormImmediately = useCallback(() => {
+    if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
     setShowAddCategory(false);
+    resetCategoryForm();
+  }, [resetCategoryForm]);
+
+  const closeCategoryForm = useCallback((mode: 'save' | 'cancel' = 'cancel') => {
+    if (!showAddCategory) {
+      closeCategoryFormImmediately();
+      return;
+    }
+    if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    setCategoryEditorCloseState(mode);
+    categoryEditorTransitionTimeoutRef.current = setTimeout(() => {
+      closeCategoryFormImmediately();
+    }, CATEGORY_EDITOR_CLOSE_DURATION_MS);
+  }, [closeCategoryFormImmediately, showAddCategory]);
+
+  const openNewCategoryForm = useCallback(() => {
+    if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    resetCategoryForm();
+    setShowAddCategory(true);
+  }, [resetCategoryForm]);
+
+  const openCategoryEditor = useCallback((category: Category) => {
+    if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    setEditingCategoryId(category.id);
+    setNewCategoryName(category.name);
+    setNewCategoryColor(category.color);
+    setNewCategoryIcon(category.icon);
+    setCategoryFormError(null);
+    setCategoryEditorCloseState(null);
+    setShowAddCategory(true);
+  }, []);
+
+  const handleCreateCategory = () => {
+    const name = newCategoryName.trim();
+    if (!name) {
+      setCategoryFormError('Enter a category name.');
+      return;
+    }
+
+    const normalizedName = name.toLowerCase();
+    const duplicateCategory = safeCategories.find((category) => (
+      category.id !== editingCategoryId
+      && category.name.trim().toLowerCase() === normalizedName
+    ));
+    if (duplicateCategory) {
+      setCategoryFormError('Category names need to be unique.');
+      return;
+    }
+
+    if (editingCategoryId !== null) {
+      updateCategory({ id: editingCategoryId, name, color: newCategoryColor, icon: newCategoryIcon });
+    } else {
+      addCategory(name, newCategoryColor, newCategoryIcon);
+    }
+
+    closeCategoryForm('save');
   };
+
+  const handleDeleteCategory = (id: number) => {
+    deleteCategory(id);
+    if (editingCategoryId === id) {
+      closeCategoryFormImmediately();
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) {
+      closeCategoryFormImmediately();
+    }
+  }, [closeCategoryFormImmediately, isOpen]);
+
+  if (!isOpen) return null;
 
   const renderLogTab = () => {
     return (
@@ -1032,11 +1202,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
                   <div className="space-y-3">
                     {entries.map((entry, index) => {
-                      const category = typeof entry.categoryId === 'number' ? categoriesById.get(entry.categoryId) : undefined;
+                      const resolvedCategory = resolveLogEntryCategory(entry, categoriesById);
                       const isWork = entry.type === 'work';
                       const isBreak = entry.type === 'break';
                       const isPause = entry.type === 'allpause';
-                      const accentColor = category?.color || entry.color || (
+                      const accentColor = resolvedCategory.color || entry.color || (
                         isWork
                           ? PRESET_COLORS[0]
                           : isBreak
@@ -1045,8 +1215,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                               ? '#94a3b8'
                               : PRESET_COLORS[4]
                       );
-                      const title = getLogBlockTitle(entry, category?.name);
-                      const subtitle = getLogBlockSubtitle(entry, category?.name);
+                      const title = getLogBlockTitle(entry, resolvedCategory.name || undefined);
+                      const subtitle = getLogBlockSubtitle(entry, resolvedCategory.name || undefined);
                       const cardStyle: React.CSSProperties = {
                         minHeight: `${getLogBlockHeight(entry.duration)}px`,
                         borderColor: colorToRgba(accentColor, isLightTheme ? 0.26 : 0.34),
@@ -1237,45 +1407,57 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         </div>
 
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-end justify-between gap-3 px-1">
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">All Time</div>
-              <div className="mt-1 text-lg font-bold tracking-tight text-white">Lifetime totals</div>
+        <div
+          className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
+          style={{
+            borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+            background: isLightTheme
+              ? `linear-gradient(160deg, rgba(255,255,255,0.95) 0%, ${colorToRgba(accountPrimaryColor, 0.09)} 100%)`
+              : `linear-gradient(160deg, rgba(255,255,255,0.05) 0%, ${colorToRgba(accountPrimaryColor, 0.08)} 100%)`,
+            boxShadow: `0 28px 56px -42px ${colorToRgba(accountPrimaryColor, isLightTheme ? 0.24 : 0.64)}`,
+          }}
+        >
+          <div className="pointer-events-none absolute inset-0 opacity-70" style={{ background: `radial-gradient(circle at 14% -10%, ${colorToRgba(accountPrimaryColor, 0.2)} 0%, transparent 34%), radial-gradient(circle at 88% 12%, ${colorToRgba(PRESET_COLORS[4], 0.08)} 0%, transparent 24%)` }} />
+          <div className="relative space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">All Time</div>
+                <div className="mt-1 text-lg font-bold tracking-tight text-white">Lifetime totals</div>
+              </div>
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {statCards.map((card) => (
-              <div
-                key={card.label}
-                className="relative overflow-hidden rounded-[1.45rem] border border-white/10 p-4"
-                style={{
-                  background: isLightTheme
-                    ? `linear-gradient(160deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
-                    : `linear-gradient(160deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
-                  boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.24 : 0.6)}`,
-                }}
-              >
-                <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 12%, ${colorToRgba(card.color, 0.18)}, transparent 26%)` }} />
-                <div className="relative">
-                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
-                    {card.label}
-                  </div>
-                  <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
-                  <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: '100%',
-                        background: `linear-gradient(90deg, ${colorToRgba(card.color, 0.98)}, ${colorToRgba(card.color, 0.58)})`,
-                      }}
-                    />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {statCards.map((card) => (
+                <div
+                  key={card.label}
+                  className="relative overflow-hidden rounded-[1.45rem] border border-white/10 p-4"
+                  style={{
+                    background: isLightTheme
+                      ? `linear-gradient(160deg, rgba(255,255,255,0.94) 0%, ${colorToRgba(card.color, 0.12)} 100%)`
+                      : `linear-gradient(160deg, rgba(255,255,255,0.06) 0%, ${colorToRgba(card.color, 0.1)} 100%)`,
+                    boxShadow: `0 20px 40px -32px ${colorToRgba(card.color, isLightTheme ? 0.24 : 0.6)}`,
+                  }}
+                >
+                  <div className="absolute inset-0 opacity-60" style={{ background: `radial-gradient(circle at 88% 12%, ${colorToRgba(card.color, 0.18)}, transparent 26%)` }} />
+                  <div className="relative">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: card.color }} />
+                      {card.label}
+                    </div>
+                    <div className="mt-3 text-[1.8rem] font-mono font-bold tracking-tight text-white">{card.value}</div>
+                    <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: '100%',
+                          background: `linear-gradient(90deg, ${colorToRgba(card.color, 0.98)}, ${colorToRgba(card.color, 0.58)})`,
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
 
@@ -1983,7 +2165,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
             <button
               type="button"
-              onClick={() => setShowAddCategory(prev => !prev)}
+              onClick={() => {
+                if (showAddCategory) {
+                  closeCategoryForm('cancel');
+                } else {
+                  openNewCategoryForm();
+                }
+              }}
               className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
             >
               {showAddCategory ? 'Cancel' : 'New Category'}
@@ -1991,67 +2179,184 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
 
           {showAddCategory && (
-            <div className="bg-black/25 border border-white/10 rounded-xl p-4 space-y-4">
-              <div>
-                <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Name</label>
-                <input
-                  type="text"
-                  value={newCategoryName}
-                  onChange={event => setNewCategoryName(event.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-white/30"
-                  placeholder="e.g. Math"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Color</label>
-                <div className="flex gap-2 flex-wrap">
-                  {PRESET_COLORS.map(color => (
-                    <button
-                      key={color}
-                      type="button"
-                      onClick={() => setNewCategoryColor(color)}
-                      className={`w-6 h-6 rounded-full transition-transform ${
-                        newCategoryColor === color ? 'scale-110 ring-2 ring-white' : 'opacity-60 hover:opacity-100'
-                      }`}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[10px] uppercase tracking-[0.14em] font-bold text-white/35 mb-2">Icon</label>
-                <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
-                  {CATEGORY_ICON_OPTIONS.map(({ key, label }) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => setNewCategoryIcon(key)}
-                      title={label}
-                      aria-label={label}
-                      className={`p-2.5 rounded-xl flex flex-col items-center justify-center gap-1.5 text-white transition-colors border ${
-                        newCategoryIcon === key
-                          ? 'bg-white/18 border-white/30'
-                          : 'bg-white/5 hover:bg-white/10 opacity-60 hover:opacity-100'
-                      }`}
+            <div
+              className={`doro-category-editor-shell relative overflow-hidden rounded-[1.35rem] border p-4 ${
+                categoryEditorCloseState === 'save'
+                  ? 'doro-category-editor-close-save'
+                  : categoryEditorCloseState === 'cancel'
+                    ? 'doro-category-editor-close-cancel'
+                    : 'doro-category-editor-open'
+              }`}
+              style={{
+                borderColor: colorToRgba(newCategoryColor, 0.3),
+                background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.18)} 0%, rgba(15, 23, 42, 0.34) 44%, rgba(15, 23, 42, 0.18) 100%)`,
+                boxShadow: `0 20px 42px -28px ${colorToRgba(newCategoryColor, 0.45)}`,
+              }}
+            >
+              <div className="pointer-events-none absolute inset-0 opacity-80" style={{ background: `radial-gradient(circle at 14% -8%, ${colorToRgba(newCategoryColor, 0.28)} 0%, transparent 32%), radial-gradient(circle at 88% 12%, rgba(255,255,255,0.1) 0%, transparent 22%)` }} />
+              <div className="relative space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/20 text-white shadow-lg"
+                      style={{
+                        background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.98)} 0%, ${colorToRgba(newCategoryColor, 0.72)} 100%)`,
+                        boxShadow: `0 14px 30px -18px ${colorToRgba(newCategoryColor, 0.68)}`,
+                      }}
                     >
-                      {getIcon(key, { size: 16 })}
-                      <span className="text-[9px] font-semibold tracking-[0.08em] uppercase leading-none text-white/70">
-                        {label}
-                      </span>
+                      {getIcon(newCategoryIcon, { size: 20, strokeWidth: 2.15 })}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/48">
+                        {editingCategoryId !== null ? 'Editing Category' : 'Creating Category'}
+                      </div>
+                      <div className="mt-1 truncate text-base font-bold tracking-tight text-white">
+                        {activeCategoryPreviewLabel}
+                      </div>
+                      <div className="mt-1 text-[11px] text-white/55">
+                        {editingCategoryId !== null
+                          ? 'Update the category name, color, or icon.'
+                          : 'Add a category for tasks, filters, and account stats.'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {editingCategoryId !== null && (
+                      <button
+                        type="button"
+                        onClick={openNewCategoryForm}
+                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+                      >
+                        Create New
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => closeCategoryForm('cancel')}
+                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-black/20 hover:bg-black/30 text-white/70 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+                    >
+                      Close
                     </button>
-                  ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_13rem]">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Name</label>
+                      <input
+                        type="text"
+                        value={newCategoryName}
+                        onChange={event => {
+                          setNewCategoryName(event.target.value);
+                          if (categoryFormError) setCategoryFormError(null);
+                        }}
+                        className="w-full rounded-2xl border border-white/12 bg-black/20 px-3.5 py-3 text-white text-sm outline-none transition-colors placeholder:text-white/22 focus:border-white/28"
+                        placeholder="e.g. Math"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Color</label>
+                      <div className="flex gap-2 flex-wrap">
+                        {PRESET_COLORS.map(color => (
+                          <button
+                            key={color}
+                            type="button"
+                            onClick={() => {
+                              setNewCategoryColor(color);
+                              if (categoryFormError) setCategoryFormError(null);
+                            }}
+                            className={`h-8 w-8 rounded-full border transition-all ${
+                              newCategoryColor === color
+                                ? 'scale-110 border-white/70 ring-2 ring-white/70 shadow-[0_0_0_6px_rgba(255,255,255,0.08)]'
+                                : 'border-white/10 opacity-72 hover:opacity-100 hover:-translate-y-[1px]'
+                            }`}
+                            style={{
+                              backgroundColor: color,
+                              boxShadow: newCategoryColor === color ? `0 12px 20px -12px ${colorToRgba(color, 0.8)}` : undefined,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/15 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Preview</div>
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="flex h-10 w-10 items-center justify-center rounded-2xl text-white"
+                          style={{ backgroundColor: newCategoryColor }}
+                        >
+                          {getIcon(newCategoryIcon, { size: 18, strokeWidth: 2.1 })}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-bold text-white">{activeCategoryPreviewLabel}</div>
+                          <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-white/40">
+                            {editingCategoryId !== null ? 'Live edit preview' : 'New category preview'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Icon</label>
+                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                    {CATEGORY_ICON_OPTIONS.map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          setNewCategoryIcon(key);
+                          if (categoryFormError) setCategoryFormError(null);
+                        }}
+                        title={label}
+                        aria-label={label}
+                        className={`rounded-2xl border p-2.5 text-white transition-all ${
+                          newCategoryIcon === key
+                            ? 'border-white/32 bg-white/18 shadow-[0_14px_26px_-20px_rgba(255,255,255,0.42)]'
+                            : 'border-white/8 bg-white/[0.04] opacity-65 hover:bg-white/[0.1] hover:opacity-100 hover:-translate-y-[1px]'
+                        }`}
+                      >
+                        <div className="flex flex-col items-center justify-center gap-1.5">
+                          {getIcon(key, { size: 16 })}
+                          <span className="text-[9px] font-semibold tracking-[0.08em] uppercase leading-none text-white/70">
+                            {label}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {categoryFormError && (
+                  <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                    {categoryFormError}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => closeCategoryForm('cancel')}
+                    className="flex-1 min-w-[8rem] rounded-xl border border-white/12 bg-black/20 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/72 transition-all hover:bg-black/30 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateCategory}
+                    disabled={!newCategoryName.trim()}
+                    className="flex-1 min-w-[8rem] rounded-xl bg-white px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-black shadow-lg transition-all hover:bg-gray-200 active:scale-[0.985] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {editingCategoryId !== null ? 'Save Changes' : 'Create Category'}
+                  </button>
                 </div>
               </div>
-
-              <button
-                type="button"
-                onClick={handleCreateCategory}
-                className="w-full py-2 bg-white text-black font-bold text-xs uppercase rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                Create Category
-              </button>
             </div>
           )}
 
@@ -2062,29 +2367,41 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             {safeCategories.map(category => (
               <div
                 key={category.id}
-                className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/10"
+                className={`relative overflow-hidden flex justify-between items-center gap-3 p-3 rounded-xl border transition-all duration-300 ${
+                  editingCategoryId === category.id
+                    ? 'bg-white/12 border-white/25 shadow-[0_18px_34px_-26px_rgba(255,255,255,0.34)] -translate-y-[1px]'
+                    : 'bg-white/5 border-white/10 hover:bg-white/[0.075]'
+                }`}
+                style={editingCategoryId === category.id ? { boxShadow: `0 20px 34px -28px ${colorToRgba(category.color, 0.7)}` } : undefined}
               >
-                <div className="flex items-center gap-3">
+                {editingCategoryId === category.id && (
+                  <div className="absolute inset-y-0 left-0 w-1.5" style={{ backgroundColor: category.color }} />
+                )}
+                <div className="flex items-center gap-3 min-w-0">
                   <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: category.color }}>
                     {getIcon(category.icon)}
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-white font-bold text-sm">{category.name}</div>
-                    <div className="text-[10px] uppercase tracking-[0.12em] text-white/35">
-                      {getCategoryIconLabel(category.icon)}
-                    </div>
-                  </div>
+                  <div className="min-w-0 text-white font-bold text-sm truncate">{category.name}</div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => deleteCategory(category.id)}
-                  className="text-white/30 hover:text-red-400 p-1 transition-colors"
-                  aria-label={`Delete ${category.name}`}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openCategoryEditor(category)}
+                    className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCategory(category.id)}
+                    className="text-white/30 hover:text-red-400 p-1 transition-colors"
+                    aria-label={`Delete ${category.name}`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -2132,9 +2449,155 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     );
   };
 
+  const renderDisplayedTab = () => {
+    if (displayedTab === 'log') return renderLogTab();
+    if (displayedTab === 'group') return renderGroupTab();
+    if (displayedTab === 'account') return renderAccountTab();
+    return renderSettingsTab();
+  };
+
+  const settingsPanelAnimationClass = settingsPanelTransitionPhase === 'leaving'
+    ? (settingsPanelTransitionDirection === 'forward' ? 'doro-settings-panel-leave-forward' : 'doro-settings-panel-leave-backward')
+    : settingsPanelTransitionPhase === 'entering'
+      ? (settingsPanelTransitionDirection === 'forward' ? 'doro-settings-panel-enter-forward' : 'doro-settings-panel-enter-backward')
+      : 'doro-settings-panel-idle';
+
   return (
     <>
       <style>{`
+        @keyframes doro-category-editor-open {
+          0% {
+            opacity: 0;
+            transform: translateY(10px) scale(0.972);
+            filter: saturate(0.92);
+          }
+          58% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.01);
+            filter: saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        .doro-category-editor-open {
+          animation: doro-category-editor-open 420ms cubic-bezier(0.16, 0.88, 0.3, 1.08);
+          transform-origin: top center;
+          will-change: transform, opacity, filter;
+        }
+        @keyframes doro-category-editor-close-save {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: brightness(1) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-6px) scale(0.985);
+            filter: brightness(1.08) saturate(1.08);
+          }
+        }
+        .doro-category-editor-close-save {
+          animation: doro-category-editor-close-save ${CATEGORY_EDITOR_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          pointer-events: none;
+        }
+        @keyframes doro-category-editor-close-cancel {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: brightness(1) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(8px) scale(0.978);
+            filter: brightness(0.96) saturate(0.92);
+          }
+        }
+        .doro-category-editor-close-cancel {
+          animation: doro-category-editor-close-cancel ${CATEGORY_EDITOR_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          pointer-events: none;
+        }
+        @keyframes doro-settings-panel-leave-forward {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(-22px, 6px, 0) scale(0.988);
+            filter: saturate(0.94);
+          }
+        }
+        @keyframes doro-settings-panel-leave-backward {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(22px, 6px, 0) scale(0.988);
+            filter: saturate(0.94);
+          }
+        }
+        @keyframes doro-settings-panel-enter-forward {
+          0% {
+            opacity: 0;
+            transform: translate3d(26px, 8px, 0) scale(0.988);
+            filter: saturate(0.95);
+          }
+          62% {
+            opacity: 1;
+            transform: translate3d(-2px, -1px, 0) scale(1.006);
+            filter: saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        @keyframes doro-settings-panel-enter-backward {
+          0% {
+            opacity: 0;
+            transform: translate3d(-26px, 8px, 0) scale(0.988);
+            filter: saturate(0.95);
+          }
+          62% {
+            opacity: 1;
+            transform: translate3d(2px, -1px, 0) scale(1.006);
+            filter: saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        .doro-settings-panel-view {
+          min-height: 100%;
+          will-change: transform, opacity, filter;
+          transform-origin: top center;
+        }
+        .doro-settings-panel-idle {
+          opacity: 1;
+          transform: translate3d(0, 0, 0);
+        }
+        .doro-settings-panel-leave-forward {
+          animation: doro-settings-panel-leave-forward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+        .doro-settings-panel-leave-backward {
+          animation: doro-settings-panel-leave-backward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+        .doro-settings-panel-enter-forward {
+          animation: doro-settings-panel-enter-forward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.16, 0.88, 0.3, 1.04);
+        }
+        .doro-settings-panel-enter-backward {
+          animation: doro-settings-panel-enter-backward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.16, 0.88, 0.3, 1.04);
+        }
         .settings-option-btn {
           transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease;
         }
@@ -2353,11 +2816,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
           </div>
 
-          <div className="settings-body flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative">
-            {activeTab === 'log' && renderLogTab()}
-            {activeTab === 'group' && renderGroupTab()}
-            {activeTab === 'account' && renderAccountTab()}
-            {activeTab === 'settings' && renderSettingsTab()}
+          <div
+            ref={settingsBodyRef}
+            className={`settings-body flex-1 overflow-y-auto custom-scrollbar bg-[#0F0F11]/50 relative ${
+              settingsPanelTransitionPhase !== 'idle' ? 'pointer-events-none' : ''
+            }`}
+          >
+            <div className={`doro-settings-panel-view ${settingsPanelAnimationClass}`}>
+              {renderDisplayedTab()}
+            </div>
           </div>
         </div>
       </div>

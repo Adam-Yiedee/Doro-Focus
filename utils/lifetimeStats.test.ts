@@ -13,12 +13,14 @@ const makeLog = ({
   end,
   reason = '',
   categoryId = null,
+  categoryName,
 }: {
   type?: LogEntry['type'];
   start: string;
   end: string;
   reason?: string;
   categoryId?: number | null;
+  categoryName?: string;
 }): LogEntry => ({
   type,
   start,
@@ -28,6 +30,7 @@ const makeLog = ({
   task: null,
   color: undefined,
   categoryId,
+  categoryName,
 });
 
 describe('calculateLifetimeStatsFromData', () => {
@@ -138,5 +141,37 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.totalFocusHours).toBeCloseTo(25 / 60, 5);
     expect(stats.totalPomos).toBe(1);
     expect(stats.categoryBreakdown).toEqual({ Study: 25 });
+  });
+
+  it('falls back to the saved category snapshot when a category no longer exists', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        reason: 'Pomodoro Complete',
+        categoryId: 99,
+        categoryName: 'Archived Reading',
+      }),
+    ], categories);
+
+    expect(stats.categoryBreakdown).toEqual({ 'Archived Reading': 25 });
+  });
+
+  it('prefers the live category name over an older saved snapshot when the category still exists', () => {
+    const renamedCategories: Category[] = [
+      { id: 1, name: 'Deep Writing', color: '#C86D80', icon: 'pen' },
+    ];
+
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        reason: 'Pomodoro Complete',
+        categoryId: 1,
+        categoryName: 'Writing',
+      }),
+    ], renamedCategories);
+
+    expect(stats.categoryBreakdown).toEqual({ 'Deep Writing': 25 });
   });
 });

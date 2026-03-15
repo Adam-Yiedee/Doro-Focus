@@ -1,4 +1,5 @@
 import { Category, LogEntry } from '../types';
+import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import { LONG_GRACE_SESSION_TIMEOUT_SECONDS } from './timerRuntime';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -352,12 +353,7 @@ export const computeAccountInsights = ({
   joinedAt: string;
   nowMs?: number;
 }): AccountInsights => {
-  const categoryNameById = new Map<number, string>();
-  categories.forEach((category) => {
-    if (Number.isFinite(category.id) && category.name) {
-      categoryNameById.set(category.id, category.name);
-    }
-  });
+  const categoriesById = getCategoryMapById(categories);
 
   const normalizedLogs = logs
     .map(normalizeLogWindow)
@@ -420,9 +416,7 @@ export const computeAccountInsights = ({
   let lastWeekFocusMinutes = 0;
 
   productiveWindows.forEach((window) => {
-    const categoryName = typeof window.entry.categoryId === 'number'
-      ? (categoryNameById.get(window.entry.categoryId) || 'Uncategorized')
-      : 'Uncategorized';
+    const categoryName = resolveLogEntryCategory(window.entry, categoriesById).name || 'Uncategorized';
     const totalMinutes = (window.endMs - window.startMs) / 60_000;
 
     categoryMinutes.set(categoryName, (categoryMinutes.get(categoryName) || 0) + totalMinutes);

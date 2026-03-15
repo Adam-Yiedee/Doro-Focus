@@ -13,12 +13,14 @@ const makeLog = ({
   end,
   reason = '',
   categoryId = null,
+  categoryName,
 }: {
   type?: LogEntry['type'];
   start: string;
   end: string;
   reason?: string;
   categoryId?: number | null;
+  categoryName?: string;
 }): LogEntry => ({
   type,
   start,
@@ -28,6 +30,7 @@ const makeLog = ({
   task: null,
   color: undefined,
   categoryId,
+  categoryName,
 });
 
 describe('computeAccountInsights', () => {
@@ -355,6 +358,55 @@ describe('computeAccountInsights', () => {
       bucketMinutes: [15 * 60 + 20],
       count: 1,
       sourceBucketCount: 3,
+    });
+  });
+
+  it('uses the saved category snapshot when logs reference a deleted category', () => {
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-05T00:00:00',
+      nowMs: Date.parse('2026-01-05T23:00:00'),
+      categories,
+      logs: [
+        makeLog({
+          start: '2026-01-05T09:00:00',
+          end: '2026-01-05T09:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 99,
+          categoryName: 'Archived Reading',
+        }),
+      ],
+    });
+
+    expect(insights.topCategory).toMatchObject({
+      name: 'Archived Reading',
+      minutes: 25,
+    });
+    expect(insights.today.topCategoryName).toBe('Archived Reading');
+  });
+
+  it('prefers the current category name when the category still exists', () => {
+    const renamedCategories: Category[] = [
+      { id: 2, name: 'Deep Study', color: '#4FAE9B', icon: 'book' },
+    ];
+
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-05T00:00:00',
+      nowMs: Date.parse('2026-01-05T23:00:00'),
+      categories: renamedCategories,
+      logs: [
+        makeLog({
+          start: '2026-01-05T09:00:00',
+          end: '2026-01-05T09:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 2,
+          categoryName: 'Study',
+        }),
+      ],
+    });
+
+    expect(insights.topCategory).toMatchObject({
+      name: 'Deep Study',
+      minutes: 25,
     });
   });
 });

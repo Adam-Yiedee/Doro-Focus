@@ -1,4 +1,5 @@
 import { Category, LogEntry, SessionRecord, User } from '../types';
+import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
@@ -100,20 +101,13 @@ export const calculateLifetimeStatsFromData = (
     0,
   );
 
-  const categoryMap = new Map<number, string>();
-  safeCategories.forEach((cat) => {
-    if (typeof cat.id === 'number' && Number.isFinite(cat.id) && cat.name) {
-      categoryMap.set(cat.id, cat.name);
-    }
-  });
+  const categoryMap = getCategoryMapById(safeCategories);
 
   const categoryBreakdown: Record<string, number> = {};
   productiveLogs.forEach((entry) => {
     const minutes = Math.max(0, entry.duration / 60);
     if (minutes <= 0) return;
-    const key = typeof entry.categoryId === 'number'
-      ? (categoryMap.get(entry.categoryId) || 'Uncategorized')
-      : 'Uncategorized';
+    const key = resolveLogEntryCategory(entry, categoryMap).name || 'Uncategorized';
     categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
   });
   fallbackSessions.forEach((session) => {

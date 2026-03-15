@@ -62,6 +62,7 @@ import {
   shouldRefreshMembersAfterPeerCleanup,
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
+import { buildCategorySnapshot, resolveLogEntryCategory } from '../utils/categoryTracking';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 
 export interface ScheduleBreak {
@@ -258,6 +259,27 @@ const createTaskId = () => {
   return lastTaskIdSeed;
 };
 
+let lastCategoryIdSeed = 0;
+const getMaxCategoryId = (categories: Category[]): number => (
+  categories.reduce((maxId, category) => {
+    if (typeof category.id === 'number' && Number.isFinite(category.id)) {
+      return Math.max(maxId, Math.floor(category.id));
+    }
+    return maxId;
+  }, 0)
+);
+
+const createCategoryId = (categories: Category[]) => {
+  const candidate = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+  const currentMax = getMaxCategoryId(categories);
+  if (candidate <= lastCategoryIdSeed || candidate <= currentMax) {
+    lastCategoryIdSeed = Math.max(lastCategoryIdSeed, currentMax) + 1;
+  } else {
+    lastCategoryIdSeed = candidate;
+  }
+  return lastCategoryIdSeed;
+};
+
 // Recursive Helpers for Tasks
 const recalculateStats = (task: Task): Task => {
   if (task.subtasks.length > 0) {
@@ -395,6 +417,29 @@ const removeCompletedTasks = (tasks: Task[]): Task[] => {
             ...t,
             subtasks: removeCompletedTasks(t.subtasks)
         }));
+};
+
+const clearCategoryFromTasks = (tasks: Task[], categoryId: number): Task[] => {
+  let changed = false;
+
+  const nextTasks = tasks.map((task) => {
+    const nextSubtasks = task.subtasks.length > 0 ? clearCategoryFromTasks(task.subtasks, categoryId) : task.subtasks;
+    const nextCategoryId = task.categoryId === categoryId ? null : task.categoryId;
+    const taskChanged = nextSubtasks !== task.subtasks || nextCategoryId !== task.categoryId;
+
+    if (!taskChanged) {
+      return task;
+    }
+
+    changed = true;
+    return {
+      ...task,
+      categoryId: nextCategoryId,
+      subtasks: nextSubtasks,
+    };
+  });
+
+  return changed ? nextTasks : tasks;
 };
 
 const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
@@ -2647,14 +2692,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
+    const categorySnapshot = buildCategorySnapshot(categories, selectedTask?.categoryId ?? null);
     const entry: LogEntry = {
       type, start: start.toISOString(), end: new Date().toISOString(),
       duration, reason, task: selectedTask ? { id: selectedTask.id, name: selectedTask.name } : null,
       color: currentContext.color,
-      categoryId: selectedTask ? selectedTask.categoryId : null
+      categoryId: selectedTask ? selectedTask.categoryId : null,
+      ...categorySnapshot,
     };
     setLogs(prev => [entry, ...prev]);
-  }, [tasks]);
+  }, [categories, tasks]);
 
   const sendNotification = useCallback((title: string, body: string) => {
     if ("Notification" in window) {
@@ -3262,6 +3309,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let pendingActiveDuration = 0;
     let pendingActiveMode: TimerMode | null = null;
     let pendingActiveCategoryId: number | null | undefined = null;
+    let pendingActiveCategorySnapshot: Pick<LogEntry, 'categoryName' | 'categoryColor' | 'categoryIcon'> = {};
     let pendingActiveStartIso: string | null = null;
 
     if (!isIdle && currentActivityStartRef.current) {
@@ -3270,6 +3318,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         pendingActiveDuration = elapsed;
         pendingActiveMode = activeMode;
         pendingActiveCategoryId = activeTask?.categoryId;
+        pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
         pendingActiveStartIso = currentActivityStartRef.current.toISOString();
         const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
         const sessionEndEntry: LogEntry = {
@@ -3281,6 +3330,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           task: selectedTask,
           color: activeColor,
           categoryId: pendingActiveCategoryId ?? null,
+          ...pendingActiveCategorySnapshot,
         };
         setLogs(prev => [sessionEndEntry, ...prev]);
       }
@@ -3302,17 +3352,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const catStats: Record<string, number> = {};
     workLogs.forEach(l => {
         const minutes = l.duration / 60;
-        if (typeof l.categoryId === 'number') {
-          const cat = categories.find(c => c.id === l.categoryId);
-          const key = cat?.name || 'Uncategorized';
-          catStats[key] = (catStats[key] || 0) + minutes;
-        } else {
-          catStats.Uncategorized = (catStats.Uncategorized || 0) + minutes;
-        }
+        const key = resolveLogEntryCategory(l, categories).name || 'Uncategorized';
+        catStats[key] = (catStats[key] || 0) + minutes;
     });
     if (pendingWorkSeconds > 0 && typeof pendingActiveCategoryId === 'number') {
-      const cat = categories.find(c => c.id === pendingActiveCategoryId);
-      const key = cat?.name || 'Uncategorized';
+      const key = resolveLogEntryCategory({
+        categoryId: pendingActiveCategoryId ?? null,
+        ...pendingActiveCategorySnapshot,
+      }, categories).name || 'Uncategorized';
       catStats[key] = (catStats[key] || 0) + (pendingWorkSeconds / 60);
     } else if (pendingWorkSeconds > 0) {
       catStats.Uncategorized = (catStats.Uncategorized || 0) + (pendingWorkSeconds / 60);
@@ -3349,6 +3396,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       task: activeTask ? { id: activeTask.id, name: activeTask.name } : null,
                       color: activeColor,
                       categoryId: pendingActiveCategoryId ?? null,
+                      ...pendingActiveCategorySnapshot,
                     } as LogEntry]
                   : [];
                 const nextStats = calculateLifetimeStats(
@@ -3584,10 +3632,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updateTask({ ...task, scheduledStart, isFuture: true });
   };
 
-  const addCategory = (name: string, color: string, icon: string) => setCategories(prev => [...prev, { id: Date.now(), name, color, icon }]);
-  const updateCategory = (cat: Category) => setCategories(prev => prev.map(c => c.id === cat.id ? cat : c));
+  const addCategory = (name: string, color: string, icon: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    setCategories(prev => [...prev, { id: createCategoryId(prev), name: trimmedName, color, icon }]);
+  };
+  const updateCategory = (cat: Category) => {
+    const trimmedName = cat.name.trim();
+    if (!trimmedName) return;
+    setCategories(prev => prev.map(c => (c.id === cat.id ? { ...cat, name: trimmedName } : c)));
+  };
   const deleteCategory = (id: number) => {
     setCategories(prev => prev.filter(c => c.id !== id));
+    setTasks(prev => clearCategoryFromTasks(prev, id));
     if (selectedCategoryId === id) setSelectedCategoryId(null);
   };
 

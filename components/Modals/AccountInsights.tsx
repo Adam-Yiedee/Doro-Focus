@@ -6,6 +6,7 @@ import {
   WEEKDAY_LABELS,
   WEEKDAY_SHORT_LABELS,
 } from '../../utils/accountInsights';
+import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 
 interface AccountInsightsProps {
@@ -57,9 +58,6 @@ const formatMinutesPrecise = (minutes: number) => {
 };
 
 const formatPct = (value: number) => `${Math.round(value * 100)}%`;
-const formatSignedMinutes = (minutes: number) => Math.abs(minutes) < 0.5 ? 'flat' : `${minutes > 0 ? '+' : '-'}${formatMinutesCompact(Math.abs(minutes))}`;
-const formatSignedCount = (value: number) => value === 0 ? 'flat' : `${value > 0 ? '+' : ''}${value}`;
-
 const formatHour = (hour: number) => {
   const normalized = ((hour % 24) + 24) % 24;
   const suffix = normalized >= 12 ? 'PM' : 'AM';
@@ -150,7 +148,17 @@ const Card: React.FC<{
 
 const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joinedAt, accentColor, isLightTheme, showTodayStats = true }) => {
   const insights = useMemo(() => computeAccountInsights({ logs, categories, joinedAt }), [categories, joinedAt, logs]);
-  const categoryColors = useMemo(() => new Map(categories.map((category) => [category.name, category.color])), [categories]);
+  const categoryColors = useMemo(() => {
+    const categoriesById = getCategoryMapById(categories);
+    const map = new Map(categories.map((category) => [category.name, category.color]));
+    logs.forEach((entry) => {
+      const resolvedCategory = resolveLogEntryCategory(entry, categoriesById);
+      if (resolvedCategory.name && resolvedCategory.color && !map.has(resolvedCategory.name)) {
+        map.set(resolvedCategory.name, resolvedCategory.color);
+      }
+    });
+    return map;
+  }, [categories, logs]);
   const categorySlices = useMemo<CategorySliceWithColor[]>(() => (
     insights.categorySlices.map((slice, index) => ({
       ...slice,
@@ -161,7 +169,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   ), [accentColor, categoryColors, insights.categorySlices]);
 
   const [activeCategoryName, setActiveCategoryName] = useState<string | null>(categorySlices[0]?.name ?? null);
-  const [hoveredHour, setHoveredHour] = useState<number | null>(null);
   const [hoveredTrendDateKey, setHoveredTrendDateKey] = useState<string | null>(null);
   const [hoveredSessionLaneKey, setHoveredSessionLaneKey] = useState<string | null>(null);
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
@@ -216,12 +223,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     });
   }, [categorySlices]);
 
-  const comparisonRows = [
-    ['Focus Time', insights.weekComparison.thisWeek.focusMinutes, insights.weekComparison.lastWeek.focusMinutes, formatMinutesCompact(insights.weekComparison.thisWeek.focusMinutes), formatMinutesCompact(insights.weekComparison.lastWeek.focusMinutes), formatSignedMinutes(insights.weekComparison.focusDeltaMinutes), insights.weekComparison.focusDeltaPct, accentColor],
-    ['Pomodoros', insights.weekComparison.thisWeek.pomodoros, insights.weekComparison.lastWeek.pomodoros, `${insights.weekComparison.thisWeek.pomodoros}`, `${insights.weekComparison.lastWeek.pomodoros}`, formatSignedCount(insights.weekComparison.pomoDelta), insights.weekComparison.pomoDeltaPct, PRESET_COLORS[2]],
-    ['Sessions', insights.weekComparison.thisWeek.sessions, insights.weekComparison.lastWeek.sessions, `${insights.weekComparison.thisWeek.sessions}`, `${insights.weekComparison.lastWeek.sessions}`, formatSignedCount(insights.weekComparison.sessionDelta), insights.weekComparison.sessionDeltaPct, PRESET_COLORS[5]],
-  ] as const;
-
   const trendMaxFocus = Math.max(1, ...insights.dailyFocusTrend.map((point) => point.focusMinutes));
   const trendPoints = useMemo(() => (
     insights.dailyFocusTrend.map((point, index, array) => {
@@ -247,20 +248,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const trendMaxPomos = Math.max(1, ...insights.dailyFocusTrend.map((point) => point.pomodoros));
   const trendMaxSessions = Math.max(1, ...insights.dailyFocusTrend.map((point) => point.sessions));
   const activeTrendDayCount = insights.dailyFocusTrend.filter((point) => point.focusMinutes > 0).length;
-  const bestHourRows = useMemo(() => (
-    insights.hourlyFocusMinutes
-      .map((minutes, hour) => ({ hour, minutes }))
-      .filter((entry) => entry.minutes > 0)
-      .sort((left, right) => right.minutes - left.minutes || left.hour - right.hour)
-      .slice(0, 6)
-  ), [insights.hourlyFocusMinutes]);
-  const activeBestHour = bestHourRows.find((entry) => entry.hour === hoveredHour) || bestHourRows[0] || null;
-  const bestHourMaxMinutes = Math.max(1, ...bestHourRows.map((entry) => entry.minutes));
-  const focusPhaseRows = (Object.entries(dayPartLabels) as Array<[DayPartKey, string]>).map(([key, label]) => ({
-    key,
-    label,
-    minutes: insights.dayPartTotals[key],
-  }));
 
   const activeSessionLane = insights.sessionLanes.find((lane) => lane.dateKey === hoveredSessionLaneKey)
     || insights.sessionLanes.find((lane) => lane.sessions.length > 0)
@@ -356,12 +343,16 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     >
       {categorySlices.length > 0 ? (
         <div className="grid gap-5 md:grid-cols-[0.9fr_1.1fr]">
-          <div className="flex items-center justify-center">
-            <div className="relative h-60 w-60">
-              <svg viewBox="0 0 120 120" className="h-full w-full">
+          <div className="flex items-center justify-center overflow-visible">
+            <div className="relative h-64 w-64 overflow-visible md:h-[17rem] md:w-[17rem]">
+              <svg viewBox="-14 -14 148 148" className="h-full w-full overflow-visible">
                 <defs>
-                  <filter id="doroPieGlow" x="-40%" y="-40%" width="180%" height="180%">
-                    <feGaussianBlur stdDeviation="3.6" result="blur" />
+                  <filter id="doroPieGlow" x="-90%" y="-90%" width="280%" height="280%">
+                    <feGaussianBlur stdDeviation="5.5" result="blur" />
+                    <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                  </filter>
+                  <filter id="doroPieSweepGlow" x="-120%" y="-120%" width="340%" height="340%">
+                    <feGaussianBlur stdDeviation="4.8" result="blur" />
                     <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
                   </filter>
                 </defs>
@@ -387,6 +378,28 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                     />
                   );
                 })}
+                <circle
+                  cx="60"
+                  cy="60"
+                  r="46"
+                  fill="none"
+                  stroke={rgba('#ffffff', isLightTheme ? 0.62 : 0.78)}
+                  strokeWidth="18"
+                  strokeLinecap="round"
+                  strokeDasharray="44 245"
+                  opacity={isLightTheme ? 0.68 : 0.9}
+                  filter="url(#doroPieSweepGlow)"
+                  pointerEvents="none"
+                >
+                  <animateTransform
+                    attributeName="transform"
+                    type="rotate"
+                    from="-90 60 60"
+                    to="270 60 60"
+                    dur="8s"
+                    repeatCount="indefinite"
+                  />
+                </circle>
               </svg>
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                 <div className="text-center">
@@ -790,124 +803,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           )}
         </Card>
 
-        <Card title="This Week Vs Last Week" subtitle="A quick comparison." accent={PRESET_COLORS[2]} isLightTheme={isLightTheme}>
-          <div className="space-y-4">
-            {comparisonRows.map(([label, current, previous, currentLabel, previousLabel, deltaLabel, pct, color]) => {
-              const rowMax = Math.max(1, current as number, previous as number);
-              return (
-                <div key={label} className="rounded-[1.25rem] border border-white/10 bg-black/12 px-4 py-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">{label}</div>
-                    <div className="text-[11px] font-bold text-white/72">
-                      {deltaLabel}
-                      {pct === null ? ' new' : pct === 0 ? '' : ` (${pct > 0 ? '+' : ''}${Math.round(pct)}%)`}
-                    </div>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {[
-                      ['This week', current as number, currentLabel as string, color as string],
-                      ['Last week', previous as number, previousLabel as string, rgba(color as string, 0.45)],
-                    ].map(([barLabel, value, display, fill]) => (
-                      <div key={barLabel}>
-                        <div className="flex items-center justify-between gap-3 text-[11px] text-white/56">
-                          <span>{barLabel}</span>
-                          <span className="font-mono text-white/82">{display}</span>
-                        </div>
-                        <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-white/8">
-                          <div
-                            className="h-full rounded-full transition-[width] duration-500"
-                            style={{
-                              width: `${((value as number) / rowMax) * 100}%`,
-                              background: typeof fill === 'string' && fill.startsWith('rgba')
-                                ? fill
-                                : `linear-gradient(90deg, ${rgba(fill as string, 0.95)}, ${rgba(fill as string, 0.62)})`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      </div>
-
-      <div className="space-y-4">
-        <Card title="Best Hours" subtitle="Where the most saved focus lives." accent={accentColor} isLightTheme={isLightTheme}>
-          {bestHourRows.length > 0 ? (
-            <div className="space-y-4">
-              <div className="rounded-[1.35rem] border border-white/10 bg-black/12 px-4 py-4">
-                <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">Selected Hour</div>
-                <div className="mt-2 text-xl font-bold tracking-tight text-white">
-                  {activeBestHour ? formatHour(activeBestHour.hour) : '--'}
-                </div>
-                <div className="mt-1 text-sm text-white/58">
-                  {activeBestHour
-                    ? `${formatMinutesPrecise(activeBestHour.minutes)} saved in this hour.`
-                    : 'Hover a row to inspect an hour.'}
-                </div>
-              </div>
-
-              <div className="space-y-2.5">
-                {bestHourRows.map((entry, index) => {
-                  const active = activeBestHour?.hour === entry.hour;
-                  return (
-                    <button
-                      key={entry.hour}
-                      type="button"
-                      onMouseEnter={() => setHoveredHour(entry.hour)}
-                      onMouseLeave={() => setHoveredHour(null)}
-                      onFocus={() => setHoveredHour(entry.hour)}
-                      onBlur={() => setHoveredHour(null)}
-                      className={`w-full rounded-[1.15rem] border px-4 py-3 text-left transition-all ${active ? 'border-white/20 bg-white/10' : 'border-white/10 bg-black/10 hover:bg-white/6'}`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/16 text-[11px] font-bold text-white/78">
-                            {index + 1}
-                          </div>
-                          <div>
-                            <div className="text-sm font-bold text-white">{formatHour(entry.hour)}</div>
-                            <div className="text-[11px] text-white/48">{formatMinutesPrecise(entry.minutes)}</div>
-                          </div>
-                        </div>
-                        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/52">
-                          {Math.round((entry.minutes / bestHourMaxMinutes) * 100)}%
-                        </div>
-                      </div>
-                      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-white/8">
-                        <div
-                          className="h-full rounded-full transition-[width] duration-300"
-                          style={{
-                            width: `${(entry.minutes / bestHourMaxMinutes) * 100}%`,
-                            background: active
-                              ? `linear-gradient(90deg, ${rgba(accentColor, 0.98)}, ${rgba(accentColor, 0.62)})`
-                              : `linear-gradient(90deg, ${rgba(accentColor, 0.72)}, ${rgba(accentColor, 0.38)})`,
-                          }}
-                        />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                {focusPhaseRows.map((phase) => (
-                  <div key={phase.key} className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-3">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">{phase.label}</div>
-                    <div className="mt-2 text-lg font-bold text-white">{formatMinutesCompact(phase.minutes)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-5 text-sm leading-relaxed text-white/58">
-              Best hours will appear once enough saved focus exists to compare them.
-            </div>
-          )}
-        </Card>
       </div>
     </div>
   );
