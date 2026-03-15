@@ -3038,6 +3038,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .settings-tablist {
           isolation: isolate;
+          overflow: visible;
+          padding-top: 0.04rem;
+          padding-bottom: 0.04rem;
         }
         .settings-tab-indicator {
           position: absolute;
@@ -3080,20 +3083,21 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
             color 220ms ease,
             border-color 180ms ease,
+            background-color 180ms ease,
             box-shadow 220ms ease,
             opacity 200ms ease;
         }
         .settings-tab-btn:hover {
-          transform: translateY(-1px);
+          transform: none;
         }
         .settings-tab-btn:active {
-          transform: translateY(0) scale(0.985);
+          transform: scale(0.985);
         }
         .settings-tab-label {
           position: relative;
           display: block;
-          transform: translateY(0.5px);
-          opacity: 0.76;
+          transform: translateY(0.2px);
+          opacity: 0.74;
           transition:
             transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
             opacity 220ms ease,
@@ -3101,17 +3105,20 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             text-shadow 220ms ease;
         }
         .settings-tab-btn:hover .settings-tab-label {
-          transform: translateY(-0.5px);
-          opacity: 0.92;
+          transform: translateY(-0.15px);
+          opacity: 0.88;
         }
         .settings-tab-btn.is-active .settings-tab-label {
-          transform: translateY(-1px);
+          transform: translateY(-0.35px);
           opacity: 1;
         }
         .settings-close-slot {
-          transition: background-color 180ms ease, border-color 180ms ease;
+          transition: background-color 180ms ease, border-color 180ms ease, box-shadow 220ms ease;
         }
         .settings-close-btn {
+          border-radius: 999px;
+          backdrop-filter: blur(18px) saturate(165%);
+          -webkit-backdrop-filter: blur(18px) saturate(165%);
           transition:
             transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
             background-color 180ms ease,
@@ -3121,10 +3128,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             opacity 180ms ease;
         }
         .settings-close-btn:hover {
-          transform: translateY(-1px);
+          transform: none;
         }
         .settings-close-btn:active {
-          transform: translateY(0) scale(0.97);
+          transform: scale(0.97);
         }
         .settings-option-btn {
           transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease;
@@ -3185,8 +3192,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           z-index: 1;
         }
         .doro-settings-shell.theme-light .settings-tabbar {
-          padding: 0.6rem;
-          gap: 0.45rem;
+          padding: 0.76rem 0.68rem 0.62rem;
+          gap: 0.4rem;
           border-color: rgba(255, 255, 255, 0.26) !important;
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(245, 249, 255, 0.14)) !important;
           backdrop-filter: blur(18px) saturate(180%);
@@ -3204,8 +3211,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn:hover {
           color: #102133 !important;
-          border-color: rgba(255, 255, 255, 0.34);
-          box-shadow: 0 18px 28px -26px rgba(77, 93, 123, 0.24);
+          border-color: rgba(255, 255, 255, 0.24);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(244, 248, 255, 0.08)) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48), 0 10px 18px -18px rgba(77, 93, 123, 0.18);
         }
         .doro-settings-shell.theme-light .settings-tabbar .settings-tab-btn.is-active {
           color: #102133 !important;
@@ -3214,19 +3222,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-light .settings-close-slot {
           border-color: rgba(255, 255, 255, 0.22) !important;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(244, 248, 255, 0.08)) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(244, 248, 255, 0.06)) !important;
         }
         .doro-settings-shell.theme-light .settings-close-btn {
-          border-color: rgba(255, 255, 255, 0.38) !important;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(241, 246, 253, 0.18)) !important;
-          color: #607089 !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 16px 24px -24px rgba(77, 93, 123, 0.36);
+          border-color: rgba(255, 255, 255, 0.34) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(241, 246, 253, 0.12)) !important;
+          color: #66778f !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68), 0 14px 22px -22px rgba(77, 93, 123, 0.26);
         }
         .doro-settings-shell.theme-light .settings-close-btn:hover {
-          border-color: rgba(255, 255, 255, 0.52) !important;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(243, 248, 255, 0.26)) !important;
+          border-color: rgba(255, 255, 255, 0.44) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(243, 248, 255, 0.18)) !important;
           color: #102133 !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 18px 28px -24px rgba(77, 93, 123, 0.4);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 12px 22px -22px rgba(77, 93, 123, 0.22);
         }
         .doro-settings-shell.theme-light .settings-body {
           position: relative;
@@ -3293,6 +3301,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-shell.theme-light [class*='text-white/'] {
           color: #667990 !important;
         }
+        .doro-settings-shell.theme-dark .settings-tabbar {
+          padding: 0.76rem 0.68rem 0.62rem;
+          gap: 0.4rem;
+          border-color: rgba(255, 255, 255, 0.08) !important;
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
+            linear-gradient(180deg, rgba(8, 12, 20, 0.86), rgba(8, 12, 20, 0.68)) !important;
+          box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+        }
         .doro-settings-shell.theme-dark .settings-tab-indicator {
           border: 1px solid rgba(255, 255, 255, 0.12);
           background:
@@ -3305,7 +3322,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn:hover {
           color: rgba(255, 255, 255, 0.72);
-          border-color: rgba(255, 255, 255, 0.08);
+          border-color: rgba(255, 255, 255, 0.07);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0.012)) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 10px 18px -18px rgba(0, 0, 0, 0.62);
         }
         .doro-settings-shell.theme-dark .settings-tabbar .settings-tab-btn.is-active {
           color: rgba(255, 255, 255, 0.94);
@@ -3316,22 +3335,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-dark .settings-close-slot {
           border-color: rgba(255, 255, 255, 0.08);
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012));
         }
         .doro-settings-shell.theme-dark .settings-close-btn {
-          border-color: rgba(255, 255, 255, 0.1);
+          border-color: rgba(255, 255, 255, 0.11);
           background:
-            radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.012) 74%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(0, 0, 0, 0.18));
-          color: rgba(255, 255, 255, 0.62);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 16px 24px -24px rgba(0, 0, 0, 0.82);
+            radial-gradient(circle at 28% 28%, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.016) 70%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.16));
+          color: rgba(255, 255, 255, 0.64);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 14px 22px -24px rgba(0, 0, 0, 0.74);
         }
         .doro-settings-shell.theme-dark .settings-close-btn:hover {
-          border-color: rgba(255, 255, 255, 0.16);
+          border-color: rgba(255, 255, 255, 0.14);
           background:
-            radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.02) 74%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.2));
-          color: rgba(255, 255, 255, 0.84);
+            radial-gradient(circle at 28% 28%, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.02) 70%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.18));
+          color: rgba(255, 255, 255, 0.82);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 20px -24px rgba(0, 0, 0, 0.62);
         }
       `}</style>
 
@@ -3382,13 +3402,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
 
             <div
-              className="settings-close-slot md:hidden w-[4.15rem] shrink-0 flex items-center justify-center border-l"
+              className="settings-close-slot md:hidden w-[4.35rem] shrink-0 flex items-center justify-center border-l"
             >
               <button
                 type="button"
                 onClick={onClose}
                 aria-label="Close menu"
-                className="settings-close-btn flex h-9 w-9 items-center justify-center rounded-[1rem] border"
+                className="settings-close-btn flex h-10 w-10 items-center justify-center rounded-full border"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M18 6 6 18" />
