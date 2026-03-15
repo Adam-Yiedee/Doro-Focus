@@ -80,6 +80,8 @@ export interface SessionStats {
   categoryStats: Record<string, number>;
 }
 
+type PendingMenuAction = 'new-category';
+
 interface AuthResult {
   ok: boolean;
   error: string | null;
@@ -128,6 +130,7 @@ interface TimerContextType {
   hostSyncConfig: GroupSyncConfig;
   clientSyncConfig: GroupSyncConfig; // What the joiner chooses to accept
   pendingJoinId: string | null;
+  pendingMenuAction: PendingMenuAction | null;
   groupNotice: GroupNotice | null;
   guestTimerLockNotice: GuestTimerLockNotice | null;
   accountSyncState: 'idle' | 'pending' | 'syncing' | 'synced' | 'error';
@@ -163,6 +166,8 @@ interface TimerContextType {
   updateHostSyncConfig: (config: GroupSyncConfig) => void;
   updateClientSyncConfig: (config: GroupSyncConfig) => void;
   setPendingJoinId: (id: string | null) => void;
+  requestNewCategoryFlow: () => void;
+  clearPendingMenuAction: () => void;
   dismissGuestTimerLockNotice: () => void;
 
   // Data Management
@@ -567,6 +572,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [hostSyncConfig, setHostSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [clientSyncConfig, setClientSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [pendingJoinId, setPendingJoinId] = useState<string | null>(null);
+  const [pendingMenuAction, setPendingMenuAction] = useState<PendingMenuAction | null>(null);
   const [groupNotice, setGroupNotice] = useState<GroupNotice | null>(null);
   const [guestTimerLockNotice, setGuestTimerLockNotice] = useState<GuestTimerLockNotice | null>(null);
   const hostSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
@@ -1934,6 +1940,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const dismissGuestTimerLockNotice = useCallback(() => {
     setGuestTimerLockNotice(null);
+  }, []);
+
+  const requestNewCategoryFlow = useCallback(() => {
+    setPendingMenuAction('new-category');
+  }, []);
+
+  const clearPendingMenuAction = useCallback(() => {
+    setPendingMenuAction(null);
   }, []);
 
   const blockGuestTimerControl = useCallback(() => {
@@ -3671,12 +3685,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, groupNotice, guestTimerLockNotice,
+      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
       accountSyncState, accountSyncError, lastAccountSyncAt,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
-      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, dismissGuestTimerLockNotice,
+      createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       toggleTaskFuture, setTaskSchedule,
       addCategory, updateCategory, deleteCategory, selectCategory: setSelectedCategoryId,

@@ -488,7 +488,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     updateHostSyncConfig,
     updateClientSyncConfig,
     pendingJoinId,
+    pendingMenuAction,
     setPendingJoinId,
+    clearPendingMenuAction,
     setWeeklyScheduleOpen,
   } = useTimer();
 
@@ -518,6 +520,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const settingsPanelTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCategoryCommitRef = useRef<(() => void) | null>(null);
 
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -1034,6 +1037,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     return () => {
       if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+      pendingCategoryCommitRef.current = null;
     };
   }, []);
 
@@ -1048,16 +1052,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const closeCategoryFormImmediately = useCallback(() => {
     if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    if (pendingCategoryCommitRef.current) {
+      const commit = pendingCategoryCommitRef.current;
+      pendingCategoryCommitRef.current = null;
+      commit();
+    }
     setShowAddCategory(false);
     resetCategoryForm();
   }, [resetCategoryForm]);
 
-  const closeCategoryForm = useCallback((mode: 'save' | 'cancel' = 'cancel') => {
+  const closeCategoryForm = useCallback((mode: 'save' | 'cancel' = 'cancel', onAfterClose?: () => void) => {
     if (!showAddCategory) {
+      pendingCategoryCommitRef.current = onAfterClose || null;
       closeCategoryFormImmediately();
       return;
     }
     if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    pendingCategoryCommitRef.current = onAfterClose || null;
     setCategoryEditorCloseState(mode);
     categoryEditorTransitionTimeoutRef.current = setTimeout(() => {
       closeCategoryFormImmediately();
@@ -1066,12 +1077,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const openNewCategoryForm = useCallback(() => {
     if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    pendingCategoryCommitRef.current = null;
     resetCategoryForm();
     setShowAddCategory(true);
   }, [resetCategoryForm]);
 
   const openCategoryEditor = useCallback((category: Category) => {
     if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+    pendingCategoryCommitRef.current = null;
     setEditingCategoryId(category.id);
     setNewCategoryName(category.name);
     setNewCategoryColor(category.color);
@@ -1098,16 +1111,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       return;
     }
 
-    if (editingCategoryId !== null) {
-      updateCategory({ id: editingCategoryId, name, color: newCategoryColor, icon: newCategoryIcon });
-    } else {
-      addCategory(name, newCategoryColor, newCategoryIcon);
-    }
+    const nextEditingCategoryId = editingCategoryId;
+    const nextName = name;
+    const nextColor = newCategoryColor;
+    const nextIcon = newCategoryIcon;
 
-    closeCategoryForm('save');
+    closeCategoryForm('save', () => {
+      if (nextEditingCategoryId !== null) {
+        updateCategory({ id: nextEditingCategoryId, name: nextName, color: nextColor, icon: nextIcon });
+      } else {
+        addCategory(nextName, nextColor, nextIcon);
+      }
+    });
   };
 
   const handleDeleteCategory = (id: number) => {
+    pendingCategoryCommitRef.current = null;
     deleteCategory(id);
     if (editingCategoryId === id) {
       closeCategoryFormImmediately();
@@ -1119,6 +1138,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       closeCategoryFormImmediately();
     }
   }, [closeCategoryFormImmediately, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || pendingMenuAction !== 'new-category') return;
+    syncDisplayedTabImmediately('settings');
+    openNewCategoryForm();
+    clearPendingMenuAction();
+  }, [clearPendingMenuAction, isOpen, openNewCategoryForm, pendingMenuAction, syncDisplayedTabImmediately]);
 
   if (!isOpen) return null;
 
@@ -2101,40 +2127,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         <div className="space-y-3 pt-2 border-t border-white/10">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Appearance</div>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => updateTimerSettings({ themeMode: 'light' })}
-              className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.14em] font-bold transition-all ${
-                settings.themeMode === 'light'
-                  ? 'bg-white/20 border-white/30 text-white'
-                  : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-              }`}
-            >
-              Light
-            </button>
-            <button
-              type="button"
-              onClick={() => updateTimerSettings({ themeMode: 'dark' })}
-              className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.14em] font-bold transition-all ${
-                settings.themeMode === 'dark'
-                  ? 'bg-white/20 border-white/30 text-white'
-                  : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-              }`}
-            >
-              Dark
-            </button>
-          </div>
-          <ToggleRow
-            label="Disable Blur Effects"
-            description="Improves performance on older devices"
-            checked={settings.disableBlur}
-            onToggle={() => updateTimerSettings({ disableBlur: !settings.disableBlur })}
-          />
-        </div>
-
-        <div className="space-y-3 pt-2 border-t border-white/10">
           <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Alarm Sound</div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             {ALARM_OPTIONS.map(option => (
@@ -2407,6 +2399,34 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         </div>
 
+        <div className="space-y-3 pt-2 border-t border-white/10">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Appearance</div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => updateTimerSettings({ themeMode: 'light' })}
+              className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.14em] font-bold transition-all ${
+                settings.themeMode === 'light'
+                  ? 'bg-white/20 border-white/30 text-white'
+                  : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+              }`}
+            >
+              Light
+            </button>
+            <button
+              type="button"
+              onClick={() => updateTimerSettings({ themeMode: 'dark' })}
+              className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.14em] font-bold transition-all ${
+                settings.themeMode === 'dark'
+                  ? 'bg-white/20 border-white/30 text-white'
+                  : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+              }`}
+            >
+              Dark
+            </button>
+          </div>
+        </div>
+
         <div className="pt-4 border-t border-white/10">
           <div className="bg-red-500/7 border border-red-500/20 rounded-xl p-4 space-y-3">
             <div>
@@ -2598,6 +2618,24 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-panel-enter-backward {
           animation: doro-settings-panel-enter-backward ${SETTINGS_PANEL_TRANSITION_MS}ms cubic-bezier(0.16, 0.88, 0.3, 1.04);
         }
+        .settings-close-slot {
+          transition: background-color 180ms ease, border-color 180ms ease;
+        }
+        .settings-close-btn {
+          transition:
+            transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            background-color 180ms ease,
+            border-color 180ms ease,
+            box-shadow 220ms ease,
+            color 180ms ease,
+            opacity 180ms ease;
+        }
+        .settings-close-btn:hover {
+          transform: translateY(-1px);
+        }
+        .settings-close-btn:active {
+          transform: translateY(0) scale(0.97);
+        }
         .settings-option-btn {
           transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease;
         }
@@ -2687,6 +2725,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(243, 248, 255, 0.32)) !important;
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 20px 30px -26px rgba(77, 93, 123, 0.44);
         }
+        .doro-settings-shell.theme-light .settings-close-slot {
+          border-color: rgba(255, 255, 255, 0.22) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(244, 248, 255, 0.08)) !important;
+        }
+        .doro-settings-shell.theme-light .settings-close-btn {
+          border-color: rgba(255, 255, 255, 0.38) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(241, 246, 253, 0.18)) !important;
+          color: #607089 !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 16px 24px -24px rgba(77, 93, 123, 0.36);
+        }
+        .doro-settings-shell.theme-light .settings-close-btn:hover {
+          border-color: rgba(255, 255, 255, 0.52) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(243, 248, 255, 0.26)) !important;
+          color: #102133 !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 18px 28px -24px rgba(77, 93, 123, 0.4);
+        }
         .doro-settings-shell.theme-light .settings-body {
           position: relative;
           background:
@@ -2752,6 +2806,25 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-shell.theme-light [class*='text-white/'] {
           color: #667990 !important;
         }
+        .doro-settings-shell.theme-dark .settings-close-slot {
+          border-color: rgba(255, 255, 255, 0.08);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
+        }
+        .doro-settings-shell.theme-dark .settings-close-btn {
+          border-color: rgba(255, 255, 255, 0.1);
+          background:
+            radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.012) 74%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(0, 0, 0, 0.18));
+          color: rgba(255, 255, 255, 0.62);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 16px 24px -24px rgba(0, 0, 0, 0.82);
+        }
+        .doro-settings-shell.theme-dark .settings-close-btn:hover {
+          border-color: rgba(255, 255, 255, 0.16);
+          background:
+            radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.02) 74%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.2));
+          color: rgba(255, 255, 255, 0.84);
+        }
       `}</style>
 
       <div
@@ -2794,21 +2867,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
 
             <div
-              className={`md:hidden w-[4.5rem] shrink-0 flex items-center justify-center border-l ${
-                isLightTheme ? 'border-slate-300/60 bg-white/35' : 'border-white/10 bg-white/[0.03]'
-              }`}
+              className="settings-close-slot md:hidden w-[4.15rem] shrink-0 flex items-center justify-center border-l"
             >
               <button
                 type="button"
                 onClick={onClose}
                 aria-label="Close menu"
-                className={`flex h-11 w-11 items-center justify-center rounded-full border transition-all duration-200 active:scale-[0.96] ${
-                  isLightTheme
-                    ? 'border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(235,241,248,0.58))] text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_16px_28px_-22px_rgba(15,23,42,0.42)]'
-                    : 'border-white/18 bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.18),rgba(255,255,255,0.02)_72%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(0,0,0,0.3))] text-white/88 shadow-[inset_0_1px_0_rgba(255,255,255,0.16),0_18px_30px_-24px_rgba(0,0,0,0.9)]'
-                }`}
+                className="settings-close-btn flex h-9 w-9 items-center justify-center rounded-[1rem] border"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M18 6 6 18" />
                   <path d="m6 6 12 12" />
                 </svg>

@@ -474,7 +474,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 };
 
 const Tasks: React.FC = () => {
-  const { tasks, addTask, moveTask, selectedCategoryId, pomodoroCount, settings, setWeeklyScheduleOpen, categories } = useTimer();
+  const { tasks, addTask, moveTask, selectedCategoryId, pomodoroCount, settings, setWeeklyScheduleOpen, categories, requestNewCategoryFlow } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
@@ -975,7 +975,7 @@ const Tasks: React.FC = () => {
                           ))}
                       </div>
                       
-                      {categories.length > 0 && <div className="w-px h-4 bg-white/10 mx-1" />}
+                      <div className="w-px h-4 bg-white/10 mx-1" />
                       
                       <div className="flex gap-1">
                           {categories.map(cat => (
@@ -989,6 +989,21 @@ const Tasks: React.FC = () => {
                                   <span className="text-[9px] text-white font-bold">{cat.name}</span>
                               </button>
                           ))}
+                          {categories.length === 0 && (
+                              <button
+                                type="button"
+                                onClick={requestNewCategoryFlow}
+                                className="flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all bg-white/5 border-white/10 opacity-60 hover:opacity-100"
+                              >
+                                  <div className="w-3 h-3 flex items-center justify-center text-white/80">
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                          <path d="M12 5v14" />
+                                          <path d="M5 12h14" />
+                                      </svg>
+                                  </div>
+                                  <span className="text-[9px] text-white font-bold">Add Category</span>
+                              </button>
+                          )}
                       </div>
                   </div>
 

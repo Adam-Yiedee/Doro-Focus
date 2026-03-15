@@ -43,7 +43,7 @@ const colorToRgba = (value: string | undefined, alpha: number) => {
 };
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, pendingJoinId, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
+  const { activeMode, activeColor, settings, pendingJoinId, pendingMenuAction, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
   const [groupBanners, setGroupBanners] = useState<GroupBannerItem[]>([]);
@@ -67,6 +67,12 @@ const Layout: React.FC = () => {
         setShowLogModal(true);
     }
   }, [pendingJoinId]);
+
+  useEffect(() => {
+    if (pendingMenuAction) {
+      setShowLogModal(true);
+    }
+  }, [pendingMenuAction]);
 
   useEffect(() => {
     if (previousGroupSessionIdRef.current !== groupSessionId) {
