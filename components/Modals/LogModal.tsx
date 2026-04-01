@@ -1938,7 +1938,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }}
       >
         <div className="relative">
-          <div className={`${overviewCardLabelClassName} truncate`}>{card.label}</div>
+          <div className={`${overviewCardLabelClassName} min-h-[1.7rem] pr-1 leading-[1.15] whitespace-normal text-balance`}>
+            {card.label}
+          </div>
           <div className={`mt-4 ${card.valueClassName || overviewCardValueClassName}`}>
             {card.value}
           </div>

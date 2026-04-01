@@ -919,7 +919,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         runtime: snapshot,
         activeMode: runtimeMode,
         timerStarted: runtimeRunning,
-        isIdle: snapshot.phase === 'idle' ? isIdle : false,
+        isIdle: snapshot.phase === 'idle',
         allPauseActive: snapshot.phase === 'all-pause',
         allPauseTime,
         allPauseReason,
@@ -1046,10 +1046,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setScheduleBreaks(parsed.scheduleBreaks || []);
             const nextBreakTime = parsed.breakTime !== undefined ? parsed.breakTime : 0;
             const nextWorkTime = parsed.workTime !== undefined ? parsed.workTime : DEFAULT_SETTINGS.workDuration;
+            const parsedTimerStarted = parsed.timerStarted !== undefined ? Boolean(parsed.timerStarted) : false;
+            const nextInitialIdle = parsedTimerStarted
+              ? (parsed.isIdle !== undefined ? parsed.isIdle : false)
+              : true;
             setBreakTime(nextBreakTime);
             setWorkTime(nextWorkTime);
             setActiveMode(parsed.activeMode || 'work');
-            setIsIdle(parsed.isIdle !== undefined ? parsed.isIdle : true);
+            setIsIdle(nextInitialIdle);
             
             if (username) {
                 const baseUser = parsed.user && typeof parsed.user.joinedAt === 'string'
@@ -1106,6 +1110,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 runtimeRef.current = hydratedRuntime;
                 lastRuntimeAppliedRef.current = hydratedRuntime.updatedAtMs;
                 const runtimeRunning = hydratedRuntime.phase === 'running-work' || hydratedRuntime.phase === 'running-break';
+                const hydratedIsIdle = hydratedRuntime.phase === 'idle';
                 setTimerStarted(
                   collapsedGraceState
                     ? collapsedGraceState.timerStarted
@@ -1142,7 +1147,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 } else {
                   if (hydratedRuntime.phase === 'running-break') setActiveMode('break');
                   if (hydratedRuntime.phase === 'running-work') setActiveMode('work');
-                  if (parsed.isIdle === undefined) setIsIdle(hydratedRuntime.phase === 'idle');
+                  setIsIdle(hydratedIsIdle);
                   currentActivityStartRef.current = hydratedRuntime.activityStartIso ? new Date(hydratedRuntime.activityStartIso) : null;
                 }
             } else {
@@ -1294,7 +1299,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       breakTime,
       activeMode,
       timerStarted,
-      isIdle,
+      isIdle: runtimeRef.current.phase === 'idle' ? true : isIdle,
       allPauseActive,
       allPauseTime,
       allPauseReason,
@@ -3326,8 +3331,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     else setActiveMode(runtimeMode);
     if (typeof payload.timerStarted === 'boolean') setTimerStarted(payload.timerStarted);
     else setTimerStarted(runtimeRunning);
-    if (typeof payload.isIdle === 'boolean') setIsIdle(payload.isIdle);
-    else setIsIdle(runtime.phase === 'idle');
+    setIsIdle(runtime.phase === 'idle');
     if (typeof payload.pomodoroCount === 'number') setPomodoroCount(payload.pomodoroCount);
     if (typeof payload.allPauseActive === 'boolean') setAllPauseActive(payload.allPauseActive);
     else setAllPauseActive(runtime.phase === 'all-pause');

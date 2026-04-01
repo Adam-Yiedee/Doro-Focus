@@ -24,6 +24,7 @@ interface TaskCategoryPickerProps {
   swatchSize?: SwatchSize;
   className?: string;
   chipTextClassName?: string;
+  stretchCategoryTray?: boolean;
 }
 
 const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
@@ -36,10 +37,15 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
   swatchSize = 'sm',
   className = '',
   chipTextClassName = 'text-[9px]',
+  stretchCategoryTray = true,
 }) => {
+  const trayClassName = stretchCategoryTray
+    ? 'min-w-0 flex-1'
+    : 'min-w-0 max-w-full flex-[0_1_auto]';
+
   return (
-    <div className={`flex items-center gap-2 overflow-hidden ${className}`.trim()}>
-      <div className="flex shrink-0 gap-1.5">
+    <div className={`flex min-w-0 items-center gap-2 ${className}`.trim()}>
+      <div className="flex shrink-0 gap-1.5 px-0.5 py-0.5">
         {PRESET_COLORS.map((color) => (
           <button
             key={color}
@@ -53,7 +59,7 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
       </div>
 
       {categories.length > 0 ? (
-        <div className="min-w-0 flex-1 overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-1.5 scrollbar-hide">
+        <div className={`${trayClassName} overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-1.5 scrollbar-hide`}>
           <div className="flex w-max gap-1 pr-1">
             {categories.map((category) => (
               <button
@@ -75,7 +81,7 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
           </div>
         </div>
       ) : (
-        <div className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/10 p-1.5">
+        <div className={`${trayClassName} rounded-xl border border-white/10 bg-black/10 p-1.5`}>
           <button
             type="button"
             onClick={onRequestNewCategory}

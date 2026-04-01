@@ -281,6 +281,7 @@ const ScheduleTaskCard: React.FC<{
             }}
             onRequestNewCategory={onRequestNewCategory}
             swatchSize="sm"
+            stretchCategoryTray={false}
           />
         </div>
         <div className="mt-2 flex justify-end gap-1.5">
@@ -1459,42 +1460,59 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             }}
                             onRequestNewCategory={requestNewCategoryFlow}
                             swatchSize="sm"
+                            stretchCategoryTray={false}
                           />
                         </div>
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1">
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-[10px] font-mono tracking-wide text-white/60">
+                            <span className="font-bold">EST</span>
+                            <div className="flex items-center overflow-hidden rounded-lg border border-white/20 bg-black/20">
+                              <button
+                                type="button"
+                                onClick={() => setNewTaskEst((value) => clampEstimate(value - 1))}
+                                className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                                aria-label="Decrease new task estimate"
+                              >
+                                -
+                              </button>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={newTaskEst}
+                                onChange={(event) => {
+                                  const next = Number(event.target.value.replace(/[^\d]/g, ''));
+                                  if (!Number.isNaN(next)) setNewTaskEst(clampEstimate(next));
+                                }}
+                                className="w-8 bg-transparent text-center text-xs font-mono font-bold text-white outline-none"
+                                aria-label="New task estimate"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setNewTaskEst((value) => clampEstimate(value + 1))}
+                                className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                                aria-label="Increase new task estimate"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="ml-auto flex gap-2">
                             <button
                               type="button"
-                              onClick={() => setNewTaskEst((value) => clampEstimate(value - 1))}
-                              className="schedule-glass-button schedule-glass-button--icon w-6 h-6 rounded-md border border-white/15 text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
+                              onClick={() => setAddingDate(null)}
+                              className="schedule-glass-button schedule-glass-button--ghost rounded-lg border border-white/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white/60 transition-all hover:bg-white/[0.08] hover:text-white"
                             >
-                              -
+                              Cancel
                             </button>
-                            <div className="min-w-[24px] text-center text-xs text-white/80 font-mono">{newTaskEst}</div>
                             <button
                               type="button"
-                              onClick={() => setNewTaskEst((value) => clampEstimate(value + 1))}
-                              className="schedule-glass-button schedule-glass-button--icon w-6 h-6 rounded-md border border-white/15 text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
+                              onClick={() => submitDayTask(day.key)}
+                              className="schedule-glass-button schedule-glass-button--primary rounded-lg border border-white/20 bg-white px-4 py-1 text-[10px] font-bold uppercase tracking-wider text-black shadow-lg transition-all hover:bg-white/90 active:scale-95"
                             >
-                              +
+                              Add
                             </button>
                           </div>
-                        </div>
-                        <div className="mt-2 flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setAddingDate(null)}
-                            className="schedule-glass-button schedule-glass-button--ghost px-2.5 py-1 rounded-md border border-white/10 text-[10px] uppercase tracking-[0.14em] font-bold text-white/55 hover:text-white hover:bg-white/[0.08] transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => submitDayTask(day.key)}
-                            className="schedule-glass-button schedule-glass-button--primary px-2.5 py-1 rounded-md border border-white/20 bg-white text-[10px] uppercase tracking-[0.14em] font-bold text-black hover:bg-white/90 transition-colors"
-                          >
-                            Add
-                          </button>
                         </div>
                       </div>
                     )}

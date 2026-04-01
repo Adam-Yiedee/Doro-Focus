@@ -39,8 +39,6 @@ type AllTasksCelebration = {
   id: number;
   pieces: CelebrationConfettiPiece[];
   exiting: boolean;
-  taskCount: number;
-  note: string;
 };
 type PausableTimeout = {
   timeout: ReturnType<typeof setTimeout> | null;
@@ -60,13 +58,8 @@ const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
 const DAILY_WELCOME_SHOW_DELAY_MS = 1150;
 const DAILY_WELCOME_STORAGE_KEY = 'doro_daily_welcome_seen_date';
 const ALL_TASKS_CELEBRATION_DISMISS_MS = 360;
+const ALL_TASKS_CELEBRATION_BUFFER_MS = 280;
 const ALL_TASKS_CELEBRATION_COLORS = ['#FDE68A', '#FCA5A5', '#93C5FD', '#A7F3D0', '#C4B5FD', '#F9A8D4', '#FDBA74'];
-const ALL_TASKS_CELEBRATION_NOTES = [
-  'Every open task on today\'s board is wrapped.',
-  'Board cleared. Take a breath and enjoy the win.',
-  'You closed the loop on every task in sight.',
-  'Everything you queued up for today is complete.',
-];
 
 const getDateKey = (date: Date) => {
   const y = date.getFullYear();
@@ -88,10 +81,6 @@ const flattenTaskTree = (tasks: Task[]): Task[] => {
 
 const getActiveBoardTasks = (tasks: Task[], todayKey: string) => (
   tasks.filter((task) => !task.isFuture && (!task.scheduledDate || task.scheduledDate <= todayKey))
-);
-
-const getAllTasksCelebrationNote = (seed: number) => (
-  ALL_TASKS_CELEBRATION_NOTES[Math.abs(seed) % ALL_TASKS_CELEBRATION_NOTES.length]
 );
 
 const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[] => {
@@ -183,6 +172,10 @@ const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[
   return [...burstPieces, ...rainPieces, ...sparkPieces];
 };
 
+const getAllTasksCelebrationLifetime = (pieces: CelebrationConfettiPiece[]) => (
+  pieces.reduce((maxDuration, piece) => Math.max(maxDuration, piece.delayMs + piece.durationMs), 0) + ALL_TASKS_CELEBRATION_BUFFER_MS
+);
+
 const colorToRgba = (value: string | undefined, alpha: number) => {
   const safeAlpha = Math.max(0, Math.min(1, alpha));
   const normalized = (value || '').trim().replace('#', '');
@@ -270,7 +263,7 @@ const Layout: React.FC = () => {
     message: null,
   });
   const allTasksCelebrationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const allTasksCelebrationBackdropPressRef = useRef(false);
+  const queuedAllTasksCelebrationIdRef = useRef<number | null>(null);
   const previousOpenBoardTaskCountRef = useRef<number | null>(null);
   const previousTaskCheckedMapRef = useRef<Map<number, boolean>>(new Map());
   const didInitCelebrationRef = useRef(false);
@@ -377,17 +370,27 @@ const Layout: React.FC = () => {
     });
   };
 
-  const handleAllTasksCelebrationBackdropPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    allTasksCelebrationBackdropPressRef.current = event.target === event.currentTarget;
+  const startAllTasksCelebration = (celebrationId: number) => {
+    const pieces = buildAllTasksCelebrationPieces(celebrationId);
+    queuedAllTasksCelebrationIdRef.current = null;
+    clearAllTasksCelebrationTimer();
+    setAllTasksCelebration({
+      id: celebrationId,
+      pieces,
+      exiting: false,
+    });
+    allTasksCelebrationTimeoutRef.current = window.setTimeout(() => {
+      dismissAllTasksCelebration();
+    }, getAllTasksCelebrationLifetime(pieces));
+    void playCelebrationTrumpet();
   };
 
-  const handleAllTasksCelebrationBackdropClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget || !allTasksCelebrationBackdropPressRef.current) {
-      allTasksCelebrationBackdropPressRef.current = false;
+  const triggerAllTasksCelebration = (celebrationId: number) => {
+    if (!notificationTimersActive) {
+      queuedAllTasksCelebrationIdRef.current = celebrationId;
       return;
     }
-    allTasksCelebrationBackdropPressRef.current = false;
-    dismissAllTasksCelebration();
+    startAllTasksCelebration(celebrationId);
   };
 
   useEffect(() => {
@@ -423,6 +426,9 @@ const Layout: React.FC = () => {
     if (notificationTimersActive) {
       Object.keys(bannerTimersRef.current).forEach(scheduleBannerTimer);
       scheduleDailyWelcomeLifecycle();
+      if (queuedAllTasksCelebrationIdRef.current !== null) {
+        startAllTasksCelebration(queuedAllTasksCelebrationIdRef.current);
+      }
       return;
     }
 
@@ -516,33 +522,7 @@ const Layout: React.FC = () => {
 
     if (previousOpenCount === 1 && openBoardTaskCount === 0 && taskJustCompleted) {
       const celebrationId = Date.now();
-      const celebrationNote = getAllTasksCelebrationNote(celebrationId);
-      clearAllTasksCelebrationTimer();
-      setAllTasksCelebration({
-        id: celebrationId,
-        pieces: buildAllTasksCelebrationPieces(celebrationId),
-        exiting: false,
-        taskCount: activeBoardTasks.length,
-        note: celebrationNote,
-      });
-      void playCelebrationTrumpet();
-      if ('Notification' in window && Notification.permission === 'granted') {
-        try {
-          new Notification('All Tasks Completed!', {
-            body: activeBoardTasks.length > 0
-              ? `${activeBoardTasks.length} ${activeBoardTasks.length === 1 ? 'task is' : 'tasks are'} wrapped. ${celebrationNote}`
-              : celebrationNote,
-            tag: 'doro-all-tasks-completed',
-            requireInteraction: true,
-            renotify: true,
-          } as NotificationOptions);
-        } catch {
-          // no-op
-        }
-      }
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        navigator.vibrate([120, 40, 160, 40, 220]);
-      }
+      triggerAllTasksCelebration(celebrationId);
     }
 
     previousOpenBoardTaskCountRef.current = openBoardTaskCount;
@@ -922,17 +902,9 @@ const Layout: React.FC = () => {
 
       {allTasksCelebration && (
         <div
-          className={`doro-all-tasks-celebration pointer-events-auto fixed inset-0 z-[94] overflow-hidden ${allTasksCelebration.exiting ? 'is-exiting' : ''}`}
-          role="dialog"
-          aria-modal="true"
-          aria-label="All tasks completed"
-          onPointerDown={handleAllTasksCelebrationBackdropPointerDown}
-          onClick={handleAllTasksCelebrationBackdropClick}
+          className={`doro-all-tasks-celebration pointer-events-none fixed inset-0 z-[94] overflow-hidden ${allTasksCelebration.exiting ? 'is-exiting' : ''}`}
+          aria-hidden="true"
         >
-          <div className="doro-all-tasks-celebration-backdrop pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_16%,rgba(255,255,255,0.2),transparent_22%),radial-gradient(circle_at_50%_120%,rgba(251,191,36,0.08),transparent_28%),linear-gradient(180deg,rgba(15,23,42,0.26),rgba(2,6,23,0.58))]" />
-          <div className="doro-all-tasks-celebration-glow pointer-events-none absolute left-1/2 top-[26%] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,rgba(253,224,71,0.2),rgba(96,165,250,0.14)_44%,transparent_74%)]" />
-          <div className="doro-all-tasks-celebration-halo pointer-events-none absolute left-1/2 top-[30%] h-[24rem] w-[24rem] rounded-full border border-white/10" />
-
           <div className="absolute inset-0 pointer-events-none">
             {allTasksCelebration.pieces.map((piece) => (
               <span
@@ -971,60 +943,6 @@ const Layout: React.FC = () => {
                 }}
               />
             ))}
-          </div>
-
-          <div className="pointer-events-none absolute inset-0 flex items-start justify-center px-4 pt-[14vh]">
-            <div
-              className="doro-all-tasks-celebration-card pointer-events-auto relative w-[min(92vw,35rem)] overflow-hidden rounded-[2.15rem] border border-white/16 bg-[rgba(9,13,20,0.78)] px-6 py-6 text-center shadow-[0_38px_110px_-46px_rgba(15,23,42,0.98)] backdrop-blur-2xl md:px-8 md:py-7"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <button
-                type="button"
-                onClick={dismissAllTasksCelebration}
-                className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/8 text-white/62 transition-colors hover:bg-white/14 hover:text-white"
-                aria-label="Close celebration"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M18 6 6 18" />
-                  <path d="m6 6 12 12" />
-                </svg>
-              </button>
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_-12%,rgba(255,255,255,0.16),transparent_42%),radial-gradient(circle_at_82%_120%,rgba(96,165,250,0.12),transparent_34%)]" />
-              <div className="doro-all-tasks-celebration-sheen pointer-events-none absolute inset-y-0 left-[-18%] w-[28%] bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.08),transparent)]" />
-              <div className="relative">
-                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[1.25rem] border border-white/14 bg-white/7 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-[1rem] bg-[linear-gradient(180deg,rgba(250,204,21,0.94),rgba(251,191,36,0.78))] text-slate-950 shadow-[0_14px_30px_-18px_rgba(250,204,21,0.88)]">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="m5 12 4.25 4.25L19 6.5" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/6 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/54">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-200" />
-                  Board Cleared
-                </div>
-                <div className="mt-4 text-[clamp(2.2rem,5vw,3.55rem)] font-bold leading-[0.96] tracking-[-0.052em] text-white">
-                  All Tasks Completed!
-                </div>
-                <div className="mt-3 text-[15px] font-medium leading-relaxed text-white/72 md:text-base">
-                  {allTasksCelebration.note}
-                </div>
-                <div className="mt-5 flex items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/46">
-                  <span>{allTasksCelebration.taskCount > 0 ? `${allTasksCelebration.taskCount} ${allTasksCelebration.taskCount === 1 ? 'task' : 'tasks'} wrapped` : 'Board wrapped'}</span>
-                  <span className="h-1 w-1 rounded-full bg-white/20" />
-                  <span>Click anywhere to close</span>
-                </div>
-                <div className="mt-6 flex items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    onClick={dismissAllTasksCelebration}
-                    className="rounded-full border border-white/14 bg-white px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-950 transition-colors hover:bg-white/90"
-                  >
-                    Continue
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       )}
