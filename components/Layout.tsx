@@ -150,6 +150,7 @@ const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[
     const left = 46 + (((index * 1.9) + (seed % 7)) % 8);
     const size = index % 4 === 0 ? 6 : 4;
     const color = ALL_TASKS_CELEBRATION_COLORS[(index + 4) % ALL_TASKS_CELEBRATION_COLORS.length];
+    const shape: CelebrationConfettiPiece['shape'] = index % 3 === 0 ? 'diamond' : 'dot';
     return {
       id: `celebration-spark-${seed}-${index}`,
       left,
@@ -163,7 +164,7 @@ const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[
       riseY: 10 + ((index * 5) % 16),
       rotateDeg: ((index % 2 === 0 ? 1 : -1) * (140 + ((index * 23 + seed) % 220))),
       color,
-      shape: index % 3 === 0 ? 'diamond' : 'dot',
+      shape,
       motion: 'spark' as const,
       opacity: 0.9,
       swayX: 10 + ((index * 7 + seed) % 20),
@@ -783,17 +784,20 @@ const Layout: React.FC = () => {
             onClick={dismissAllTasksCelebration}
             className="absolute inset-0 cursor-default"
           />
-          <div className="doro-all-tasks-celebration-backdrop absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(255,255,255,0.22),transparent_24%),radial-gradient(circle_at_50%_120%,rgba(251,191,36,0.08),transparent_28%),linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.42))]" />
+          <div className="doro-all-tasks-celebration-backdrop absolute inset-0 bg-[radial-gradient(circle_at_50%_16%,rgba(255,255,255,0.2),transparent_22%),radial-gradient(circle_at_50%_120%,rgba(251,191,36,0.08),transparent_28%),linear-gradient(180deg,rgba(15,23,42,0.26),rgba(2,6,23,0.58))]" />
           <div className="doro-all-tasks-celebration-glow absolute left-1/2 top-[26%] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,rgba(253,224,71,0.2),rgba(96,165,250,0.14)_44%,transparent_74%)]" />
+          <div className="doro-all-tasks-celebration-halo absolute left-1/2 top-[30%] h-[24rem] w-[24rem] rounded-full border border-white/10" />
 
           <div className="absolute inset-0 pointer-events-none">
             {allTasksCelebration.pieces.map((piece) => (
               <span
                 key={piece.id}
-                className={`doro-all-tasks-confetti-piece absolute ${piece.motion === 'burst' ? 'is-burst' : 'is-rain'} ${
+                className={`doro-all-tasks-confetti-piece absolute ${
+                  piece.motion === 'burst' ? 'is-burst' : piece.motion === 'spark' ? 'is-spark' : 'is-rain'
+                } ${
                   piece.shape === 'streamer'
                     ? 'rounded-full'
-                    : piece.shape === 'chip'
+                    : piece.shape === 'chip' || piece.shape === 'dot'
                       ? 'rounded-[999px]'
                       : 'rounded-[2px]'
                 }`}
@@ -802,14 +806,21 @@ const Layout: React.FC = () => {
                   top: `${piece.topVh}vh`,
                   width: `${piece.width}px`,
                   height: `${piece.height}px`,
-                  backgroundColor: piece.color,
-                  boxShadow: `0 0 0 1px ${colorToRgba('#ffffff', 0.12)}`,
+                  opacity: piece.opacity,
+                  background: piece.shape === 'streamer'
+                    ? `linear-gradient(180deg, ${colorToRgba('#ffffff', 0.5)}, ${piece.color})`
+                    : `linear-gradient(180deg, ${colorToRgba('#ffffff', 0.34)}, ${piece.color})`,
+                  boxShadow: `0 0 0 1px ${colorToRgba('#ffffff', 0.12)}, 0 8px 18px -12px ${colorToRgba(piece.color, 0.75)}`,
+                  clipPath: piece.shape === 'diamond'
+                    ? 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)'
+                    : undefined,
                   ['--doro-confetti-drift' as any]: `${piece.driftX}px`,
                   ['--doro-confetti-fall' as any]: `${piece.fallY}vh`,
                   ['--doro-confetti-rise' as any]: `${piece.riseY}vh`,
                   ['--doro-confetti-rotate' as any]: `${piece.rotateDeg}deg`,
                   ['--doro-confetti-duration' as any]: `${piece.durationMs}ms`,
                   ['--doro-confetti-delay' as any]: `${piece.delayMs}ms`,
+                  ['--doro-confetti-sway' as any]: `${piece.swayX}px`,
                 }}
               />
             ))}
@@ -817,7 +828,7 @@ const Layout: React.FC = () => {
 
           <div className="absolute inset-0 flex items-start justify-center px-4 pt-[14vh]">
             <div
-              className="doro-all-tasks-celebration-card pointer-events-auto relative w-[min(92vw,34rem)] overflow-hidden rounded-[2rem] border border-white/18 bg-[linear-gradient(160deg,rgba(255,255,255,0.17),rgba(255,255,255,0.06))] px-6 py-6 text-center shadow-[0_32px_90px_-40px_rgba(15,23,42,0.95)] backdrop-blur-2xl md:px-8 md:py-7"
+              className="doro-all-tasks-celebration-card pointer-events-auto relative w-[min(92vw,35rem)] overflow-hidden rounded-[2.15rem] border border-white/16 bg-[rgba(9,13,20,0.78)] px-6 py-6 text-center shadow-[0_38px_110px_-46px_rgba(15,23,42,0.98)] backdrop-blur-2xl md:px-8 md:py-7"
               onClick={(event) => event.stopPropagation()}
             >
               <button
@@ -831,25 +842,38 @@ const Layout: React.FC = () => {
                   <path d="m6 6 12 12" />
                 </svg>
               </button>
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_-12%,rgba(255,255,255,0.28),transparent_42%),radial-gradient(circle_at_82%_120%,rgba(96,165,250,0.16),transparent_34%)]" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_-12%,rgba(255,255,255,0.16),transparent_42%),radial-gradient(circle_at_82%_120%,rgba(96,165,250,0.12),transparent_34%)]" />
+              <div className="doro-all-tasks-celebration-sheen pointer-events-none absolute inset-y-0 left-[-18%] w-[28%] bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.08),transparent)]" />
               <div className="relative">
-                <div className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/8 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/58">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[1.25rem] border border-white/14 bg-white/7 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-[1rem] bg-[linear-gradient(180deg,rgba(250,204,21,0.94),rgba(251,191,36,0.78))] text-slate-950 shadow-[0_14px_30px_-18px_rgba(250,204,21,0.88)]">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m5 12 4.25 4.25L19 6.5" />
+                    </svg>
+                  </div>
+                </div>
+                <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/6 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/54">
                   <span className="h-1.5 w-1.5 rounded-full bg-amber-200" />
                   Board Cleared
                 </div>
-                <div className="mt-4 text-[clamp(2rem,5vw,3.4rem)] font-bold leading-[0.96] tracking-[-0.05em] text-white">
+                <div className="mt-4 text-[clamp(2.2rem,5vw,3.55rem)] font-bold leading-[0.96] tracking-[-0.052em] text-white">
                   All Tasks Completed!
                 </div>
-                <div className="mt-3 text-sm font-medium leading-relaxed text-white/72 md:text-[15px]">
-                  Every open task on today&apos;s board is wrapped.
+                <div className="mt-3 text-[15px] font-medium leading-relaxed text-white/72 md:text-base">
+                  {allTasksCelebration.note}
                 </div>
-                <div className="mt-5 flex items-center justify-center gap-2">
+                <div className="mt-5 flex items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/46">
+                  <span>{allTasksCelebration.taskCount > 0 ? `${allTasksCelebration.taskCount} ${allTasksCelebration.taskCount === 1 ? 'task' : 'tasks'} wrapped` : 'Board wrapped'}</span>
+                  <span className="h-1 w-1 rounded-full bg-white/20" />
+                  <span>Click anywhere to close</span>
+                </div>
+                <div className="mt-6 flex items-center justify-center gap-2">
                   <button
                     type="button"
                     onClick={dismissAllTasksCelebration}
-                    className="rounded-full border border-white/14 bg-white text-[10px] font-bold uppercase tracking-[0.18em] text-slate-950 px-5 py-3 transition-colors hover:bg-white/90"
+                    className="rounded-full border border-white/14 bg-white px-5 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-950 transition-colors hover:bg-white/90"
                   >
-                    Celebrate
+                    Continue
                   </button>
                 </div>
               </div>
