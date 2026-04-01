@@ -42,11 +42,20 @@ type AllTasksCelebration = {
   taskCount: number;
   note: string;
 };
+type PausableTimeout = {
+  timeout: ReturnType<typeof setTimeout> | null;
+  remainingMs: number;
+  startedAtMs: number | null;
+};
+type BannerTimerEntry = {
+  exit: PausableTimeout;
+  remove: PausableTimeout;
+};
 
 const GROUP_BANNER_EXIT_MS = 600;
-const GROUP_BANNER_VISIBLE_MS = 5600;
+const GROUP_BANNER_VISIBLE_MS = 8200;
 const GROUP_BANNER_TOTAL_MS = GROUP_BANNER_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
-const DAILY_WELCOME_VISIBLE_MS = 6200;
+const DAILY_WELCOME_VISIBLE_MS = 9600;
 const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
 const DAILY_WELCOME_SHOW_DELAY_MS = 1150;
 const DAILY_WELCOME_STORAGE_KEY = 'doro_daily_welcome_seen_date';
@@ -86,14 +95,14 @@ const getAllTasksCelebrationNote = (seed: number) => (
 );
 
 const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[] => {
-  const burstPieces = Array.from({ length: 46 }, (_, index) => {
+  const burstPieces = Array.from({ length: 42 }, (_, index) => {
     const left = 43 + (((index * 4.7) + (seed % 19)) % 14);
     const width = index % 7 === 0 ? 4 : index % 5 === 0 ? 6 : index % 3 === 0 ? 8 : 10;
     const height = index % 7 === 0 ? 28 : index % 5 === 0 ? 20 : index % 3 === 0 ? 12 : 10;
     const delayMs = (index % 8) * 22;
-    const durationMs = 1880 + ((index * 73 + seed) % 760);
-    const driftX = ((index % 2 === 0 ? 1 : -1) * (120 + ((index * 37 + seed) % 260)));
-    const rotateDeg = ((index % 2 === 0 ? 1 : -1) * (320 + ((index * 51 + seed) % 560)));
+    const durationMs = 2160 + ((index * 73 + seed) % 820);
+    const driftX = ((index % 2 === 0 ? 1 : -1) * (96 + ((index * 37 + seed) % 220)));
+    const rotateDeg = ((index % 2 === 0 ? 1 : -1) * (260 + ((index * 51 + seed) % 420)));
     const color = ALL_TASKS_CELEBRATION_COLORS[index % ALL_TASKS_CELEBRATION_COLORS.length];
     const shape: CelebrationConfettiPiece['shape'] = index % 8 === 0 ? 'streamer' : index % 5 === 0 ? 'diamond' : index % 3 === 0 ? 'chip' : 'tile';
     return {
@@ -111,19 +120,19 @@ const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[
       color,
       shape,
       motion: 'burst' as const,
-      opacity: 0.96,
-      swayX: 16 + ((index * 13 + seed) % 34),
+      opacity: 0.94,
+      swayX: 12 + ((index * 13 + seed) % 24),
     };
   });
 
-  const rainPieces = Array.from({ length: 76 }, (_, index) => {
+  const rainPieces = Array.from({ length: 60 }, (_, index) => {
     const left = 1 + ((index * 7.1) % 98);
     const width = index % 9 === 0 ? 3 : index % 7 === 0 ? 5 : index % 4 === 0 ? 7 : 9;
     const height = index % 9 === 0 ? 18 : index % 7 === 0 ? 24 : index % 4 === 0 ? 14 : 10;
     const delayMs = 70 + ((index % 14) * 30);
-    const durationMs = 2600 + ((index * 89 + seed) % 1320);
-    const driftX = ((index % 2 === 0 ? 1 : -1) * (44 + ((index * 31 + seed) % 170)));
-    const rotateDeg = ((index % 2 === 0 ? 1 : -1) * (240 + ((index * 41 + seed) % 380)));
+    const durationMs = 3000 + ((index * 89 + seed) % 1480);
+    const driftX = ((index % 2 === 0 ? 1 : -1) * (32 + ((index * 31 + seed) % 132)));
+    const rotateDeg = ((index % 2 === 0 ? 1 : -1) * (190 + ((index * 41 + seed) % 300)));
     const color = ALL_TASKS_CELEBRATION_COLORS[(index + 2) % ALL_TASKS_CELEBRATION_COLORS.length];
     const shape: CelebrationConfettiPiece['shape'] = index % 10 === 0 ? 'streamer' : index % 6 === 0 ? 'diamond' : index % 3 === 0 ? 'chip' : 'tile';
     return {
@@ -141,12 +150,12 @@ const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[
       color,
       shape,
       motion: 'rain' as const,
-      opacity: 0.84,
-      swayX: 24 + ((index * 17 + seed) % 42),
+      opacity: 0.8,
+      swayX: 16 + ((index * 17 + seed) % 30),
     };
   });
 
-  const sparkPieces = Array.from({ length: 22 }, (_, index) => {
+  const sparkPieces = Array.from({ length: 18 }, (_, index) => {
     const left = 46 + (((index * 1.9) + (seed % 7)) % 8);
     const size = index % 4 === 0 ? 6 : 4;
     const color = ALL_TASKS_CELEBRATION_COLORS[(index + 4) % ALL_TASKS_CELEBRATION_COLORS.length];
@@ -158,16 +167,16 @@ const buildAllTasksCelebrationPieces = (seed: number): CelebrationConfettiPiece[
       width: size,
       height: size,
       delayMs: 80 + ((index % 6) * 44),
-      durationMs: 1180 + ((index * 57 + seed) % 520),
-      driftX: ((index % 2 === 0 ? 1 : -1) * (16 + ((index * 19 + seed) % 44))),
+      durationMs: 1320 + ((index * 57 + seed) % 520),
+      driftX: ((index % 2 === 0 ? 1 : -1) * (12 + ((index * 19 + seed) % 30))),
       fallY: 38 + ((index * 3) % 14),
       riseY: 10 + ((index * 5) % 16),
       rotateDeg: ((index % 2 === 0 ? 1 : -1) * (140 + ((index * 23 + seed) % 220))),
       color,
       shape,
       motion: 'spark' as const,
-      opacity: 0.9,
-      swayX: 10 + ((index * 7 + seed) % 20),
+      opacity: 0.86,
+      swayX: 6 + ((index * 7 + seed) % 12),
     };
   });
 
@@ -197,6 +206,49 @@ const colorToRgba = (value: string | undefined, alpha: number) => {
   return `rgba(255, 255, 255, ${safeAlpha})`;
 };
 
+const createPausableTimeout = (delayMs: number): PausableTimeout => ({
+  timeout: null,
+  remainingMs: delayMs,
+  startedAtMs: null,
+});
+
+const clearPausableTimeout = (timer: PausableTimeout) => {
+  if (timer.timeout) {
+    clearTimeout(timer.timeout);
+    timer.timeout = null;
+  }
+  timer.startedAtMs = null;
+};
+
+const pausePausableTimeout = (timer: PausableTimeout) => {
+  if (!timer.timeout || timer.startedAtMs === null) return;
+  timer.remainingMs = Math.max(0, timer.remainingMs - (Date.now() - timer.startedAtMs));
+  clearTimeout(timer.timeout);
+  timer.timeout = null;
+  timer.startedAtMs = null;
+};
+
+const startPausableTimeout = (timer: PausableTimeout, callback: () => void) => {
+  if (timer.remainingMs <= 0) {
+    callback();
+    return;
+  }
+  clearPausableTimeout(timer);
+  timer.startedAtMs = Date.now();
+  timer.timeout = window.setTimeout(() => {
+    timer.timeout = null;
+    timer.startedAtMs = null;
+    timer.remainingMs = 0;
+    callback();
+  }, timer.remainingMs);
+};
+
+const areNotificationTimersActive = () => (
+  typeof document === 'undefined'
+    ? true
+    : document.visibilityState === 'visible' && (typeof document.hasFocus !== 'function' || document.hasFocus())
+);
+
 const Layout: React.FC = () => {
   const { activeMode, activeColor, settings, tasks, pendingJoinId, pendingMenuAction, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
@@ -205,11 +257,20 @@ const Layout: React.FC = () => {
   const [dailyWelcomeBanner, setDailyWelcomeBanner] = useState<DailyWelcomeBanner | null>(null);
   const [allTasksCelebration, setAllTasksCelebration] = useState<AllTasksCelebration | null>(null);
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
-  const bannerTimersRef = useRef<Record<string, { exit: ReturnType<typeof setTimeout>, remove: ReturnType<typeof setTimeout> }>>({});
-  const dailyWelcomeShowTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dailyWelcomeExitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dailyWelcomeRemoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [notificationTimersActive, setNotificationTimersActive] = useState(areNotificationTimersActive);
+  const bannerTimersRef = useRef<Record<string, BannerTimerEntry>>({});
+  const dailyWelcomeTimersRef = useRef({
+    show: createPausableTimeout(DAILY_WELCOME_SHOW_DELAY_MS),
+    exit: createPausableTimeout(DAILY_WELCOME_VISIBLE_MS),
+    remove: createPausableTimeout(DAILY_WELCOME_TOTAL_MS),
+  });
+  const dailyWelcomeConfigRef = useRef<{ bannerId: string | null; todayKey: string | null; message: string | null }>({
+    bannerId: null,
+    todayKey: null,
+    message: null,
+  });
   const allTasksCelebrationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const allTasksCelebrationBackdropPressRef = useRef(false);
   const previousOpenBoardTaskCountRef = useRef<number | null>(null);
   const previousTaskCheckedMapRef = useRef<Map<number, boolean>>(new Map());
   const didInitCelebrationRef = useRef(false);
@@ -218,8 +279,8 @@ const Layout: React.FC = () => {
   const clearBannerTimer = (id: string) => {
     const timers = bannerTimersRef.current[id];
     if (!timers) return;
-    clearTimeout(timers.exit);
-    clearTimeout(timers.remove);
+    clearPausableTimeout(timers.exit);
+    clearPausableTimeout(timers.remove);
     delete bannerTimersRef.current[id];
   };
 
@@ -228,18 +289,73 @@ const Layout: React.FC = () => {
   };
 
   const clearDailyWelcomeTimers = () => {
-    if (dailyWelcomeShowTimeoutRef.current) {
-      clearTimeout(dailyWelcomeShowTimeoutRef.current);
-      dailyWelcomeShowTimeoutRef.current = null;
+    clearPausableTimeout(dailyWelcomeTimersRef.current.show);
+    clearPausableTimeout(dailyWelcomeTimersRef.current.exit);
+    clearPausableTimeout(dailyWelcomeTimersRef.current.remove);
+  };
+
+  const resetDailyWelcomeTimers = () => {
+    clearDailyWelcomeTimers();
+    dailyWelcomeTimersRef.current.show.remainingMs = DAILY_WELCOME_SHOW_DELAY_MS;
+    dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
+    dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
+  };
+
+  const pauseAllNotificationTimers = () => {
+    Object.values(bannerTimersRef.current).forEach((timers) => {
+      pausePausableTimeout(timers.exit);
+      pausePausableTimeout(timers.remove);
+    });
+    pausePausableTimeout(dailyWelcomeTimersRef.current.show);
+    pausePausableTimeout(dailyWelcomeTimersRef.current.exit);
+    pausePausableTimeout(dailyWelcomeTimersRef.current.remove);
+  };
+
+  const scheduleDailyWelcomeLifecycle = () => {
+    if (!notificationTimersActive) return;
+    const { bannerId, todayKey, message } = dailyWelcomeConfigRef.current;
+    if (!bannerId || !todayKey || !message) return;
+
+    if (dailyWelcomeTimersRef.current.show.remainingMs > 0) {
+      startPausableTimeout(dailyWelcomeTimersRef.current.show, () => {
+        try {
+          window.localStorage.setItem(DAILY_WELCOME_STORAGE_KEY, todayKey);
+        } catch {
+          // Ignore storage failures so the banner can still render.
+        }
+
+        setDailyWelcomeBanner({ id: bannerId, message, exiting: false });
+        scheduleDailyWelcomeLifecycle();
+      });
+      return;
     }
-    if (dailyWelcomeExitTimeoutRef.current) {
-      clearTimeout(dailyWelcomeExitTimeoutRef.current);
-      dailyWelcomeExitTimeoutRef.current = null;
-    }
-    if (dailyWelcomeRemoveTimeoutRef.current) {
-      clearTimeout(dailyWelcomeRemoveTimeoutRef.current);
-      dailyWelcomeRemoveTimeoutRef.current = null;
-    }
+
+    startPausableTimeout(dailyWelcomeTimersRef.current.exit, () => {
+      setDailyWelcomeBanner((prev) => (
+        prev && prev.id === bannerId ? { ...prev, exiting: true } : prev
+      ));
+    });
+
+    startPausableTimeout(dailyWelcomeTimersRef.current.remove, () => {
+      setDailyWelcomeBanner((prev) => (prev && prev.id === bannerId ? null : prev));
+      clearDailyWelcomeTimers();
+      dailyWelcomeConfigRef.current = { bannerId: null, todayKey: null, message: null };
+    });
+  };
+
+  const scheduleBannerTimer = (id: string) => {
+    if (!notificationTimersActive) return;
+    const timers = bannerTimersRef.current[id];
+    if (!timers) return;
+
+    startPausableTimeout(timers.exit, () => {
+      setGroupBanners((prev) => prev.map((item) => (item.id === id ? { ...item, exiting: true } : item)));
+    });
+
+    startPausableTimeout(timers.remove, () => {
+      setGroupBanners((prev) => prev.filter((item) => item.id !== id));
+      clearBannerTimer(id);
+    });
   };
 
   const clearAllTasksCelebrationTimer = () => {
@@ -261,6 +377,19 @@ const Layout: React.FC = () => {
     });
   };
 
+  const handleAllTasksCelebrationBackdropPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    allTasksCelebrationBackdropPressRef.current = event.target === event.currentTarget;
+  };
+
+  const handleAllTasksCelebrationBackdropClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || !allTasksCelebrationBackdropPressRef.current) {
+      allTasksCelebrationBackdropPressRef.current = false;
+      return;
+    }
+    allTasksCelebrationBackdropPressRef.current = false;
+    dismissAllTasksCelebration();
+  };
+
   useEffect(() => {
     if (pendingJoinId) {
         setShowLogModal(true);
@@ -272,6 +401,33 @@ const Layout: React.FC = () => {
       setShowLogModal(true);
     }
   }, [pendingMenuAction]);
+
+  useEffect(() => {
+    const updateNotificationTimerState = () => {
+      setNotificationTimersActive(areNotificationTimersActive());
+    };
+
+    updateNotificationTimerState();
+    window.addEventListener('focus', updateNotificationTimerState);
+    window.addEventListener('blur', updateNotificationTimerState);
+    document.addEventListener('visibilitychange', updateNotificationTimerState);
+
+    return () => {
+      window.removeEventListener('focus', updateNotificationTimerState);
+      window.removeEventListener('blur', updateNotificationTimerState);
+      document.removeEventListener('visibilitychange', updateNotificationTimerState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (notificationTimersActive) {
+      Object.keys(bannerTimersRef.current).forEach(scheduleBannerTimer);
+      scheduleDailyWelcomeLifecycle();
+      return;
+    }
+
+    pauseAllNotificationTimers();
+  }, [notificationTimersActive]);
 
   useEffect(() => {
     if (previousGroupSessionIdRef.current !== groupSessionId) {
@@ -297,16 +453,11 @@ const Layout: React.FC = () => {
       return trimmed;
     });
 
-    const exitTimer = setTimeout(() => {
-      setGroupBanners(prev => prev.map(item => item.id === id ? { ...item, exiting: true } : item));
-    }, GROUP_BANNER_VISIBLE_MS);
-
-    const removeTimer = setTimeout(() => {
-      setGroupBanners(prev => prev.filter(item => item.id !== id));
-      clearBannerTimer(id);
-    }, GROUP_BANNER_TOTAL_MS);
-
-    bannerTimersRef.current[id] = { exit: exitTimer, remove: removeTimer };
+    bannerTimersRef.current[id] = {
+      exit: createPausableTimeout(GROUP_BANNER_VISIBLE_MS),
+      remove: createPausableTimeout(GROUP_BANNER_TOTAL_MS),
+    };
+    scheduleBannerTimer(id);
   }, [groupNotice]);
 
   useEffect(() => {
@@ -329,30 +480,13 @@ const Layout: React.FC = () => {
 
     const bannerId = `daily-welcome-${todayKey}`;
     const message = getDailyWelcomeMessage(todayKey);
-
-    dailyWelcomeShowTimeoutRef.current = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem(DAILY_WELCOME_STORAGE_KEY, todayKey);
-      } catch {
-        // Ignore storage failures so the banner can still render.
-      }
-
-      setDailyWelcomeBanner({ id: bannerId, message, exiting: false });
-
-      dailyWelcomeExitTimeoutRef.current = window.setTimeout(() => {
-        setDailyWelcomeBanner((prev) => (
-          prev && prev.id === bannerId ? { ...prev, exiting: true } : prev
-        ));
-      }, DAILY_WELCOME_VISIBLE_MS);
-
-      dailyWelcomeRemoveTimeoutRef.current = window.setTimeout(() => {
-        setDailyWelcomeBanner((prev) => (prev && prev.id === bannerId ? null : prev));
-        clearDailyWelcomeTimers();
-      }, DAILY_WELCOME_TOTAL_MS);
-    }, DAILY_WELCOME_SHOW_DELAY_MS);
+    dailyWelcomeConfigRef.current = { bannerId, todayKey, message };
+    resetDailyWelcomeTimers();
+    scheduleDailyWelcomeLifecycle();
 
     return () => {
       clearDailyWelcomeTimers();
+      dailyWelcomeConfigRef.current = { bannerId: null, todayKey: null, message: null };
     };
   }, []);
 
@@ -537,67 +671,79 @@ const Layout: React.FC = () => {
         @keyframes doroAllTasksConfettiRain {
           0% {
             opacity: 0;
-            transform: translate3d(0, -18vh, 0) rotate(0deg) scale(0.78);
+            transform: translate3d(0, -18vh, 0) rotate(0deg) scale(0.82);
           }
-          12% {
+          10% {
             opacity: 1;
+            transform: translate3d(calc(var(--doro-confetti-sway, 0px) * -0.14), 6vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.08)) scale(0.92);
           }
-          34% {
+          28% {
             opacity: 1;
-            transform: translate3d(calc(var(--doro-confetti-sway, 0px) * -0.45), 30vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.32)) scale(0.96);
+            transform: translate3d(calc(var(--doro-confetti-sway, 0px) * -0.38), 28vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.28)) scale(0.97);
           }
-          56% {
+          48% {
             opacity: 1;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.42), 58vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.58)) scale(1.02);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.28 + var(--doro-confetti-sway, 0px) * -0.08), 52vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.5)) scale(1);
           }
-          78% {
+          70% {
             opacity: 0.94;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.82 + var(--doro-confetti-sway, 0px) * 0.22), 86vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.84)) scale(1.01);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.58 + var(--doro-confetti-sway, 0px) * 0.16), 76vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.72)) scale(1.01);
+          }
+          86% {
+            opacity: 0.7;
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.86 + var(--doro-confetti-sway, 0px) * 0.08), 96vh, 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.88)) scale(0.99);
           }
           100% {
             opacity: 0;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) + var(--doro-confetti-sway, 0px) * -0.12), var(--doro-confetti-fall, 112vh), 0) rotate(var(--doro-confetti-rotate, 360deg)) scale(1.04);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) + var(--doro-confetti-sway, 0px) * -0.06), var(--doro-confetti-fall, 112vh), 0) rotate(var(--doro-confetti-rotate, 360deg)) scale(0.97);
           }
         }
         @keyframes doroAllTasksConfettiBurst {
           0% {
             opacity: 0;
-            transform: translate3d(0, 0, 0) rotate(0deg) scale(0.38);
+            transform: translate3d(0, 0, 0) rotate(0deg) scale(0.46);
           }
-          10% {
+          12% {
             opacity: 1;
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.08), calc(-1 * var(--doro-confetti-rise, 18vh) * 0.22), 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.12)) scale(0.82);
           }
-          24% {
+          28% {
             opacity: 1;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.36), calc(-1 * var(--doro-confetti-rise, 18vh)), 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.3)) scale(1.08);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.3), calc(-1 * var(--doro-confetti-rise, 18vh) * 0.9), 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.34)) scale(1.04);
           }
-          54% {
+          50% {
             opacity: 1;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.78 + var(--doro-confetti-sway, 0px) * 0.2), calc(var(--doro-confetti-fall, 84vh) * 0.54), 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.7)) scale(1);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.56 + var(--doro-confetti-sway, 0px) * 0.1), calc(var(--doro-confetti-fall, 84vh) * 0.22), 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.56)) scale(1.02);
+          }
+          74% {
+            opacity: 0.9;
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.82 + var(--doro-confetti-sway, 0px) * 0.16), calc(var(--doro-confetti-fall, 84vh) * 0.58), 0) rotate(calc(var(--doro-confetti-rotate, 360deg) * 0.8)) scale(0.98);
           }
           100% {
             opacity: 0;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) + var(--doro-confetti-sway, 0px) * -0.14), var(--doro-confetti-fall, 84vh), 0) rotate(var(--doro-confetti-rotate, 360deg)) scale(0.94);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) + var(--doro-confetti-sway, 0px) * -0.08), var(--doro-confetti-fall, 84vh), 0) rotate(var(--doro-confetti-rotate, 360deg)) scale(0.9);
           }
         }
         @keyframes doroAllTasksConfettiSpark {
           0% {
             opacity: 0;
             transform: translate3d(0, 0, 0) scale(0.28) rotate(0deg);
-            filter: blur(0);
           }
-          12% {
+          16% {
             opacity: 1;
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.12), calc(-1 * var(--doro-confetti-rise, 12vh) * 0.24), 0) scale(0.82) rotate(calc(var(--doro-confetti-rotate, 180deg) * 0.16));
           }
-          38% {
+          42% {
             opacity: 1;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.34), calc(-1 * var(--doro-confetti-rise, 12vh)), 0) scale(1.08) rotate(calc(var(--doro-confetti-rotate, 180deg) * 0.45));
-            filter: blur(0);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.34 + var(--doro-confetti-sway, 0px) * 0.12), calc(-1 * var(--doro-confetti-rise, 12vh) * 0.92), 0) scale(1.02) rotate(calc(var(--doro-confetti-rotate, 180deg) * 0.48));
+          }
+          72% {
+            opacity: 0.72;
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.48 + var(--doro-confetti-sway, 0px) * -0.1), calc(-1 * var(--doro-confetti-rise, 12vh) * 1.12), 0) scale(0.72) rotate(calc(var(--doro-confetti-rotate, 180deg) * 0.78));
           }
           100% {
             opacity: 0;
-            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.55), calc(-1 * var(--doro-confetti-rise, 12vh) * 1.22), 0) scale(0.5) rotate(var(--doro-confetti-rotate, 180deg));
-            filter: blur(0.8px);
+            transform: translate3d(calc(var(--doro-confetti-drift, 0px) * 0.58), calc(-1 * var(--doro-confetti-rise, 12vh) * 1.28), 0) scale(0.42) rotate(var(--doro-confetti-rotate, 180deg));
           }
         }
         .doro-all-tasks-celebration {
@@ -628,16 +774,18 @@ const Layout: React.FC = () => {
           animation-delay: var(--doro-confetti-delay, 0ms);
           will-change: transform, opacity;
           transition: opacity ${ALL_TASKS_CELEBRATION_DISMISS_MS}ms ease;
+          backface-visibility: hidden;
+          contain: layout style paint;
           mix-blend-mode: screen;
         }
         .doro-all-tasks-confetti-piece.is-rain {
-          animation: doroAllTasksConfettiRain var(--doro-confetti-duration, 2600ms) cubic-bezier(0.16, 0.84, 0.24, 1) both;
+          animation: doroAllTasksConfettiRain var(--doro-confetti-duration, 2600ms) linear both;
         }
         .doro-all-tasks-confetti-piece.is-burst {
-          animation: doroAllTasksConfettiBurst var(--doro-confetti-duration, 2200ms) cubic-bezier(0.14, 0.86, 0.24, 1) both;
+          animation: doroAllTasksConfettiBurst var(--doro-confetti-duration, 2200ms) linear both;
         }
         .doro-all-tasks-confetti-piece.is-spark {
-          animation: doroAllTasksConfettiSpark var(--doro-confetti-duration, 1400ms) cubic-bezier(0.16, 0.84, 0.24, 1) both;
+          animation: doroAllTasksConfettiSpark var(--doro-confetti-duration, 1400ms) linear both;
         }
         .doro-all-tasks-celebration-sheen {
           animation: doroAllTasksCelebrationSheen 2400ms cubic-bezier(0.16, 0.84, 0.24, 1) 380ms both;
@@ -682,18 +830,21 @@ const Layout: React.FC = () => {
             }`}
           >
             <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_12%_-18%,rgba(255,255,255,0.34),transparent_44%)]" />
-            <div className="relative flex items-start gap-3">
-              <div className="mt-1 w-2.5 h-2.5 rounded-full bg-emerald-100 shadow-[0_0_10px_rgba(255,255,255,0.45)]" />
-              <div className="min-w-0">
-                <div className="text-[10px] uppercase tracking-[0.18em] font-bold text-white/55">
-                  Welcome Back
-                </div>
-                <div className="mt-1 text-sm leading-snug text-white/95">
-                  {dailyWelcomeBanner.message}
-                </div>
+            <div className="relative min-w-0 text-center">
+              <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
+                Welcome Back
+              </div>
+              <div className="mt-1.5 text-sm leading-snug text-white/95">
+                {dailyWelcomeBanner.message}
               </div>
             </div>
-            <div className="doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full bg-white/40" style={{ animationDuration: `${DAILY_WELCOME_TOTAL_MS}ms` }} />
+            <div
+              className="doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full bg-white/40"
+              style={{
+                animationDuration: `${DAILY_WELCOME_TOTAL_MS}ms`,
+                animationPlayState: notificationTimersActive ? 'running' : 'paused',
+              }}
+            />
           </div>
         )}
         {groupBanners.map((notice, i) => (
@@ -709,22 +860,20 @@ const Layout: React.FC = () => {
             style={{ animationDelay: `${i * 70}ms` }}
           >
             <div className="absolute inset-0 opacity-60 bg-[radial-gradient(circle_at_12%_-12%,rgba(255,255,255,0.34),transparent_50%)]" />
-            <div className="relative flex items-start gap-3">
-              <div className={`mt-1 w-2.5 h-2.5 rounded-full shadow-[0_0_10px_rgba(255,255,255,0.55)] ${
-                notice.kind === 'join' ? 'bg-emerald-200' : 'bg-white/90'
-              }`} />
-              <div className="min-w-0">
-                <div className="text-[10px] uppercase tracking-[0.18em] font-bold text-white/55">
-                  {notice.kind === 'join' ? 'Member Joined' : 'Group Action'}
-                </div>
-                <div className="text-sm text-white/95 leading-snug">
-                  <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
-                </div>
+            <div className="relative min-w-0 text-center">
+              <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
+                {notice.kind === 'join' ? 'Member Joined' : 'Group Action'}
+              </div>
+              <div className="mt-1 text-sm leading-snug text-white/95">
+                <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
               </div>
             </div>
-            <div className={`doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full ${
-              notice.kind === 'join' ? 'bg-emerald-100/55' : 'bg-white/45'
-            }`} />
+            <div
+              className={`doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full ${
+                notice.kind === 'join' ? 'bg-emerald-100/55' : 'bg-white/45'
+              }`}
+              style={{ animationPlayState: notificationTimersActive ? 'running' : 'paused' }}
+            />
           </div>
         ))}
         {guestTimerLockNotice && (
@@ -737,17 +886,17 @@ const Layout: React.FC = () => {
             }`}
           >
             <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_10%_-10%,rgba(251,191,36,0.28),transparent_46%)]" />
-            <div className="relative">
+            <div className="relative text-center">
               <div className="text-[10px] uppercase tracking-[0.18em] font-bold text-amber-100/70">
                 Guest Timer Lock
               </div>
-              <div className="mt-1 text-sm font-bold text-white/95">
+              <div className="mt-1.5 text-sm font-bold text-white/95">
                 {guestTimerLockNotice.title}
               </div>
-              <div className="mt-1 text-sm leading-relaxed text-white/68">
+              <div className="mt-1.5 text-sm leading-relaxed text-white/68">
                 {guestTimerLockNotice.message}
               </div>
-              <div className="mt-4 flex items-center justify-end gap-2">
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                 <button
                   type="button"
                   onClick={dismissGuestTimerLockNotice}
@@ -777,16 +926,12 @@ const Layout: React.FC = () => {
           role="dialog"
           aria-modal="true"
           aria-label="All tasks completed"
+          onPointerDown={handleAllTasksCelebrationBackdropPointerDown}
+          onClick={handleAllTasksCelebrationBackdropClick}
         >
-          <button
-            type="button"
-            aria-label="Dismiss celebration"
-            onClick={dismissAllTasksCelebration}
-            className="absolute inset-0 cursor-default"
-          />
-          <div className="doro-all-tasks-celebration-backdrop absolute inset-0 bg-[radial-gradient(circle_at_50%_16%,rgba(255,255,255,0.2),transparent_22%),radial-gradient(circle_at_50%_120%,rgba(251,191,36,0.08),transparent_28%),linear-gradient(180deg,rgba(15,23,42,0.26),rgba(2,6,23,0.58))]" />
-          <div className="doro-all-tasks-celebration-glow absolute left-1/2 top-[26%] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,rgba(253,224,71,0.2),rgba(96,165,250,0.14)_44%,transparent_74%)]" />
-          <div className="doro-all-tasks-celebration-halo absolute left-1/2 top-[30%] h-[24rem] w-[24rem] rounded-full border border-white/10" />
+          <div className="doro-all-tasks-celebration-backdrop pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_16%,rgba(255,255,255,0.2),transparent_22%),radial-gradient(circle_at_50%_120%,rgba(251,191,36,0.08),transparent_28%),linear-gradient(180deg,rgba(15,23,42,0.26),rgba(2,6,23,0.58))]" />
+          <div className="doro-all-tasks-celebration-glow pointer-events-none absolute left-1/2 top-[26%] h-[30rem] w-[30rem] rounded-full bg-[radial-gradient(circle,rgba(253,224,71,0.2),rgba(96,165,250,0.14)_44%,transparent_74%)]" />
+          <div className="doro-all-tasks-celebration-halo pointer-events-none absolute left-1/2 top-[30%] h-[24rem] w-[24rem] rounded-full border border-white/10" />
 
           <div className="absolute inset-0 pointer-events-none">
             {allTasksCelebration.pieces.map((piece) => (
@@ -808,9 +953,11 @@ const Layout: React.FC = () => {
                   height: `${piece.height}px`,
                   opacity: piece.opacity,
                   background: piece.shape === 'streamer'
-                    ? `linear-gradient(180deg, ${colorToRgba('#ffffff', 0.5)}, ${piece.color})`
-                    : `linear-gradient(180deg, ${colorToRgba('#ffffff', 0.34)}, ${piece.color})`,
-                  boxShadow: `0 0 0 1px ${colorToRgba('#ffffff', 0.12)}, 0 8px 18px -12px ${colorToRgba(piece.color, 0.75)}`,
+                    ? `linear-gradient(180deg, ${colorToRgba('#ffffff', 0.44)}, ${piece.color})`
+                    : `linear-gradient(180deg, ${colorToRgba('#ffffff', 0.28)}, ${piece.color})`,
+                  boxShadow: piece.shape === 'dot'
+                    ? `0 0 0 1px ${colorToRgba('#ffffff', 0.08)}`
+                    : `0 0 0 1px ${colorToRgba('#ffffff', 0.1)}, 0 5px 12px -12px ${colorToRgba(piece.color, 0.42)}`,
                   clipPath: piece.shape === 'diamond'
                     ? 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)'
                     : undefined,
@@ -826,7 +973,7 @@ const Layout: React.FC = () => {
             ))}
           </div>
 
-          <div className="absolute inset-0 flex items-start justify-center px-4 pt-[14vh]">
+          <div className="pointer-events-none absolute inset-0 flex items-start justify-center px-4 pt-[14vh]">
             <div
               className="doro-all-tasks-celebration-card pointer-events-auto relative w-[min(92vw,35rem)] overflow-hidden rounded-[2.15rem] border border-white/16 bg-[rgba(9,13,20,0.78)] px-6 py-6 text-center shadow-[0_38px_110px_-46px_rgba(15,23,42,0.98)] backdrop-blur-2xl md:px-8 md:py-7"
               onClick={(event) => event.stopPropagation()}
