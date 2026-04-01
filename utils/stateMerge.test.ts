@@ -22,6 +22,17 @@ describe('mergeOrderedEntitiesById', () => {
       remoteCategories[2],
     ]);
   });
+
+  it('treats the preferred list as authoritative when membership is preferred', () => {
+    const remoteCategories: Category[] = [
+      { id: 1, name: 'Writing', color: '#C86D80', icon: 'pen' },
+      { id: 2, name: 'Study', color: '#4FAE9B', icon: 'book' },
+    ];
+
+    expect(
+      mergeOrderedEntitiesById(remoteCategories, [], 'local', { membership: 'preferred' }),
+    ).toEqual([]);
+  });
 });
 
 describe('mergeTaskLists', () => {
@@ -131,5 +142,25 @@ describe('mergeTaskLists', () => {
         ],
       },
     ]);
+  });
+
+  it('keeps deletions from the preferred side when membership is preferred', () => {
+    const remoteTasks: Task[] = [
+      {
+        id: 1,
+        name: 'Task to delete',
+        estimated: 1,
+        completed: 0,
+        checked: false,
+        selected: false,
+        categoryId: null,
+        subtasks: [],
+        isExpanded: true,
+      },
+    ];
+
+    expect(
+      mergeTaskLists(remoteTasks, [], 'local', { membership: 'preferred' }),
+    ).toEqual([]);
   });
 });

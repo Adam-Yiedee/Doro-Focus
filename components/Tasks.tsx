@@ -24,6 +24,11 @@ const getRemainingPomosForTask = (task: Task): number => {
   return Math.max(0, task.estimated - task.completed);
 };
 
+const hasSelectedTaskInSubtree = (task: Task): boolean => {
+  if (task.selected) return true;
+  return task.subtasks.some(hasSelectedTaskInSubtree);
+};
+
 const formatFinishTime = (date: Date) => {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 };
@@ -52,11 +57,18 @@ const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
 const TASK_EDIT_CLOSE_DURATION_MS = 240;
 const TASK_EDIT_SETTLE_DURATION_MS = 280;
+const CATEGORY_RAIL_DRAG_THRESHOLD_PX = 6;
+
+interface TasksProps {
+  onPreviewSurfaceColorChange?: (color?: string) => void;
+}
 
 interface TaskItemProps {
   task: Task;
   depth?: number;
   isSectionActive: boolean;
+  showCompletedTasks: boolean;
+  keepSelectedCompletedVisible: boolean;
   isEntering?: boolean;
   draggingTaskId?: number | null;
   dropHint?: DragInsertPosition | null;
@@ -70,6 +82,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
   task,
   depth = 0,
   isSectionActive,
+  showCompletedTasks,
+  keepSelectedCompletedVisible,
   isEntering = false,
   draggingTaskId = null,
   dropHint = null,
@@ -170,9 +184,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
     }, 280);
   };
 
-  const containerMargin = depth === 0 ? 'mb-3' : 'mb-2';
   const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
   const isTopLevel = depth === 0;
+  const isVisibleInList = showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task));
   const isDraggedTask = isTopLevel && draggingTaskId === task.id;
 
   if (isEditing) {
@@ -182,7 +196,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           e.preventDefault();
           handleSave();
         }}
-        className={`doro-task-edit-shell p-3 bg-white/10 rounded-xl ${containerMargin} flex flex-col gap-3 backdrop-blur-md border border-white/20 ${
+        className={`doro-task-edit-shell p-3 bg-white/10 rounded-xl flex flex-col gap-3 backdrop-blur-md border border-white/20 ${
           editCloseState === 'save'
             ? 'doro-task-edit-close-save'
             : editCloseState === 'cancel'
@@ -267,9 +281,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
   return (
     <div
       ref={isTopLevel && registerTaskRef ? (node) => registerTaskRef(task.id, node) : undefined}
-      draggable={isTopLevel && !isRemoving}
+      draggable={isTopLevel && !isRemoving && isVisibleInList}
       onDragStart={(event) => {
-        if (!isTopLevel || !onDragStartTask) return;
+        if (!isTopLevel || !onDragStartTask || !isVisibleInList) return;
         const dragTarget = event.target as HTMLElement;
         if (dragTarget.closest('button, input, textarea, select, a, form')) {
           event.preventDefault();
@@ -300,12 +314,16 @@ const TaskItem: React.FC<TaskItemProps> = ({
         onDragEndTask?.();
       }}
       className={`
-        flex flex-col ${containerMargin} ${depth === 0 ? 'mt-2 cursor-grab active:cursor-grabbing' : ''} relative
-        transition-[transform,opacity] duration-250 ease-out
+        relative flex flex-col overflow-hidden origin-top
+        ${depth === 0 && isVisibleInList ? 'cursor-grab active:cursor-grabbing' : ''}
+        transition-[max-height,opacity,transform,margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+        ${isVisibleInList ? 'max-h-[2000px] opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2 pointer-events-none'}
         ${isEntering ? 'doro-task-enter' : ''}
         ${isSettlingAfterEdit ? 'doro-task-edit-return-settle' : ''}
-        ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 pointer-events-none' : 'opacity-100 scale-100 translate-x-0'}
+        ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 pointer-events-none' : ''}
       `}
+      style={isVisibleInList ? undefined : { marginTop: 0 }}
+      aria-hidden={!isVisibleInList}
     >
       <div 
         onClick={() => selectTask(task.id)}
@@ -313,12 +331,12 @@ const TaskItem: React.FC<TaskItemProps> = ({
           group relative rounded-lg cursor-pointer transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
           flex items-center gap-3 border
           ${depth === 0 ? 'p-3' : 'p-2.5'}
-          ${task.selected && isSectionActive
-            ? 'bg-white/20 border-white/30 shadow-lg scale-[1.01] z-20 blur-0 opacity-100' 
-            : 'bg-white/5 border-transparent z-10' // Base state
+          ${task.selected
+            ? 'bg-white/18 border-white/30 shadow-[0_18px_30px_-18px_rgba(15,23,42,0.58)] z-20 blur-0 opacity-100'
+            : 'bg-white/5 border-transparent z-10'
           }
           ${!isSectionActive 
-            ? 'opacity-70 hover:opacity-100' 
+            ? (task.selected ? '' : 'opacity-70 hover:opacity-100')
             : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/10 hover:shadow-md opacity-80 hover:opacity-100')
           }
           ${task.checked ? 'opacity-40' : ''}
@@ -334,7 +352,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         {dropHint && !isDraggedTask && (
           <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`} />
         )}
-        {task.selected && isSectionActive && <div className="absolute left-0 inset-y-2 w-1 bg-white rounded-r-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" />}
+        {task.selected && <div className="absolute left-0 inset-y-2 w-1 bg-white rounded-r-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" />}
         
         {task.subtasks.length > 0 ? (
           <button 
@@ -375,7 +393,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         
         <div className="flex-1 min-w-0 flex flex-col justify-center">
             <div className="flex items-center gap-2">
-                <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : 'group-hover:text-white'} ${depth === 0 ? 'font-medium text-sm' : 'text-xs'}`}>
+                <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : (task.selected ? 'text-white' : 'group-hover:text-white')} ${depth === 0 ? 'font-medium text-sm' : 'text-xs'}`}>
                     {task.name}
                 </div>
                 {category && depth === 0 && (
@@ -388,7 +406,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 )}
             </div>
           {task.color && depth === 0 && !task.checked && (
-             <div className="w-full max-w-[60px] h-[2px] mt-1.5 rounded-full opacity-60 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: task.color }} />
+             <div className={`w-full max-w-[60px] h-[2px] mt-1.5 rounded-full transition-opacity ${task.selected ? 'opacity-100' : 'opacity-60 group-hover:opacity-100'}`} style={{ backgroundColor: task.color }} />
           )}
         </div>
 
@@ -462,28 +480,47 @@ const TaskItem: React.FC<TaskItemProps> = ({
         )}
 
         {task.isExpanded && task.subtasks.length > 0 && (
-          <div className="doro-soft-expand relative border-l border-white/10 pl-4 mt-1 space-y-1">
+          <div className="doro-soft-expand relative border-l border-white/10 pl-4 mt-1 space-y-1.5">
             {task.subtasks.map(sub => (
-              <TaskItem key={sub.id} task={sub} depth={depth + 1} isSectionActive={isSectionActive} />
-            ))}
-          </div>
+                <TaskItem
+                  key={sub.id}
+                  task={sub}
+                  depth={depth + 1}
+                  isSectionActive={isSectionActive}
+                  showCompletedTasks={showCompletedTasks}
+                  keepSelectedCompletedVisible={keepSelectedCompletedVisible}
+                />
+              ))}
+            </div>
         )}
       </div>
     </div>
   );
 };
 
-const Tasks: React.FC = () => {
-  const { tasks, addTask, moveTask, pomodoroCount, settings, setWeeklyScheduleOpen, categories, requestNewCategoryFlow } = useTimer();
+const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
+  const {
+    tasks,
+    addTask,
+    moveTask,
+    pomodoroCount,
+    settings,
+    setWeeklyScheduleOpen,
+    categories,
+    requestNewCategoryFlow,
+    showCompletedTasks,
+  } = useTimer();
   const [newName, setNewName] = useState('');
   const [newEst, setNewEst] = useState(1);
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
   const [newCatId, setNewCatId] = useState<number | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [isPreviewingNewTaskColor, setIsPreviewingNewTaskColor] = useState(false);
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
   const [hoverTarget, setHoverTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
+  const [isCategoryRailDragging, setIsCategoryRailDragging] = useState(false);
   const didInitTaskIdsRef = useRef(false);
   const mountAtRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
   const prevTaskIdsRef = useRef<number[]>([]);
@@ -492,6 +529,15 @@ const Tasks: React.FC = () => {
   const flipAnimationsRef = useRef<Map<number, Animation>>(new Map());
   const lastHoverMoveKeyRef = useRef<string | null>(null);
   const lastReorderAtRef = useRef<number>(0);
+  const categoryRailReleaseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const categoryRailDragRef = useRef({
+    pointerId: null as number | null,
+    startX: 0,
+    startScrollLeft: 0,
+    moved: false,
+    suppressClick: false,
+    captured: false,
+  });
 
   const todayKey = getDateKey(new Date());
 
@@ -500,7 +546,17 @@ const Tasks: React.FC = () => {
     !t.isFuture
     && (!t.scheduledDate || t.scheduledDate <= todayKey)
   );
-  const filteredTaskIds = useMemo(() => filteredTasks.map(task => task.id), [filteredTasks]);
+  const keepSelectedCompletedVisible = useMemo(
+    () => filteredTasks.some(task => !task.checked),
+    [filteredTasks]
+  );
+  const visibleTaskIds = useMemo(
+    () => filteredTasks
+      .filter(task => showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task)))
+      .map(task => task.id),
+    [filteredTasks, keepSelectedCompletedVisible, showCompletedTasks]
+  );
+  const filteredTaskIds = useMemo(() => visibleTaskIds, [visibleTaskIds]);
   const filteredTaskOrderKey = useMemo(() => filteredTaskIds.join('|'), [filteredTaskIds]);
 
   useEffect(() => {
@@ -540,6 +596,22 @@ const Tasks: React.FC = () => {
       lastHoverMoveKeyRef.current = null;
     }
   }, [draggingTaskId, filteredTaskIds]);
+
+  useEffect(() => {
+    return () => {
+      if (categoryRailReleaseTimeoutRef.current) clearTimeout(categoryRailReleaseTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    onPreviewSurfaceColorChange?.(isInputFocused && isPreviewingNewTaskColor ? newColor : undefined);
+  }, [isInputFocused, isPreviewingNewTaskColor, newColor, onPreviewSurfaceColorChange]);
+
+  useEffect(() => {
+    return () => {
+      onPreviewSurfaceColorChange?.(undefined);
+    };
+  }, [onPreviewSurfaceColorChange]);
 
   const registerTaskRef = useCallback((taskId: number, node: HTMLDivElement | null) => {
     if (node) taskCardRefsRef.current.set(taskId, node);
@@ -704,12 +776,96 @@ const Tasks: React.FC = () => {
     moveTask(draggingTaskId, toId);
   }, [draggingTaskId, filteredTaskIds, moveTask]);
 
+  const releaseCategoryRailDrag = useCallback((pointerId?: number) => {
+    const drag = categoryRailDragRef.current;
+    if (pointerId !== undefined && drag.pointerId !== pointerId) return;
+    const shouldSuppressClick = drag.moved;
+    drag.pointerId = null;
+    drag.startX = 0;
+    drag.startScrollLeft = 0;
+    drag.moved = false;
+    drag.captured = false;
+    setIsCategoryRailDragging(false);
+
+    if (!shouldSuppressClick) return;
+    drag.suppressClick = true;
+    if (categoryRailReleaseTimeoutRef.current) clearTimeout(categoryRailReleaseTimeoutRef.current);
+    categoryRailReleaseTimeoutRef.current = setTimeout(() => {
+      categoryRailDragRef.current.suppressClick = false;
+      categoryRailReleaseTimeoutRef.current = null;
+    }, 0);
+  }, []);
+
+  const handleCategoryRailPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const rail = event.currentTarget;
+    if (rail.scrollWidth <= rail.clientWidth + 1) return;
+    if (categoryRailReleaseTimeoutRef.current) {
+      clearTimeout(categoryRailReleaseTimeoutRef.current);
+      categoryRailReleaseTimeoutRef.current = null;
+    }
+
+    const drag = categoryRailDragRef.current;
+    drag.pointerId = event.pointerId;
+    drag.startX = event.clientX;
+    drag.startScrollLeft = rail.scrollLeft;
+    drag.moved = false;
+    drag.suppressClick = false;
+    setIsCategoryRailDragging(false);
+
+  }, []);
+
+  const handleCategoryRailPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = categoryRailDragRef.current;
+    if (drag.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - drag.startX;
+    if (!drag.moved && Math.abs(deltaX) >= CATEGORY_RAIL_DRAG_THRESHOLD_PX) {
+      drag.moved = true;
+      if (!drag.captured && typeof event.currentTarget.setPointerCapture === 'function') {
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.captured = true;
+        } catch {
+          drag.captured = false;
+        }
+      }
+      setIsCategoryRailDragging(true);
+    }
+    if (!drag.moved) return;
+
+    event.preventDefault();
+    event.currentTarget.scrollLeft = drag.startScrollLeft - deltaX;
+  }, []);
+
+  const handleCategoryRailPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    releaseCategoryRailDrag(event.pointerId);
+  }, [releaseCategoryRailDrag]);
+
+  const handleCategoryRailPointerCancel = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    releaseCategoryRailDrag(event.pointerId);
+  }, [releaseCategoryRailDrag]);
+
+  const handleCategoryRailClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!categoryRailDragRef.current.suppressClick) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
+  const handleCategorySelect = useCallback((categoryId: number, color: string) => {
+    if (categoryRailDragRef.current.suppressClick) return;
+    setNewCatId(categoryId);
+    setNewColor(color);
+    setIsPreviewingNewTaskColor(true);
+  }, []);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
     addTask(newName, clampPomoEstimate(newEst), newCatId, undefined, newColor);
     setNewName('');
     setNewEst(1);
+    setIsPreviewingNewTaskColor(false);
   };
 
   const isSectionActive = isHovered || isInputFocused;
@@ -922,6 +1078,7 @@ const Tasks: React.FC = () => {
           onBlur={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget)) {
               setIsInputFocused(false);
+              setIsPreviewingNewTaskColor(false);
             }
           }}
         >
@@ -961,49 +1118,65 @@ const Tasks: React.FC = () => {
             `}>
               <div className="flex flex-col gap-3">
                   {/* Category & Color Selection */}
-                  <div className="flex items-center gap-2 overflow-x-auto px-1 py-1 scrollbar-hide">
-                      <div className="flex gap-1.5">
+                  <div className="flex items-center gap-2 overflow-hidden px-1 py-1">
+                      <div className="flex shrink-0 gap-1.5">
                           {PRESET_COLORS.map(c => (
                             <button
                               key={c}
                               type="button"
-                              onClick={() => { setNewColor(c); setNewCatId(null); }}
+                              onClick={() => {
+                                setNewColor(c);
+                                setNewCatId(null);
+                                setIsPreviewingNewTaskColor(true);
+                              }}
                               className={getColorSwatchClass(newColor === c && !newCatId)}
                               style={{ backgroundColor: c }}
                             />
                           ))}
                       </div>
-                      
-                      <div className="w-px h-4 bg-white/10 mx-1" />
-                      
-                      <div className="flex gap-1">
-                          {categories.map(cat => (
-                              <button
-                                key={cat.id}
-                                type="button"
-                                onClick={() => { setNewCatId(cat.id); setNewColor(cat.color); }}
-                                className={`flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${newCatId === cat.id ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'}`}
-                              >
-                                  <div className="w-3 h-3 text-white" style={{color: cat.color}}>{getIcon(cat.icon)}</div>
-                                  <span className="text-[9px] text-white font-bold">{cat.name}</span>
-                              </button>
-                          ))}
-                          {categories.length === 0 && (
-                              <button
-                                type="button"
-                                onClick={requestNewCategoryFlow}
-                                className="flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all bg-white/5 border-white/10 opacity-60 hover:opacity-100"
-                              >
-                                  <div className="w-3 h-3 flex items-center justify-center text-white/80">
-                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                          <path d="M12 5v14" />
-                                          <path d="M5 12h14" />
-                                      </svg>
-                                  </div>
-                                  <span className="text-[9px] text-white font-bold">Add Category</span>
-                              </button>
-                          )}
-                      </div>
+
+                      {categories.length > 0 ? (
+                        <div
+                          className={`min-w-0 flex-1 overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-1.5 scrollbar-hide ${isCategoryRailDragging ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
+                          style={{ touchAction: 'pan-y' }}
+                          onPointerDown={handleCategoryRailPointerDown}
+                          onPointerMove={handleCategoryRailPointerMove}
+                          onPointerUp={handleCategoryRailPointerUp}
+                          onPointerCancel={handleCategoryRailPointerCancel}
+                          onLostPointerCapture={handleCategoryRailPointerCancel}
+                          onClick={handleCategoryRailClick}
+                        >
+                          <div className="flex w-max gap-1 pr-1">
+                              {categories.map(cat => (
+                                  <button
+                                    key={cat.id}
+                                    type="button"
+                                    onClick={() => handleCategorySelect(cat.id, cat.color)}
+                                    className={`shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${newCatId === cat.id ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'}`}
+                                  >
+                                      <div className="w-3 h-3 text-white" style={{color: cat.color}}>{getIcon(cat.icon)}</div>
+                                      <span className="text-[9px] text-white font-bold">{cat.name}</span>
+                                  </button>
+                              ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/10 p-1.5">
+                          <button
+                            type="button"
+                            onClick={requestNewCategoryFlow}
+                            className="flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 transition-all opacity-60 hover:opacity-100"
+                          >
+                              <div className="w-3 h-3 flex items-center justify-center text-white/80">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                      <path d="M12 5v14" />
+                                      <path d="M5 12h14" />
+                                  </svg>
+                              </div>
+                              <span className="text-[9px] text-white font-bold">Add Category</span>
+                          </button>
+                        </div>
+                      )}
                   </div>
 
                   <div className="flex justify-between items-center">
@@ -1070,13 +1243,15 @@ const Tasks: React.FC = () => {
             event.preventDefault();
             clearDragState();
           }}
-          className={`flex-1 min-h-0 space-y-1 overflow-y-auto pb-8 pr-1 scrollbar-hide transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
+          className={`flex-1 min-h-0 space-y-3 overflow-y-auto pb-8 pr-1 scrollbar-hide transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
         >
           {filteredTasks.map(task => (
             <TaskItem
               key={task.id}
               task={task}
               isSectionActive={isSectionActive}
+              showCompletedTasks={showCompletedTasks}
+              keepSelectedCompletedVisible={keepSelectedCompletedVisible}
               isEntering={enteringTaskIds.includes(task.id)}
               draggingTaskId={draggingTaskId}
               dropHint={draggingTaskId && hoverTarget?.taskId === task.id && draggingTaskId !== task.id ? hoverTarget.position : null}
@@ -1086,7 +1261,7 @@ const Tasks: React.FC = () => {
               registerTaskRef={registerTaskRef}
             />
           ))}
-          {filteredTasks.length === 0 && (
+          {visibleTaskIds.length === 0 && (
             <div className="flex items-center justify-center h-24 opacity-0" />
           )}
         </div>

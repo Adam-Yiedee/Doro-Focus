@@ -310,6 +310,8 @@ const GraceModal: React.FC = () => {
 
   const addToBankAmount = graceTotal / 5;
   const deductFromBankAmount = graceTotal;
+  const graceHeaderTitleClassName = 'text-[2.65rem] leading-none md:text-[3.4rem] font-semibold tracking-tight text-white/95 drop-shadow-[0_18px_32px_rgba(0,0,0,0.35)]';
+  const graceHeaderMessageClassName = 'mx-auto max-w-2xl text-base md:text-[1.15rem] leading-snug tracking-[-0.01em] text-white/60 font-medium';
 
   const buttonClass = `
     group relative w-32 h-32 md:w-40 md:h-40 rounded-[1.5rem] overflow-hidden
@@ -326,10 +328,10 @@ const GraceModal: React.FC = () => {
         
         {/* Header Area */}
         <div className="text-center space-y-2">
-           <h2 className="text-3xl font-bold text-white/90 tracking-tight drop-shadow-lg">
+           <h2 className={graceHeaderTitleClassName}>
              {isAfterWork ? "Session Complete" : "Break Complete"}
            </h2>
-           <p className="text-[11px] tracking-[0.06em] text-white/50 font-semibold">
+           <p className={graceHeaderMessageClassName}>
               {statusMessage}
            </p>
         </div>

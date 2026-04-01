@@ -1,6 +1,7 @@
 import { Task } from '../types';
 
 export type MergePreference = 'local' | 'remote';
+export type OrderedMergeMembership = 'union' | 'preferred';
 
 type EntityWithId = { id: number | string };
 
@@ -26,8 +27,12 @@ export const mergeOrderedEntitiesById = <T extends EntityWithId>(
   remoteItems: T[] = [],
   localItems: T[] = [],
   prefer: MergePreference = 'local',
+  options?: {
+    membership?: OrderedMergeMembership;
+  },
 ): T[] => {
   const { preferredItems, fallbackItems } = getSourcesByPreference(remoteItems, localItems, prefer);
+  const membership = options?.membership ?? 'union';
   const orderedIds: Array<number | string> = [];
   const seenIds = new Set<number | string>();
   const preferredById = new Map<number | string, T>();
@@ -41,13 +46,20 @@ export const mergeOrderedEntitiesById = <T extends EntityWithId>(
     orderedIds.push(item.id);
   });
 
-  fallbackItems.forEach((item) => {
-    if (!item) return;
-    fallbackById.set(item.id, item);
-    if (seenIds.has(item.id)) return;
-    seenIds.add(item.id);
-    orderedIds.push(item.id);
-  });
+  if (membership === 'union') {
+    fallbackItems.forEach((item) => {
+      if (!item) return;
+      fallbackById.set(item.id, item);
+      if (seenIds.has(item.id)) return;
+      seenIds.add(item.id);
+      orderedIds.push(item.id);
+    });
+  } else {
+    fallbackItems.forEach((item) => {
+      if (!item) return;
+      fallbackById.set(item.id, item);
+    });
+  }
 
   return orderedIds
     .map((id) => preferredById.get(id) ?? fallbackById.get(id) ?? null)
@@ -59,12 +71,13 @@ const cloneTaskTree = (task: Task): Task => ({
   subtasks: Array.isArray(task.subtasks) ? task.subtasks.map(cloneTaskTree) : [],
 });
 
-export const mergeTaskLists = (
+const mergeTaskListsInternal = (
   remoteTasks: Task[] = [],
   localTasks: Task[] = [],
   prefer: MergePreference = 'local',
+  membership: OrderedMergeMembership = 'union',
 ): Task[] => {
-  const orderedTasks = mergeOrderedEntitiesById(remoteTasks, localTasks, prefer);
+  const orderedTasks = mergeOrderedEntitiesById(remoteTasks, localTasks, prefer, { membership });
   const remoteById = new Map<number | string, Task>();
   const localById = new Map<number | string, Task>();
 
@@ -94,7 +107,23 @@ export const mergeTaskLists = (
     return {
       ...(fallbackTask ? cloneTaskTree(fallbackTask) : {}),
       ...cloneTaskTree(preferredTask),
-      subtasks: mergeTaskLists(remoteSubtasks, localSubtasks, prefer),
+      subtasks: mergeTaskListsInternal(remoteSubtasks, localSubtasks, prefer, membership),
     };
   });
+};
+
+export const mergeTaskLists = (
+  remoteTasks: Task[] = [],
+  localTasks: Task[] = [],
+  prefer: MergePreference = 'local',
+  options?: {
+    membership?: OrderedMergeMembership;
+  },
+): Task[] => {
+  return mergeTaskListsInternal(
+    remoteTasks,
+    localTasks,
+    prefer,
+    options?.membership ?? 'union',
+  );
 };

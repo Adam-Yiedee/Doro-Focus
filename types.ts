@@ -41,6 +41,7 @@ export interface LogEntry {
 }
 
 export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood' | 'marimba' | 'crystal' | 'blade' | 'cosmic' | 'ripple' | 'news';
+export type FocusSound = 'off' | 'white-soft' | 'white-bright' | 'pink-soft' | 'pink-air' | 'brown-deep' | 'brown-warm' | 'green-calm';
 
 export interface TimerSettings {
   workDuration: number;
@@ -49,6 +50,8 @@ export interface TimerSettings {
   longBreakInterval: number; // Pomodoros before a long break
   disableBlur: boolean;
   alarmSound: AlarmSound;
+  focusSound: FocusSound;
+  focusSoundVolume: number;
   themeMode: 'light' | 'dark';
 }
 

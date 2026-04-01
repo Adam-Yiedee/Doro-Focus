@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
-import { Task } from '../../types';
+import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
+import { getIcon } from '../../utils/icons';
+import TaskCategoryPicker from '../TaskCategoryPicker';
 
 const clampEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -110,8 +112,24 @@ const colorToRgba = (color: string, alpha: number) => {
   return `rgba(125, 83, 162, ${safeAlpha})`;
 };
 
+const ScheduleCategoryBadge: React.FC<{
+  category: Category;
+  muted?: boolean;
+}> = ({ category, muted = false }) => (
+  <div className={`inline-flex max-w-full min-w-0 items-center gap-1 rounded-full border px-2 py-0.5 ${
+    muted ? 'border-white/8 bg-white/[0.04] text-white/38' : 'border-white/10 bg-white/[0.06] text-white/60'
+  }`}>
+    <div className="w-3 h-3" style={{ color: category.color }}>
+      {getIcon(category.icon, { size: 12 })}
+    </div>
+    <span className="truncate text-[9px] font-bold uppercase tracking-[0.12em]">{category.name}</span>
+  </div>
+);
+
 const ScheduleTaskCard: React.FC<{
   task: Task;
+  categories: Category[];
+  onRequestNewCategory: () => void;
   onDragStart: (taskId: number) => void;
   onDragHover: (taskId: number, position: DragInsertPosition) => void;
   onDragEnd: () => void;
@@ -124,6 +142,8 @@ const ScheduleTaskCard: React.FC<{
   registerCardRef?: (taskId: number, node: HTMLDivElement | null) => void;
 }> = ({
   task,
+  categories,
+  onRequestNewCategory,
   onDragStart,
   onDragHover,
   onDragEnd,
@@ -140,6 +160,7 @@ const ScheduleTaskCard: React.FC<{
   const [name, setName] = useState(task.name);
   const [estimated, setEstimated] = useState(task.estimated);
   const [color, setColor] = useState(task.color || PRESET_COLORS[0]);
+  const [categoryId, setCategoryId] = useState<number | null>(task.categoryId ?? null);
   const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCompleted = Boolean(task.checked);
 
@@ -148,6 +169,7 @@ const ScheduleTaskCard: React.FC<{
       setName(task.name);
       setEstimated(task.estimated);
       setColor(task.color || PRESET_COLORS[0]);
+      setCategoryId(task.categoryId ?? null);
     }
   }, [task, isEditing]);
 
@@ -159,6 +181,10 @@ const ScheduleTaskCard: React.FC<{
 
   const predictedPomos = getPredictedPomos(task);
   const displayColor = task.color || PRESET_COLORS[0];
+  const taskCategory = useMemo(
+    () => categories.find((category) => category.id === task.categoryId) || null,
+    [categories, task.categoryId]
+  );
   const additionalHeight = isCompleted ? 0 : Math.min(44, Math.max(0, predictedPomos - 1) * 8);
   const taskGlassStyle = useMemo(() => ({
     background: isCompleted
@@ -219,7 +245,7 @@ const ScheduleTaskCard: React.FC<{
           onChange={(event) => setName(event.target.value)}
           className="w-full bg-transparent border-b border-white/20 pb-1 text-sm text-white outline-none focus:border-white/45"
         />
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="mt-2 flex items-center gap-2">
           <div className="flex items-center rounded-md border border-white/15 bg-black/20 overflow-hidden">
             <button
               type="button"
@@ -239,20 +265,23 @@ const ScheduleTaskCard: React.FC<{
               +
             </button>
           </div>
-          <div className="flex items-center gap-1">
-            {PRESET_COLORS.map((nextColor) => (
-              <button
-                key={`schedule-edit-color-${task.id}-${nextColor}`}
-                type="button"
-                onClick={() => setColor(nextColor)}
-                className={`w-4 h-4 rounded-full transition-all ${
-                  color === nextColor ? 'ring-2 ring-white ring-offset-1 ring-offset-transparent scale-110' : 'opacity-75 hover:opacity-100 hover:scale-110'
-                }`}
-                style={{ backgroundColor: nextColor }}
-                aria-label={`Set color ${nextColor}`}
-              />
-            ))}
-          </div>
+        </div>
+        <div className="mt-2">
+          <TaskCategoryPicker
+            categories={categories}
+            selectedCategoryId={categoryId}
+            selectedColor={color}
+            onColorSelect={(nextColor) => {
+              setColor(nextColor);
+              setCategoryId(null);
+            }}
+            onCategorySelect={(category) => {
+              setCategoryId(category.id);
+              setColor(category.color);
+            }}
+            onRequestNewCategory={onRequestNewCategory}
+            swatchSize="sm"
+          />
         </div>
         <div className="mt-2 flex justify-end gap-1.5">
           <button
@@ -265,7 +294,13 @@ const ScheduleTaskCard: React.FC<{
           <button
             type="button"
             onClick={() => {
-              onSave({ ...task, name: name.trim() || task.name, estimated: clampEstimate(estimated), color });
+              onSave({
+                ...task,
+                name: name.trim() || task.name,
+                estimated: clampEstimate(estimated),
+                color,
+                categoryId,
+              });
               exitEdit();
             }}
             className="schedule-glass-button schedule-glass-button--primary px-2.5 py-1 rounded-md border border-teal-100/35 bg-teal-300/20 text-[10px] uppercase tracking-[0.14em] font-bold text-teal-50 hover:bg-teal-300/30 transition-colors"
@@ -331,7 +366,12 @@ const ScheduleTaskCard: React.FC<{
       <div className="pointer-events-none absolute inset-0 rounded-xl" style={taskTintStyle} />
       <div className="pointer-events-none absolute left-3 right-10 top-[1px] h-[2px] rounded-full opacity-95" style={taskAccentStyle} />
       <div className="pointer-events-none absolute inset-0 rounded-xl bg-[linear-gradient(160deg,rgba(255,255,255,0.35),rgba(255,255,255,0.08)_34%,rgba(255,255,255,0)_64%)] opacity-60" />
-      <div className="relative z-10 pr-8">
+      <div className="relative z-10 pr-24 sm:pr-28">
+        {taskCategory && (
+          <div className="absolute right-0 top-0 max-w-[calc(100%-5rem)]">
+            <ScheduleCategoryBadge category={taskCategory} muted={isCompleted} />
+          </div>
+        )}
         <div className={`schedule-task-title text-[16px] leading-tight font-bold truncate ${isCompleted ? 'text-white/45 line-through decoration-white/45 decoration-2' : 'text-white'}`}>{task.name}</div>
         <div className={`schedule-task-meta mt-1 text-[9px] uppercase tracking-[0.1em] font-sans font-medium ${isCompleted ? 'text-white/30' : 'text-white/45'}`}>
           {isCompleted ? 'Completed' : formatPomoLabel(predictedPomos)}
@@ -360,7 +400,18 @@ interface WeeklySchedulePanelProps {
 }
 
 const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClose }) => {
-  const { tasks, updateTask, moveTask, addDetailedTask, activeColor, settings } = useTimer();
+  const {
+    tasks,
+    updateTask,
+    moveTask,
+    addDetailedTask,
+    activeColor,
+    settings,
+    categories,
+    requestNewCategoryFlow,
+    showCompletedTasks,
+    setShowCompletedTasks,
+  } = useTimer();
   const isLightTheme = settings.themeMode !== 'dark';
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
   const [hoveredTaskTarget, setHoveredTaskTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
@@ -371,11 +422,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const [addingDate, setAddingDate] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [extendSchedule, setExtendSchedule] = useState(false);
-  const [showCompleted, setShowCompleted] = useState(true);
   const [showUnscheduled, setShowUnscheduled] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskEst, setNewTaskEst] = useState(1);
   const [newTaskColor, setNewTaskColor] = useState(activeColor || PRESET_COLORS[0]);
+  const [newTaskCategoryId, setNewTaskCategoryId] = useState<number | null>(null);
   const [todayKey, setTodayKey] = useState(() => getDateKey(new Date()));
   const openAtRef = useRef<number>(0);
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -430,6 +481,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     setNewTaskName('');
     setNewTaskEst(1);
     setNewTaskColor(activeColor || PRESET_COLORS[0]);
+    setNewTaskCategoryId(null);
     setShowHistory(false);
     setExtendSchedule(false);
     setShowUnscheduled(false);
@@ -464,9 +516,9 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const rootOpenTasks = useMemo(() => tasks.filter((task) => !task.checked), [tasks]);
   const rootScheduledTasks = useMemo(() => tasks.filter((task) => Boolean(task.scheduledDate)), [tasks]);
   const visibleScheduledTasks = useMemo(() => {
-    if (showCompleted) return rootScheduledTasks;
+    if (showCompletedTasks) return rootScheduledTasks;
     return rootScheduledTasks.filter((task) => !task.checked);
-  }, [rootScheduledTasks, showCompleted]);
+  }, [rootScheduledTasks, showCompletedTasks]);
   const rootOpenTaskIds = useMemo(() => rootOpenTasks.map((task) => task.id), [rootOpenTasks]);
   const rootOpenTaskLayoutKey = useMemo(
     () => rootOpenTasks.map((task) => `${task.id}:${task.scheduledDate || 'unscheduled'}`).join('|'),
@@ -775,6 +827,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       name: newTaskName.trim(),
       estimated: clampEstimate(newTaskEst),
       color: newTaskColor,
+      categoryId: newTaskCategoryId,
       scheduledDate: dateKey,
       isFuture: false,
     });
@@ -789,6 +842,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     setAddingDate((prev) => (prev === dateKey ? null : dateKey));
     setNewTaskName('');
     setNewTaskEst(1);
+    setNewTaskColor(activeColor || PRESET_COLORS[0]);
+    setNewTaskCategoryId(null);
   };
 
   const unscheduledPomos = unscheduledTasks.reduce((sum, task) => sum + getPredictedPomos(task), 0);
@@ -1141,36 +1196,43 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           opacity: 0.36;
           transform: scale(0.985);
         }
+        .schedule-reveal-slot {
+          display: flex;
+          align-items: center;
+          min-height: 2.25rem;
+          flex: 0 1 32rem;
+          max-width: 32rem;
+          overflow: hidden;
+        }
         .schedule-reveal-controls {
-          max-width: 0;
           opacity: 0;
           visibility: hidden;
           transform: translateY(6px);
-          overflow: hidden;
+          flex-wrap: nowrap;
           white-space: nowrap;
           transition:
-            max-width 280ms cubic-bezier(0.22, 1, 0.36, 1),
             opacity 220ms ease,
             transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-            visibility 0s linear 280ms;
+            visibility 0s linear 220ms;
           pointer-events: none;
         }
         .schedule-header-group:hover .schedule-reveal-controls,
         .schedule-header-group:focus-within .schedule-reveal-controls {
-          max-width: 20rem;
           opacity: 1;
           visibility: visible;
           transform: translateY(0);
           transition:
-            max-width 360ms cubic-bezier(0.22, 1, 0.36, 1),
             opacity 220ms ease,
             transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
             visibility 0s linear 0s;
           pointer-events: auto;
         }
         @media (hover: none) {
+          .schedule-reveal-slot {
+            flex-basis: auto;
+            max-width: none;
+          }
           .schedule-reveal-controls {
-            max-width: 20rem;
             opacity: 1;
             visibility: visible;
             transform: translateY(0);
@@ -1193,66 +1255,52 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         className={`doro-weekly-shell ${isLightTheme ? 'theme-light' : 'theme-dark'} fixed right-0 top-0 bottom-0 z-50 w-full md:w-[min(92vw,1000px)] bg-[#0e1116]/95 border-l border-white/10 shadow-[0_20px_80px_rgba(0,0,0,0.45)] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${isOpen ? 'translate-x-0' : 'translate-x-full'} overflow-hidden`}
       >
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.08),transparent_46%),radial-gradient(circle_at_bottom_right,rgba(255,255,255,0.05),transparent_42%)] pointer-events-none" />
-
         <div className="relative h-full flex flex-col">
-          <div className="schedule-header-group px-4 md:px-6 py-4 border-b border-white/10 bg-black/20 backdrop-blur-xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.24em] text-white/45 font-bold">Schedule View</div>
-                <h2 className="mt-1 text-2xl font-bold text-white tracking-tight">Weekly Planner</h2>
-                <p className="mt-1 text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
-                <div className="mt-3 flex items-center gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setShowCompleted(prev => !prev)}
-                    className={`schedule-glass-button group relative overflow-hidden px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-all duration-300 ${
-                      showCompleted
-                        ? 'schedule-glass-button--accent border-emerald-200/35 bg-emerald-300/18 text-emerald-50 hover:bg-emerald-300/26 hover:border-emerald-100/45 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(16,185,129,0.9)]'
-                        : 'schedule-glass-button--persistent border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1] hover:border-white/20 hover:-translate-y-[1px] hover:shadow-[0_8px_20px_-12px_rgba(255,255,255,0.4)]'
-                    }`}
-                    aria-label={showCompleted ? 'Hide completed tasks' : 'Show completed tasks'}
-                  >
-                    <span className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_62%)]" />
-                    <span className="relative z-10">{showCompleted ? 'Hide Completed' : 'Show Completed'}</span>
-                  </button>
-                  <div className="schedule-reveal-controls flex items-center gap-2 shrink-0 whitespace-nowrap">
-                  <button
-                    type="button"
-                    onClick={() => setShowHistory(prev => !prev)}
-                    className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${
-                      showHistory
-                        ? 'is-active border-white/25 bg-white/14 text-white'
-                        : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'
-                    }`}
-                  >
-                    {showHistory ? 'Hide History' : 'See History'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setExtendSchedule(prev => !prev)}
-                    className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${
-                      extendSchedule
-                        ? 'is-active border-white/25 bg-white/14 text-white'
-                        : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'
-                    }`}
-                  >
-                    {extendSchedule ? 'Default Range' : 'Extend Schedule'}
-                  </button>
+          <div className="schedule-header-group px-4 md:px-6 py-3 border-b border-white/10 bg-black/20 backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h2 className="shrink-0 text-[1.35rem] md:text-[1.5rem] font-bold text-white tracking-tight leading-none">Weekly Planner</h2>
+                  <div className="schedule-reveal-slot min-w-0">
+                    <div className="schedule-reveal-controls flex items-center gap-2 shrink min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowCompletedTasks(!showCompletedTasks)}
+                        className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${showCompletedTasks ? 'is-active border-white/25 bg-white/14 text-white' : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'}`}
+                        aria-label={showCompletedTasks ? 'Hide completed tasks' : 'Show completed tasks'}
+                      >
+                        {showCompletedTasks ? 'Hide Completed' : 'Show Completed'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowHistory(prev => !prev)}
+                        className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${showHistory ? 'is-active border-white/25 bg-white/14 text-white' : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'}`}
+                      >
+                        {showHistory ? 'Hide History' : 'See History'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExtendSchedule(prev => !prev)}
+                        className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${extendSchedule ? 'is-active border-white/25 bg-white/14 text-white' : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'}`}
+                      >
+                        {extendSchedule ? 'Default Range' : 'Extend Schedule'}
+                      </button>
+                    </div>
                   </div>
                 </div>
+                <p className="mt-1 text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="schedule-glass-button schedule-glass-button--icon w-9 h-9 rounded-xl border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors"
+                className="schedule-glass-button schedule-glass-button--icon w-8 h-8 rounded-lg border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors shrink-0"
                 aria-label="Close weekly schedule panel"
               >
                 X
               </button>
             </div>
           </div>
-
-          <div ref={scrollContainerRef} className="weekly-body flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 py-4">
+          <div ref={scrollContainerRef} className="weekly-body flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 py-3">
             {unscheduledTasks.length > 0 && (
               <div
                 onDragOver={(event) => {
@@ -1262,9 +1310,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                 }}
                 onDragLeave={() => setHoveredLane((value) => (value === 'unscheduled' ? null : value))}
                 onDrop={(event) => dropToLane(event, undefined)}
-                className={`rounded-xl border p-2.5 mb-3 transition-colors duration-200 ${dropAnimatedDayKey === 'unscheduled' ? 'doro-lane-hit' : ''} ${
-                  hoveredLane === 'unscheduled' ? 'border-white/40 bg-white/[0.12]' : 'border-white/10 bg-white/[0.05]'
-                }`}
+                className={`rounded-xl border p-2.5 mb-3 transition-colors duration-200 ${dropAnimatedDayKey === 'unscheduled' ? 'doro-lane-hit' : ''} ${hoveredLane === 'unscheduled' ? 'border-white/40 bg-white/[0.12]' : 'border-white/10 bg-white/[0.05]'}`}
               >
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold">Unscheduled</div>
@@ -1296,6 +1342,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                       <ScheduleTaskCard
                         key={task.id}
                         task={task}
+                        categories={categories}
+                        onRequestNewCategory={requestNewCategoryFlow}
                         onSave={updateTask}
                         isLightTheme={isLightTheme}
                         isDragging={draggingTaskId === task.id}
@@ -1312,14 +1360,12 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                 )}
               </div>
             )}
-
             <div className="space-y-2.5 pb-5">
               {dayRange.map((day) => {
                 const dayTasks = tasksByDate[day.key] || [];
                 const dayPredictedPomos = dayTasks.reduce((sum, task) => sum + (task.checked ? 0 : getPredictedPomos(task)), 0);
                 const isAddingHere = addingDate === day.key;
                 const isHovered = hoveredLane === day.key;
-
                 return (
                   <div
                     key={day.key}
@@ -1331,9 +1377,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                     }}
                     onDragLeave={() => setHoveredLane((value) => (value === day.key ? null : value))}
                     onDrop={(event) => dropToLane(event, day.key)}
-                    className={`rounded-xl border p-2.5 transition-colors duration-200 ${dropAnimatedDayKey === day.key ? 'doro-lane-hit' : ''} ${
-                      isHovered ? 'border-white/40 bg-white/[0.12]' : 'border-white/10 bg-white/[0.05]'
-                    }`}
+                    className={`rounded-xl border p-2.5 transition-colors duration-200 ${dropAnimatedDayKey === day.key ? 'doro-lane-hit' : ''} ${isHovered ? 'border-white/40 bg-white/[0.12]' : 'border-white/10 bg-white/[0.05]'}`}
                   >
                     <div className="mb-2 flex items-center justify-between gap-2.5">
                       <div className="flex items-center gap-2.5 min-w-0">
@@ -1355,25 +1399,25 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         +
                       </button>
                     </div>
-
                     <div className="space-y-1.5 min-h-[58px]">
                       {dayTasks.map((task) => (
-                      <ScheduleTaskCard
-                        key={task.id}
-                        task={task}
-                        onSave={updateTask}
-                        isLightTheme={isLightTheme}
-                        isDragging={draggingTaskId === task.id}
-                        dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
-                        isDropAnimating={dropAnimatedTaskId === task.id}
-                        isEntering={enteringTaskIds.includes(task.id)}
-                        registerCardRef={registerCardRef}
+                        <ScheduleTaskCard
+                          key={task.id}
+                          task={task}
+                          categories={categories}
+                          onRequestNewCategory={requestNewCategoryFlow}
+                          onSave={updateTask}
+                          isLightTheme={isLightTheme}
+                          isDragging={draggingTaskId === task.id}
+                          dropHint={draggingTaskId && hoveredTaskTarget?.taskId === task.id && draggingTaskId !== task.id ? hoveredTaskTarget.position : null}
+                          isDropAnimating={dropAnimatedTaskId === task.id}
+                          isEntering={enteringTaskIds.includes(task.id)}
+                          registerCardRef={registerCardRef}
                           onDragStart={handleCardDragStart}
                           onDragHover={handleCardDragHover}
                           onDragEnd={clearDragState}
                         />
                       ))}
-
                       {dayTasks.length === 0 && !isAddingHere && (
                         <button
                           type="button"
@@ -1385,7 +1429,6 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         </button>
                       )}
                     </div>
-
                     {isAddingHere && (
                       <div className="doro-soft-expand mt-2.5 rounded-xl border border-white/15 bg-black/25 p-2.5">
                         <input
@@ -1401,6 +1444,23 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                           placeholder="Task name..."
                           className="w-full bg-transparent border-b border-white/20 pb-1.5 text-sm text-white placeholder-white/35 outline-none focus:border-white/45"
                         />
+                        <div className="mt-2">
+                          <TaskCategoryPicker
+                            categories={categories}
+                            selectedCategoryId={newTaskCategoryId}
+                            selectedColor={newTaskColor}
+                            onColorSelect={(color) => {
+                              setNewTaskColor(color);
+                              setNewTaskCategoryId(null);
+                            }}
+                            onCategorySelect={(category) => {
+                              setNewTaskCategoryId(category.id);
+                              setNewTaskColor(category.color);
+                            }}
+                            onRequestNewCategory={requestNewCategoryFlow}
+                            swatchSize="sm"
+                          />
+                        </div>
                         <div className="mt-2 flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1">
                             <button
@@ -1418,23 +1478,6 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             >
                               +
                             </button>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            {PRESET_COLORS.map((color) => (
-                              <button
-                                key={`week-color-${day.key}-${color}`}
-                                type="button"
-                                onClick={() => setNewTaskColor(color)}
-                                className={`w-4 h-4 rounded-full transition-all duration-300 ease-out ${
-                                  newTaskColor === color
-                                    ? 'ring-2 ring-white ring-offset-1 ring-offset-transparent scale-110'
-                                    : 'opacity-80 hover:opacity-100 hover:scale-110 hover:-translate-y-[1px]'
-                                }`}
-                                style={{ backgroundColor: color }}
-                                aria-label={`Pick color ${color}`}
-                              />
-                            ))}
                           </div>
                         </div>
                         <div className="mt-2 flex items-center justify-end gap-1.5">
@@ -1467,4 +1510,5 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
 };
 
 export default WeeklySchedulePanel;
+
 

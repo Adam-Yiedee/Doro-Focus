@@ -2,8 +2,10 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTimer, ScheduleBreak } from '../../context/TimerContext';
-import { Task } from '../../types';
+import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
+import { getIcon } from '../../utils/icons';
+import TaskCategoryPicker from '../TaskCategoryPicker';
 
 interface WorkUnit {
     taskId: number;
@@ -11,6 +13,7 @@ interface WorkUnit {
     name: string;
     subtaskName?: string;
     color?: string;
+    categoryName?: string;
     pomoIndex: number; 
     estimatedTotal: number;
 }
@@ -41,8 +44,17 @@ const GripIcon = () => (
     </svg>
 );
 
+const ScheduleCategoryBadge: React.FC<{ category: Category }> = ({ category }) => (
+    <div className="inline-flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-2 py-0.5 text-white/60">
+        <div className="w-3 h-3" style={{ color: category.color }}>
+            {getIcon(category.icon, { size: 12 })}
+        </div>
+        <span className="text-[9px] font-bold uppercase tracking-[0.12em]">{category.name}</span>
+    </div>
+);
+
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
-    const { tasks, pastSessions, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode, toggleTaskFuture, setTaskSchedule } = useTimer();
+    const { tasks, pastSessions, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode, toggleTaskFuture, setTaskSchedule, categories, requestNewCategoryFlow } = useTimer();
     const isLightTheme = settings.themeMode !== 'dark';
     
     // UI State
@@ -58,6 +70,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const [newTaskName, setNewTaskName] = useState('');
     const [newTaskEst, setNewTaskEst] = useState(2);
     const [newTaskColor, setNewTaskColor] = useState(PRESET_COLORS[0]);
+    const [newTaskCategoryId, setNewTaskCategoryId] = useState<number | null>(null);
     const [newSubtasks, setNewSubtasks] = useState<{name: string, est: number}[]>([]);
     const [subInputName, setSubInputName] = useState('');
     const [subInputEst, setSubInputEst] = useState(1);
@@ -150,19 +163,21 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const activeTasks = tasks.filter(t => !t.isFuture);
     const futureTasks = tasks.filter(t => t.isFuture);
     const scheduledFutureTasks = futureTasks.filter(t => t.scheduledStart);
+    const categoriesById = useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
 
     const flattenedWorkUnits = useMemo(() => {
         const units: WorkUnit[] = [];
         activeTasks.forEach(task => {
             if (task.checked) return; 
             const taskColor = task.color || PRESET_COLORS[0];
+            const categoryName = typeof task.categoryId === 'number' ? categoriesById.get(task.categoryId)?.name : undefined;
             if (task.subtasks.length > 0) {
                 task.subtasks.forEach(sub => {
                     if (sub.checked) return;
                     const remaining = Math.max(1, sub.estimated - sub.completed);
                     for (let i = 0; i < remaining; i++) {
                         units.push({
-                            taskId: task.id, subtaskId: sub.id, name: task.name, subtaskName: sub.name, color: taskColor, pomoIndex: i + 1, estimatedTotal: remaining
+                            taskId: task.id, subtaskId: sub.id, name: task.name, subtaskName: sub.name, color: taskColor, categoryName, pomoIndex: i + 1, estimatedTotal: remaining
                         });
                     }
                 });
@@ -170,13 +185,13 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                 const remaining = Math.max(1, task.estimated - task.completed);
                 for (let i = 0; i < remaining; i++) {
                     units.push({
-                        taskId: task.id, name: task.name, color: taskColor, pomoIndex: i + 1, estimatedTotal: remaining
+                        taskId: task.id, name: task.name, color: taskColor, categoryName, pomoIndex: i + 1, estimatedTotal: remaining
                     });
                 }
             }
         });
         return units;
-    }, [activeTasks]);
+    }, [activeTasks, categoriesById]);
     
     const timelineData = useMemo(() => {
         const blocks: TimeBlock[] = [];
@@ -250,6 +265,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         // --- 3. Scheduled Future Tasks ---
         scheduledFutureTasks.forEach(t => {
             if (!t.scheduledStart) return;
+            const categoryName = typeof t.categoryId === 'number' ? categoriesById.get(t.categoryId)?.name : undefined;
             const [h, m] = t.scheduledStart.split(':').map(Number);
             const start = new Date(timelineStart);
             start.setHours(h, m, 0, 0);
@@ -274,7 +290,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                 endTime: new Date(start.getTime() + totalDur * 60000),
                 durationMinutes: totalDur,
                 label: t.name,
-                subLabel: 'Scheduled Task',
+                subLabel: categoryName ? `${categoryName} • Scheduled Task` : 'Scheduled Task',
                 color: t.color,
                 topPx: diffMins * pixelsPerMin,
                 heightPx: totalDur * pixelsPerMin
@@ -293,14 +309,14 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             const remainingMins = workTime / 60; 
             const endTime = new Date(projectionTime.getTime() + remainingMins * 60000);
             
-            const currentUnit = workQueue[0]; 
-            if (currentUnit) {
-                 const diffMins = (projectionTime.getTime() - timelineStart.getTime()) / 60000;
-                 blocks.push({
-                    id: `current-work`, type: 'work', startTime: projectionTime, endTime: endTime, durationMinutes: remainingMins,
-                    label: currentUnit.name, subLabel: 'Current Session', color: currentUnit.color,
-                    topPx: diffMins * pixelsPerMin, heightPx: remainingMins * pixelsPerMin
-                });
+                const currentUnit = workQueue[0]; 
+                if (currentUnit) {
+                     const diffMins = (projectionTime.getTime() - timelineStart.getTime()) / 60000;
+                     blocks.push({
+                        id: `current-work`, type: 'work', startTime: projectionTime, endTime: endTime, durationMinutes: remainingMins,
+                    label: currentUnit.name, subLabel: currentUnit.categoryName || 'Current Session', color: currentUnit.color,
+                        topPx: diffMins * pixelsPerMin, heightPx: remainingMins * pixelsPerMin
+                    });
                 workQueue.shift();
                 virtualPomoCount++;
                 projectionTime = endTime;
@@ -369,7 +385,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             
             blocks.push({
                 id: `work-proj-${index}`, type: 'work', startTime: workStart, endTime: new Date(workStart.getTime() + workDuration * 60000), durationMinutes: workDuration,
-                label: unit.name, subLabel: unit.subtaskName, color: unit.color,
+                label: unit.name, subLabel: unit.subtaskName || unit.categoryName, color: unit.color,
                 topPx: diffMins * pixelsPerMin, heightPx: workDuration * pixelsPerMin
             });
             
@@ -397,7 +413,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
         const totalHeight = Math.max(1440, endMins + 60) * pixelsPerMin;
 
         return { blocks, totalHeight, timelineStart };
-    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime, activeMode, pastSessions, futureTasks]);
+    }, [scheduleStartTime, sessionStartTime, logs, flattenedWorkUnits, settings, pomodoroCount, scheduleBreaks, pixelsPerMin, timerStarted, workTime, activeMode, pastSessions, futureTasks, categoriesById]);
 
     useEffect(() => {
         if (isOpen && calendarRef.current) {
@@ -515,9 +531,9 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     const handleCreateTask = () => {
         if (!newTaskName.trim()) return;
         const subTaskObjects = newSubtasks.map(s => ({
-            id: Date.now() + Math.random(), name: s.name, estimated: s.est, completed: 0, checked: false, selected: false, categoryId: null, subtasks: [], isExpanded: false
+            id: Date.now() + Math.random(), name: s.name, estimated: s.est, completed: 0, checked: false, selected: false, categoryId: newTaskCategoryId, subtasks: [], isExpanded: false
         }));
-        addDetailedTask({ name: newTaskName, estimated: newTaskEst, color: newTaskColor, subtasks: subTaskObjects, isFuture });
+        addDetailedTask({ name: newTaskName, estimated: newTaskEst, color: newTaskColor, categoryId: newTaskCategoryId, subtasks: subTaskObjects, isFuture });
         setNewTaskName(''); setNewTaskEst(2); setNewSubtasks([]); setIsCreating(false); setIsFuture(false);
     };
 
@@ -615,15 +631,29 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                  <input autoFocus={isCreating} type="text" placeholder="e.g. Civil Procedure" className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-white/30" value={newTaskName} onChange={e => setNewTaskName(e.target.value)} />
                              </div>
                              <div className="flex gap-4">
-                                 <div className="flex-1">
-                                     <label className="text-white/40 text-[10px] uppercase font-bold mb-1 block">Color</label>
-                                     <div className="flex gap-1.5 items-center">{PRESET_COLORS.map(c => (<button key={c} onClick={() => setNewTaskColor(c)} className={`w-5 h-5 rounded-full transition-transform ${newTaskColor === c ? 'ring-1 ring-white scale-110' : 'opacity-40 hover:opacity-100'}`} style={{ backgroundColor: c }} />))}</div>
-                                 </div>
                                  <div className="w-20">
-                                    <label className="text-white/40 text-[10px] uppercase font-bold mb-1 block">Pomos</label>
-                                    <input type="number" min="1" max="99" value={newTaskEst} onChange={e => setNewTaskEst(Number(e.target.value))} className="w-full bg-black/20 border border-white/10 rounded-xl px-2 py-2 text-white text-sm text-center outline-none focus:border-white/30" />
+                                     <label className="text-white/40 text-[10px] uppercase font-bold mb-1 block">Pomos</label>
+                                     <input type="number" min="1" max="99" value={newTaskEst} onChange={e => setNewTaskEst(Number(e.target.value))} className="w-full bg-black/20 border border-white/10 rounded-xl px-2 py-2 text-white text-sm text-center outline-none focus:border-white/30" />
                                  </div>
-                             </div>
+                              </div>
+                              <div>
+                                  <label className="text-white/40 text-[10px] uppercase font-bold mb-1 block">Color / Category</label>
+                                  <TaskCategoryPicker
+                                      categories={categories}
+                                      selectedCategoryId={newTaskCategoryId}
+                                      selectedColor={newTaskColor}
+                                      onColorSelect={(color) => {
+                                          setNewTaskColor(color);
+                                          setNewTaskCategoryId(null);
+                                      }}
+                                      onCategorySelect={(category) => {
+                                          setNewTaskCategoryId(category.id);
+                                          setNewTaskColor(category.color);
+                                      }}
+                                      onRequestNewCategory={requestNewCategoryFlow}
+                                      swatchSize="md"
+                                  />
+                              </div>
                              <div className="pt-2 border-t border-white/5">
                                  <div className="flex gap-2 mb-2">
                                      <input type="text" placeholder="Add subtask..." className="flex-1 bg-black/20 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white outline-none" value={subInputName} onChange={e => setSubInputName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddSubtaskToForm()} />
@@ -649,6 +679,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                     {/* Task List */}
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4 relative">
                         {(mobileTab === 'backlog' ? futureTasks : activeTasks).map((task, index) => {
+                            const taskCategory = typeof task.categoryId === 'number' ? categoriesById.get(task.categoryId) : undefined;
                             if (task.checked) {
                                 return (
                                     <div key={task.id} className="relative rounded-xl border border-white/5 bg-black/20 p-3 opacity-40 group mb-2">
@@ -658,6 +689,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                                 <div className="text-[10px] text-white/40 font-mono flex items-center gap-2 mt-0.5">
                                                     <span>Completed</span>
                                                 </div>
+                                                {taskCategory && <div className="mt-1.5"><ScheduleCategoryBadge category={taskCategory} /></div>}
                                             </div>
                                              <button onClick={() => deleteTask(task.id)} className="p-1.5 text-white/30 hover:text-red-400 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
                                         </div>
@@ -704,6 +736,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                                                                 {task.subtasks.length > 0 && <span className="text-white/20">• {task.subtasks.length} sub</span>}
                                                                 {task.scheduledStart && <span className="ml-2 text-purple-300">{task.scheduledStart}</span>}
                                                             </div>
+                                                            {taskCategory && <div className="mt-1.5"><ScheduleCategoryBadge category={taskCategory} /></div>}
                                                         </div>
                                                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                                             {mobileTab === 'backlog' ? (

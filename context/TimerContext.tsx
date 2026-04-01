@@ -18,7 +18,7 @@ import {
   TimerRuntimePhase,
   TimerRuntimeSnapshot,
 } from '../types';
-import { playAlarm, playSwitch } from '../utils/sound';
+import { playAlarm, playSwitch, resumeAudioContext, startFocusSound, stopFocusSound } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
 import {
   GraceContext,
@@ -120,6 +120,7 @@ interface TimerContextType {
   sessionStartTime: string | null;
   isScheduleOpen: boolean;
   isWeeklyScheduleOpen: boolean;
+  showCompletedTasks: boolean;
 
   showSummary: boolean;
   sessionStats: SessionStats | null;
@@ -139,6 +140,7 @@ interface TimerContextType {
   accountSyncState: 'idle' | 'pending' | 'syncing' | 'synced' | 'error';
   accountSyncError: string | null;
   lastAccountSyncAt: number | null;
+  isPreviewAccount: boolean;
 
   // Actions
   login: (username: string, password?: string) => Promise<AuthResult>;
@@ -201,6 +203,7 @@ interface TimerContextType {
   setScheduleStartTime: (time: string) => void;
   setScheduleOpen: (isOpen: boolean) => void;
   setWeeklyScheduleOpen: (isOpen: boolean) => void;
+  setShowCompletedTasks: (show: boolean) => void;
 }
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
@@ -216,6 +219,8 @@ const DEFAULT_SETTINGS: TimerSettings = {
   longBreakInterval: 4, 
   disableBlur: true,
   alarmSound: 'bell',
+  focusSound: 'off',
+  focusSoundVolume: 100,
   themeMode: 'dark'
 };
 
@@ -223,6 +228,9 @@ const DATA_SCHEMA_VERSION = 2;
 const LEGACY_RUNTIME_FLAG = 'doro_use_legacy_tick';
 const CROSS_TAB_CHANNEL = 'doro_timer_sync';
 const AUTH_TOKEN_KEY = 'doro_auth_token';
+const PREVIEW_ACCOUNT_USERNAME = 'master';
+const PREVIEW_ACCOUNT_PASSWORD = 'master';
+const PREVIEW_AUTH_TOKEN = 'doro_preview_master_token';
 
 const GROUP_EVENT_TYPES: GroupEventType[] = [
   'joined',
@@ -244,6 +252,12 @@ const getDateKey = (date: Date) => {
   const m = `${date.getMonth() + 1}`.padStart(2, '0');
   const d = `${date.getDate()}`.padStart(2, '0');
   return `${y}-${m}-${d}`;
+};
+
+const isPreviewAuthToken = (value: string | null | undefined) => value === PREVIEW_AUTH_TOKEN;
+
+const isPreviewAccountCredentials = (username: string, password?: string) => {
+  return username.trim().toLowerCase() === PREVIEW_ACCOUNT_USERNAME && password === PREVIEW_ACCOUNT_PASSWORD;
 };
 
 const getScheduleStartLabel = (date: Date) => {
@@ -527,10 +541,215 @@ const collapseHydratedGraceState = ({
   sessionStartTime: null as string | null,
 });
 
+type PreviewBlockSeed = {
+  categoryId: number;
+  taskName: string;
+  startHour: number;
+  startMinute: number;
+  durationMinutes: number;
+};
+
+const buildPreviewAccountPayload = (sourceTabId: string): TimerPersistencePayload => {
+  const now = new Date();
+  const joinedAt = new Date(now);
+  joinedAt.setDate(joinedAt.getDate() - 120);
+  joinedAt.setHours(9, 12, 0, 0);
+
+  const categories: Category[] = [
+    { id: 1, name: 'Deep Work', color: '#7CB4FF', icon: 'brain' },
+    { id: 2, name: 'Writing', color: '#F5B27A', icon: 'notebook' },
+    { id: 3, name: 'Planning', color: '#95D7A1', icon: 'calendar' },
+    { id: 4, name: 'Creative', color: '#C6A2FF', icon: 'sparkles' },
+    { id: 5, name: 'Health', color: '#F49AB1', icon: 'heart' },
+  ];
+  const categoryMap = new Map(categories.map((category) => [category.id, category]));
+  const templates: PreviewBlockSeed[][] = [
+    [
+      { categoryId: 1, taskName: 'Architecture review', startHour: 8, startMinute: 30, durationMinutes: 50 },
+      { categoryId: 1, taskName: 'API cleanup', startHour: 9, startMinute: 35, durationMinutes: 45 },
+      { categoryId: 3, taskName: 'Roadmap planning', startHour: 11, startMinute: 10, durationMinutes: 35 },
+    ],
+    [
+      { categoryId: 2, taskName: 'Draft writing pass', startHour: 9, startMinute: 0, durationMinutes: 50 },
+      { categoryId: 2, taskName: 'Edit notes', startHour: 10, startMinute: 5, durationMinutes: 40 },
+      { categoryId: 4, taskName: 'Creative direction', startHour: 13, startMinute: 25, durationMinutes: 55 },
+    ],
+    [
+      { categoryId: 1, taskName: 'Implementation sprint', startHour: 8, startMinute: 10, durationMinutes: 55 },
+      { categoryId: 1, taskName: 'Testing pass', startHour: 10, startMinute: 0, durationMinutes: 45 },
+      { categoryId: 5, taskName: 'Workout reset', startHour: 17, startMinute: 45, durationMinutes: 30 },
+    ],
+    [
+      { categoryId: 3, taskName: 'Weekly planning', startHour: 8, startMinute: 45, durationMinutes: 35 },
+      { categoryId: 2, taskName: 'Reading and notes', startHour: 10, startMinute: 20, durationMinutes: 50 },
+      { categoryId: 4, taskName: 'Design polish', startHour: 14, startMinute: 10, durationMinutes: 45 },
+      { categoryId: 1, taskName: 'Bug fix pass', startHour: 15, startMinute: 20, durationMinutes: 40 },
+    ],
+    [
+      { categoryId: 5, taskName: 'Morning walk', startHour: 7, startMinute: 35, durationMinutes: 25 },
+      { categoryId: 1, taskName: 'Focused build block', startHour: 9, startMinute: 15, durationMinutes: 50 },
+      { categoryId: 2, taskName: 'Outline next draft', startHour: 11, startMinute: 5, durationMinutes: 35 },
+    ],
+  ];
+  const activeDayOffsets = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 22, 23, 24, 25, 27, 28, 29, 31, 32, 33];
+
+  const logs: LogEntry[] = [];
+  const pastSessions: SessionRecord[] = [];
+
+  activeDayOffsets.forEach((dayOffset, index) => {
+    const baseDate = new Date(now);
+    baseDate.setHours(0, 0, 0, 0);
+    baseDate.setDate(baseDate.getDate() - dayOffset);
+    const template = templates[index % templates.length];
+    const categoryMinutes = new Map<number, number>();
+    let totalWorkMinutes = 0;
+    let totalBreakMinutes = 0;
+    let firstStartIso = '';
+    let lastEndIso = '';
+
+    template.forEach((seed, blockIndex) => {
+      const category = categoryMap.get(seed.categoryId);
+      if (!category) return;
+
+      const start = new Date(baseDate);
+      start.setHours(seed.startHour, seed.startMinute + (((dayOffset + blockIndex) % 3) * 5), 0, 0);
+      const durationMinutes = seed.durationMinutes + ((dayOffset + blockIndex) % 2 === 0 ? 0 : 5);
+      const end = new Date(start.getTime() + durationMinutes * 60_000);
+      const workLog: LogEntry = {
+        type: 'work',
+        start: start.toISOString(),
+        end: end.toISOString(),
+        duration: durationMinutes * 60,
+        reason: 'Pomodoro Complete',
+        task: {
+          id: 10_000 + (dayOffset * 10) + blockIndex,
+          name: seed.taskName,
+        },
+        color: category.color,
+        categoryId: category.id,
+        categoryName: category.name,
+        categoryColor: category.color,
+        categoryIcon: category.icon,
+      };
+      logs.push(workLog);
+      categoryMinutes.set(category.id, (categoryMinutes.get(category.id) || 0) + durationMinutes);
+      totalWorkMinutes += durationMinutes;
+      if (!firstStartIso) firstStartIso = workLog.start;
+      lastEndIso = workLog.end;
+
+      if (blockIndex < template.length - 1) {
+        const breakMinutes = 10 + (((dayOffset + blockIndex) % 2) * 5);
+        const breakStart = new Date(end);
+        const breakEnd = new Date(breakStart.getTime() + breakMinutes * 60_000);
+        logs.push({
+          type: 'break',
+          start: breakStart.toISOString(),
+          end: breakEnd.toISOString(),
+          duration: breakMinutes * 60,
+          reason: 'Recovery Time',
+          color: category.color,
+          categoryId: category.id,
+          categoryName: category.name,
+          categoryColor: category.color,
+          categoryIcon: category.icon,
+        });
+        totalBreakMinutes += breakMinutes;
+        lastEndIso = breakEnd.toISOString();
+      }
+    });
+
+    if (!firstStartIso || !lastEndIso) return;
+
+    const closeStart = new Date(lastEndIso);
+    const closeEnd = new Date(closeStart.getTime() + 5 * 60_000);
+    logs.push({
+      type: 'break',
+      start: closeStart.toISOString(),
+      end: closeEnd.toISOString(),
+      duration: 5 * 60,
+      reason: 'Session End',
+    });
+    totalBreakMinutes += 5;
+    lastEndIso = closeEnd.toISOString();
+
+    const categoryDetails: SessionCategoryStat[] = Array.from(categoryMinutes.entries()).map(([categoryId, minutes]) => {
+      const category = categoryMap.get(categoryId)!;
+      return {
+        categoryId,
+        categoryName: category.name,
+        categoryColor: category.color,
+        categoryIcon: category.icon,
+        minutes,
+      };
+    });
+
+    pastSessions.push({
+      id: `preview-session-${getDateKey(new Date(firstStartIso))}-${index}`,
+      startTime: firstStartIso,
+      endTime: lastEndIso,
+      stats: {
+        totalWorkMinutes,
+        totalBreakMinutes,
+        pomosCompleted: template.length,
+        tasksCompleted: Math.max(1, Math.round(template.length / 2)),
+        categoryStats: Object.fromEntries(categoryDetails.map((detail) => [detail.categoryName || 'Uncategorized', detail.minutes])),
+        categoryDetails,
+      },
+    });
+  });
+
+  logs.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  pastSessions.sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
+
+  return {
+    schemaVersion: DATA_SCHEMA_VERSION,
+    revision: 1,
+    runtime: createRuntimeSnapshot({
+      sourceTabId,
+      phase: 'idle',
+      nowMs: now.getTime(),
+      workTime: DEFAULT_SETTINGS.workDuration,
+      breakTime: 0,
+      allPauseTime: 0,
+      graceTotal: 0,
+      activityStartIso: null,
+    }),
+    settings: DEFAULT_SETTINGS,
+    tasks: [],
+    pastSessions,
+    categories,
+    logs,
+    pomodoroCount: 0,
+    workTime: DEFAULT_SETTINGS.workDuration,
+    breakTime: 0,
+    activeMode: 'work',
+    timerStarted: false,
+    isIdle: true,
+    allPauseActive: false,
+    allPauseTime: 0,
+    allPauseReason: '',
+    allPauseStartTime: null,
+    graceOpen: false,
+    graceContext: null,
+    graceTotal: 0,
+    scheduleBreaks: [],
+    scheduleStartTime: '08:30',
+    sessionStartTime: null,
+    userName: 'Master Preview',
+    user: {
+      username: PREVIEW_ACCOUNT_USERNAME,
+      joinedAt: joinedAt.toISOString(),
+      lifetimeStats: { ...EMPTY_LIFETIME_STATS },
+    },
+    updatedAt: now.toISOString(),
+  };
+};
+
 export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const isDevMode = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const isPreviewAccount = isPreviewAuthToken(authToken);
   const [accountSyncState, setAccountSyncState] = useState<'idle' | 'pending' | 'syncing' | 'synced' | 'error'>('idle');
   const [accountSyncError, setAccountSyncError] = useState<string | null>(null);
   const [lastAccountSyncAt, setLastAccountSyncAt] = useState<number | null>(null);
@@ -563,6 +782,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
   const [isScheduleOpen, setScheduleOpen] = useState(false);
   const [isWeeklyScheduleOpen, setWeeklyScheduleOpen] = useState(false);
+  const [showCompletedTasks, setShowCompletedTasks] = useState(false);
 
   const [showSummary, setShowSummary] = useState(false);
   const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
@@ -726,16 +946,37 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     graceTotal,
   ]);
 
-  const anchorRuntimePhase = useCallback((phase: TimerRuntimePhase, overrides?: Partial<Pick<TimerRuntimeSnapshot, 'phaseStartWorkTime' | 'phaseStartBreakTime' | 'phaseStartAllPauseTime' | 'phaseStartGraceTotal' | 'activityStartIso'>>) => {
+  const anchorRuntimePhase = useCallback((
+    phase: TimerRuntimePhase,
+    overrides?: Partial<Pick<TimerRuntimeSnapshot, 'phaseStartWorkTime' | 'phaseStartBreakTime' | 'phaseStartAllPauseTime' | 'phaseStartGraceTotal' | 'activityStartIso'>> & {
+      activeMode?: TimerMode;
+      timerStarted?: boolean;
+      isIdle?: boolean;
+      allPauseActive?: boolean;
+      allPauseTime?: number;
+      allPauseReason?: string;
+      allPauseStartTime?: number | null;
+      graceOpen?: boolean;
+      graceContext?: GraceContext;
+      graceTotal?: number;
+      pomodoroCount?: number;
+      sessionStartTime?: string | null;
+      scheduleStartTime?: string;
+    },
+  ) => {
     const phaseWorkTime = overrides?.phaseStartWorkTime ?? workTime;
     const phaseBreakTime = overrides?.phaseStartBreakTime ?? breakTime;
-    const phaseAllPause = overrides?.phaseStartAllPauseTime ?? allPauseTime;
-    const phaseGraceTotal = phase === 'grace' ? (overrides?.phaseStartGraceTotal ?? graceTotal) : 0;
-    const phaseImpliesRunning = phase === 'running-work' || phase === 'running-break';
-    const phaseMode: TimerMode = phase === 'running-break' ? 'break' : activeMode;
+    const phaseAllPause = overrides?.phaseStartAllPauseTime ?? overrides?.allPauseTime ?? allPauseTime;
+    const phaseGraceTotal = phase === 'grace'
+      ? (overrides?.phaseStartGraceTotal ?? overrides?.graceTotal ?? graceTotal)
+      : 0;
+    const phaseImpliesRunning = typeof overrides?.timerStarted === 'boolean'
+      ? overrides.timerStarted
+      : (phase === 'running-work' || phase === 'running-break');
+    const phaseMode: TimerMode = overrides?.activeMode ?? (phase === 'running-break' ? 'break' : activeMode);
     const phaseGraceState = normalizeGraceWindow({
-      graceOpenCandidate: phase === 'grace',
-      rawGraceContext: graceContext,
+      graceOpenCandidate: typeof overrides?.graceOpen === 'boolean' ? overrides.graceOpen : phase === 'grace',
+      rawGraceContext: overrides?.graceContext ?? graceContext,
       fallbackMode: phaseMode,
     });
     const snapshot = createRuntimeSnapshot({
@@ -759,24 +1000,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         timer: {
           activeMode: phaseMode,
           timerStarted: phaseImpliesRunning,
-          isIdle: phase === 'idle' ? isIdle : false,
-          allPauseActive: phase === 'all-pause',
-          allPauseTime: phaseAllPause,
-          allPauseReason,
-          allPauseStartTime,
+          isIdle: typeof overrides?.isIdle === 'boolean' ? overrides.isIdle : (phase === 'idle' ? isIdle : false),
+          allPauseActive: typeof overrides?.allPauseActive === 'boolean' ? overrides.allPauseActive : phase === 'all-pause',
+          allPauseTime: typeof overrides?.allPauseTime === 'number' ? overrides.allPauseTime : phaseAllPause,
+          allPauseReason: overrides?.allPauseReason ?? allPauseReason,
+          allPauseStartTime: overrides?.allPauseStartTime !== undefined ? overrides.allPauseStartTime : allPauseStartTime,
           graceOpen: phaseGraceState.graceOpen,
           graceContext: phaseGraceState.graceContext,
-          graceTotal: phaseGraceTotal,
+          graceTotal: phaseGraceState.graceOpen
+            ? (typeof overrides?.graceTotal === 'number' ? overrides.graceTotal : phaseGraceTotal)
+            : 0,
           workTime: phaseWorkTime,
           breakTime: phaseBreakTime,
-          pomodoroCount,
-          sessionStartTime,
-          scheduleStartTime,
+          pomodoroCount: typeof overrides?.pomodoroCount === 'number' ? overrides.pomodoroCount : pomodoroCount,
+          sessionStartTime: overrides?.sessionStartTime !== undefined ? overrides.sessionStartTime : sessionStartTime,
+          scheduleStartTime: overrides?.scheduleStartTime ?? scheduleStartTime,
         },
       });
     }
     bumpAccountTimerSyncNonce();
-  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, timerStarted, isIdle, allPauseActive, allPauseReason, allPauseStartTime, graceOpen, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
+  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, isIdle, allPauseReason, allPauseStartTime, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
 
   // Load Data Helper
   const loadData = useCallback((username?: string) => {
@@ -1222,8 +1465,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       schemaVersion: DATA_SCHEMA_VERSION,
       revision: Math.max(getPayloadRevision(localData), getPayloadRevision(remoteData)),
       settings: { ...DEFAULT_SETTINGS, ...(dataWinner.settings || {}) },
-      tasks: mergeTaskLists(remoteData.tasks, localData.tasks, prefer),
-      categories: mergeOrderedEntitiesById<Category>(remoteData.categories, localData.categories, prefer),
+      tasks: mergeTaskLists(remoteData.tasks, localData.tasks, prefer, { membership: 'preferred' }),
+      categories: mergeOrderedEntitiesById<Category>(remoteData.categories, localData.categories, prefer, { membership: 'preferred' }),
       logs: mergeLogs(remoteData.logs, localData.logs),
       pastSessions: mergeSessions(remoteData.pastSessions, localData.pastSessions),
       runtime: isRuntimeSnapshot(timerWinner.runtime) ? timerWinner.runtime : dataWinner.runtime,
@@ -1244,7 +1487,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ? timerWinner.graceContext
         : null,
       graceTotal: typeof timerWinner.graceTotal === 'number' ? timerWinner.graceTotal : 0,
-      scheduleBreaks: mergeOrderedEntitiesById<ScheduleBreak>(remoteData.scheduleBreaks, localData.scheduleBreaks, prefer),
+      scheduleBreaks: mergeOrderedEntitiesById<ScheduleBreak>(remoteData.scheduleBreaks, localData.scheduleBreaks, prefer, { membership: 'preferred' }),
       scheduleStartTime: typeof timerWinner.scheduleStartTime === 'string' && timerWinner.scheduleStartTime
         ? timerWinner.scheduleStartTime
         : (typeof dataWinner.scheduleStartTime === 'string' && dataWinner.scheduleStartTime ? dataWinner.scheduleStartTime : '08:00'),
@@ -1431,7 +1674,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [normalizeAccountPayload]);
 
   const syncAccountNow = useCallback(async (): Promise<boolean> => {
-      if (!user || !authToken || isApplyingCloudSnapshotRef.current) return false;
+      if (!user || !authToken || isApplyingCloudSnapshotRef.current || isPreviewAuthToken(authToken)) return false;
       if (isCloudSyncInFlightRef.current) return false;
 
       try {
@@ -1477,7 +1720,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [authToken, applyAccountSnapshot, buildPersistencePayload, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
 
   const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
-      if (!user || !authToken) return false;
+      if (!user || !authToken || isPreviewAuthToken(authToken)) return false;
       if (isCloudSyncInFlightRef.current || isApplyingCloudSnapshotRef.current) return false;
 
       const force = options?.force ?? true;
@@ -1605,6 +1848,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!password) {
           return { ok: false, error: 'Password is required.' };
       }
+      if (isPreviewAccountCredentials(username, password)) {
+          const previewPayload = buildPreviewAccountPayload(tabIdRef.current);
+          localStorage.setItem(AUTH_TOKEN_KEY, PREVIEW_AUTH_TOKEN);
+          setAuthToken(PREVIEW_AUTH_TOKEN);
+          applyAccountSnapshot(PREVIEW_ACCOUNT_USERNAME, previewPayload);
+          hasHydratedCloudForUserRef.current = PREVIEW_ACCOUNT_USERNAME;
+          setLastAccountSyncAt(null);
+          setAccountSyncState('idle');
+          setAccountSyncError(null);
+          return { ok: true, error: null };
+      }
       try {
           const guestData: TimerPersistencePayload = JSON.parse(localStorage.getItem(getGuestKey()) || '{}');
           const response = await registerAccount(username, password, guestData);
@@ -1639,6 +1893,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const login = async (username: string, password?: string): Promise<AuthResult> => {
       if (!password) {
           return { ok: false, error: 'Password is required.' };
+      }
+      if (isPreviewAccountCredentials(username, password)) {
+          const previewPayload = buildPreviewAccountPayload(tabIdRef.current);
+          localStorage.setItem(AUTH_TOKEN_KEY, PREVIEW_AUTH_TOKEN);
+          setAuthToken(PREVIEW_AUTH_TOKEN);
+          applyAccountSnapshot(PREVIEW_ACCOUNT_USERNAME, previewPayload);
+          hasHydratedCloudForUserRef.current = PREVIEW_ACCOUNT_USERNAME;
+          setLastAccountSyncAt(null);
+          setAccountSyncState('idle');
+          setAccountSyncError(null);
+          return { ok: true, error: null };
       }
       try {
           const response = await loginAccount(username, password);
@@ -1707,7 +1972,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const logout = () => {
       const tokenToRevoke = authToken;
-      if (tokenToRevoke) {
+      if (tokenToRevoke && !isPreviewAuthToken(tokenToRevoke)) {
           void logoutAccount(tokenToRevoke).catch(() => {});
       }
       resetAccountSession();
@@ -1720,19 +1985,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [categories, selectedCategoryId]);
 
   useEffect(() => {
-      if (!user || !authToken) return;
+      if (!user || !authToken || isPreviewAuthToken(authToken)) return;
       if (hasHydratedCloudForUserRef.current === user.username) return;
       void refreshAccountFromCloud();
   }, [authToken, refreshAccountFromCloud, user]);
 
   useEffect(() => {
-      if (!user || !authToken) return;
+      if (!user || !authToken || isPreviewAuthToken(authToken)) return;
       const interval = setInterval(() => { void refreshAccountFromCloud({ force: false }); }, 12000);
       return () => clearInterval(interval);
   }, [authToken, refreshAccountFromCloud, user]);
 
   useEffect(() => {
-      if (!user || !authToken) return;
+      if (!user || !authToken || isPreviewAuthToken(authToken)) return;
       if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
       setAccountSyncState((prev) => (prev === 'syncing' ? prev : 'pending'));
       // Debounce signed-in saves from timer phase transitions, not per-second countdown ticks.
@@ -2877,6 +3142,58 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [activeMode, breakTime, handleBreakBoundaryReached, isIdle, legacyRuntimeMode, timerStarted]);
 
+  useEffect(() => {
+    const shouldPlayFocusSound = (
+      settings.focusSound !== 'off'
+      && timerStarted
+      && !isIdle
+      && activeMode === 'work'
+      && !allPauseActive
+      && !graceOpen
+    );
+
+    if (shouldPlayFocusSound) {
+      void startFocusSound(settings.focusSound, settings.focusSoundVolume);
+      return;
+    }
+
+    stopFocusSound();
+  }, [activeMode, allPauseActive, graceOpen, isIdle, settings.focusSound, settings.focusSoundVolume, timerStarted]);
+
+  useEffect(() => {
+    if (settings.focusSound === 'off') return;
+
+    const unlockFocusAudio = () => {
+      void resumeAudioContext();
+
+      const shouldPlayFocusSound = (
+        timerStarted
+        && !isIdle
+        && activeMode === 'work'
+        && !allPauseActive
+        && !graceOpen
+      );
+
+      if (shouldPlayFocusSound) {
+        void startFocusSound(settings.focusSound, settings.focusSoundVolume);
+      }
+    };
+
+    window.addEventListener('pointerdown', unlockFocusAudio, { passive: true });
+    window.addEventListener('keydown', unlockFocusAudio);
+
+    return () => {
+      window.removeEventListener('pointerdown', unlockFocusAudio);
+      window.removeEventListener('keydown', unlockFocusAudio);
+    };
+  }, [activeMode, allPauseActive, graceOpen, isIdle, settings.focusSound, settings.focusSoundVolume, timerStarted]);
+
+  useEffect(() => {
+    return () => {
+      stopFocusSound();
+    };
+  }, []);
+
   const legacyTick = useCallback((now: number) => {
     if (!lastTickRef.current) { lastTickRef.current = now; return; }
     const delta = (now - lastTickRef.current) / 1000;
@@ -3125,6 +3442,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const startTimerInternal = (opts?: { mode?: TimerMode, workOverride?: number, breakOverride?: number, forceActivityStart?: Date, playSound?: boolean, forceStart?: boolean }) => {
     if (timerStarted && !opts?.forceStart) return;
     if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+    void resumeAudioContext();
     if (!sessionStartTime) {
         const now = new Date();
         setSessionStartTime(now.toISOString());
@@ -3381,9 +3699,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
 
-    stopTimer({ silentGroupEvent: true });
-    setAllPauseActive(false);
-
     const sessionFloor = sessionStartTime || '';
     const workLogs = logs.filter((l) => l.type === 'work' && l.start >= sessionFloor && !isPauseCreditedWorkLog(l));
     const breakLogs = logs.filter((l) => l.type === 'break' && l.start >= sessionFloor);
@@ -3499,24 +3814,46 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setPomodoroCount(0);
     setWorkTime(settings.workDuration);
     setBreakTime(0);
+    setActiveMode('work');
     setIsIdle(true);
     setTimerStarted(false);
+    setAllPauseActive(false);
+    setAllPauseTime(0);
+    setAllPauseReason('');
+    setAllPauseStartTime(null);
     setGraceOpen(false);
     setGraceContext(null);
     setGraceTotal(0);
     setSessionStartTime(null);
     currentActivityStartRef.current = null;
+    lastTickRef.current = null;
+    shadowTickRef.current = null;
+    workerRef.current?.postMessage('stop');
 
     const resetNow = new Date();
     const h = resetNow.getHours().toString().padStart(2, '0');
     const m = resetNow.getMinutes().toString().padStart(2, '0');
-    setScheduleStartTime(`${h}:${m}`);
+    const nextScheduleStartTime = `${h}:${m}`;
+    setScheduleStartTime(nextScheduleStartTime);
     anchorRuntimePhase('idle', {
       phaseStartWorkTime: settings.workDuration,
       phaseStartBreakTime: 0,
       phaseStartAllPauseTime: 0,
       phaseStartGraceTotal: 0,
       activityStartIso: null,
+      activeMode: 'work',
+      timerStarted: false,
+      isIdle: true,
+      allPauseActive: false,
+      allPauseTime: 0,
+      allPauseReason: '',
+      allPauseStartTime: null,
+      graceOpen: false,
+      graceContext: null,
+      graceTotal: 0,
+      pomodoroCount: 0,
+      sessionStartTime: null,
+      scheduleStartTime: nextScheduleStartTime,
     });
 
     setShowSummary(options?.showSummary !== false);
@@ -3534,7 +3871,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     pomodoroCount,
     sessionStartTime,
     settings.workDuration,
-    stopTimer,
     tasks,
     user,
   ]);
@@ -3556,6 +3892,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setTimerStarted(false);
       setIsIdle(true);
       setAllPauseActive(false);
+      setAllPauseTime(0);
+      setAllPauseReason('');
+      setAllPauseStartTime(null);
       setGraceOpen(false);
       setGraceContext(null);
       setGraceTotal(0);
@@ -3567,9 +3906,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const now = new Date();
       const h = now.getHours().toString().padStart(2, '0');
       const m = now.getMinutes().toString().padStart(2, '0');
-      setScheduleStartTime(`${h}:${m}`);
+      const nextScheduleStartTime = `${h}:${m}`;
+      setScheduleStartTime(nextScheduleStartTime);
       currentActivityStartRef.current = null;
       lastTickRef.current = null;
+      shadowTickRef.current = null;
       workerRef.current?.postMessage('stop');
       anchorRuntimePhase('idle', {
         phaseStartWorkTime: DEFAULT_SETTINGS.workDuration,
@@ -3577,6 +3918,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         phaseStartAllPauseTime: 0,
         phaseStartGraceTotal: 0,
         activityStartIso: null,
+        activeMode: 'work',
+        timerStarted: false,
+        isIdle: true,
+        allPauseActive: false,
+        allPauseTime: 0,
+        allPauseReason: '',
+        allPauseStartTime: null,
+        graceOpen: false,
+        graceContext: null,
+        graceTotal: 0,
+        pomodoroCount: 0,
+        sessionStartTime: null,
+        scheduleStartTime: nextScheduleStartTime,
       });
   };
 
@@ -3763,10 +4117,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       user, workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
-      isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen,
+      isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, showCompletedTasks, setShowCompletedTasks,
       activeTask, activeColor, showSummary, sessionStats,
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
-      accountSyncState, accountSyncError, lastAccountSyncAt,
+      accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
       startTimer, stopTimer, toggleTimer, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
