@@ -5,6 +5,7 @@ import {
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
   getCompletedPhaseDuration,
+  resolveGraceBreakBank,
   getTimerStateFreshnessStamp,
   getGraceCompensation,
   getPauseCompensation,
@@ -32,6 +33,36 @@ describe('timer runtime derivation', () => {
     const derived = deriveRuntimeValues(snapshot, BASE_NOW + 30_000);
     expect(derived.workTime).toBeCloseTo(1470, 2);
     expect(derived.breakTime).toBe(120);
+  });
+
+  it('lets a break started at zero continue into debt', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-break',
+      nowMs: BASE_NOW,
+      workTime: 1500,
+      breakTime: 0,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    const derived = deriveRuntimeValues(snapshot, BASE_NOW + 45_000);
+    expect(derived.breakTime).toBeCloseTo(-45, 2);
+  });
+
+  it('keeps a debt break counting downward when it resumes below zero', () => {
+    const snapshot = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-break',
+      nowMs: BASE_NOW,
+      workTime: 1500,
+      breakTime: -30,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+
+    const derived = deriveRuntimeValues(snapshot, BASE_NOW + 45_000);
+    expect(derived.breakTime).toBeCloseTo(-75, 2);
   });
 
   it('derives pause and grace elapsed totals from wall-clock time', () => {
@@ -417,6 +448,70 @@ describe('behavior-locked transition math', () => {
     expect(result.isLongBreak).toBe(true);
     expect(result.reward).toBe(900);
     expect(result.nextBreakTime).toBe(960);
+  });
+
+  it('recovers the earned break bank from after-work grace when state is stale', () => {
+    const runtime = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 0,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 8,
+    });
+
+    expect(resolveGraceBreakBank({
+      breakTime: 0,
+      graceContext: 'afterWork',
+      runtimeSnapshot: runtime,
+    })).toEqual({
+      baseBreakTime: 300,
+      nextBreakTime: 300,
+    });
+  });
+
+  it('applies grace adjustments against the authoritative after-work break bank', () => {
+    const runtime = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 0,
+      breakTime: 300,
+      allPauseTime: 0,
+      graceTotal: 45,
+    });
+
+    expect(resolveGraceBreakBank({
+      breakTime: 0,
+      graceContext: 'afterWork',
+      runtimeSnapshot: runtime,
+      adjustBreakBalance: 45,
+    })).toEqual({
+      baseBreakTime: 300,
+      nextBreakTime: 255,
+    });
+  });
+
+  it('keeps break continuation at zero when no earned bank should be restored', () => {
+    const runtime = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'grace',
+      nowMs: BASE_NOW,
+      workTime: 1500,
+      breakTime: 0,
+      allPauseTime: 0,
+      graceTotal: 20,
+    });
+
+    expect(resolveGraceBreakBank({
+      breakTime: 0,
+      graceContext: 'afterBreak',
+      runtimeSnapshot: runtime,
+    })).toEqual({
+      baseBreakTime: 0,
+      nextBreakTime: 0,
+    });
   });
 
   it('keeps pause compensation formulas exact', () => {

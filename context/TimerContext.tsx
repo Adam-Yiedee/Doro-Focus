@@ -29,6 +29,7 @@ import {
   detectRuntimeBoundaryCrossing,
   getCompletedPhaseDuration,
   getTimerStateFreshnessStamp,
+  resolveGraceBreakBank,
   normalizeGraceWindow,
   resetPersistedTimerSessionState,
   shouldApplyIncomingRuntime,
@@ -3630,8 +3631,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setActiveMode(nextMode);
     setIsIdle(false);
     let nextBreakTime = breakTime;
-    if (options && options.adjustBreakBalance !== undefined) {
-      nextBreakTime = breakTime - (options.adjustBreakBalance || 0);
+    if (graceContext === 'afterWork' || nextMode === 'break' || options?.adjustBreakBalance !== undefined) {
+      nextBreakTime = resolveGraceBreakBank({
+        breakTime,
+        graceContext,
+        runtimeSnapshot: runtimeRef.current,
+        adjustBreakBalance: options?.adjustBreakBalance,
+      }).nextBreakTime;
       setBreakTime(nextBreakTime);
     }
     

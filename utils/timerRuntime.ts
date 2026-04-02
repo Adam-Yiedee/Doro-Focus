@@ -371,6 +371,40 @@ export const computeWorkCompletion = (
   };
 };
 
+export const resolveGraceBreakBank = ({
+  breakTime,
+  graceContext,
+  runtimeSnapshot,
+  adjustBreakBalance = 0,
+}: {
+  breakTime: number;
+  graceContext: GraceContext;
+  runtimeSnapshot?: TimerRuntimeSnapshot | null;
+  adjustBreakBalance?: number;
+}) => {
+  const safeBreakTime = Number.isFinite(breakTime) ? breakTime : 0;
+  const safeAdjustment = Number.isFinite(adjustBreakBalance) ? adjustBreakBalance : 0;
+  const runtimeBreakTime = (
+    graceContext === 'afterWork'
+    && runtimeSnapshot?.phase === 'grace'
+    && typeof runtimeSnapshot.phaseStartBreakTime === 'number'
+    && Number.isFinite(runtimeSnapshot.phaseStartBreakTime)
+  )
+    ? runtimeSnapshot.phaseStartBreakTime
+    : null;
+  const baseBreakTime = runtimeBreakTime === null
+    ? safeBreakTime
+    : Math.max(safeBreakTime, runtimeBreakTime);
+
+  return {
+    // Only after-work grace should recover an earned bank from runtime state.
+    // Continuing or manually starting a break at zero/debt should stay at zero/debt
+    // so the timer can intentionally run negative.
+    baseBreakTime,
+    nextBreakTime: baseBreakTime - safeAdjustment,
+  };
+};
+
 export const getPauseCompensation = (allPauseTime: number) => ({
   addToBankAmount: allPauseTime / 5,
   deductFromBankAmount: allPauseTime,
