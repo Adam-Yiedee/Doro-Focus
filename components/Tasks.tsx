@@ -5,6 +5,7 @@ import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
 import { getIcon } from '../utils/icons';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../utils/palette';
+import { getPomodoroCycleProgress } from '../utils/timerRuntime';
 
 const clampPomoEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -874,8 +875,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
   
   // Pomo Counter Logic
   const pomosPerSet = settings.longBreakInterval || 4;
-  const currentInSet = pomodoroCount % pomosPerSet;
-  const untilLongBreak = pomosPerSet - currentInSet;
+  const cycleProgress = useMemo(
+    () => getPomodoroCycleProgress(pomodoroCount, pomosPerSet),
+    [pomodoroCount, pomosPerSet]
+  );
+  const untilLongBreak = cycleProgress.untilLongBreak;
   const remainingTaskPomos = useMemo(
     () => filteredTasks.reduce((acc, task) => acc + getRemainingPomosForTask(task), 0),
     [filteredTasks]
@@ -885,8 +889,8 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
 
     let totalSeconds = remainingTaskPomos * settings.workDuration;
     for (let i = 1; i < remainingTaskPomos; i++) {
-      const completionCount = pomodoroCount + i;
-      const breakSeconds = completionCount % pomosPerSet === 0 ? settings.longBreakDuration : settings.shortBreakDuration;
+      const breakProgress = getPomodoroCycleProgress(pomodoroCount + i - 1, pomosPerSet);
+      const breakSeconds = breakProgress.nextPomoTriggersLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
       totalSeconds += breakSeconds;
     }
     return formatFinishTime(new Date(Date.now() + totalSeconds * 1000));

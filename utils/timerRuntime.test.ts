@@ -5,6 +5,7 @@ import {
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
   getCompletedPhaseDuration,
+  getPomodoroCycleProgress,
   resolveGraceBreakBank,
   getTimerStateFreshnessStamp,
   getGraceCompensation,
@@ -424,6 +425,27 @@ describe('grace context normalization', () => {
 });
 
 describe('behavior-locked transition math', () => {
+  it('tracks how many pomodoros remain until the next long break', () => {
+    expect(getPomodoroCycleProgress(0, 4)).toMatchObject({
+      completedInCycle: 0,
+      untilLongBreak: 4,
+      nextPomoCount: 1,
+      nextPomoTriggersLongBreak: false,
+    });
+    expect(getPomodoroCycleProgress(3, 4)).toMatchObject({
+      completedInCycle: 3,
+      untilLongBreak: 1,
+      nextPomoCount: 4,
+      nextPomoTriggersLongBreak: true,
+    });
+    expect(getPomodoroCycleProgress(4, 4)).toMatchObject({
+      completedInCycle: 0,
+      untilLongBreak: 4,
+      nextPomoCount: 5,
+      nextPomoTriggersLongBreak: false,
+    });
+  });
+
   it('keeps short-break reward logic exact', () => {
     const result = computeWorkCompletion(1, 120, {
       shortBreakDuration: 300,

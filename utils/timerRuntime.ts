@@ -354,17 +354,47 @@ export interface WorkCompletionResult {
   nextBreakTime: number;
 }
 
+export interface PomodoroCycleProgress {
+  completedPomoCount: number;
+  longBreakInterval: number;
+  completedInCycle: number;
+  untilLongBreak: number;
+  nextPomoCount: number;
+  nextPomoTriggersLongBreak: boolean;
+}
+
+export const getPomodoroCycleProgress = (
+  pomodoroCount: number,
+  longBreakInterval: number,
+): PomodoroCycleProgress => {
+  const safeCompletedPomoCount = Number.isFinite(pomodoroCount) ? Math.max(0, Math.floor(pomodoroCount)) : 0;
+  const safeLongBreakInterval = Number.isFinite(longBreakInterval) && longBreakInterval > 0
+    ? Math.max(1, Math.floor(longBreakInterval))
+    : 4;
+  const completedInCycle = safeCompletedPomoCount % safeLongBreakInterval;
+  const nextPomoCount = safeCompletedPomoCount + 1;
+
+  return {
+    completedPomoCount: safeCompletedPomoCount,
+    longBreakInterval: safeLongBreakInterval,
+    completedInCycle,
+    untilLongBreak: completedInCycle === 0 ? safeLongBreakInterval : safeLongBreakInterval - completedInCycle,
+    nextPomoCount,
+    nextPomoTriggersLongBreak: nextPomoCount % safeLongBreakInterval === 0,
+  };
+};
+
 export const computeWorkCompletion = (
   pomodoroCount: number,
   breakTime: number,
   settings: Pick<TimerSettings, 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval'>
 ): WorkCompletionResult => {
-  const nextPomoCount = pomodoroCount + 1;
-  const isLongBreak = nextPomoCount % settings.longBreakInterval === 0;
+  const cycleProgress = getPomodoroCycleProgress(pomodoroCount, settings.longBreakInterval);
+  const isLongBreak = cycleProgress.nextPomoTriggersLongBreak;
   const reward = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
 
   return {
-    nextPomoCount,
+    nextPomoCount: cycleProgress.nextPomoCount,
     reward,
     isLongBreak,
     nextBreakTime: breakTime + reward,

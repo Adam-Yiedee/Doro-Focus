@@ -5,6 +5,7 @@ import { useTimer, ScheduleBreak } from '../../context/TimerContext';
 import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { getIcon } from '../../utils/icons';
+import { getPomodoroCycleProgress } from '../../utils/timerRuntime';
 import TaskCategoryPicker from '../TaskCategoryPicker';
 
 interface WorkUnit {
@@ -318,10 +319,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                         topPx: diffMins * pixelsPerMin, heightPx: remainingMins * pixelsPerMin
                     });
                 workQueue.shift();
-                virtualPomoCount++;
+                const currentCycle = getPomodoroCycleProgress(virtualPomoCount, settings.longBreakInterval);
+                virtualPomoCount = currentCycle.nextPomoCount;
                 projectionTime = endTime;
                 
-                const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
+                const isLongBreak = currentCycle.nextPomoTriggersLongBreak;
                 const breakDur = isLongBreak ? (settings.longBreakDuration/60) : (settings.shortBreakDuration/60);
                 const bEnd = new Date(projectionTime.getTime() + breakDur * 60000);
                 const bDiff = (projectionTime.getTime() - timelineStart.getTime()) / 60000;
@@ -389,10 +391,11 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                 topPx: diffMins * pixelsPerMin, heightPx: workDuration * pixelsPerMin
             });
             
+            const projectedCycle = getPomodoroCycleProgress(virtualPomoCount, settings.longBreakInterval);
             projectionTime = new Date(projectionTime.getTime() + workDuration * 60000);
-            virtualPomoCount++;
+            virtualPomoCount = projectedCycle.nextPomoCount;
             
-            const isLongBreak = virtualPomoCount > 0 && (virtualPomoCount % settings.longBreakInterval === 0);
+            const isLongBreak = projectedCycle.nextPomoTriggersLongBreak;
             const breakDur = isLongBreak ? (settings.longBreakDuration / 60) : (settings.shortBreakDuration / 60);
             
             projectionTime = advanceTimeIfBlocked(projectionTime);

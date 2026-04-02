@@ -502,6 +502,24 @@ interface TimerPersistencePayload {
   updatedAt?: string;
 }
 
+type PersistedRuntimeTimerState = Pick<TimerPersistencePayload,
+  | 'workTime'
+  | 'breakTime'
+  | 'activeMode'
+  | 'timerStarted'
+  | 'isIdle'
+  | 'pomodoroCount'
+  | 'allPauseActive'
+  | 'allPauseTime'
+  | 'allPauseReason'
+  | 'allPauseStartTime'
+  | 'graceOpen'
+  | 'graceContext'
+  | 'graceTotal'
+  | 'sessionStartTime'
+  | 'scheduleStartTime'
+>;
+
 const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
   return !!value && typeof value === 'object' && value.version === TIMER_RUNTIME_VERSION && typeof value.updatedAtMs === 'number' && typeof value.phase === 'string';
 };
@@ -902,13 +920,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return user ? getUserKey(user.username) : getGuestKey();
   }, [user]);
 
-  const persistRuntimeSnapshot = useCallback((snapshot: TimerRuntimeSnapshot, overrideKey?: string) => {
+  const persistRuntimeSnapshot = useCallback((
+    snapshot: TimerRuntimeSnapshot,
+    overrideKey?: string,
+    timerState?: Partial<PersistedRuntimeTimerState>,
+  ) => {
     const key = overrideKey || getActiveStorageKey();
     const runtimeRunning = snapshot.phase === 'running-work' || snapshot.phase === 'running-break';
-    const runtimeMode: TimerMode = snapshot.phase === 'running-break' ? 'break' : activeMode;
+    const runtimeMode: TimerMode = timerState?.activeMode ?? (snapshot.phase === 'running-break' ? 'break' : activeMode);
     const runtimeGrace = normalizeGraceWindow({
-      graceOpenCandidate: snapshot.phase === 'grace',
-      rawGraceContext: graceContext,
+      graceOpenCandidate: typeof timerState?.graceOpen === 'boolean' ? timerState.graceOpen : snapshot.phase === 'grace',
+      rawGraceContext: timerState?.graceContext ?? graceContext,
       fallbackMode: runtimeMode,
     });
     try {
@@ -918,16 +940,23 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ...existing,
         schemaVersion: DATA_SCHEMA_VERSION,
         runtime: snapshot,
+        pomodoroCount: typeof timerState?.pomodoroCount === 'number' ? timerState.pomodoroCount : pomodoroCount,
+        workTime: typeof timerState?.workTime === 'number' ? timerState.workTime : workTime,
+        breakTime: typeof timerState?.breakTime === 'number' ? timerState.breakTime : breakTime,
         activeMode: runtimeMode,
-        timerStarted: runtimeRunning,
-        isIdle: snapshot.phase === 'idle',
-        allPauseActive: snapshot.phase === 'all-pause',
-        allPauseTime,
-        allPauseReason,
-        allPauseStartTime,
+        timerStarted: typeof timerState?.timerStarted === 'boolean' ? timerState.timerStarted : runtimeRunning,
+        isIdle: typeof timerState?.isIdle === 'boolean' ? timerState.isIdle : snapshot.phase === 'idle',
+        allPauseActive: typeof timerState?.allPauseActive === 'boolean' ? timerState.allPauseActive : snapshot.phase === 'all-pause',
+        allPauseTime: typeof timerState?.allPauseTime === 'number' ? timerState.allPauseTime : allPauseTime,
+        allPauseReason: timerState?.allPauseReason ?? allPauseReason,
+        allPauseStartTime: timerState?.allPauseStartTime !== undefined ? timerState.allPauseStartTime : allPauseStartTime,
         graceOpen: runtimeGrace.graceOpen,
         graceContext: runtimeGrace.graceContext,
-        graceTotal: runtimeGrace.graceOpen ? snapshot.phaseStartGraceTotal : 0,
+        graceTotal: runtimeGrace.graceOpen
+          ? (typeof timerState?.graceTotal === 'number' ? timerState.graceTotal : snapshot.phaseStartGraceTotal)
+          : 0,
+        sessionStartTime: timerState?.sessionStartTime !== undefined ? timerState.sessionStartTime : sessionStartTime,
+        scheduleStartTime: timerState?.scheduleStartTime ?? scheduleStartTime,
       };
       localStorage.setItem(key, JSON.stringify(merged));
     } catch (error) {
@@ -936,15 +965,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [
     getActiveStorageKey,
     activeMode,
-    timerStarted,
-    isIdle,
-    allPauseActive,
+    breakTime,
+    pomodoroCount,
+    workTime,
     allPauseTime,
     allPauseReason,
     allPauseStartTime,
-    graceOpen,
     graceContext,
-    graceTotal,
+    scheduleStartTime,
+    sessionStartTime,
   ]);
 
   const anchorRuntimePhase = useCallback((
@@ -992,31 +1021,32 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
     runtimeRef.current = snapshot;
     lastRuntimeAppliedRef.current = snapshot.updatedAtMs;
-    persistRuntimeSnapshot(snapshot);
+    const phaseTimerState: PersistedRuntimeTimerState = {
+      activeMode: phaseMode,
+      timerStarted: phaseImpliesRunning,
+      isIdle: typeof overrides?.isIdle === 'boolean' ? overrides.isIdle : (phase === 'idle' ? isIdle : false),
+      allPauseActive: typeof overrides?.allPauseActive === 'boolean' ? overrides.allPauseActive : phase === 'all-pause',
+      allPauseTime: typeof overrides?.allPauseTime === 'number' ? overrides.allPauseTime : phaseAllPause,
+      allPauseReason: overrides?.allPauseReason ?? allPauseReason,
+      allPauseStartTime: overrides?.allPauseStartTime !== undefined ? overrides.allPauseStartTime : allPauseStartTime,
+      graceOpen: phaseGraceState.graceOpen,
+      graceContext: phaseGraceState.graceContext,
+      graceTotal: phaseGraceState.graceOpen
+        ? (typeof overrides?.graceTotal === 'number' ? overrides.graceTotal : phaseGraceTotal)
+        : 0,
+      workTime: phaseWorkTime,
+      breakTime: phaseBreakTime,
+      pomodoroCount: typeof overrides?.pomodoroCount === 'number' ? overrides.pomodoroCount : pomodoroCount,
+      sessionStartTime: overrides?.sessionStartTime !== undefined ? overrides.sessionStartTime : sessionStartTime,
+      scheduleStartTime: overrides?.scheduleStartTime ?? scheduleStartTime,
+    };
+    persistRuntimeSnapshot(snapshot, undefined, phaseTimerState);
     if (broadcastChannelRef.current) {
       broadcastChannelRef.current.postMessage({
         type: 'RUNTIME_SYNC',
         key: getActiveStorageKey(),
         runtime: snapshot,
-        timer: {
-          activeMode: phaseMode,
-          timerStarted: phaseImpliesRunning,
-          isIdle: typeof overrides?.isIdle === 'boolean' ? overrides.isIdle : (phase === 'idle' ? isIdle : false),
-          allPauseActive: typeof overrides?.allPauseActive === 'boolean' ? overrides.allPauseActive : phase === 'all-pause',
-          allPauseTime: typeof overrides?.allPauseTime === 'number' ? overrides.allPauseTime : phaseAllPause,
-          allPauseReason: overrides?.allPauseReason ?? allPauseReason,
-          allPauseStartTime: overrides?.allPauseStartTime !== undefined ? overrides.allPauseStartTime : allPauseStartTime,
-          graceOpen: phaseGraceState.graceOpen,
-          graceContext: phaseGraceState.graceContext,
-          graceTotal: phaseGraceState.graceOpen
-            ? (typeof overrides?.graceTotal === 'number' ? overrides.graceTotal : phaseGraceTotal)
-            : 0,
-          workTime: phaseWorkTime,
-          breakTime: phaseBreakTime,
-          pomodoroCount: typeof overrides?.pomodoroCount === 'number' ? overrides.pomodoroCount : pomodoroCount,
-          sessionStartTime: overrides?.sessionStartTime !== undefined ? overrides.sessionStartTime : sessionStartTime,
-          scheduleStartTime: overrides?.scheduleStartTime ?? scheduleStartTime,
-        },
+        timer: phaseTimerState,
       });
     }
     bumpAccountTimerSyncNonce();
@@ -3123,6 +3153,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       phaseStartBreakTime: completion.nextBreakTime,
       phaseStartGraceTotal: initialGraceSeconds,
       activityStartIso: null,
+      pomodoroCount: completion.nextPomoCount,
     });
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
   }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase]);
@@ -3448,12 +3479,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (timerStarted && !opts?.forceStart) return;
     if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
     void resumeAudioContext();
+    let nextSessionStartTime = sessionStartTime;
+    let nextScheduleStartTime = scheduleStartTime;
     if (!sessionStartTime) {
         const now = new Date();
-        setSessionStartTime(now.toISOString());
+        nextSessionStartTime = now.toISOString();
+        setSessionStartTime(nextSessionStartTime);
         const h = now.getHours().toString().padStart(2, '0');
         const m = now.getMinutes().toString().padStart(2, '0');
-        setScheduleStartTime(`${h}:${m}`);
+        nextScheduleStartTime = `${h}:${m}`;
+        setScheduleStartTime(nextScheduleStartTime);
     }
     if (isIdle) setIsIdle(false);
     const activityStart = opts?.forceActivityStart || currentActivityStartRef.current || new Date();
@@ -3464,6 +3499,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       phaseStartWorkTime: opts?.workOverride ?? workTime,
       phaseStartBreakTime: opts?.breakOverride ?? breakTime,
       activityStartIso: activityStart.toISOString(),
+      sessionStartTime: nextSessionStartTime,
+      scheduleStartTime: nextScheduleStartTime,
     });
     if (opts?.playSound !== false) playSwitch();
   };
