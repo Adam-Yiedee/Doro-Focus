@@ -7,6 +7,7 @@ import {
   WEEKDAY_SHORT_LABELS,
 } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
+import { formatPomodoroCount } from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 
 interface AccountInsightsProps {
@@ -691,7 +692,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     },
     {
       label: '14-Day Pomodoros',
-      value: `${recentPomoTotal}`,
+      value: formatPomodoroCount(recentPomoTotal),
       helper: recentPomoTotal > 0 ? 'Completed in this window' : 'No pomodoros yet',
       color: PRESET_COLORS[2],
     },
@@ -733,7 +734,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     },
     {
       label: 'Pomodoros',
-      value: `${insights.today.pomodoros}`,
+      value: formatPomodoroCount(insights.today.pomodoros),
       helper: insights.today.pomodoros > 0 ? 'Completed today' : 'No pomodoros yet',
       trail: insights.today.pomodoros > 0 ? `${Math.round((insights.today.pomodoros / trendMaxPomos) * 100)}% of top day` : 'No completions',
       fill: insights.today.pomodoros > 0 ? Math.max(10, (insights.today.pomodoros / trendMaxPomos) * 100) : 0,
@@ -1205,7 +1206,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                 </div>
                 <div className="mt-1 text-sm text-white/56">
                   {activeTrendPoint
-                    ? `${formatMinutesPrecise(activeTrendPoint.focusMinutes)} saved, ${activeTrendPoint.pomodoros} pomodoros, ${activeTrendPoint.sessions} start${activeTrendPoint.sessions === 1 ? '' : 's'}.`
+                    ? `${formatMinutesPrecise(activeTrendPoint.focusMinutes)} saved, ${formatPomodoroCount(activeTrendPoint.pomodoros)} pomodoros, ${activeTrendPoint.sessions} start${activeTrendPoint.sessions === 1 ? '' : 's'}.`
                     : 'Hover a point to inspect one day.'}
                 </div>
               </div>

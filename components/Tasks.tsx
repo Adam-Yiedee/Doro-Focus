@@ -4,8 +4,10 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTimer } from '../context/TimerContext';
 import { Task } from '../types';
 import { getIcon } from '../utils/icons';
+import { getActiveCategories } from '../utils/categoryVisibility';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../utils/palette';
-import { getPomodoroCycleProgress } from '../utils/timerRuntime';
+import { getTimerPomoUnitLabel } from '../utils/pomodoroAccounting';
+import { getPomodoroCycleProgress, getProjectedTaskFinishSeconds } from '../utils/timerRuntime';
 
 const clampPomoEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -329,22 +331,28 @@ const TaskItem: React.FC<TaskItemProps> = ({
       <div 
         onClick={() => selectTask(task.id)}
         className={`
-          group relative rounded-lg cursor-pointer transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
+          group relative rounded-lg cursor-pointer transform-gpu transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
           flex items-center gap-3 border
           ${depth === 0 ? 'p-3' : 'p-2.5'}
           ${task.selected
-            ? 'bg-white/18 border-white/30 shadow-[0_18px_30px_-18px_rgba(15,23,42,0.58)] z-20 blur-0 opacity-100'
-            : 'bg-white/5 border-transparent z-10'
+            ? 'z-20 -translate-y-1 scale-[1.01] bg-white/10 border-white/20 ring-1 ring-white/30 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] blur-0 opacity-100'
+            : 'z-10 bg-white/[0.025] border-white/8 shadow-none opacity-60'
           }
           ${!isSectionActive 
-            ? (task.selected ? '' : 'opacity-70 hover:opacity-100')
-            : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/10 hover:shadow-md opacity-80 hover:opacity-100')
+            ? (task.selected ? '' : 'hover:opacity-90')
+            : (task.selected ? '' : 'hover:-translate-y-0.5 hover:bg-white/10 hover:border-white/16 hover:shadow-[0_16px_34px_-20px_rgba(0,0,0,0.28)] hover:opacity-90')
           }
           ${task.checked ? 'opacity-40' : ''}
           ${isDraggedTask ? 'opacity-45 scale-[0.985]' : ''}
           ${isCheckAnimating ? 'doro-check-burst scale-[1.015]' : ''}
         `}
       >
+        {task.selected && (
+          <>
+            <div className="pointer-events-none absolute inset-0 rounded-lg bg-gradient-to-tr from-white/10 via-white/0 to-transparent" />
+            <div className="pointer-events-none absolute inset-0 rounded-lg shadow-[inset_0_0_34px_rgba(255,255,255,0.08)]" />
+          </>
+        )}
         {isCheckAnimating && (
           <span className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg">
             <span className="doro-check-pass absolute -left-[42%] top-[-10%] h-[120%] w-[58%] rounded-full bg-[linear-gradient(90deg,rgba(16,185,129,0),rgba(167,243,208,0.18)_26%,rgba(110,231,183,0.45)_48%,rgba(167,243,208,0.2)_70%,rgba(16,185,129,0))] blur-md" />
@@ -353,8 +361,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
         {dropHint && !isDraggedTask && (
           <div className={`pointer-events-none absolute left-2 right-2 ${dropHint === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`} />
         )}
-        {task.selected && <div className="absolute left-0 inset-y-2 w-1 bg-white rounded-r-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" />}
-        
         {task.subtasks.length > 0 ? (
           <button 
             onClick={(e) => { e.stopPropagation(); toggleTaskExpansion(task.id); }}
@@ -505,6 +511,12 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     addTask,
     moveTask,
     pomodoroCount,
+    workTime,
+    breakTime,
+    activeMode,
+    isIdle,
+    graceOpen,
+    graceContext,
     settings,
     setWeeklyScheduleOpen,
     categories,
@@ -539,6 +551,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     suppressClick: false,
     captured: false,
   });
+  const activeCategories = useMemo(() => getActiveCategories(categories), [categories]);
 
   const todayKey = getDateKey(new Date());
 
@@ -607,6 +620,12 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
   useEffect(() => {
     onPreviewSurfaceColorChange?.(isInputFocused && isPreviewingNewTaskColor ? newColor : undefined);
   }, [isInputFocused, isPreviewingNewTaskColor, newColor, onPreviewSurfaceColorChange]);
+
+  useEffect(() => {
+    if (newCatId === null) return;
+    if (activeCategories.some((category) => category.id === newCatId)) return;
+    setNewCatId(null);
+  }, [activeCategories, newCatId]);
 
   useEffect(() => {
     return () => {
@@ -799,6 +818,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
 
   const handleCategoryRailPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('button')) return;
     const rail = event.currentTarget;
     if (rail.scrollWidth <= rail.clientWidth + 1) return;
     if (categoryRailReleaseTimeoutRef.current) {
@@ -860,6 +880,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     setIsPreviewingNewTaskColor(true);
   }, []);
 
+  const handleRequestNewCategory = useCallback(() => {
+    if (categoryRailDragRef.current.suppressClick) return;
+    requestNewCategoryFlow();
+  }, [requestNewCategoryFlow]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
@@ -872,9 +897,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
   const isSectionActive = isHovered || isInputFocused;
   const shouldBlur = !isSectionActive && !settings.disableBlur;
   const blurClass = shouldBlur ? 'opacity-60' : 'opacity-100';
+  const isCompactTimer = settings.timerPreset === 'compact';
   
   // Pomo Counter Logic
   const pomosPerSet = settings.longBreakInterval || 4;
+  const pomoUnitLabel = getTimerPomoUnitLabel(settings).toLowerCase();
   const cycleProgress = useMemo(
     () => getPomodoroCycleProgress(pomodoroCount, pomosPerSet),
     [pomodoroCount, pomosPerSet]
@@ -887,14 +914,20 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
   const predictedFinishTime = useMemo(() => {
     if (remainingTaskPomos <= 0) return '--';
 
-    let totalSeconds = remainingTaskPomos * settings.workDuration;
-    for (let i = 1; i < remainingTaskPomos; i++) {
-      const breakProgress = getPomodoroCycleProgress(pomodoroCount + i - 1, pomosPerSet);
-      const breakSeconds = breakProgress.nextPomoTriggersLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
-      totalSeconds += breakSeconds;
-    }
+    const totalSeconds = getProjectedTaskFinishSeconds({
+      remainingPomodoros: remainingTaskPomos,
+      pomodoroCount,
+      workTime,
+      breakTime,
+      activeMode,
+      isIdle,
+      graceOpen,
+      graceContext,
+      settings,
+    });
+
     return formatFinishTime(new Date(Date.now() + totalSeconds * 1000));
-  }, [remainingTaskPomos, settings.workDuration, settings.shortBreakDuration, settings.longBreakDuration, pomodoroCount, pomosPerSet]);
+  }, [activeMode, breakTime, graceContext, graceOpen, isIdle, pomodoroCount, remainingTaskPomos, settings, workTime]);
 
   return (
     <>
@@ -1122,12 +1155,13 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             `}>
               <div className="flex flex-col gap-3">
                   {/* Category & Color Selection */}
-                  <div className="flex items-center gap-2 overflow-hidden px-1 py-1">
-                      <div className="flex shrink-0 gap-1.5">
+                  <div className="flex items-center gap-2 overflow-hidden pl-1 py-1">
+                      <div className="flex shrink-0 items-center gap-1.5">
                           {PRESET_COLORS.map(c => (
                             <button
                               key={c}
                               type="button"
+                              onPointerDown={(event) => event.preventDefault()}
                               onClick={() => {
                                 setNewColor(c);
                                 setNewCatId(null);
@@ -1139,37 +1173,45 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                           ))}
                       </div>
 
-                      {categories.length > 0 ? (
-                        <div
-                          className={`min-w-0 flex-1 overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-1.5 scrollbar-hide ${isCategoryRailDragging ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
-                          style={{ touchAction: 'pan-y' }}
-                          onPointerDown={handleCategoryRailPointerDown}
-                          onPointerMove={handleCategoryRailPointerMove}
-                          onPointerUp={handleCategoryRailPointerUp}
-                          onPointerCancel={handleCategoryRailPointerCancel}
-                          onLostPointerCapture={handleCategoryRailPointerCancel}
-                          onClick={handleCategoryRailClick}
-                        >
-                          <div className="flex w-max gap-1 pr-1">
-                              {categories.map(cat => (
-                                  <button
-                                    key={cat.id}
-                                    type="button"
-                                    onClick={() => handleCategorySelect(cat.id, cat.color)}
-                                    className={`shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${newCatId === cat.id ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'}`}
-                                  >
-                                      <div className="w-3 h-3 text-white" style={{color: cat.color}}>{getIcon(cat.icon)}</div>
-                                      <span className="text-[9px] text-white font-bold">{cat.name}</span>
-                                  </button>
-                              ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/10 p-1.5">
+                      <div
+                        className={`min-w-0 flex-1 overflow-x-auto rounded-xl border p-1.5 scrollbar-hide transition-[background-color,border-color,box-shadow] duration-300 ease-out ${
+                          newCatId
+                            ? 'border-white/18 bg-black/15 shadow-[0_10px_24px_-22px_rgba(255,255,255,0.5)]'
+                            : 'border-white/10 bg-black/10'
+                        } ${isCategoryRailDragging ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
+                        style={{ touchAction: 'pan-y' }}
+                        onPointerDown={handleCategoryRailPointerDown}
+                        onPointerMove={handleCategoryRailPointerMove}
+                        onPointerUp={handleCategoryRailPointerUp}
+                        onPointerCancel={handleCategoryRailPointerCancel}
+                        onLostPointerCapture={handleCategoryRailPointerCancel}
+                        onClick={handleCategoryRailClick}
+                      >
+                        <div className="flex w-max items-center gap-1 pr-1">
+                            {activeCategories.map(cat => (
+                                <button
+                                  key={cat.id}
+                                  type="button"
+                                  onPointerDown={(event) => event.preventDefault()}
+                                  onClick={() => handleCategorySelect(cat.id, cat.color)}
+                                  className={`shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${newCatId === cat.id ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'}`}
+                                >
+                                    <div className="w-3 h-3 text-white" style={{color: cat.color}}>{getIcon(cat.icon)}</div>
+                                    <span className="text-[9px] text-white font-bold">{cat.name}</span>
+                                </button>
+                            ))}
                           <button
                             type="button"
-                            onClick={requestNewCategoryFlow}
-                            className="flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 transition-all opacity-60 hover:opacity-100"
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              handleRequestNewCategory();
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleRequestNewCategory();
+                            }}
+                            className="shrink-0 flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 transition-all opacity-75 hover:opacity-100 hover:bg-white/10"
                           >
                               <div className="w-3 h-3 flex items-center justify-center text-white/80">
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1180,7 +1222,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                               <span className="text-[9px] text-white font-bold">Add Category</span>
                           </button>
                         </div>
-                      )}
+                      </div>
                   </div>
 
                   <div className="flex justify-between items-center">
@@ -1272,20 +1314,33 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         
         {/* Permanent Pomo Counter Footer */}
         <div className={`
-            pt-3 pb-1 border-t border-white/5 grid grid-cols-3 items-center gap-1
-            text-center whitespace-nowrap [font-size:clamp(7px,1.8vw,10px)] uppercase tracking-[0.13em] font-bold text-white/45
+            pt-3 pb-1 border-t border-white/5 grid grid-cols-3 items-center
+            text-center uppercase font-bold text-white/45
             transition-opacity duration-250 ${blurClass}
+            ${isCompactTimer
+              ? 'gap-2 [font-size:clamp(7px,1.35vw,9px)] tracking-[0.1em]'
+              : 'gap-1 whitespace-nowrap [font-size:clamp(7px,1.8vw,10px)] tracking-[0.13em]'
+            }
         `}>
-            <div className="flex min-w-0 items-center justify-center gap-1">
-                 <span className={`leading-none font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>
-                 <span>until long break</span>
+            <div className={`min-w-0 items-center justify-center ${isCompactTimer ? 'flex flex-col gap-0.5 leading-tight' : 'flex gap-1'}`}>
+                {isCompactTimer ? (
+                    <>
+                        <span className="truncate">long break in</span>
+                        <span className={`leading-none font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>
+                    </>
+                ) : (
+                    <>
+                        <span className={`leading-none font-mono font-bold ${untilLongBreak === 1 ? 'text-yellow-200' : 'text-white/80'}`}>{untilLongBreak}</span>
+                        <span className="truncate">until long break</span>
+                    </>
+                )}
             </div>
-            <div className="flex min-w-0 items-center justify-center gap-1">
-                <span>time finished</span>
+            <div className={`min-w-0 items-center justify-center ${isCompactTimer ? 'flex flex-col gap-0.5 leading-tight' : 'flex gap-1'}`}>
+                <span className="truncate">time finished</span>
                 <span className="leading-none font-mono font-bold text-white/80">{predictedFinishTime}</span>
             </div>
-            <div className="flex min-w-0 items-center justify-center gap-1">
-                <span>total pomos</span>
+            <div className={`min-w-0 items-center justify-center ${isCompactTimer ? 'flex flex-col gap-0.5 leading-tight' : 'flex gap-1'}`}>
+                <span className="truncate">total {pomoUnitLabel}</span>
                 <span className="leading-none font-mono font-bold text-white/80">{pomodoroCount}</span>
             </div>
         </div>

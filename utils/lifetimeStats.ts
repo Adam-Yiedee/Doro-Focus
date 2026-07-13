@@ -1,5 +1,9 @@
 import { Category, LogEntry, SessionCategoryStat, SessionRecord, User } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
+import {
+  getPomodoroEquivalentWeight,
+  getSessionPomodoroEquivalent,
+} from './pomodoroAccounting';
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
@@ -25,20 +29,9 @@ const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
   return reason.startsWith('paused') || reason.includes('pause credit');
 };
 
-const isCompletedPomodoroLog = (entry: LogEntry): boolean => {
-  return entry.type === 'work'
-    && !isPauseCreditedWorkLog(entry)
-    && (entry.reason || '').trim().toLowerCase() === 'pomodoro complete';
-};
-
 const getSessionWorkMinutes = (session: SessionRecord): number => {
   const minutes = Number(session.stats?.totalWorkMinutes || 0);
   return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
-};
-
-const getSessionPomodoros = (session: SessionRecord): number => {
-  const pomos = Number(session.stats?.pomosCompleted || 0);
-  return Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
 };
 
 const getLocalDateKeyFromIso = (iso: string): string | null => {
@@ -74,7 +67,10 @@ export const calculateLifetimeStatsFromData = (
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
     return !isPauseCreditedWorkLog(entry);
   });
-  const completedPomodoroLogs = productiveLogs.filter((entry) => isCompletedPomodoroLog(entry));
+  const completedPomodoroWeightFromLogs = productiveLogs.reduce(
+    (acc, entry) => acc + getPomodoroEquivalentWeight(entry),
+    0,
+  );
 
   const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
   const workHoursFromLogs = workSecondsFromLogs / 3600;
@@ -95,9 +91,8 @@ export const calculateLifetimeStatsFromData = (
   );
   const totalFocusHours = workHoursFromLogs + (workMinutesFromFallbackSessions / 60);
 
-  const totalPomosFromLogs = completedPomodoroLogs.length;
   const totalPomosFromFallbackSessions = fallbackSessions.reduce(
-    (acc, session) => acc + getSessionPomodoros(session),
+    (acc, session) => acc + getSessionPomodoroEquivalent(session),
     0,
   );
 
@@ -178,7 +173,7 @@ export const calculateLifetimeStatsFromData = (
     ...EMPTY_LIFETIME_STATS,
     totalFocusHours,
     totalSessions: safeSessions.length,
-    totalPomos: totalPomosFromLogs + totalPomosFromFallbackSessions,
+    totalPomos: completedPomodoroWeightFromLogs + totalPomosFromFallbackSessions,
     activeDays,
     currentStreak,
     bestStreak,

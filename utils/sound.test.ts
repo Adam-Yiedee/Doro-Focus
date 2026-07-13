@@ -235,7 +235,16 @@ describe('focus sound engine', () => {
 
     await sound.startFocusSound('white-soft', Number.NaN);
 
-    expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBeCloseTo(0.055, 5);
+    expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBeCloseTo(0.055 * 2.35, 5);
+  });
+
+  it('boosts the focus sound noticeably at full slider volume', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const sound = await import('./sound');
+
+    await sound.startFocusSound('white-soft', 100);
+
+    expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBeCloseTo(0.055 * 2.35, 5);
   });
 
   it('treats zero volume as a true mute target', async () => {

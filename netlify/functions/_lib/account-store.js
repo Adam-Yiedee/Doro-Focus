@@ -19,14 +19,21 @@ const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 256;
 
 const DEFAULT_SETTINGS = {
+  timerPreset: 'classic',
   workDuration: 1500,
   shortBreakDuration: 300,
   longBreakDuration: 900,
   longBreakInterval: 4,
+  twoInARowMode: false,
   disableBlur: true,
   alarmSound: 'bell',
+  focusSound: 'off',
+  focusSoundVolume: 100,
   themeMode: 'dark',
 };
+
+const POMODORO_COMPLETE_REASON = 'pomodoro complete';
+const MINI_POMODORO_COMPLETE_REASON = 'mini-pomodoro complete';
 
 const defaultLifetimeStats = () => ({
   totalFocusHours: 0,
@@ -96,10 +103,12 @@ const isPauseCreditedWorkLog = (entry) => {
   return reason.startsWith('paused') || reason.includes('pause credit');
 };
 
-const isCompletedPomodoroLog = (entry) => {
-  if (!entry || entry.type !== 'work') return false;
-  if (isPauseCreditedWorkLog(entry)) return false;
-  return cleanString(entry.reason).trim().toLowerCase() === 'pomodoro complete';
+const getPomodoroEquivalentWeight = (entry) => {
+  if (!entry || entry.type !== 'work') return 0;
+  const reason = cleanString(entry.reason).trim().toLowerCase();
+  if (reason === POMODORO_COMPLETE_REASON) return 1;
+  if (reason === MINI_POMODORO_COMPLETE_REASON) return 0.5;
+  return 0;
 };
 
 const getSessionWorkMinutes = (session) => {
@@ -109,7 +118,9 @@ const getSessionWorkMinutes = (session) => {
 
 const getSessionPomodoros = (session) => {
   const pomos = Number(session?.stats?.pomosCompleted || 0);
-  return Math.max(0, Math.floor(Number.isFinite(pomos) ? pomos : 0));
+  if (Number.isFinite(pomos) && pomos >= 0) return pomos;
+  const miniPomos = Number(session?.stats?.miniPomosCompleted || 0);
+  return Number.isFinite(miniPomos) && miniPomos > 0 ? miniPomos * 0.5 : 0;
 };
 
 const getResolvedCategoryName = (entry, categoryMap) => {
@@ -131,7 +142,10 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
     return !isPauseCreditedWorkLog(entry);
   });
-  const completedPomodoroLogs = productiveLogs.filter((entry) => isCompletedPomodoroLog(entry));
+  const completedPomodoroWeightFromLogs = productiveLogs.reduce(
+    (acc, entry) => acc + getPomodoroEquivalentWeight(entry),
+    0,
+  );
 
   const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
   const productiveLogDateKeys = new Set();
@@ -224,7 +238,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     ...defaultLifetimeStats(),
     totalFocusHours: (workSecondsFromLogs / 3600) + (workMinutesFromFallbackSessions / 60),
     totalSessions: safeSessions.length,
-    totalPomos: completedPomodoroLogs.length + fallbackSessions.reduce((acc, session) => acc + getSessionPomodoros(session), 0),
+    totalPomos: completedPomodoroWeightFromLogs + fallbackSessions.reduce((acc, session) => acc + getSessionPomodoros(session), 0),
     activeDays: sortedDates.length,
     currentStreak,
     bestStreak,

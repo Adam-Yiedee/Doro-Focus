@@ -5,6 +5,7 @@ import { useTimer, ScheduleBreak } from '../../context/TimerContext';
 import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { getIcon } from '../../utils/icons';
+import { getSessionPomoDisplay, getTimerPomoUnitLabel } from '../../utils/pomodoroAccounting';
 import { getPomodoroCycleProgress } from '../../utils/timerRuntime';
 import TaskCategoryPicker from '../TaskCategoryPicker';
 
@@ -56,6 +57,7 @@ const ScheduleCategoryBadge: React.FC<{ category: Category }> = ({ category }) =
 
 const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isOpen, onClose }) => {
     const { tasks, pastSessions, settings, pomodoroCount, logs, workTime, timerStarted, moveTask, moveSubtask, addDetailedTask, splitTask, deleteTask, scheduleBreaks, addScheduleBreak, deleteScheduleBreak, scheduleStartTime, setScheduleStartTime, sessionStartTime, activeMode, toggleTaskFuture, setTaskSchedule, categories, requestNewCategoryFlow } = useTimer();
+    const pomoUnitLabel = getTimerPomoUnitLabel(settings);
     const isLightTheme = settings.themeMode !== 'dark';
     
     // UI State
@@ -208,14 +210,15 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
             if (Math.abs(start.getTime() - timelineStart.getTime()) < 86400000) {
                  const diffMins = (start.getTime() - timelineStart.getTime()) / 60000;
                  const durMins = (end.getTime() - start.getTime()) / 60000;
+                 const pomoDisplay = getSessionPomoDisplay(session.stats);
                  blocks.push({
                      id: `past-${session.id}`,
                      type: 'past-session',
                      startTime: start, endTime: end, durationMinutes: durMins,
-                     label: 'Past Session', subLabel: `${session.stats.pomosCompleted} Pomos`,
+                     label: 'Past Session', subLabel: `${pomoDisplay.value} ${pomoDisplay.label}`,
                      topPx: diffMins * pixelsPerMin, heightPx: durMins * pixelsPerMin,
                      color: '#333'
-                 });
+                  });
             }
         });
 
@@ -635,7 +638,7 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
                              </div>
                              <div className="flex gap-4">
                                  <div className="w-20">
-                                     <label className="text-white/40 text-[10px] uppercase font-bold mb-1 block">Pomos</label>
+                                     <label className="text-white/40 text-[10px] uppercase font-bold mb-1 block">{pomoUnitLabel}</label>
                                      <input type="number" min="1" max="99" value={newTaskEst} onChange={e => setNewTaskEst(Number(e.target.value))} className="w-full bg-black/20 border border-white/10 rounded-xl px-2 py-2 text-white text-sm text-center outline-none focus:border-white/30" />
                                  </div>
                               </div>

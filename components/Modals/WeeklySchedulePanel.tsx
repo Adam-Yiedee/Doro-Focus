@@ -3,6 +3,7 @@ import { useTimer } from '../../context/TimerContext';
 import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { getIcon } from '../../utils/icons';
+import { getTimerPomoUnitLabel } from '../../utils/pomodoroAccounting';
 import TaskCategoryPicker from '../TaskCategoryPicker';
 
 const clampEstimate = (value: number) => {
@@ -68,7 +69,7 @@ const getPredictedPomos = (task: Task) => {
   if (task.checked) return 0;
   return Math.max(1, task.estimated - task.completed);
 };
-const formatPomoLabel = (count: number) => `${count} POMO${count === 1 ? '' : 'S'}`;
+const formatPomoLabel = (count: number, unitLabel: string) => `${count} ${unitLabel.toUpperCase()}`;
 type DragInsertPosition = 'before' | 'after';
 const DRAG_DEAD_ZONE_MIN_PX = 14;
 const DRAG_DEAD_ZONE_RATIO = 0.34;
@@ -140,6 +141,8 @@ const ScheduleTaskCard: React.FC<{
   isDropAnimating?: boolean;
   isEntering?: boolean;
   registerCardRef?: (taskId: number, node: HTMLDivElement | null) => void;
+  pomoUnitLabel: string;
+  pluralPomoUnitLabel: string;
 }> = ({
   task,
   categories,
@@ -154,6 +157,8 @@ const ScheduleTaskCard: React.FC<{
   isDropAnimating = false,
   isEntering = false,
   registerCardRef,
+  pomoUnitLabel,
+  pluralPomoUnitLabel,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
@@ -375,7 +380,7 @@ const ScheduleTaskCard: React.FC<{
         )}
         <div className={`schedule-task-title text-[16px] leading-tight font-bold truncate ${isCompleted ? 'text-white/45 line-through decoration-white/45 decoration-2' : 'text-white'}`}>{task.name}</div>
         <div className={`schedule-task-meta mt-1 text-[9px] uppercase tracking-[0.1em] font-sans font-medium ${isCompleted ? 'text-white/30' : 'text-white/45'}`}>
-          {isCompleted ? 'Completed' : formatPomoLabel(predictedPomos)}
+          {isCompleted ? 'Completed' : formatPomoLabel(predictedPomos, predictedPomos === 1 ? pomoUnitLabel : pluralPomoUnitLabel)}
         </div>
       </div>
       {!isCompleted && (
@@ -414,6 +419,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     setShowCompletedTasks,
   } = useTimer();
   const isLightTheme = settings.themeMode !== 'dark';
+  const pomoUnitLabel = getTimerPomoUnitLabel(settings, false);
+  const pluralPomoUnitLabel = getTimerPomoUnitLabel(settings);
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
   const [hoveredTaskTarget, setHoveredTaskTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [dropAnimatedTaskId, setDropAnimatedTaskId] = useState<number | null>(null);
@@ -1316,7 +1323,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold">Unscheduled</div>
                   <div className="flex items-center gap-2">
-                    <div className="text-[11px] text-white/70 font-sans font-medium tracking-[0.06em]">{formatPomoLabel(unscheduledPomos)}</div>
+                    <div className="text-[11px] text-white/70 font-sans font-medium tracking-[0.06em]">{formatPomoLabel(unscheduledPomos, unscheduledPomos === 1 ? pomoUnitLabel : pluralPomoUnitLabel)}</div>
                     <button
                       type="button"
                       onClick={() => setShowUnscheduled(prev => !prev)}
@@ -1352,6 +1359,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         isDropAnimating={dropAnimatedTaskId === task.id}
                         isEntering={enteringTaskIds.includes(task.id)}
                         registerCardRef={registerCardRef}
+                        pomoUnitLabel={pomoUnitLabel}
+                        pluralPomoUnitLabel={pluralPomoUnitLabel}
                         onDragStart={handleCardDragStart}
                         onDragHover={handleCardDragHover}
                         onDragEnd={clearDragState}
@@ -1388,7 +1397,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                         </div>
                         <div className="min-w-0">
                           <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold truncate">{day.monthLabel}</div>
-                          <div className="text-xs text-white/75 font-sans font-medium tracking-[0.06em] truncate">{formatPomoLabel(dayPredictedPomos)}</div>
+                          <div className="text-xs text-white/75 font-sans font-medium tracking-[0.06em] truncate">{formatPomoLabel(dayPredictedPomos, dayPredictedPomos === 1 ? pomoUnitLabel : pluralPomoUnitLabel)}</div>
                         </div>
                       </div>
                       <button
@@ -1414,6 +1423,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                           isDropAnimating={dropAnimatedTaskId === task.id}
                           isEntering={enteringTaskIds.includes(task.id)}
                           registerCardRef={registerCardRef}
+                          pomoUnitLabel={pomoUnitLabel}
+                          pluralPomoUnitLabel={pluralPomoUnitLabel}
                           onDragStart={handleCardDragStart}
                           onDragHover={handleCardDragHover}
                           onDragEnd={clearDragState}

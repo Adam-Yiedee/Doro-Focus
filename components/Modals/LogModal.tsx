@@ -1,15 +1,23 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, Category, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerSettings, User } from '../../types';
+import { AlarmSound, Category, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
 import { CATEGORY_ICON_OPTIONS, getIcon } from '../../utils/icons';
 import { computeAccountInsights } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
+import { getActiveCategories } from '../../utils/categoryVisibility';
 import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
 import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
+import {
+  formatPomodoroCount,
+  getPomodoroEquivalentWeightForReason,
+  MINI_POMODORO_COMPLETE_REASON,
+  POMODORO_COMPLETE_REASON,
+} from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm } from '../../utils/sound';
+import { TIMER_PRESETS, getMatchingTimerPreset } from '../../utils/timerRuntime';
 
 interface LogModalProps {
   isOpen: boolean;
@@ -68,6 +76,11 @@ const FOCUS_SOUND_OPTIONS: Array<{ label: string; value: FocusSound }> = [
   { label: 'Brown Deep', value: 'brown-deep' },
   { label: 'Brown Warm', value: 'brown-warm' },
   { label: 'Green Calm', value: 'green-calm' },
+];
+
+const TIMER_PRESET_OPTIONS: Array<{ label: string; value: Exclude<TimerPreset, 'custom'>; detail: string }> = [
+  { label: 'Classic', value: 'classic', detail: '25 / 5 / 15' },
+  { label: 'Mini-Pomos', value: 'compact', detail: '15 / 3 / 9' },
 ];
 
 const MAX_VALID_DATE_MS = 8.64e15;
@@ -319,7 +332,7 @@ const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
     ...(rawStats || {}),
     totalFocusHours: Number.isFinite(safeTotalFocusHours) && safeTotalFocusHours > 0 ? safeTotalFocusHours : 0,
     totalSessions: Math.max(0, Math.floor(Number(rawStats?.totalSessions || 0))),
-    totalPomos: Math.max(0, Math.floor(Number(rawStats?.totalPomos || 0))),
+    totalPomos: Math.max(0, Number.isFinite(Number(rawStats?.totalPomos || 0)) ? Number(rawStats?.totalPomos || 0) : 0),
     activeDays: Math.max(0, Math.floor(Number(rawStats?.activeDays || 0))),
     currentStreak: Math.max(0, Math.floor(Number(rawStats?.currentStreak || 0))),
     bestStreak: Math.max(0, Math.floor(Number(rawStats?.bestStreak || 0))),
@@ -401,7 +414,11 @@ const getLogDisplayReason = (entry: LogEntry) => {
   if (!reason) return '';
 
   const normalized = reason.toLowerCase();
-  if (normalized === 'pomodoro complete' || normalized === 'session end') return '';
+  if (
+    normalized === POMODORO_COMPLETE_REASON.toLowerCase()
+    || normalized === MINI_POMODORO_COMPLETE_REASON.toLowerCase()
+    || normalized === 'session end'
+  ) return '';
   if (entry.type === 'break' && normalized === 'recovery time') return '';
   if (entry.type === 'allpause' && normalized === 'paused session') return '';
   if (isGraceLike(entry) && (normalized === 'grace continuation' || normalized.startsWith('grace period'))) return '';
@@ -437,7 +454,23 @@ const getActivityLogTaskName = (entry: LogEntry) => (
 );
 
 const getActivityLogPrimaryLabel = (entry: ActivityLogDisplayEntry) => {
-  if (entry.mode === 'focus') return `Switched to ${entry.taskName || 'Focus'}`;
+  if (entry.mode === 'focus') {
+    const miniPomoCount = entry.rawEntries.filter(
+      (rawEntry) => getPomodoroEquivalentWeightForReason(rawEntry.reason) === 0.5,
+    ).length;
+    if (miniPomoCount > 0) {
+      return miniPomoCount === 1 ? 'Completed Mini-Pomo' : `Completed ${miniPomoCount} Mini-Pomos`;
+    }
+
+    const pomoCount = entry.rawEntries.filter(
+      (rawEntry) => getPomodoroEquivalentWeightForReason(rawEntry.reason) === 1,
+    ).length;
+    if (pomoCount > 0) {
+      return pomoCount === 1 ? 'Completed Pomo' : `Completed ${pomoCount} Pomos`;
+    }
+
+    return `Switched to ${entry.taskName || 'Focus'}`;
+  }
   if (entry.mode === 'break') return 'Switched to Break';
   if (entry.mode === 'pause') return 'Paused timer';
   return 'Used grace time';
@@ -609,19 +642,24 @@ const ToggleRow: React.FC<{
   checked: boolean;
   onToggle: () => void;
   disabled?: boolean;
-}> = ({ label, description, checked, onToggle, disabled = false }) => {
+  tone?: 'default' | 'quiet';
+}> = ({ label, description, checked, onToggle, disabled = false, tone = 'default' }) => {
+  const surfaceClass = disabled
+    ? 'cursor-not-allowed opacity-60'
+    : tone === 'quiet'
+      ? checked
+        ? 'border-white/12 bg-white/[0.055] text-white/90 hover:border-white/14 hover:bg-white/[0.075]'
+        : 'border-white/8 bg-white/[0.03] text-white/72 hover:border-white/10 hover:bg-white/[0.055] hover:text-white/88'
+      : checked
+        ? 'border-white/14 bg-white/[0.065] text-white hover:bg-white/[0.08]'
+        : 'border-white/8 bg-white/[0.025] text-white/72 hover:border-white/12 hover:bg-white/[0.05] hover:text-white/88';
+
   return (
     <button
       type="button"
       onClick={onToggle}
       disabled={disabled}
-      className={`settings-option-btn group w-full flex items-center justify-between gap-4 rounded-[1rem] border px-4 py-3 text-left transition-[background-color,border-color,transform,color] duration-200 ${
-        disabled
-          ? 'cursor-not-allowed opacity-60'
-          : checked
-            ? 'border-white/14 bg-white/[0.065] text-white hover:bg-white/[0.08]'
-            : 'border-white/8 bg-white/[0.025] text-white/72 hover:border-white/12 hover:bg-white/[0.05] hover:text-white/88'
-      }`}
+      className={`settings-option-btn group w-full flex items-center justify-between gap-4 rounded-[1rem] border px-4 py-3 text-left outline-none transition-[background-color,border-color,transform,color] duration-200 focus-visible:ring-2 focus-visible:ring-white/14 ${surfaceClass}`}
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold tracking-tight">{label}</div>
@@ -653,7 +691,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     categories,
     addCategory,
     updateCategory,
-    deleteCategory,
+    archiveCategory,
     moveCategory,
     user,
     login,
@@ -709,10 +747,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const categorySettingsSectionRef = useRef<HTMLDivElement | null>(null);
   const settingsTabListRef = useRef<HTMLDivElement | null>(null);
   const settingsTabButtonRefsRef = useRef(new Map<TabButton, HTMLButtonElement>());
   const settingsPanelTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCategoryCommitRef = useRef<(() => void) | null>(null);
+  const pendingCategorySectionScrollRef = useRef(false);
   const [settingsTabIndicatorStyle, setSettingsTabIndicatorStyle] = useState({ left: 0, width: 0, opacity: 0 });
 
   const [showAddCategory, setShowAddCategory] = useState(false);
@@ -746,8 +786,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeCategories = useMemo(() => (
     Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
   ), [categories]);
-  const safeCategoryIds = useMemo(() => safeCategories.map((category) => category.id), [safeCategories]);
-  const safeCategoryOrderKey = useMemo(() => safeCategoryIds.join('|'), [safeCategoryIds]);
+  const safeActiveCategories = useMemo(() => getActiveCategories(safeCategories), [safeCategories]);
+  const safeActiveCategoryIds = useMemo(() => safeActiveCategories.map((category) => category.id), [safeActiveCategories]);
+  const safeCategoryOrderKey = useMemo(() => safeActiveCategoryIds.join('|'), [safeActiveCategoryIds]);
   const activeCategoryPreviewLabel = useMemo(() => {
     const trimmed = newCategoryName.trim();
     if (trimmed) return trimmed;
@@ -985,6 +1026,21 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = 0;
   }, [clearSettingsPanelTransitionTimeout]);
 
+  const scrollCategorySettingsSectionIntoView = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const body = settingsBodyRef.current;
+    const section = categorySettingsSectionRef.current;
+    if (!body || !section) return false;
+
+    const bodyRect = body.getBoundingClientRect();
+    const sectionRect = section.getBoundingClientRect();
+    const nextTop = body.scrollTop + sectionRect.top - bodyRect.top - 18;
+    body.scrollTo({
+      top: Math.max(0, nextTop),
+      behavior,
+    });
+    return true;
+  }, []);
+
   const clearCategoryHoldTimer = useCallback(() => {
     if (categoryHoldTimerRef.current) {
       clearTimeout(categoryHoldTimerRef.current);
@@ -1016,14 +1072,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const snapshotCategoryRects = useCallback(() => {
     const tops = new Map<number, number>();
     const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
-    safeCategoryIds.forEach((categoryId) => {
+    safeActiveCategoryIds.forEach((categoryId) => {
       const node = categoryCardRefsRef.current.get(categoryId);
       if (!node) return;
       const rect = node.getBoundingClientRect();
       tops.set(categoryId, rect.top + windowScrollY);
     });
     previousCategoryTopsRef.current = tops;
-  }, [safeCategoryIds]);
+  }, [safeActiveCategoryIds]);
 
   const clearCategoryDragState = useCallback(() => {
     clearCategoryHoldTimer();
@@ -1055,7 +1111,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         : { categoryId: targetCategoryId, position }
     ));
 
-    const categoryIdsWithoutDragged = safeCategoryIds.filter((id) => id !== draggingCategoryId);
+    const categoryIdsWithoutDragged = safeActiveCategoryIds.filter((id) => id !== draggingCategoryId);
     const targetIndex = categoryIdsWithoutDragged.indexOf(targetCategoryId);
     if (targetIndex === -1) return;
 
@@ -1070,7 +1126,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     lastCategoryHoverMoveKeyRef.current = moveKey;
     lastCategoryReorderAtRef.current = now;
     moveCategory(draggingCategoryId, toId);
-  }, [draggingCategoryId, moveCategory, safeCategoryIds]);
+  }, [draggingCategoryId, moveCategory, safeActiveCategoryIds]);
 
   useEffect(() => {
     return () => {
@@ -1126,6 +1182,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setSettingsPanelTransitionPhase('idle');
       setSettingsPanelTransitionDirection('forward');
       clearCategoryDragState();
+      pendingCategorySectionScrollRef.current = false;
     }
   }, [clearCategoryDragState, clearSettingsPanelTransitionTimeout, isOpen]);
 
@@ -1136,15 +1193,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   }, [clearCategoryDragState, displayedTab]);
 
   useEffect(() => {
-    if (draggingCategoryId && !safeCategoryIds.includes(draggingCategoryId)) {
+    if (draggingCategoryId && !safeActiveCategoryIds.includes(draggingCategoryId)) {
       clearCategoryDragState();
     }
-  }, [clearCategoryDragState, draggingCategoryId, safeCategoryIds]);
+  }, [clearCategoryDragState, draggingCategoryId, safeActiveCategoryIds]);
 
   useLayoutEffect(() => {
     const nextTops = new Map<number, number>();
     const windowScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
-    safeCategoryIds.forEach((categoryId) => {
+    safeActiveCategoryIds.forEach((categoryId) => {
       const node = categoryCardRefsRef.current.get(categoryId);
       if (!node) return;
       const rect = node.getBoundingClientRect();
@@ -1156,7 +1213,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       return;
     }
 
-    if (safeCategoryIds.length > CATEGORY_FLIP_MAX_ITEMS) {
+    if (safeActiveCategoryIds.length > CATEGORY_FLIP_MAX_ITEMS) {
       previousCategoryTopsRef.current = nextTops;
       return;
     }
@@ -1219,7 +1276,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     });
 
     previousCategoryTopsRef.current = nextTops;
-  }, [draggingCategoryId, safeCategoryIds, safeCategoryOrderKey]);
+  }, [draggingCategoryId, safeActiveCategoryIds, safeCategoryOrderKey]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1263,7 +1320,31 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   }, [isOpen, safeUser]);
 
   const updateTimerSettings = (patch: Partial<TimerSettings>) => {
-    updateSettings({ ...settings, ...patch });
+    const nextSettings = { ...settings, ...patch };
+    const timerDurationsChanged = (
+      'workDuration' in patch
+      || 'shortBreakDuration' in patch
+      || 'longBreakDuration' in patch
+      || 'longBreakInterval' in patch
+    );
+
+    if (timerDurationsChanged && !('timerPreset' in patch)) {
+      nextSettings.timerPreset = getMatchingTimerPreset(nextSettings);
+    }
+
+    if (nextSettings.timerPreset !== 'compact') {
+      nextSettings.twoInARowMode = false;
+    }
+
+    updateSettings(nextSettings);
+  };
+
+  const setTimerPreset = (timerPreset: Exclude<TimerPreset, 'custom'>) => {
+    updateTimerSettings({
+      timerPreset,
+      ...TIMER_PRESETS[timerPreset],
+      twoInARowMode: timerPreset === 'compact' ? settings.twoInARowMode : false,
+    });
   };
 
   const setDurationFromMinutes = (
@@ -1540,7 +1621,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
 
     const normalizedName = name.toLowerCase();
-    const duplicateCategory = safeCategories.find((category) => (
+    const duplicateCategory = safeActiveCategories.find((category) => (
       category.id !== editingCategoryId
       && category.name.trim().toLowerCase() === normalizedName
     ));
@@ -1563,9 +1644,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     });
   };
 
-  const handleDeleteCategory = (id: number) => {
+  const handleArchiveCategory = (id: number) => {
     pendingCategoryCommitRef.current = null;
-    deleteCategory(id);
+    clearCategoryDragState();
+    archiveCategory(id);
     if (editingCategoryId === id) {
       closeCategoryFormImmediately();
     }
@@ -1624,7 +1706,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       if (draggingCategoryId === null) return;
       event.preventDefault();
 
-      const targetCategory = safeCategories.find((category) => {
+      const targetCategory = safeActiveCategories.find((category) => {
         if (category.id === draggingCategoryId) return false;
         const node = categoryCardRefsRef.current.get(category.id);
         if (!node) return false;
@@ -1656,7 +1738,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
     };
-  }, [clearCategoryHoldTimer, draggingCategoryId, handleCategoryDragHover, releaseCategoryPointer, safeCategories]);
+  }, [clearCategoryHoldTimer, draggingCategoryId, handleCategoryDragHover, releaseCategoryPointer, safeActiveCategories]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -1681,10 +1763,36 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     if (!isOpen || pendingMenuAction !== 'new-category') return;
+    pendingCategorySectionScrollRef.current = true;
     syncDisplayedTabImmediately('settings');
     openNewCategoryForm();
     clearPendingMenuAction();
   }, [clearPendingMenuAction, isOpen, openNewCategoryForm, pendingMenuAction, syncDisplayedTabImmediately]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      displayedTab !== 'settings' ||
+      !showAddCategory ||
+      !pendingCategorySectionScrollRef.current ||
+      typeof window === 'undefined'
+    ) {
+      return;
+    }
+
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        pendingCategorySectionScrollRef.current = false;
+        scrollCategorySettingsSectionIntoView('smooth');
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [displayedTab, isOpen, scrollCategorySettingsSectionIntoView, showAddCategory]);
 
   if (!isOpen) return null;
 
@@ -1758,8 +1866,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
                   <div className="divide-y divide-white/8">
                     {entries.map((entry, index) => {
+                      const hasMiniPomoCompletion = entry.mode === 'focus' && entry.rawEntries.some(
+                        (rawEntry) => getPomodoroEquivalentWeightForReason(rawEntry.reason) === 0.5,
+                      );
                       const modeLabel = entry.mode === 'focus'
-                        ? 'Focus'
+                        ? (hasMiniPomoCompletion ? 'Mini-Pomo' : 'Focus')
                         : entry.mode === 'break'
                           ? 'Break'
                           : entry.mode === 'pause'
@@ -1853,7 +1964,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       valueClassName?: string;
     }> = [
       { label: 'Focus Time', value: focusHoursLabel, color: accountPrimaryColor },
-      { label: 'Pomodoros', value: `${stats.totalPomos}`, color: PRESET_COLORS[2] },
+      { label: 'Pomodoros', value: formatPomodoroCount(stats.totalPomos), color: PRESET_COLORS[2] },
       { label: 'Sessions', value: `${stats.totalSessions}`, color: PRESET_COLORS[1] },
       {
         label: 'Current Streak',
@@ -1878,7 +1989,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       valueClassName?: string;
     }> = [
       { label: 'Focus Today', value: insights.today.focusMinutes > 0 ? formatCompactMinutes(insights.today.focusMinutes) : '0m', color: accountPrimaryColor },
-      { label: 'Pomodoros', value: `${insights.today.pomodoros}`, color: PRESET_COLORS[2] },
+      { label: 'Pomodoros', value: formatPomodoroCount(insights.today.pomodoros), color: PRESET_COLORS[2] },
       { label: 'Sessions', value: `${insights.today.sessions}`, color: PRESET_COLORS[1] },
       {
         label: "Today's Top Category",
@@ -2543,52 +2654,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       : focusSoundVolumePercent >= 100
         ? '100%'
         : `calc(${focusSoundVolumePercent}% + 0.5rem)`;
+    const activeTimerPreset = settings.timerPreset === 'classic' || settings.timerPreset === 'compact'
+      ? settings.timerPreset
+      : 'custom';
+    const isCompactTimerPreset = activeTimerPreset === 'compact';
 
     return (
       <div className="p-4 pt-16 pb-10 md:p-8 space-y-8 max-w-2xl mx-auto">
-        <div className="space-y-4">
-          <h3 className="text-lg font-bold text-white tracking-tight">Timer Settings</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Work (min)</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={Math.round(settings.workDuration / 60)}
-                onChange={event => setDurationFromMinutes('workDuration', event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Short Break</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={Math.round(settings.shortBreakDuration / 60)}
-                onChange={event => setDurationFromMinutes('shortBreakDuration', event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={Math.round(settings.longBreakDuration / 60)}
-                onChange={event => setDurationFromMinutes('longBreakDuration', event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break Every</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={settings.longBreakInterval}
-                onChange={event => setLongBreakInterval(event.target.value)}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-3 pt-2 border-t border-white/10">
+        <div className="space-y-3">
           <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Alarm Sound</div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             {ALARM_OPTIONS.map(option => (
@@ -2675,6 +2748,84 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         <div className="space-y-4 pt-2 border-t border-white/10">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Timer Settings</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Work (min)</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={Math.round(settings.workDuration / 60)}
+                onChange={event => setDurationFromMinutes('workDuration', event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Short Break</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={Math.round(settings.shortBreakDuration / 60)}
+                onChange={event => setDurationFromMinutes('shortBreakDuration', event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={Math.round(settings.longBreakDuration / 60)}
+                onChange={event => setDurationFromMinutes('longBreakDuration', event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break Every</label>
+              <input
+                type="number"
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                value={settings.longBreakInterval}
+                onChange={event => setLongBreakInterval(event.target.value)}
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Timer Mode</div>
+              {activeTimerPreset === 'custom' && (
+                <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/45">
+                  Custom
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {TIMER_PRESET_OPTIONS.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setTimerPreset(option.value)}
+                  className={`settings-option-btn rounded-xl border p-3 text-left transition-all ${
+                    activeTimerPreset === option.value
+                      ? 'bg-white/20 border-white/30 text-white'
+                      : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                  }`}
+                >
+                  <div className="text-[10px] uppercase tracking-[0.14em] font-bold">{option.label}</div>
+                  <div className="mt-1 text-xs font-semibold tabular-nums text-white/55">{option.detail}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          {isCompactTimerPreset && (
+            <ToggleRow
+              label="Two-In-A-Row"
+              description="Auto-starts the second focus in each pair."
+              checked={settings.twoInARowMode}
+              onToggle={() => updateTimerSettings({ twoInARowMode: !settings.twoInARowMode })}
+              tone="quiet"
+            />
+          )}
+        </div>
+
+        <div ref={categorySettingsSectionRef} className="space-y-4 pt-2 border-t border-white/10">
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-bold text-white">Categories</div>
@@ -2730,11 +2881,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                       <div className="mt-1 truncate text-base font-bold tracking-tight text-white">
                         {activeCategoryPreviewLabel}
                       </div>
-                      <div className="mt-1 text-[11px] text-white/55">
-                        {editingCategoryId !== null
-                          ? 'Update the category name, color, or icon.'
-                          : 'Add a category for tasks, filters, and account stats.'}
-                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -2757,8 +2903,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  <div>
+                <div className="flex flex-wrap items-start gap-4">
+                  <div className="min-w-[14rem] flex-1">
                     <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Name</label>
                     <input
                       type="text"
@@ -2772,7 +2918,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     />
                   </div>
 
-                  <div>
+                  <div className="shrink-0">
                     <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Color</label>
                     <div className="flex gap-2 flex-wrap">
                       {PRESET_COLORS.map(color => (
@@ -2800,7 +2946,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
                 <div>
                   <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Icon</label>
-                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                  <div className="grid grid-cols-6 sm:grid-cols-8 gap-2">
                     {CATEGORY_ICON_OPTIONS.map(({ key, label }) => (
                       <button
                         key={key}
@@ -2811,18 +2957,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                         }}
                         title={label}
                         aria-label={label}
-                        className={`rounded-2xl border p-2.5 text-white transition-all ${
+                        className={`flex h-11 items-center justify-center rounded-2xl border text-white transition-all ${
                           newCategoryIcon === key
                             ? 'border-white/32 bg-white/18 shadow-[0_14px_26px_-20px_rgba(255,255,255,0.42)]'
                             : 'border-white/8 bg-white/[0.04] opacity-65 hover:bg-white/[0.1] hover:opacity-100 hover:-translate-y-[1px]'
                         }`}
                       >
-                        <div className="flex flex-col items-center justify-center gap-1.5">
-                          {getIcon(key, { size: 16 })}
-                          <span className="text-[9px] font-semibold tracking-[0.08em] uppercase leading-none text-white/70">
-                            {label}
-                          </span>
-                        </div>
+                        {getIcon(key, { size: 18 })}
                       </button>
                     ))}
                   </div>
@@ -2856,10 +2997,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           )}
 
           <div className="space-y-2">
-            {safeCategories.length === 0 && (
-              <div className="text-center text-white/35 text-xs italic py-4">No categories created.</div>
+            {safeActiveCategories.length === 0 && (
+              <div className="text-center text-white/35 text-xs italic py-4">No active categories.</div>
             )}
-            {safeCategories.map(category => (
+            {safeActiveCategories.map(category => (
               <div
                 key={category.id}
                 ref={(node) => registerCategoryRef(category.id, node)}
@@ -2910,13 +3051,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   <button
                     type="button"
                     data-category-action="true"
-                    onClick={() => handleDeleteCategory(category.id)}
-                    className="text-white/30 hover:text-red-400 p-1 transition-colors"
-                    aria-label={`Delete ${category.name}`}
+                    onClick={() => handleArchiveCategory(category.id)}
+                    className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/45 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+                    aria-label={`Archive ${category.name}`}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
+                    Archive
                   </button>
                 </div>
               </div>

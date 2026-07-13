@@ -69,8 +69,16 @@ const clampFocusSoundVolume = (value: number) => {
   return Math.max(0, Math.min(100, value));
 };
 
+const FOCUS_SOUND_MAX_GAIN_MULTIPLIER = 2.35;
+
+const getFocusSoundVolumeScale = (volume: number) => {
+  const normalized = clampFocusSoundVolume(volume) / 100;
+  if (normalized <= 0) return 0;
+  return normalized * (1 + ((FOCUS_SOUND_MAX_GAIN_MULTIPLIER - 1) * normalized * normalized));
+};
+
 const getFocusSoundGain = (preset: FocusSoundPreset, volume: number) => (
-  Math.max(0, preset.gain * (clampFocusSoundVolume(volume) / 100))
+  Math.max(0, preset.gain * getFocusSoundVolumeScale(volume))
 );
 
 const createNoiseBuffer = (ctx: AudioContext, color: NoiseColor, durationSeconds = 2) => {

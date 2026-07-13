@@ -170,6 +170,58 @@ describe('account store blob compatibility', () => {
     });
   });
 
+  it('counts two mini-pomodoros from work logs as one standard pomodoro', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:15:00.000Z',
+        duration: 900,
+        reason: 'Mini-Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'work',
+        start: '2026-03-12T09:18:00.000Z',
+        end: '2026-03-12T09:33:00.000Z',
+        duration: 900,
+        reason: 'Mini-Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'work',
+        start: '2026-03-12T09:36:00.000Z',
+        end: '2026-03-12T09:51:00.000Z',
+        duration: 900,
+        reason: 'Mini-Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'work',
+        start: '2026-03-12T09:54:00.000Z',
+        end: '2026-03-12T10:09:00.000Z',
+        duration: 900,
+        reason: 'Mini-Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+    ], []);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 1,
+      totalSessions: 0,
+      totalPomos: 2,
+      activeDays: 1,
+    });
+  });
+
   it('keeps older archived session days when newer synced logs exist on different dates', () => {
     const stats = calculateLifetimeStatsFromAccountData([
       {

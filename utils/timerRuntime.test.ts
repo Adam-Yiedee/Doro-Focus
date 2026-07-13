@@ -4,15 +4,20 @@ import {
   createRuntimeSnapshot,
   deriveRuntimeValues,
   detectRuntimeBoundaryCrossing,
+  getBreakBankBaseForWorkCompletion,
+  getMatchingTimerPreset,
   getCompletedPhaseDuration,
   getPomodoroCycleProgress,
+  getProjectedTaskFinishSeconds,
   resolveGraceBreakBank,
+  TIMER_PRESETS,
   getTimerStateFreshnessStamp,
   getGraceCompensation,
   getPauseCompensation,
   normalizeGraceWindow,
   resetPersistedTimerSessionState,
   shouldApplyIncomingRuntime,
+  shouldAutoStartTwoInARowFocus,
   shouldDiscardRestoredGrace,
 } from './timerRuntime';
 
@@ -425,6 +430,29 @@ describe('grace context normalization', () => {
 });
 
 describe('behavior-locked transition math', () => {
+  it('defines compact timers at the same break ratio as classic timers', () => {
+    expect(TIMER_PRESETS.compact).toEqual({
+      workDuration: 900,
+      shortBreakDuration: 180,
+      longBreakDuration: 540,
+      longBreakInterval: 4,
+    });
+    expect(TIMER_PRESETS.classic.workDuration / TIMER_PRESETS.classic.shortBreakDuration).toBe(5);
+    expect(TIMER_PRESETS.compact.workDuration / TIMER_PRESETS.compact.shortBreakDuration).toBe(5);
+    expect(TIMER_PRESETS.compact.longBreakDuration / TIMER_PRESETS.compact.shortBreakDuration).toBe(3);
+  });
+
+  it('detects classic, compact, and custom timer presets from duration settings', () => {
+    expect(getMatchingTimerPreset(TIMER_PRESETS.classic)).toBe('classic');
+    expect(getMatchingTimerPreset(TIMER_PRESETS.compact)).toBe('compact');
+    expect(getMatchingTimerPreset({
+      workDuration: 1200,
+      shortBreakDuration: 240,
+      longBreakDuration: 720,
+      longBreakInterval: 4,
+    })).toBe('custom');
+  });
+
   it('tracks how many pomodoros remain until the next long break', () => {
     expect(getPomodoroCycleProgress(0, 4)).toMatchObject({
       completedInCycle: 0,
@@ -470,6 +498,152 @@ describe('behavior-locked transition math', () => {
     expect(result.isLongBreak).toBe(true);
     expect(result.reward).toBe(900);
     expect(result.nextBreakTime).toBe(960);
+  });
+
+  it('uses the compact long-break reward after every four compact pomodoros', () => {
+    const result = computeWorkCompletion(3, 0, TIMER_PRESETS.compact);
+
+    expect(result.nextPomoCount).toBe(4);
+    expect(result.isLongBreak).toBe(true);
+    expect(result.reward).toBe(540);
+    expect(result.nextBreakTime).toBe(540);
+  });
+
+  it('projects classic task finish time with short breaks between remaining pomodoros', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 4,
+      pomodoroCount: 0,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: 0,
+      activeMode: 'work',
+      isIdle: true,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    })).toBe((4 * 25 + 3 * 5) * 60);
+  });
+
+  it('projects classic long breaks when the next completion crosses the long-break boundary', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 2,
+      pomodoroCount: 3,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: 0,
+      activeMode: 'work',
+      isIdle: true,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    })).toBe((25 + 15 + 25) * 60);
+  });
+
+  it('projects compact mini-pomos with compact short and long breaks', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 5,
+      pomodoroCount: 0,
+      workTime: TIMER_PRESETS.compact.workDuration,
+      breakTime: 0,
+      activeMode: 'work',
+      isIdle: true,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.compact, timerPreset: 'compact', twoInARowMode: false },
+    })).toBe((5 * 15 + 3 + 3 + 3 + 9) * 60);
+  });
+
+  it('uses the current partial work timer for the first remaining classic pomodoro', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 2,
+      pomodoroCount: 0,
+      workTime: 10 * 60,
+      breakTime: 0,
+      activeMode: 'work',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    })).toBe((10 + 5 + 25) * 60);
+  });
+
+  it('starts with the current break bank when the timer is already in break mode', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 2,
+      pomodoroCount: 1,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: 4 * 60,
+      activeMode: 'break',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    })).toBe((4 + 25 + 5 + 25) * 60);
+  });
+
+  it('projects compact two-in-a-row by banking skipped breaks until the pair break point', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 4,
+      pomodoroCount: 0,
+      workTime: TIMER_PRESETS.compact.workDuration,
+      breakTime: 0,
+      activeMode: 'work',
+      isIdle: true,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.compact, timerPreset: 'compact', twoInARowMode: true },
+    })).toBe((15 + 15 + 6 + 15 + 15) * 60);
+  });
+
+  it('keeps already banked compact two-in-a-row break time for the next pair break', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 2,
+      pomodoroCount: 1,
+      workTime: 10 * 60,
+      breakTime: 3 * 60,
+      activeMode: 'work',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.compact, timerPreset: 'compact', twoInARowMode: true },
+    })).toBe((10 + 6 + 15) * 60);
+  });
+
+  it('uses the running-work runtime break bank when completing an auto-started compact pair', () => {
+    const runtime = createRuntimeSnapshot({
+      sourceTabId: TAB_ID,
+      phase: 'running-work',
+      nowMs: BASE_NOW,
+      workTime: TIMER_PRESETS.compact.workDuration,
+      breakTime: TIMER_PRESETS.compact.shortBreakDuration,
+      allPauseTime: 0,
+      graceTotal: 0,
+    });
+    const baseBreakBank = getBreakBankBaseForWorkCompletion({
+      breakTime: 0,
+      runtimeSnapshot: runtime,
+      nowMs: BASE_NOW + 30_000,
+    });
+    const result = computeWorkCompletion(1, baseBreakBank, TIMER_PRESETS.compact);
+
+    expect(baseBreakBank).toBe(180);
+    expect(result.reward).toBe(180);
+    expect(result.nextBreakTime).toBe(360);
+  });
+
+  it('auto-starts only the first completed pomodoro in each compact two-in-a-row pair', () => {
+    const compactTwoInARow = { timerPreset: 'compact' as const, twoInARowMode: true };
+
+    expect(shouldAutoStartTwoInARowFocus(0, compactTwoInARow)).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(1, compactTwoInARow)).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(2, compactTwoInARow)).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(3, compactTwoInARow)).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(4, compactTwoInARow)).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(5, compactTwoInARow)).toBe(true);
+  });
+
+  it('keeps two-in-a-row disabled outside the compact preset', () => {
+    expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'classic', twoInARowMode: true })).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'compact', twoInARowMode: false })).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'custom', twoInARowMode: true })).toBe(false);
   });
 
   it('recovers the earned break bank from after-work grace when state is stale', () => {

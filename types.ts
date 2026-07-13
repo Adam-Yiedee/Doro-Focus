@@ -7,6 +7,7 @@ export interface Category {
   name: string;
   color: string;
   icon: string; // Icon key
+  archived?: boolean;
 }
 
 export interface Task {
@@ -42,12 +43,15 @@ export interface LogEntry {
 
 export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood' | 'marimba' | 'crystal' | 'blade' | 'cosmic' | 'ripple' | 'news';
 export type FocusSound = 'off' | 'white-soft' | 'white-bright' | 'pink-soft' | 'pink-air' | 'brown-deep' | 'brown-warm' | 'green-calm';
+export type TimerPreset = 'classic' | 'compact' | 'custom';
 
 export interface TimerSettings {
+  timerPreset: TimerPreset;
   workDuration: number;
   shortBreakDuration: number;
   longBreakDuration: number;
   longBreakInterval: number; // Pomodoros before a long break
+  twoInARowMode: boolean;
   disableBlur: boolean;
   alarmSound: AlarmSound;
   focusSound: FocusSound;
@@ -71,6 +75,7 @@ export interface SessionRecord {
         totalWorkMinutes: number;
         totalBreakMinutes: number;
         pomosCompleted: number;
+        miniPomosCompleted?: number;
         tasksCompleted: number;
         categoryStats?: Record<string, number>; // Category Name -> Minutes
         categoryDetails?: SessionCategoryStat[];

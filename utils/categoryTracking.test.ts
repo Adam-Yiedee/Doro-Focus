@@ -48,4 +48,22 @@ describe('categoryTracking', () => {
       icon: 'history',
     });
   });
+
+  it('still resolves archived category records for historical stats', () => {
+    const archivedCategories = [
+      { id: 2, name: 'Study', color: '#4FAE9B', icon: 'book', archived: true },
+    ];
+
+    expect(resolveLogEntryCategory({
+      categoryId: 2,
+      categoryName: 'Older Study',
+      categoryColor: '#9AA0AA',
+      categoryIcon: 'notebook',
+    }, archivedCategories)).toEqual({
+      category: archivedCategories[0],
+      name: 'Study',
+      color: '#4FAE9B',
+      icon: 'book',
+    });
+  });
 });

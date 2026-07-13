@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useTimer } from '../context/TimerContext';
+import { getSessionPomoDisplay } from '../utils/pomodoroAccounting';
 
 const SummaryView: React.FC = () => {
   const { showSummary, sessionStats, closeSummary } = useTimer();
@@ -12,6 +13,7 @@ const SummaryView: React.FC = () => {
     if (!Number.isFinite(minutes) || minutes <= 0) return '0';
     return `${Math.max(1, Math.round(minutes))}`;
   };
+  const pomoDisplay = getSessionPomoDisplay(sessionStats);
 
   return (
     <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden bg-black animate-fade-in">
@@ -46,8 +48,8 @@ const SummaryView: React.FC = () => {
                     <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Break Mins</span>
                 </div>
                 <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-6 flex min-h-[9rem] sm:min-h-[11rem] xl:aspect-square flex-col items-center justify-center gap-2">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{sessionStats.pomosCompleted}</span>
-                    <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Pomos</span>
+                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{pomoDisplay.value}</span>
+                    <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">{pomoDisplay.label}</span>
                 </div>
                 <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-6 flex min-h-[9rem] sm:min-h-[11rem] xl:aspect-square flex-col items-center justify-center gap-2">
                     <span className="text-4xl md:text-5xl font-mono font-bold text-white">{sessionStats.tasksCompleted}</span>

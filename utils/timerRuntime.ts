@@ -1,8 +1,53 @@
-import { TimerRuntimePhase, TimerRuntimeSnapshot, TimerSettings } from '../types';
+import { TimerMode, TimerPreset, TimerRuntimePhase, TimerRuntimeSnapshot, TimerSettings } from '../types';
 
 export const TIMER_RUNTIME_VERSION = 2 as const;
 export const LONG_GRACE_SESSION_TIMEOUT_SECONDS = 3 * 60 * 60;
 export const LONG_GRACE_SESSION_TIMEOUT_MS = LONG_GRACE_SESSION_TIMEOUT_SECONDS * 1000;
+
+export const TIMER_PRESETS: Record<Exclude<TimerPreset, 'custom'>, Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval'>> = {
+  classic: {
+    workDuration: 25 * 60,
+    shortBreakDuration: 5 * 60,
+    longBreakDuration: 15 * 60,
+    longBreakInterval: 4,
+  },
+  compact: {
+    workDuration: 15 * 60,
+    shortBreakDuration: 3 * 60,
+    longBreakDuration: 9 * 60,
+    longBreakInterval: 4,
+  },
+};
+
+export const getMatchingTimerPreset = (
+  settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval'>,
+): TimerPreset => {
+  const entries = Object.entries(TIMER_PRESETS) as Array<[Exclude<TimerPreset, 'custom'>, typeof TIMER_PRESETS.classic]>;
+  const match = entries.find(([, preset]) => (
+    settings.workDuration === preset.workDuration
+    && settings.shortBreakDuration === preset.shortBreakDuration
+    && settings.longBreakDuration === preset.longBreakDuration
+    && settings.longBreakInterval === preset.longBreakInterval
+  ));
+
+  return match ? match[0] : 'custom';
+};
+
+export const shouldAutoStartTwoInARowFocus = (
+  completedPomoCount: number,
+  settings: Pick<TimerSettings, 'timerPreset' | 'twoInARowMode'>,
+) => {
+  const safeCompletedPomoCount = Number.isFinite(completedPomoCount)
+    ? Math.max(0, Math.floor(completedPomoCount))
+    : 0;
+
+  return (
+    settings.timerPreset === 'compact'
+    && settings.twoInARowMode
+    && safeCompletedPomoCount > 0
+    && safeCompletedPomoCount % 2 === 1
+  );
+};
 
 export interface RuntimeDerivedValues {
   workTime: number;
@@ -363,6 +408,25 @@ export interface PomodoroCycleProgress {
   nextPomoTriggersLongBreak: boolean;
 }
 
+export interface TaskFinishProjectionInput {
+  remainingPomodoros: number;
+  pomodoroCount: number;
+  workTime: number;
+  breakTime: number;
+  activeMode: TimerMode;
+  isIdle: boolean;
+  graceOpen: boolean;
+  graceContext: 'afterWork' | 'afterBreak' | null;
+  settings: Pick<TimerSettings,
+    | 'workDuration'
+    | 'shortBreakDuration'
+    | 'longBreakDuration'
+    | 'longBreakInterval'
+    | 'timerPreset'
+    | 'twoInARowMode'
+  >;
+}
+
 export const getPomodoroCycleProgress = (
   pomodoroCount: number,
   longBreakInterval: number,
@@ -384,6 +448,10 @@ export const getPomodoroCycleProgress = (
   };
 };
 
+const getSafePositiveSeconds = (value: number, fallback = 0) => (
+  Number.isFinite(value) ? Math.max(0, value) : fallback
+);
+
 export const computeWorkCompletion = (
   pomodoroCount: number,
   breakTime: number,
@@ -399,6 +467,88 @@ export const computeWorkCompletion = (
     isLongBreak,
     nextBreakTime: breakTime + reward,
   };
+};
+
+export const getProjectedTaskFinishSeconds = ({
+  remainingPomodoros,
+  pomodoroCount,
+  workTime,
+  breakTime,
+  activeMode,
+  isIdle,
+  graceOpen,
+  graceContext,
+  settings,
+}: TaskFinishProjectionInput) => {
+  const remaining = Number.isFinite(remainingPomodoros)
+    ? Math.max(0, Math.floor(remainingPomodoros))
+    : 0;
+  if (remaining <= 0) return 0;
+
+  const safeSettings = {
+    ...settings,
+    workDuration: getSafePositiveSeconds(settings.workDuration),
+    shortBreakDuration: getSafePositiveSeconds(settings.shortBreakDuration),
+    longBreakDuration: getSafePositiveSeconds(settings.longBreakDuration),
+    longBreakInterval: Number.isFinite(settings.longBreakInterval) && settings.longBreakInterval > 0
+      ? Math.max(1, Math.floor(settings.longBreakInterval))
+      : 4,
+  };
+  let projectedSeconds = 0;
+  let virtualPomoCount = Number.isFinite(pomodoroCount) ? Math.max(0, Math.floor(pomodoroCount)) : 0;
+  let breakBank = getSafePositiveSeconds(breakTime);
+
+  const shouldUseCurrentBreakFirst = (
+    breakBank > 0
+    && (
+      graceContext === 'afterWork'
+      || (!graceOpen && !isIdle && activeMode === 'break')
+    )
+  );
+  if (shouldUseCurrentBreakFirst) {
+    projectedSeconds += breakBank;
+    breakBank = 0;
+  }
+
+  const shouldUseCurrentWorkFirst = (
+    !isIdle
+    && activeMode === 'work'
+    && !(graceOpen && graceContext === 'afterWork')
+  );
+
+  for (let i = 0; i < remaining; i += 1) {
+    projectedSeconds += i === 0 && shouldUseCurrentWorkFirst
+      ? getSafePositiveSeconds(workTime, safeSettings.workDuration)
+      : safeSettings.workDuration;
+
+    const completion = computeWorkCompletion(virtualPomoCount, breakBank, safeSettings);
+    virtualPomoCount = completion.nextPomoCount;
+    breakBank = getSafePositiveSeconds(completion.nextBreakTime);
+
+    const hasMoreWork = i < remaining - 1;
+    if (hasMoreWork && !shouldAutoStartTwoInARowFocus(virtualPomoCount, safeSettings)) {
+      projectedSeconds += breakBank;
+      breakBank = 0;
+    }
+  }
+
+  return projectedSeconds;
+};
+
+export const getBreakBankBaseForWorkCompletion = ({
+  breakTime,
+  runtimeSnapshot,
+  nowMs,
+}: {
+  breakTime: number;
+  runtimeSnapshot?: TimerRuntimeSnapshot | null;
+  nowMs: number;
+}) => {
+  const fallbackBreakTime = Number.isFinite(breakTime) ? breakTime : 0;
+  if (!runtimeSnapshot || runtimeSnapshot.phase !== 'running-work') return fallbackBreakTime;
+
+  const derivedBreakTime = deriveRuntimeValues(runtimeSnapshot, nowMs).breakTime;
+  return Number.isFinite(derivedBreakTime) ? derivedBreakTime : fallbackBreakTime;
 };
 
 export const resolveGraceBreakBank = ({

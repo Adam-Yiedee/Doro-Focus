@@ -51,6 +51,62 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 25 });
   });
 
+  it('counts two mini-pomodoros as one standard pomodoro from logs', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:15:00.000Z',
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-03-12T09:18:00.000Z',
+        end: '2026-03-12T09:33:00.000Z',
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-03-12T09:36:00.000Z',
+        end: '2026-03-12T09:51:00.000Z',
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-03-12T09:54:00.000Z',
+        end: '2026-03-12T10:09:00.000Z',
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 1,
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(60 / 60, 5);
+    expect(stats.totalPomos).toBe(2);
+    expect(stats.categoryBreakdown).toEqual({ Writing: 60 });
+  });
+
+  it('keeps archived mini-pomodoro sessions as standard-pomodoro equivalents', () => {
+    const sessions: SessionRecord[] = [
+      {
+        id: 'mini-session-1',
+        startTime: '2026-03-10T08:00:00.000Z',
+        endTime: '2026-03-10T09:12:00.000Z',
+        stats: {
+          totalWorkMinutes: 60,
+          totalBreakMinutes: 12,
+          pomosCompleted: 2,
+          miniPomosCompleted: 4,
+          tasksCompleted: 0,
+          categoryStats: { Study: 60 },
+        },
+      },
+    ];
+
+    const stats = calculateLifetimeStatsFromData(sessions, [], categories);
+
+    expect(stats.totalPomos).toBe(2);
+    expect(stats.totalSessions).toBe(1);
+  });
+
   it('falls back to archived session totals when completed pomodoro logs are unavailable', () => {
     const sessions: SessionRecord[] = [
       {

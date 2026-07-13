@@ -336,6 +336,23 @@ const Layout: React.FC = () => {
     });
   };
 
+  const dismissDailyWelcomeBanner = () => {
+    setDailyWelcomeBanner((current) => {
+      if (!current || current.exiting) return current;
+      const closingId = current.id;
+
+      clearDailyWelcomeTimers();
+      dailyWelcomeTimersRef.current.remove.remainingMs = GROUP_BANNER_EXIT_MS;
+      startPausableTimeout(dailyWelcomeTimersRef.current.remove, () => {
+        setDailyWelcomeBanner((latest) => (latest?.id === closingId ? null : latest));
+        clearDailyWelcomeTimers();
+        dailyWelcomeConfigRef.current = { bannerId: null, todayKey: null, message: null };
+      });
+
+      return { ...current, exiting: true };
+    });
+  };
+
   const scheduleBannerTimer = (id: string) => {
     if (!notificationTimersActive) return;
     const timers = bannerTimersRef.current[id];
@@ -799,9 +816,12 @@ const Layout: React.FC = () => {
 
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,34rem)] pointer-events-none flex flex-col gap-2">
         {dailyWelcomeBanner && (
-          <div
+          <button
+            type="button"
             key={dailyWelcomeBanner.id}
-            className={`doro-group-banner relative overflow-hidden rounded-[1.7rem] border px-4 py-4 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 ${
+            onClick={dismissDailyWelcomeBanner}
+            aria-label="Dismiss welcome message"
+            className={`doro-group-banner pointer-events-auto relative w-full overflow-hidden rounded-[1.7rem] border px-4 py-4 text-left shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 hover:-translate-y-0.5 hover:border-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/45 ${
               settings.disableBlur
                 ? 'border-white/18 bg-black/70'
                 : 'border-white/22 bg-[linear-gradient(160deg,rgba(255,245,247,0.18),rgba(255,255,255,0.07))] backdrop-blur-2xl'
@@ -825,7 +845,7 @@ const Layout: React.FC = () => {
                 animationPlayState: notificationTimersActive ? 'running' : 'paused',
               }}
             />
-          </div>
+          </button>
         )}
         {groupBanners.map((notice, i) => (
           <div

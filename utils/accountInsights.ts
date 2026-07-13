@@ -1,6 +1,7 @@
 import { Category, LogEntry } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import { LONG_GRACE_SESSION_TIMEOUT_SECONDS } from './timerRuntime';
+import { getPomodoroEquivalentWeight } from './pomodoroAccounting';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -141,10 +142,6 @@ const isNeutralGraceWindow = (entry: LogEntry) => {
 
 const isSessionEndLog = (entry: LogEntry) => {
   return (entry.reason || '').trim().toLowerCase() === 'session end';
-};
-
-const isCompletedPomodoroLog = (entry: LogEntry) => {
-  return entry.type === 'work' && !isPauseCreditedWorkLog(entry) && (entry.reason || '').trim().toLowerCase() === 'pomodoro complete';
 };
 
 const startOfLocalDay = (ms: number) => {
@@ -364,7 +361,12 @@ export const computeAccountInsights = ({
   const productiveWindows = normalizedLogs.filter((window) => (
     window.entry.type === 'work' && !isPauseCreditedWorkLog(window.entry)
   ));
-  const completedPomos = productiveWindows.filter((window) => isCompletedPomodoroLog(window.entry));
+  const completedPomos = productiveWindows
+    .map((window) => ({
+      ...window,
+      pomodoroWeight: getPomodoroEquivalentWeight(window.entry),
+    }))
+    .filter((window) => window.pomodoroWeight > 0);
   const sessions = buildAnalyticsSessions(normalizedLogs);
 
   const todayStartMs = startOfLocalDay(nowMs);
@@ -461,10 +463,10 @@ export const computeAccountInsights = ({
   completedPomos.forEach((window) => {
     const endDateKey = getLocalDateKey(window.endMs);
     const trendPoint = dailyTrendMap.get(endDateKey);
-    if (trendPoint) trendPoint.pomodoros += 1;
-    if (window.endMs >= todayStartMs && window.endMs < tomorrowStartMs) todayPomos += 1;
-    if (window.endMs >= thisWeekStartMs && window.endMs < thisWeekStartMs + WEEK_MS) thisWeekPomos += 1;
-    else if (window.endMs >= lastWeekStartMs && window.endMs < thisWeekStartMs) lastWeekPomos += 1;
+    if (trendPoint) trendPoint.pomodoros += window.pomodoroWeight;
+    if (window.endMs >= todayStartMs && window.endMs < tomorrowStartMs) todayPomos += window.pomodoroWeight;
+    if (window.endMs >= thisWeekStartMs && window.endMs < thisWeekStartMs + WEEK_MS) thisWeekPomos += window.pomodoroWeight;
+    else if (window.endMs >= lastWeekStartMs && window.endMs < thisWeekStartMs) lastWeekPomos += window.pomodoroWeight;
   });
 
   const sessionStartMinutes = sessions.map((session) => getMinutesOfDay(session.startMs));

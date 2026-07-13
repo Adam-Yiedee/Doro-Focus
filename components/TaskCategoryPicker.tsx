@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Category } from '../types';
 import { getIcon } from '../utils/icons';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../utils/palette';
+import { getActiveCategories } from '../utils/categoryVisibility';
 
 type SwatchSize = 'sm' | 'md';
 
@@ -39,6 +40,8 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
   chipTextClassName = 'text-[9px]',
   stretchCategoryTray = true,
 }) => {
+  const activeCategories = useMemo(() => getActiveCategories(categories), [categories]);
+  const hasActiveSelectedCategory = activeCategories.some((category) => category.id === selectedCategoryId);
   const trayClassName = stretchCategoryTray
     ? 'min-w-0 flex-1'
     : 'min-w-0 max-w-full flex-[0_1_auto]';
@@ -51,17 +54,17 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
             key={color}
             type="button"
             onClick={() => onColorSelect(color)}
-            className={getColorSwatchClass(selectedColor === color && !selectedCategoryId, swatchSize)}
+            className={getColorSwatchClass(selectedColor === color && !hasActiveSelectedCategory, swatchSize)}
             style={{ backgroundColor: color }}
             aria-label={`Pick color ${color}`}
           />
         ))}
       </div>
 
-      {categories.length > 0 ? (
+      {activeCategories.length > 0 ? (
         <div className={`${trayClassName} overflow-x-auto rounded-xl border border-white/10 bg-black/10 p-1.5 scrollbar-hide`}>
           <div className="flex w-max gap-1 pr-1">
-            {categories.map((category) => (
+            {activeCategories.map((category) => (
               <button
                 key={category.id}
                 type="button"

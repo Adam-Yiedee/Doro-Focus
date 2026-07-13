@@ -156,7 +156,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   return (
     <div
       className={`
-        doro-mobile-liquid-shell relative w-full aspect-square max-w-[19rem] sm:max-w-[20rem] md:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
+        doro-mobile-liquid-shell relative w-full aspect-square max-w-[19rem] sm:max-w-[20rem] md:max-w-[20rem] lg:max-w-[24rem] flex-shrink-0 rounded-[3rem] overflow-hidden transform-gpu
         transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
@@ -360,7 +360,7 @@ const TimerDisplay: React.FC = () => {
       )}
 
       {/* Timer Container */}
-      <div className="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-24 w-full mt-8 md:mt-0">
+      <div className="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-10 lg:gap-24 w-full mt-8 md:mt-0">
         <TimerSquare 
             type="work" 
             time={workTime}
