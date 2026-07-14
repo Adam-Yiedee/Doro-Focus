@@ -74,6 +74,9 @@ const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
   { label: 'Drift', value: 'drift' },
   { label: 'Orbit', value: 'orbit' },
   { label: 'Tada', value: 'tada' },
+  { label: 'Echo', value: 'echo' },
+  { label: 'Sprout', value: 'sprout' },
+  { label: 'Comet', value: 'comet' },
 ];
 
 const FOCUS_SOUND_OPTIONS: Array<{ label: string; value: FocusSound }> = [
@@ -2892,7 +2895,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
           {showAddCategory && (
             <div
-              className={`doro-category-editor-shell relative overflow-hidden rounded-[1.35rem] border p-4 ${
+              key={`category-editor-${editingCategoryId ?? 'new'}`}
+              className={`doro-category-editor-shell relative overflow-hidden rounded-[1.35rem] border px-4 py-4 ${
                 categoryEditorCloseState === 'save'
                   ? 'doro-category-editor-close-save'
                   : categoryEditorCloseState === 'cancel'
@@ -2906,11 +2910,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               }}
             >
               <div className="pointer-events-none absolute inset-0 opacity-80" style={{ background: `radial-gradient(circle at 14% -8%, ${colorToRgba(newCategoryColor, 0.28)} 0%, transparent 32%), radial-gradient(circle at 88% 12%, rgba(255,255,255,0.1) 0%, transparent 22%)` }} />
-              <div className="relative space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="doro-category-editor-content relative space-y-4">
+                <div className="doro-category-editor-section flex flex-wrap items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div
-                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/20 text-white shadow-lg"
+                      className="doro-category-preview-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/20 text-white shadow-lg"
                       style={{
                         background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.98)} 0%, ${colorToRgba(newCategoryColor, 0.72)} 100%)`,
                         boxShadow: `0 14px 30px -18px ${colorToRgba(newCategoryColor, 0.68)}`,
@@ -2927,7 +2931,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="doro-category-editor-actions flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => closeCategoryForm('cancel')}
@@ -2938,8 +2942,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-start gap-4">
-                  <div className="min-w-[14rem] flex-1">
+                <div className="doro-category-editor-section flex flex-wrap items-start gap-4">
+                  <div className="doro-category-editor-field min-w-[14rem] flex-1">
                     <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Name</label>
                     <input
                       type="text"
@@ -2953,10 +2957,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     />
                   </div>
 
-                  <div className="shrink-0">
+                  <div className="doro-category-editor-field shrink-0">
                     <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Color</label>
                     <div className="flex gap-2 flex-wrap">
-                      {PRESET_COLORS.map(color => (
+                      {PRESET_COLORS.map((color, index) => (
                         <button
                           key={color}
                           type="button"
@@ -2964,7 +2968,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                             setNewCategoryColor(color);
                             if (categoryFormError) setCategoryFormError(null);
                           }}
-                          className={`h-8 w-8 rounded-full border transition-all ${
+                          className={`doro-category-color-swatch h-8 w-8 rounded-full border transition-all ${
                             newCategoryColor === color
                               ? 'scale-110 border-white/70 ring-2 ring-white/70 shadow-[0_0_0_6px_rgba(255,255,255,0.08)]'
                               : 'border-white/10 opacity-72 hover:opacity-100 hover:-translate-y-[1px]'
@@ -2972,6 +2976,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                           style={{
                             backgroundColor: color,
                             boxShadow: newCategoryColor === color ? `0 12px 20px -12px ${colorToRgba(color, 0.8)}` : undefined,
+                            animationDelay: `${150 + (index * 18)}ms`,
                           }}
                         />
                       ))}
@@ -2979,10 +2984,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   </div>
                 </div>
 
-                <div>
+                <div className="doro-category-editor-section">
                   <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Icon</label>
                   <div className="grid grid-cols-6 sm:grid-cols-8 gap-2">
-                    {CATEGORY_ICON_OPTIONS.map(({ key, label }) => (
+                    {CATEGORY_ICON_OPTIONS.map(({ key, label }, index) => (
                       <button
                         key={key}
                         type="button"
@@ -2992,11 +2997,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                         }}
                         title={label}
                         aria-label={label}
-                        className={`flex h-11 items-center justify-center rounded-2xl border text-white transition-all ${
+                        className={`doro-category-icon-option flex h-11 items-center justify-center rounded-2xl border text-white transition-all ${
                           newCategoryIcon === key
                             ? 'border-white/32 bg-white/18 shadow-[0_14px_26px_-20px_rgba(255,255,255,0.42)]'
                             : 'border-white/8 bg-white/[0.04] opacity-65 hover:bg-white/[0.1] hover:opacity-100 hover:-translate-y-[1px]'
                         }`}
+                        style={{ animationDelay: `${190 + (index * 9)}ms` }}
                       >
                         {getIcon(key, { size: 18 })}
                       </button>
@@ -3010,7 +3016,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   </div>
                 )}
 
-                <div className="flex flex-wrap gap-2">
+                <div className="doro-category-editor-footer flex flex-wrap gap-2">
                   {editingCategoryId !== null && (
                     <button
                       type="button"
@@ -3218,7 +3224,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         @media (prefers-reduced-motion: reduce) {
           .doro-account-stat-card,
           .doro-account-stat-rail,
-          .doro-auto-start-sound-panel {
+          .doro-auto-start-sound-panel,
+          .doro-category-editor-shell,
+          .doro-category-editor-content,
+          .doro-category-editor-section,
+          .doro-category-editor-actions,
+          .doro-category-editor-field,
+          .doro-category-preview-icon,
+          .doro-category-color-swatch,
+          .doro-category-icon-option,
+          .doro-category-editor-footer {
             animation: none !important;
             transition: none !important;
           }
@@ -3261,34 +3276,144 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         @keyframes doro-category-editor-open {
           0% {
+            max-height: 0;
             opacity: 0;
-            transform: translateY(10px) scale(0.972);
+            padding-top: 0;
+            padding-bottom: 0;
+            transform: translateY(8px) scale(0.982);
             filter: saturate(0.92);
+            border-color: rgba(255, 255, 255, 0);
           }
-          58% {
+          66% {
+            max-height: 72rem;
             opacity: 1;
-            transform: translateY(-1px) scale(1.01);
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+            transform: translateY(-1px) scale(1.004);
             filter: saturate(1.04);
           }
           100% {
+            max-height: 72rem;
             opacity: 1;
+            padding-top: 1rem;
+            padding-bottom: 1rem;
             transform: translateY(0) scale(1);
             filter: saturate(1);
           }
         }
         .doro-category-editor-open {
-          animation: doro-category-editor-open 420ms cubic-bezier(0.16, 0.88, 0.3, 1.08);
+          animation: doro-category-editor-open 460ms cubic-bezier(0.18, 0.9, 0.32, 1.06);
+        }
+        .doro-category-editor-shell {
+          max-height: 72rem;
           transform-origin: top center;
-          will-change: transform, opacity, filter;
+          transition:
+            border-color 220ms ease,
+            box-shadow 260ms ease,
+            background 260ms ease;
+          will-change: max-height, padding, transform, opacity, filter, border-color;
+        }
+        @keyframes doro-category-editor-content-in {
+          0% {
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .doro-category-editor-open .doro-category-editor-content {
+          animation: doro-category-editor-content-in 320ms cubic-bezier(0.22, 1, 0.36, 1) 70ms both;
+        }
+        @keyframes doro-category-editor-item-in {
+          0% {
+            opacity: 0;
+            transform: translateY(8px) scale(0.985);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-category-editor-open .doro-category-editor-section,
+        .doro-category-editor-open .doro-category-editor-actions,
+        .doro-category-editor-open .doro-category-editor-field,
+        .doro-category-editor-open .doro-category-editor-footer {
+          animation: doro-category-editor-item-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-category-editor-open .doro-category-editor-section:nth-child(1) {
+          animation-delay: 90ms;
+        }
+        .doro-category-editor-open .doro-category-editor-section:nth-child(2),
+        .doro-category-editor-open .doro-category-editor-field {
+          animation-delay: 145ms;
+        }
+        .doro-category-editor-open .doro-category-editor-section:nth-child(3) {
+          animation-delay: 190ms;
+        }
+        .doro-category-editor-open .doro-category-editor-actions {
+          animation-delay: 135ms;
+        }
+        .doro-category-editor-open .doro-category-editor-footer {
+          animation-delay: 250ms;
+        }
+        @keyframes doro-category-preview-icon-in {
+          0% {
+            transform: scale(0.74) rotate(-8deg);
+            opacity: 0;
+            filter: saturate(0.9);
+          }
+          70% {
+            transform: scale(1.08) rotate(2deg);
+            opacity: 1;
+            filter: saturate(1.08);
+          }
+          100% {
+            transform: scale(1) rotate(0deg);
+            opacity: 1;
+            filter: saturate(1);
+          }
+        }
+        .doro-category-editor-open .doro-category-preview-icon {
+          animation: doro-category-preview-icon-in 390ms cubic-bezier(0.18, 0.9, 0.32, 1.12) 110ms both;
+          transform-origin: center;
+          transition:
+            background 220ms ease,
+            box-shadow 220ms ease,
+            border-color 180ms ease;
+        }
+        @keyframes doro-category-option-pop {
+          0% {
+            opacity: 0;
+            transform: translateY(5px) scale(0.88);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-category-editor-open .doro-category-color-swatch,
+        .doro-category-editor-open .doro-category-icon-option {
+          animation-name: doro-category-option-pop;
+          animation-duration: 280ms;
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.3, 1.08);
+          animation-fill-mode: backwards;
         }
         @keyframes doro-category-editor-close-save {
           0% {
+            max-height: 72rem;
             opacity: 1;
+            padding-top: 1rem;
+            padding-bottom: 1rem;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
           100% {
+            max-height: 0;
             opacity: 0;
+            padding-top: 0;
+            padding-bottom: 0;
             transform: translateY(-6px) scale(0.985);
             filter: brightness(1.08) saturate(1.08);
           }
@@ -3299,12 +3424,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         @keyframes doro-category-editor-close-cancel {
           0% {
+            max-height: 72rem;
             opacity: 1;
+            padding-top: 1rem;
+            padding-bottom: 1rem;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
           100% {
+            max-height: 0;
             opacity: 0;
+            padding-top: 0;
+            padding-bottom: 0;
             transform: translateY(8px) scale(0.978);
             filter: brightness(0.96) saturate(0.92);
           }

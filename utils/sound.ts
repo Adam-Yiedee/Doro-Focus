@@ -591,6 +591,59 @@ export const playAlarm = async (soundType: AlarmSound) => {
                 playNoiseBurst(ctx, 'white', now + 0.22, 0.18, 0.025, 2600, 1.7);
                 break;
             }
+            case 'echo': {
+                const eDelay = ctx.createDelay();
+                const eFeedback = ctx.createGain();
+                eDelay.delayTime.setValueAtTime(0.22, now);
+                eFeedback.gain.setValueAtTime(0.32, now);
+                eDelay.connect(eFeedback);
+                eFeedback.connect(eDelay);
+                eDelay.connect(ctx.destination);
+                [587.33, 739.99, 880].forEach((freq, i) => {
+                    const eOsc = ctx.createOscillator();
+                    const eGain = ctx.createGain();
+                    const start = now + (i * 0.13);
+                    eOsc.type = 'sine';
+                    eOsc.frequency.setValueAtTime(freq, start);
+                    eGain.gain.setValueAtTime(0.0001, start);
+                    eGain.gain.linearRampToValueAtTime(0.13 - (i * 0.02), start + 0.025);
+                    eGain.gain.exponentialRampToValueAtTime(0.001, start + 0.45);
+                    eOsc.connect(eGain);
+                    eGain.connect(ctx.destination);
+                    eGain.connect(eDelay);
+                    eOsc.start(start);
+                    eOsc.stop(start + 0.5);
+                });
+                break;
+            }
+            case 'sprout': {
+                [329.63, 392, 493.88, 659.25].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.1), 0.75, 0.14 + (i * 0.012), freq * 1.045);
+                });
+                playNoiseBurst(ctx, 'pink', now + 0.05, 0.42, 0.012, 1800, 0.9);
+                break;
+            }
+            case 'comet': {
+                const cometOsc = ctx.createOscillator();
+                const cometGain = ctx.createGain();
+                const cometFilter = ctx.createBiquadFilter();
+                cometOsc.type = 'sine';
+                cometOsc.frequency.setValueAtTime(1568, now);
+                cometOsc.frequency.exponentialRampToValueAtTime(220, now + 0.62);
+                cometFilter.type = 'bandpass';
+                cometFilter.frequency.setValueAtTime(1800, now);
+                cometFilter.frequency.exponentialRampToValueAtTime(420, now + 0.55);
+                cometFilter.Q.value = 2.2;
+                cometGain.gain.setValueAtTime(0.0001, now);
+                cometGain.gain.linearRampToValueAtTime(0.18, now + 0.035);
+                cometGain.gain.exponentialRampToValueAtTime(0.001, now + 0.76);
+                cometOsc.connect(cometFilter);
+                cometFilter.connect(cometGain);
+                cometGain.connect(ctx.destination);
+                cometOsc.start(now);
+                cometOsc.stop(now + 0.82);
+                break;
+            }
         }
     } catch(e) { console.error(e); }
 };

@@ -62,7 +62,10 @@ export type AlarmSound =
   | 'flare'
   | 'drift'
   | 'orbit'
-  | 'tada';
+  | 'tada'
+  | 'echo'
+  | 'sprout'
+  | 'comet';
 export type FocusSound = 'off' | 'white-soft' | 'white-bright' | 'pink-soft' | 'pink-air' | 'brown-deep' | 'brown-warm' | 'green-calm';
 export type TimerPreset = 'classic' | 'compact' | 'custom';
 

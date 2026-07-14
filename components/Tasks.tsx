@@ -58,8 +58,8 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
-const TASK_EDIT_CLOSE_DURATION_MS = 300;
-const TASK_EDIT_SETTLE_DURATION_MS = 280;
+const TASK_EDIT_CLOSE_DURATION_MS = 340;
+const TASK_EDIT_SETTLE_DURATION_MS = 190;
 const CATEGORY_RAIL_DRAG_THRESHOLD_PX = 6;
 
 const getCategoryTrayClass = (hasSelection: boolean, extraClassName = '') => (
@@ -1092,7 +1092,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         @keyframes doro-task-edit-open {
           0% {
-            max-height: 3.65rem;
+            max-height: 3.875rem;
             opacity: 0.96;
             transform: translateY(0) scale(0.996);
             filter: saturate(0.96);
@@ -1112,6 +1112,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         .doro-task-edit-shell {
           max-height: 24rem;
+          min-height: 3.875rem;
           transform-origin: top center;
           will-change: max-height, transform, opacity, filter;
         }
@@ -1141,9 +1142,13 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             opacity: 1;
             transform: translateY(0) scale(1);
           }
+          45% {
+            opacity: 0;
+            transform: translateY(-4px) scale(0.996);
+          }
           100% {
             opacity: 0;
-            transform: translateY(-7px) scale(0.992);
+            transform: translateY(-4px) scale(0.996);
           }
         }
         @keyframes doro-task-edit-close-save {
@@ -1154,16 +1159,16 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             filter: brightness(1) saturate(1);
           }
           62% {
-            max-height: 3.95rem;
+            max-height: 3.875rem;
             opacity: 1;
-            transform: translateY(-1px) scale(0.995);
-            filter: brightness(1.04) saturate(1.03);
+            transform: translateY(0) scale(1);
+            filter: brightness(1.03) saturate(1.02);
           }
           100% {
-            max-height: 3.65rem;
-            opacity: 0.98;
-            transform: translateY(0) scale(0.996);
-            filter: brightness(1.06) saturate(1.04);
+            max-height: 3.875rem;
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: brightness(1) saturate(1);
           }
         }
         .doro-task-edit-close-save {
@@ -1181,16 +1186,16 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             filter: brightness(1) saturate(1);
           }
           62% {
-            max-height: 3.95rem;
+            max-height: 3.875rem;
             opacity: 1;
-            transform: translateY(1px) scale(0.992);
+            transform: translateY(0) scale(1);
             filter: brightness(0.98) saturate(0.96);
           }
           100% {
-            max-height: 3.65rem;
-            opacity: 0.98;
-            transform: translateY(0) scale(0.996);
-            filter: brightness(0.96) saturate(0.92);
+            max-height: 3.875rem;
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: brightness(1) saturate(1);
           }
         }
         .doro-task-edit-close-cancel {
@@ -1202,10 +1207,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         @keyframes doro-task-edit-return-settle {
           0% {
-            transform: translateY(3px) scale(0.986);
-          }
-          56% {
-            transform: translateY(-1px) scale(1.01);
+            transform: translateY(1px) scale(0.998);
           }
           100% {
             transform: translateY(0) scale(1);
