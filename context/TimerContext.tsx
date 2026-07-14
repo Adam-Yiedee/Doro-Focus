@@ -233,6 +233,7 @@ const DEFAULT_SETTINGS: TimerSettings = {
   twoInARowMode: false,
   disableBlur: true,
   alarmSound: 'bell',
+  twoInARowStartSound: 'chime',
   focusSound: 'off',
   focusSoundVolume: 100,
   themeMode: 'dark'
@@ -3141,7 +3142,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     
     isProcessingRef.current = true;
     lastLoopTimeRef.current = now;
-    playAlarm(settings.alarmSound);
     
     const breakBankBase = getBreakBankBaseForWorkCompletion({
       breakTime,
@@ -3150,6 +3150,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
     const completion = computeWorkCompletion(pomodoroCount, breakBankBase, settings);
     const shouldAutoStartNextFocus = shouldAutoStartTwoInARowFocus(completion.nextPomoCount, settings);
+    playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound);
     const nextWorkTime = shouldAutoStartNextFocus ? settings.workDuration : 0;
 
     setBreakTime(completion.nextBreakTime);
@@ -4132,11 +4133,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
   };
 
+  const getDefaultedTaskName = (name: string, catId: number | null | undefined) => {
+    const trimmedName = name.trim();
+    if (trimmedName) return trimmedName;
+
+    const categoryName = typeof catId === 'number'
+      ? categories.find((category) => category.id === catId)?.name.trim()
+      : '';
+    return categoryName || 'Task';
+  };
+
   const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => {
     const todayKey = getDateKey(new Date());
     const deferred = Boolean(isFuture) || (typeof scheduledDate === 'string' && scheduledDate > todayKey);
     const newTask: Task = {
-      id: createTaskId(), name, estimated, completed: 0, checked: false,
+      id: createTaskId(), name: getDefaultedTaskName(name, catId), estimated, completed: 0, checked: false,
       selected: tasks.length === 0 && !parentId && !deferred, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
     };
     if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
@@ -4146,9 +4157,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const addDetailedTask = (taskProps: Partial<Task> & { name: string, estimated: number }) => {
       const todayKey = getDateKey(new Date());
       const deferred = Boolean(taskProps.isFuture) || (typeof taskProps.scheduledDate === 'string' && taskProps.scheduledDate > todayKey);
+      const categoryId = taskProps.categoryId || null;
       const newTask: Task = {
-        id: createTaskId(), name: taskProps.name, estimated: taskProps.estimated, completed: 0, checked: false,
-        selected: tasks.length === 0 && !deferred, categoryId: taskProps.categoryId || null, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
+        id: createTaskId(), name: getDefaultedTaskName(taskProps.name, categoryId), estimated: taskProps.estimated, completed: 0, checked: false,
+        selected: tasks.length === 0 && !deferred, categoryId, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
         isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
       setTasks(prev => [...prev, newTask]);

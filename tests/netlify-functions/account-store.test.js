@@ -170,7 +170,7 @@ describe('account store blob compatibility', () => {
     });
   });
 
-  it('counts two mini-pomodoros from work logs as one standard pomodoro', () => {
+  it('converts mini-pomodoro work minutes to standard pomodoros from work logs', () => {
     const stats = calculateLifetimeStatsFromAccountData([], [
       {
         type: 'work',
@@ -217,7 +217,7 @@ describe('account store blob compatibility', () => {
     expect(stats).toMatchObject({
       totalFocusHours: 1,
       totalSessions: 0,
-      totalPomos: 2,
+      totalPomos: 2.4,
       activeDays: 1,
     });
   });

@@ -1,7 +1,7 @@
 import { Category, LogEntry } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import { LONG_GRACE_SESSION_TIMEOUT_SECONDS } from './timerRuntime';
-import { getPomodoroEquivalentWeight } from './pomodoroAccounting';
+import { getAccountStatsPomodoroEquivalent } from './pomodoroAccounting';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -364,7 +364,7 @@ export const computeAccountInsights = ({
   const completedPomos = productiveWindows
     .map((window) => ({
       ...window,
-      pomodoroWeight: getPomodoroEquivalentWeight(window.entry),
+      pomodoroWeight: getAccountStatsPomodoroEquivalent(window.entry),
     }))
     .filter((window) => window.pomodoroWeight > 0);
   const sessions = buildAnalyticsSessions(normalizedLogs);

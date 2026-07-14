@@ -1,8 +1,8 @@
 import { Category, LogEntry, SessionCategoryStat, SessionRecord, User } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import {
-  getPomodoroEquivalentWeight,
-  getSessionPomodoroEquivalent,
+  getAccountStatsPomodoroEquivalent,
+  getAccountStatsSessionPomodoroEquivalent,
 } from './pomodoroAccounting';
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
@@ -68,7 +68,7 @@ export const calculateLifetimeStatsFromData = (
     return !isPauseCreditedWorkLog(entry);
   });
   const completedPomodoroWeightFromLogs = productiveLogs.reduce(
-    (acc, entry) => acc + getPomodoroEquivalentWeight(entry),
+    (acc, entry) => acc + getAccountStatsPomodoroEquivalent(entry),
     0,
   );
 
@@ -92,7 +92,7 @@ export const calculateLifetimeStatsFromData = (
   const totalFocusHours = workHoursFromLogs + (workMinutesFromFallbackSessions / 60);
 
   const totalPomosFromFallbackSessions = fallbackSessions.reduce(
-    (acc, session) => acc + getSessionPomodoroEquivalent(session),
+    (acc, session) => acc + getAccountStatsSessionPomodoroEquivalent(session),
     0,
   );
 

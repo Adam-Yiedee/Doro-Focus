@@ -535,7 +535,6 @@ const TaskViewModal: React.FC<{ isOpen: boolean, onClose: () => void }> = ({ isO
     };
 
     const handleCreateTask = () => {
-        if (!newTaskName.trim()) return;
         const subTaskObjects = newSubtasks.map(s => ({
             id: Date.now() + Math.random(), name: s.name, estimated: s.est, completed: 0, checked: false, selected: false, categoryId: newTaskCategoryId, subtasks: [], isExpanded: false
         }));

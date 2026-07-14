@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   twoInARowMode: false,
   disableBlur: true,
   alarmSound: 'bell',
+  twoInARowStartSound: 'chime',
   focusSound: 'off',
   focusSoundVolume: 100,
   themeMode: 'dark',
@@ -34,6 +35,7 @@ const DEFAULT_SETTINGS = {
 
 const POMODORO_COMPLETE_REASON = 'pomodoro complete';
 const MINI_POMODORO_COMPLETE_REASON = 'mini-pomodoro complete';
+const ACCOUNT_STATS_POMODORO_SECONDS = 25 * 60;
 
 const defaultLifetimeStats = () => ({
   totalFocusHours: 0,
@@ -107,7 +109,10 @@ const getPomodoroEquivalentWeight = (entry) => {
   if (!entry || entry.type !== 'work') return 0;
   const reason = cleanString(entry.reason).trim().toLowerCase();
   if (reason === POMODORO_COMPLETE_REASON) return 1;
-  if (reason === MINI_POMODORO_COMPLETE_REASON) return 0.5;
+  if (reason === MINI_POMODORO_COMPLETE_REASON) {
+    const durationSeconds = clampNumber(entry.duration, 0);
+    return durationSeconds > 0 ? durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS : 0.5;
+  }
   return 0;
 };
 
@@ -117,9 +122,13 @@ const getSessionWorkMinutes = (session) => {
 };
 
 const getSessionPomodoros = (session) => {
+  const miniPomos = Number(session?.stats?.miniPomosCompleted || 0);
+  if (Number.isFinite(miniPomos) && miniPomos > 0) {
+    const workMinutes = getSessionWorkMinutes(session);
+    if (workMinutes > 0) return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
+  }
   const pomos = Number(session?.stats?.pomosCompleted || 0);
   if (Number.isFinite(pomos) && pomos >= 0) return pomos;
-  const miniPomos = Number(session?.stats?.miniPomosCompleted || 0);
   return Number.isFinite(miniPomos) && miniPomos > 0 ? miniPomos * 0.5 : 0;
 };
 

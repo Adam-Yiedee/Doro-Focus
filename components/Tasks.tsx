@@ -58,9 +58,27 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
-const TASK_EDIT_CLOSE_DURATION_MS = 240;
+const TASK_EDIT_CLOSE_DURATION_MS = 300;
 const TASK_EDIT_SETTLE_DURATION_MS = 280;
 const CATEGORY_RAIL_DRAG_THRESHOLD_PX = 6;
+
+const getCategoryTrayClass = (hasSelection: boolean, extraClassName = '') => (
+  `min-w-0 flex-1 overflow-x-auto rounded-xl border p-1.5 scrollbar-hide transition-[background-color,border-color,box-shadow] duration-300 ease-out ${
+    hasSelection
+      ? 'border-white/[0.10] bg-black/[0.10] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]'
+      : 'border-white/[0.08] bg-black/[0.08]'
+  } ${extraClassName}`.trim()
+);
+
+const getCategoryChipClass = (selected: boolean) => (
+  `shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${
+    selected
+      ? 'bg-white/[0.11] border-white/[0.18] opacity-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
+      : 'bg-white/[0.04] border-white/[0.08] opacity-60 hover:opacity-100 hover:bg-white/[0.07]'
+  }`
+);
+
+const ADD_CATEGORY_CHIP_CLASS = 'shrink-0 flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 transition-all opacity-75 hover:opacity-100 hover:bg-white/[0.07]';
 
 interface TasksProps {
   onPreviewSurfaceColorChange?: (color?: string) => void;
@@ -95,13 +113,14 @@ const TaskItem: React.FC<TaskItemProps> = ({
   onDragEndTask,
   registerTaskRef,
 }) => {
-  const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories } = useTimer();
+  const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories, requestNewCategoryFlow } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editCloseState, setEditCloseState] = useState<'save' | 'cancel' | null>(null);
   const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
   const [editName, setEditName] = useState(task.name);
   const [editEst, setEditEst] = useState(task.estimated);
   const [editColor, setEditColor] = useState(task.color || PRESET_COLORS[0]);
+  const [editCategoryId, setEditCategoryId] = useState<number | null>(task.categoryId ?? null);
   const [isAddingSub, setIsAddingSub] = useState(false);
   const [subName, setSubName] = useState('');
   const [subEst, setSubEst] = useState(1);
@@ -111,6 +130,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const checkAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editSettleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editFormRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -147,23 +167,42 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
   const handleSave = () => {
     const safeEst = clampPomoEstimate(editEst);
-    updateTask({ ...task, name: editName.trim() || task.name, estimated: safeEst, color: editColor });
+    updateTask({ ...task, name: editName.trim() || task.name, estimated: safeEst, color: editColor, categoryId: editCategoryId });
     setEditCloseState('save');
     settleTaskAfterEdit();
   };
 
   const handleCancelEdit = () => {
+    if (editCloseState) return;
     setEditCloseState('cancel');
     settleTaskAfterEdit();
   };
+
+  useEffect(() => {
+    if (!isEditing || editCloseState) return;
+
+    const handlePointerDownOutside = (event: PointerEvent) => {
+      const node = editFormRef.current;
+      if (!node || !(event.target instanceof Node) || node.contains(event.target)) return;
+      setEditCloseState('cancel');
+      settleTaskAfterEdit();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDownOutside, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDownOutside, true);
+  }, [editCloseState, isEditing]);
 
   const startEditing = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (editTransitionTimeoutRef.current) clearTimeout(editTransitionTimeoutRef.current);
     if (editSettleTimeoutRef.current) clearTimeout(editSettleTimeoutRef.current);
+    const currentCategory = typeof task.categoryId === 'number'
+      ? categories.find(item => item.id === task.categoryId)
+      : null;
     setEditName(task.name);
     setEditEst(task.estimated);
-    setEditColor(task.color || PRESET_COLORS[0]);
+    setEditColor(task.color || currentCategory?.color || PRESET_COLORS[0]);
+    setEditCategoryId(task.categoryId ?? null);
     setEditCloseState(null);
     setIsSettlingAfterEdit(false);
     setIsEditing(true);
@@ -188,94 +227,195 @@ const TaskItem: React.FC<TaskItemProps> = ({
   };
 
   const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
+  const activeCategories = useMemo(() => getActiveCategories(categories), [categories]);
   const isTopLevel = depth === 0;
+  const isNestedTask = !isTopLevel;
   const isVisibleInList = showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task));
   const isDraggedTask = isTopLevel && draggingTaskId === task.id;
+  const editPickerRowClass = isNestedTask
+    ? 'flex flex-col gap-2 overflow-hidden py-1 sm:flex-row sm:items-center sm:pl-1'
+    : 'flex items-center gap-2 overflow-hidden pl-1 py-1';
+  const editFooterClass = isNestedTask
+    ? 'flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'
+    : 'flex items-center justify-between gap-3';
 
   if (isEditing) {
     return (
       <form
+        ref={editFormRef}
         onSubmit={(e) => {
           e.preventDefault();
           handleSave();
         }}
-        className={`doro-task-edit-shell p-3 bg-white/10 rounded-xl flex flex-col gap-3 backdrop-blur-md border border-white/20 ${
+        className={`doro-task-edit-shell rounded-lg border border-white/[0.10] bg-white/[0.055] backdrop-blur-md overflow-hidden shadow-[0_18px_42px_-28px_rgba(0,0,0,0.35)] ${
           editCloseState === 'save'
             ? 'doro-task-edit-close-save'
             : editCloseState === 'cancel'
               ? 'doro-task-edit-close-cancel'
               : 'doro-task-edit-open'
         }`}
-        style={{ marginLeft: depth * 16 }}
       >
-        <input
-          autoFocus
-          value={editName}
-          onChange={e => setEditName(e.target.value)}
-          className="w-full bg-transparent border-b border-white/30 px-2 py-1 text-glass-text outline-none focus:border-white text-sm"
-        />
+        <div className="flex items-center gap-3 p-3">
+          {task.subtasks.length > 0 ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleTaskExpansion(task.id);
+              }}
+              className="p-1 text-white/40 hover:text-white transition-colors rounded hover:bg-white/10"
+            >
+              <svg
+                className={`w-3 h-3 transition-transform duration-300 ${task.isExpanded ? 'rotate-90' : ''}`}
+                fill="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+          ) : (
+            <div className="w-3 h-3 px-1" />
+          )}
 
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/50 font-bold">
-            <span>Est</span>
-            <div className="flex items-center rounded-lg border border-white/20 bg-black/20 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setEditEst(prev => clampPomoEstimate(prev - 1))}
-                className="px-2.5 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
-                aria-label="Decrease estimate"
-              >
-                -
-              </button>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={editEst}
-                onChange={e => {
-                  const next = Number(e.target.value.replace(/[^\d]/g, ''));
-                  if (!Number.isNaN(next)) setEditEst(clampPomoEstimate(next));
-                }}
-                className="w-10 bg-transparent text-center text-white font-mono font-bold text-xs outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => setEditEst(prev => clampPomoEstimate(prev + 1))}
-                className="px-2.5 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
-                aria-label="Increase estimate"
-              >
-                +
-              </button>
-            </div>
+          <button
+            type="button"
+            onClick={handleCheck}
+            className={`
+              rounded-full border relative flex h-5 w-5 shrink-0 items-center justify-center border-[1.5px] transition-all duration-300
+              ${task.checked
+                ? 'bg-white border-white'
+                : 'border-white/35 hover:border-white hover:bg-white/10'
+              }
+            `}
+            aria-label={task.checked ? 'Mark task incomplete' : 'Mark task complete'}
+          >
+            {task.checked && (
+              <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <input
+              autoFocus
+              value={editName}
+              onChange={e => setEditName(e.target.value)}
+              placeholder="Describe task..."
+              className="w-full bg-transparent py-0.5 text-sm font-medium text-glass-text placeholder-white/30 outline-none transition-colors focus:text-white"
+            />
+            {editColor && !task.checked && (
+              <div className="mt-1.5 h-[2px] w-full max-w-[60px] rounded-full opacity-90 transition-opacity" style={{ backgroundColor: editColor }} />
+            )}
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {PRESET_COLORS.map(c => (
-              <button
-                key={`edit-${task.id}-${c}`}
-                type="button"
-                onClick={() => setEditColor(c)}
-                className={getColorSwatchClass(editColor === c, 'sm')}
-                style={{ backgroundColor: c }}
-                aria-label={`Set color ${c}`}
-              />
-            ))}
+          <div className="text-glass-textMuted font-mono text-[10px] bg-black/20 px-2 py-0.5 rounded-md backdrop-blur-sm transition-colors border border-white/5">
+            <span className={task.completed >= editEst ? 'text-green-400 font-bold' : ''}>{task.completed}</span>
+            <span className="opacity-40 mx-0.5">/</span>
+            <span>{editEst}</span>
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={handleCancelEdit}
-            className="px-3.5 py-1.5 rounded-lg bg-black/25 hover:bg-black/35 border border-white/20 text-[10px] uppercase tracking-widest font-bold text-white/75 hover:text-white transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_8px_16px_rgba(0,0,0,0.22)] active:translate-y-0 active:scale-95"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className="px-3.5 py-1.5 rounded-lg bg-teal-400/20 hover:bg-teal-300/30 border border-teal-100/35 hover:border-teal-100/60 text-[10px] uppercase tracking-widest font-bold text-teal-50 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_10px_20px_rgba(45,212,191,0.22)] active:translate-y-0 active:scale-95"
-          >
-            Save
-          </button>
+        <div className="doro-task-edit-controls flex flex-col gap-3 border-t border-white/[0.07] px-4 py-3">
+          <div className={editPickerRowClass}>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {PRESET_COLORS.map(c => (
+                <button
+                  key={`edit-${task.id}-${c}`}
+                  type="button"
+                  onClick={() => {
+                    setEditColor(c);
+                    setEditCategoryId(null);
+                  }}
+                  className={getColorSwatchClass(editColor === c && !editCategoryId)}
+                  style={{ backgroundColor: c }}
+                  aria-label={`Set color ${c}`}
+                />
+              ))}
+            </div>
+
+            <div className={getCategoryTrayClass(Boolean(editCategoryId))}>
+              <div className="flex w-max items-center gap-1 pr-1">
+                {activeCategories.map(cat => (
+                  <button
+                    key={`edit-category-${task.id}-${cat.id}`}
+                    type="button"
+                    onClick={() => {
+                      setEditCategoryId(cat.id);
+                      setEditColor(cat.color);
+                    }}
+                    className={getCategoryChipClass(editCategoryId === cat.id)}
+                  >
+                    <div className="w-3 h-3 text-white" style={{ color: cat.color }}>{getIcon(cat.icon)}</div>
+                    <span className="text-[9px] text-white font-bold">{cat.name}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={requestNewCategoryFlow}
+                  className={ADD_CATEGORY_CHIP_CLASS}
+                >
+                  <div className="w-3 h-3 flex items-center justify-center text-white/75">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 5v14" />
+                      <path d="M5 12h14" />
+                    </svg>
+                  </div>
+                  <span className="text-[9px] text-white font-bold">Add Category</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className={editFooterClass}>
+            <div className="flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
+              <span className="font-bold uppercase">Est</span>
+              <div className="flex items-center rounded-lg border border-white/15 bg-black/18 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setEditEst(prev => clampPomoEstimate(prev - 1))}
+                  className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                  aria-label="Decrease estimate"
+                >
+                  -
+                </button>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={editEst}
+                  onChange={e => {
+                    const next = Number(e.target.value.replace(/[^\d]/g, ''));
+                    if (!Number.isNaN(next)) setEditEst(clampPomoEstimate(next));
+                  }}
+                  className="w-8 bg-transparent text-center text-white font-mono font-bold text-xs outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setEditEst(prev => clampPomoEstimate(prev + 1))}
+                  className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                  aria-label="Increase estimate"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5 active:scale-95"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-1 bg-white text-black text-[10px] rounded-lg font-bold hover:bg-gray-200 transition-all shadow-lg active:scale-95 uppercase tracking-wider"
+              >
+                Save
+              </button>
+            </div>
+          </div>
         </div>
       </form>
     );
@@ -317,7 +457,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
         onDragEndTask?.();
       }}
       className={`
-        relative flex flex-col overflow-hidden origin-top
+        relative flex flex-col origin-top
+        ${isVisibleInList ? 'overflow-visible' : 'overflow-hidden'}
         ${depth === 0 && isVisibleInList ? 'cursor-grab active:cursor-grabbing' : ''}
         transition-[max-height,opacity,transform,margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
         ${isVisibleInList ? 'max-h-[2000px] opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2 pointer-events-none'}
@@ -333,10 +474,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
         className={`
           group relative rounded-lg cursor-pointer transform-gpu transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
           flex items-center gap-3 border
-          ${depth === 0 ? 'p-3' : 'p-2.5'}
+          p-3
           ${task.selected
-            ? 'z-20 -translate-y-1 scale-[1.01] bg-white/10 border-white/20 ring-1 ring-white/30 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] blur-0 opacity-100'
-            : 'z-10 bg-white/[0.025] border-white/8 shadow-none opacity-60'
+            ? 'z-20 -translate-y-1 scale-[1.006] bg-white/[0.075] border-white/[0.10] shadow-[0_24px_46px_-18px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.06)] blur-0 opacity-100'
+            : 'z-10 bg-white/[0.025] border-white/[0.08] shadow-none opacity-60'
           }
           ${!isSectionActive 
             ? (task.selected ? '' : 'hover:opacity-90')
@@ -349,8 +490,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
       >
         {task.selected && (
           <>
-            <div className="pointer-events-none absolute inset-0 rounded-lg bg-gradient-to-tr from-white/10 via-white/0 to-transparent" />
-            <div className="pointer-events-none absolute inset-0 rounded-lg shadow-[inset_0_0_34px_rgba(255,255,255,0.08)]" />
+            <div className="pointer-events-none absolute inset-0 rounded-lg bg-gradient-to-tr from-white/[0.055] via-white/0 to-transparent" />
+            <div className="pointer-events-none absolute inset-0 rounded-lg shadow-[inset_0_0_28px_rgba(255,255,255,0.045)]" />
           </>
         )}
         {isCheckAnimating && (
@@ -381,7 +522,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           onClick={handleCheck}
           className={`
             rounded-full border relative flex items-center justify-center transition-all duration-300 shrink-0 z-20
-            ${depth === 0 ? 'w-5 h-5 border-[1.5px]' : 'w-4 h-4 border'}
+            w-5 h-5 border-[1.5px]
             ${task.checked 
               ? 'bg-white border-white' 
               : 'border-white/30 hover:border-white group-hover:bg-white/10'
@@ -400,7 +541,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         
         <div className="flex-1 min-w-0 flex flex-col justify-center">
             <div className="flex items-center gap-2">
-                <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : (task.selected ? 'text-white' : 'group-hover:text-white')} ${depth === 0 ? 'font-medium text-sm' : 'text-xs'}`}>
+                <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : (task.selected ? 'text-white' : 'group-hover:text-white')} font-medium text-sm`}>
                     {task.name}
                 </div>
                 {category && depth === 0 && (
@@ -412,7 +553,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                      </div>
                 )}
             </div>
-          {task.color && depth === 0 && !task.checked && (
+          {task.color && !task.checked && (
              <div className={`w-full max-w-[60px] h-[2px] mt-1.5 rounded-full transition-opacity ${task.selected ? 'opacity-100' : 'opacity-60 group-hover:opacity-100'}`} style={{ backgroundColor: task.color }} />
           )}
         </div>
@@ -439,14 +580,14 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
       </div>
 
-      <div className="pl-6 md:pl-8">
+      <div className={isTopLevel ? 'pl-6 md:pl-8' : 'pl-5 md:pl-6'}>
         {isAddingSub && (
-          <form onSubmit={handleAddSubtask} className="doro-soft-expand flex gap-2 p-2 mb-2 bg-white/5 rounded-lg border border-white/10 backdrop-blur-sm">
+          <form onSubmit={handleAddSubtask} className="doro-soft-expand mb-2.5 flex flex-col gap-2 rounded-lg border border-white/10 bg-white/5 p-2.5 backdrop-blur-sm sm:flex-row sm:items-center">
             <input 
               autoFocus
               type="text" 
               placeholder="Subtask..." 
-              className="flex-1 bg-transparent px-2 py-0.5 text-xs text-glass-text placeholder-white/30 outline-none"
+              className="min-w-0 flex-1 bg-transparent px-2 py-1 text-sm font-medium text-glass-text placeholder-white/30 outline-none"
               value={subName}
               onChange={e => setSubName(e.target.value)}
             />
@@ -487,7 +628,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         )}
 
         {task.isExpanded && task.subtasks.length > 0 && (
-          <div className="doro-soft-expand relative border-l border-white/10 pl-4 mt-1 space-y-1.5">
+          <div className="doro-soft-expand relative mt-1.5 space-y-2 border-l border-white/10 pl-4">
             {task.subtasks.map(sub => (
                 <TaskItem
                   key={sub.id}
@@ -887,7 +1028,6 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim()) return;
     addTask(newName, clampPomoEstimate(newEst), newCatId, undefined, newColor);
     setNewName('');
     setNewEst(1);
@@ -952,57 +1092,113 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         @keyframes doro-task-edit-open {
           0% {
-            opacity: 0;
-            transform: translateY(10px) scale(0.972);
-            filter: saturate(0.9);
+            max-height: 3.65rem;
+            opacity: 0.96;
+            transform: translateY(0) scale(0.996);
+            filter: saturate(0.96);
           }
-          58% {
+          62% {
+            max-height: 24rem;
             opacity: 1;
-            transform: translateY(-1px) scale(1.01);
+            transform: translateY(-1px) scale(1.004);
             filter: saturate(1.05);
           }
           100% {
+            max-height: 24rem;
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: saturate(1);
           }
         }
-        .doro-task-edit-open {
-          animation: doro-task-edit-open 420ms cubic-bezier(0.16, 0.88, 0.3, 1.08);
+        .doro-task-edit-shell {
+          max-height: 24rem;
           transform-origin: top center;
-          will-change: transform, opacity, filter;
+          will-change: max-height, transform, opacity, filter;
+        }
+        .doro-task-edit-open {
+          animation: doro-task-edit-open 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+        }
+        @keyframes doro-task-edit-controls-in {
+          0% {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.992);
+          }
+          68% {
+            opacity: 1;
+            transform: translateY(1px) scale(1.002);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-task-edit-open .doro-task-edit-controls {
+          animation: doro-task-edit-controls-in 360ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+          transform-origin: top center;
+        }
+        @keyframes doro-task-edit-controls-out {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-7px) scale(0.992);
+          }
         }
         @keyframes doro-task-edit-close-save {
           0% {
+            max-height: 24rem;
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
+          62% {
+            max-height: 3.95rem;
+            opacity: 1;
+            transform: translateY(-1px) scale(0.995);
+            filter: brightness(1.04) saturate(1.03);
+          }
           100% {
-            opacity: 0;
-            transform: translateY(-6px) scale(0.985);
-            filter: brightness(1.08) saturate(1.08);
+            max-height: 3.65rem;
+            opacity: 0.98;
+            transform: translateY(0) scale(0.996);
+            filter: brightness(1.06) saturate(1.04);
           }
         }
         .doro-task-edit-close-save {
-          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
           pointer-events: none;
+        }
+        .doro-task-edit-close-save .doro-task-edit-controls {
+          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes doro-task-edit-close-cancel {
           0% {
+            max-height: 24rem;
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
+          62% {
+            max-height: 3.95rem;
+            opacity: 1;
+            transform: translateY(1px) scale(0.992);
+            filter: brightness(0.98) saturate(0.96);
+          }
           100% {
-            opacity: 0;
-            transform: translateY(8px) scale(0.978);
+            max-height: 3.65rem;
+            opacity: 0.98;
+            transform: translateY(0) scale(0.996);
             filter: brightness(0.96) saturate(0.92);
           }
         }
         .doro-task-edit-close-cancel {
-          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
           pointer-events: none;
+        }
+        .doro-task-edit-close-cancel .doro-task-edit-controls {
+          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes doro-task-edit-return-settle {
           0% {
@@ -1174,11 +1370,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                       </div>
 
                       <div
-                        className={`min-w-0 flex-1 overflow-x-auto rounded-xl border p-1.5 scrollbar-hide transition-[background-color,border-color,box-shadow] duration-300 ease-out ${
-                          newCatId
-                            ? 'border-white/18 bg-black/15 shadow-[0_10px_24px_-22px_rgba(255,255,255,0.5)]'
-                            : 'border-white/10 bg-black/10'
-                        } ${isCategoryRailDragging ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
+                        className={getCategoryTrayClass(Boolean(newCatId), isCategoryRailDragging ? 'cursor-grabbing select-none' : 'cursor-grab')}
                         style={{ touchAction: 'pan-y' }}
                         onPointerDown={handleCategoryRailPointerDown}
                         onPointerMove={handleCategoryRailPointerMove}
@@ -1194,7 +1386,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                                   type="button"
                                   onPointerDown={(event) => event.preventDefault()}
                                   onClick={() => handleCategorySelect(cat.id, cat.color)}
-                                  className={`shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${newCatId === cat.id ? 'bg-white/20 border-white/40' : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'}`}
+                                  className={getCategoryChipClass(newCatId === cat.id)}
                                 >
                                     <div className="w-3 h-3 text-white" style={{color: cat.color}}>{getIcon(cat.icon)}</div>
                                     <span className="text-[9px] text-white font-bold">{cat.name}</span>
@@ -1211,7 +1403,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                               event.stopPropagation();
                               handleRequestNewCategory();
                             }}
-                            className="shrink-0 flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 transition-all opacity-75 hover:opacity-100 hover:bg-white/10"
+                            className={ADD_CATEGORY_CHIP_CLASS}
                           >
                               <div className="w-3 h-3 flex items-center justify-center text-white/80">
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1289,7 +1481,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             event.preventDefault();
             clearDragState();
           }}
-          className={`flex-1 min-h-0 space-y-3 overflow-y-auto pb-8 pr-1 scrollbar-hide transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
+          className={`flex-1 min-h-0 -mx-2 space-y-3 overflow-y-auto px-2 pt-2 pb-10 scrollbar-hide transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
         >
           {filteredTasks.map(task => (
             <TaskItem

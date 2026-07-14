@@ -41,7 +41,28 @@ export interface LogEntry {
   categoryIcon?: string;
 }
 
-export type AlarmSound = 'bell' | 'digital' | 'chime' | 'gong' | 'pop' | 'wood' | 'marimba' | 'crystal' | 'blade' | 'cosmic' | 'ripple' | 'news';
+export type AlarmSound =
+  | 'bell'
+  | 'digital'
+  | 'chime'
+  | 'gong'
+  | 'pop'
+  | 'wood'
+  | 'marimba'
+  | 'crystal'
+  | 'blade'
+  | 'cosmic'
+  | 'ripple'
+  | 'news'
+  | 'harp'
+  | 'pulse'
+  | 'beacon'
+  | 'bubbles'
+  | 'pluck'
+  | 'flare'
+  | 'drift'
+  | 'orbit'
+  | 'tada';
 export type FocusSound = 'off' | 'white-soft' | 'white-bright' | 'pink-soft' | 'pink-air' | 'brown-deep' | 'brown-warm' | 'green-calm';
 export type TimerPreset = 'classic' | 'compact' | 'custom';
 
@@ -54,6 +75,7 @@ export interface TimerSettings {
   twoInARowMode: boolean;
   disableBlur: boolean;
   alarmSound: AlarmSound;
+  twoInARowStartSound: AlarmSound;
   focusSound: FocusSound;
   focusSoundVolume: number;
   themeMode: 'light' | 'dark';

@@ -181,7 +181,7 @@ describe('computeAccountInsights', () => {
     expect(insights.weekComparison.pomoDelta).toBe(-1);
   });
 
-  it('counts mini-pomodoros as half pomodoros in today and trend stats', () => {
+  it('converts mini-pomodoro work minutes to standard pomodoros in today and trend stats', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({
       joinedAt: '2026-01-01T00:00:00',
@@ -210,9 +210,9 @@ describe('computeAccountInsights', () => {
     });
 
     expect(insights.today.focusMinutes).toBeCloseTo(45, 5);
-    expect(insights.today.pomodoros).toBe(1.5);
-    expect(insights.weekComparison.thisWeek.pomodoros).toBe(1.5);
-    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBe(1.5);
+    expect(insights.today.pomodoros).toBeCloseTo(1.8, 5);
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(1.8, 5);
+    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(1.8, 5);
   });
 
   it('builds recent daily trend points and session lanes for interactive charts', () => {

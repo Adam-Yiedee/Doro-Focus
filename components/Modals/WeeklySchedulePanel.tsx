@@ -830,9 +830,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   };
 
   const submitDayTask = (dateKey: string) => {
-    if (!newTaskName.trim()) return;
     const createdTaskId = addDetailedTask({
-      name: newTaskName.trim(),
+      name: newTaskName,
       estimated: clampEstimate(newTaskEst),
       color: newTaskColor,
       categoryId: newTaskCategoryId,

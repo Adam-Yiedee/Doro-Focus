@@ -65,6 +65,15 @@ const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
   { label: 'Cosmic', value: 'cosmic' },
   { label: 'Ripple', value: 'ripple' },
   { label: 'News', value: 'news' },
+  { label: 'Harp', value: 'harp' },
+  { label: 'Pulse', value: 'pulse' },
+  { label: 'Beacon', value: 'beacon' },
+  { label: 'Bubbles', value: 'bubbles' },
+  { label: 'Pluck', value: 'pluck' },
+  { label: 'Flare', value: 'flare' },
+  { label: 'Drift', value: 'drift' },
+  { label: 'Orbit', value: 'orbit' },
+  { label: 'Tada', value: 'tada' },
 ];
 
 const FOCUS_SOUND_OPTIONS: Array<{ label: string; value: FocusSound }> = [
@@ -314,6 +323,8 @@ const SETTINGS_TAB_BUTTONS: Array<{ id: TabButton; label: string }> = [
   { id: 'account', label: 'Account' },
   { id: 'settings', label: 'Settings' },
 ];
+
+const modalPanelTitleClass = 'text-lg font-bold text-white tracking-tight';
 
 const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
   const rawStats = user?.lifetimeStats;
@@ -643,23 +654,30 @@ const ToggleRow: React.FC<{
   onToggle: () => void;
   disabled?: boolean;
   tone?: 'default' | 'quiet';
-}> = ({ label, description, checked, onToggle, disabled = false, tone = 'default' }) => {
+  switchTone?: 'blue' | 'neutral';
+}> = ({ label, description, checked, onToggle, disabled = false, tone = 'default', switchTone = 'blue' }) => {
   const surfaceClass = disabled
     ? 'cursor-not-allowed opacity-60'
     : tone === 'quiet'
       ? checked
-        ? 'border-white/12 bg-white/[0.055] text-white/90 hover:border-white/14 hover:bg-white/[0.075]'
-        : 'border-white/8 bg-white/[0.03] text-white/72 hover:border-white/10 hover:bg-white/[0.055] hover:text-white/88'
+        ? 'border-white/[0.075] bg-white/[0.04] text-white/90 hover:border-white/[0.09] hover:bg-white/[0.055]'
+        : 'border-white/[0.07] bg-white/[0.025] text-white/72 hover:border-white/[0.09] hover:bg-white/[0.045] hover:text-white/88'
       : checked
         ? 'border-white/14 bg-white/[0.065] text-white hover:bg-white/[0.08]'
         : 'border-white/8 bg-white/[0.025] text-white/72 hover:border-white/12 hover:bg-white/[0.05] hover:text-white/88';
+  const checkedSwitchClass = switchTone === 'neutral'
+    ? 'border-white/[0.14] bg-white/[0.13]'
+    : 'border-blue-300/30 bg-blue-500/70';
+  const checkedKnobClass = switchTone === 'neutral'
+    ? 'left-[1.35rem] shadow-[0_8px_18px_-10px_rgba(255,255,255,0.42)]'
+    : 'left-[1.35rem] shadow-[0_8px_18px_-10px_rgba(96,165,250,0.7)]';
 
   return (
     <button
       type="button"
       onClick={onToggle}
       disabled={disabled}
-      className={`settings-option-btn group w-full flex items-center justify-between gap-4 rounded-[1rem] border px-4 py-3 text-left outline-none transition-[background-color,border-color,transform,color] duration-200 focus-visible:ring-2 focus-visible:ring-white/14 ${surfaceClass}`}
+      className={`settings-option-btn group w-full flex items-center justify-between gap-4 rounded-[1rem] border px-4 py-3 text-left outline-none transition-[background-color,border-color,transform,color] duration-200 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/[0.10] ${surfaceClass}`}
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold tracking-tight">{label}</div>
@@ -667,12 +685,12 @@ const ToggleRow: React.FC<{
       </div>
       <div
         className={`relative h-6 w-11 shrink-0 rounded-full border transition-[background-color,border-color] duration-200 ${
-          checked ? 'border-blue-300/30 bg-blue-500/70' : 'border-white/8 bg-white/8'
+          checked ? checkedSwitchClass : 'border-white/8 bg-white/8'
         }`}
       >
         <div
           className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-white transition-[left,transform,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-            checked ? 'left-[1.35rem] shadow-[0_8px_18px_-10px_rgba(96,165,250,0.7)]' : 'left-1'
+            checked ? checkedKnobClass : 'left-1'
           }`}
         />
       </div>
@@ -1801,7 +1819,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       <div className="p-4 md:p-8 space-y-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
-            <h3 className="text-lg font-bold text-white tracking-tight">Activity Log</h3>
+            <h3 className={modalPanelTitleClass}>Activity Log</h3>
           </div>
           <button
             type="button"
@@ -2660,10 +2678,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const isCompactTimerPreset = activeTimerPreset === 'compact';
 
     return (
-      <div className="p-4 pt-16 pb-10 md:p-8 space-y-8 max-w-2xl mx-auto">
-        <div className="space-y-3">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Alarm Sound</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="p-4 pt-8 pb-12 md:px-8 md:pt-10 md:pb-14 space-y-8 md:space-y-10 max-w-2xl mx-auto">
+        <div>
+          <h3 className={modalPanelTitleClass}>Settings</h3>
+        </div>
+
+        <div className="space-y-4">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Alarm Sound</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
             {ALARM_OPTIONS.map(option => (
               <button
                 key={option.value}
@@ -2684,14 +2706,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         </div>
 
-        <div className="space-y-3 pt-2 border-t border-white/10">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Focus Sound</div>
-            <div className="mt-1 text-xs text-white/45">
-              Build an auditory association by selecting a focus sound
-            </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="space-y-4 pt-8 md:pt-9 border-t border-white/[0.08]">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Focus Sound</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
             {FOCUS_SOUND_OPTIONS.map(option => (
               <button
                 key={option.value}
@@ -2707,9 +2724,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </button>
             ))}
           </div>
-          <div className="rounded-[1rem] border border-white/10 bg-white/5 px-4 py-3">
+          <div className="rounded-[1rem] border border-white/[0.08] bg-white/[0.045] px-4 py-3.5">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Volume</div>
+              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Volume</div>
               <div className="text-[11px] font-semibold text-white/55">{focusSoundVolumePercent}%</div>
             </div>
             <div className="mt-3">
@@ -2747,9 +2764,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         </div>
 
-        <div className="space-y-4 pt-2 border-t border-white/10">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Timer Settings</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="space-y-5 pt-8 md:pt-9 border-t border-white/[0.08]">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Timer Settings</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
             <div className="space-y-1">
               <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Work (min)</label>
               <input
@@ -2787,16 +2804,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               />
             </div>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-3 pt-1">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Timer Mode</div>
+              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Timer Mode</div>
               {activeTimerPreset === 'custom' && (
-                <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/45">
+                <div className="rounded-full border border-white/[0.08] bg-white/[0.045] px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/45">
                   Custom
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2.5">
               {TIMER_PRESET_OPTIONS.map(option => (
                 <button
                   key={option.value}
@@ -2815,17 +2832,44 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
           </div>
           {isCompactTimerPreset && (
-            <ToggleRow
-              label="Two-In-A-Row"
-              description="Auto-starts the second focus in each pair."
-              checked={settings.twoInARowMode}
-              onToggle={() => updateTimerSettings({ twoInARowMode: !settings.twoInARowMode })}
-              tone="quiet"
-            />
+            <div className="space-y-3">
+              <ToggleRow
+                label="Two-In-A-Row"
+                description="Auto-starts the second focus in each pair."
+                checked={settings.twoInARowMode}
+                onToggle={() => updateTimerSettings({ twoInARowMode: !settings.twoInARowMode })}
+                tone="quiet"
+                switchTone="neutral"
+              />
+              {settings.twoInARowMode && (
+                <div className="doro-auto-start-sound-panel rounded-[1rem] border border-white/[0.08] bg-white/[0.035] px-4 py-3.5">
+                  <div className="mb-3 text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Auto-Start Sound</div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                    {ALARM_OPTIONS.map(option => (
+                      <button
+                        key={`two-in-a-row-sound-${option.value}`}
+                        type="button"
+                        onClick={() => {
+                          updateTimerSettings({ twoInARowStartSound: option.value });
+                          void playAlarm(option.value);
+                        }}
+                        className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                          settings.twoInARowStartSound === option.value
+                            ? 'bg-white/20 border-white/30 text-white'
+                            : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
-        <div ref={categorySettingsSectionRef} className="space-y-4 pt-2 border-t border-white/10">
+        <div ref={categorySettingsSectionRef} className="space-y-5 pt-8 md:pt-9 border-t border-white/[0.08]">
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-bold text-white">Categories</div>
@@ -2884,15 +2928,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {editingCategoryId !== null && (
-                      <button
-                        type="button"
-                        onClick={openNewCategoryForm}
-                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
-                      >
-                        Create New
-                      </button>
-                    )}
                     <button
                       type="button"
                       onClick={() => closeCategoryForm('cancel')}
@@ -2976,6 +3011,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 )}
 
                 <div className="flex flex-wrap gap-2">
+                  {editingCategoryId !== null && (
+                    <button
+                      type="button"
+                      onClick={() => handleArchiveCategory(editingCategoryId)}
+                      className="flex-1 min-w-[8rem] rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/75 transition-all hover:border-red-300/28 hover:bg-red-500/16 hover:text-red-100"
+                    >
+                      Archive
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => closeCategoryForm('cancel')}
@@ -3044,18 +3088,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     type="button"
                     data-category-action="true"
                     onClick={() => openCategoryEditor(category)}
-                    className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                    title="Edit"
+                    aria-label={`Edit ${category.name}`}
                   >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    data-category-action="true"
-                    onClick={() => handleArchiveCategory(category.id)}
-                    className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-white/45 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
-                    aria-label={`Archive ${category.name}`}
-                  >
-                    Archive
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
                   </button>
                 </div>
               </div>
@@ -3092,42 +3132,36 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         <div className="pt-4 border-t border-white/10">
-          <div className="bg-red-500/7 border border-red-500/20 rounded-xl p-4 space-y-3">
-            <div>
-              <div className="text-sm font-bold text-red-200">Danger Zone</div>
-              <div className="text-xs text-red-200/55">Resets local app data for this browser profile.</div>
-            </div>
-            {showResetConfirm ? (
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowResetConfirm(false)}
-                  className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white/65 font-bold uppercase text-xs tracking-[0.14em] rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    hardReset();
-                    setShowResetConfirm(false);
-                    onClose();
-                  }}
-                  className="flex-1 py-2 bg-red-500 text-white font-bold uppercase text-xs tracking-[0.14em] rounded-lg hover:bg-red-600 transition-colors"
-                >
-                  Confirm Reset
-                </button>
-              </div>
-            ) : (
+          {showResetConfirm ? (
+            <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setShowResetConfirm(true)}
-                className="w-full py-2 bg-red-500/15 hover:bg-red-500/24 text-red-200 font-bold uppercase text-xs tracking-[0.14em] rounded-lg transition-colors"
+                onClick={() => setShowResetConfirm(false)}
+                className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white/65 font-bold uppercase text-xs tracking-[0.14em] rounded-lg transition-colors"
               >
-                Reset App Data
+                Cancel
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                onClick={() => {
+                  hardReset();
+                  setShowResetConfirm(false);
+                  onClose();
+                }}
+                className="flex-1 py-2 bg-red-500 text-white font-bold uppercase text-xs tracking-[0.14em] rounded-lg hover:bg-red-600 transition-colors"
+              >
+                Confirm Reset
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowResetConfirm(true)}
+              className="w-full py-2 bg-red-500/15 hover:bg-red-500/24 text-red-200 font-bold uppercase text-xs tracking-[0.14em] rounded-lg transition-colors"
+            >
+              Reset App Data
+            </button>
+          )}
         </div>
       </div>
     );
@@ -3183,10 +3217,47 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         @media (prefers-reduced-motion: reduce) {
           .doro-account-stat-card,
-          .doro-account-stat-rail {
+          .doro-account-stat-rail,
+          .doro-auto-start-sound-panel {
             animation: none !important;
             transition: none !important;
           }
+        }
+        @keyframes doro-auto-start-sound-panel-in {
+          0% {
+            max-height: 0;
+            opacity: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            transform: translateY(6px) scale(0.982);
+            filter: saturate(0.92);
+            border-color: rgba(255, 255, 255, 0);
+          }
+          62% {
+            max-height: 28rem;
+            opacity: 1;
+            padding-top: 0.875rem;
+            padding-bottom: 0.875rem;
+            transform: translateY(-1px) scale(1.006);
+            filter: saturate(1.04);
+            border-color: rgba(255, 255, 255, 0.09);
+          }
+          100% {
+            max-height: 28rem;
+            opacity: 1;
+            padding-top: 0.875rem;
+            padding-bottom: 0.875rem;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+            border-color: rgba(255, 255, 255, 0.08);
+          }
+        }
+        .doro-auto-start-sound-panel {
+          max-height: 28rem;
+          overflow: hidden;
+          transform-origin: top center;
+          will-change: max-height, padding, transform, opacity, filter, border-color;
+          animation: doro-auto-start-sound-panel-in 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
         }
         @keyframes doro-category-editor-open {
           0% {

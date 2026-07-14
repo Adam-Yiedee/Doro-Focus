@@ -258,6 +258,57 @@ const playOscillator = (ctx: AudioContext, type: OscillatorType, freq: number, s
     osc.stop(start + dur);
 };
 
+const playSmoothTone = (
+  ctx: AudioContext,
+  type: OscillatorType,
+  freq: number,
+  start: number,
+  dur: number,
+  gainVal: number,
+  endFreq?: number,
+) => {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, start);
+  if (endFreq && endFreq > 0) {
+    osc.frequency.exponentialRampToValueAtTime(endFreq, start + (dur * 0.82));
+  }
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.linearRampToValueAtTime(gainVal, start + Math.min(0.035, dur * 0.35));
+  gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(start);
+  osc.stop(start + dur + 0.04);
+};
+
+const playNoiseBurst = (
+  ctx: AudioContext,
+  color: NoiseColor,
+  start: number,
+  dur: number,
+  gainVal: number,
+  frequency: number,
+  q = 2.4,
+) => {
+  const source = ctx.createBufferSource();
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+  source.buffer = createNoiseBuffer(ctx, color, Math.max(0.2, dur));
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(frequency, start);
+  filter.Q.value = q;
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.linearRampToValueAtTime(gainVal, start + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+  source.start(start);
+  source.stop(start + dur + 0.02);
+};
+
 const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: number, gainVal: number) => {
   const masterGain = ctx.createGain();
   const lowpass = ctx.createBiquadFilter();
@@ -444,6 +495,102 @@ export const playAlarm = async (soundType: AlarmSound) => {
                  });
                  playOscillator(ctx, 'square', 1500, now + 0.5, 0.3, 0.05);
                  break;
+            case 'harp': {
+                [392.00, 493.88, 587.33, 783.99, 987.77].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.09), 1.15, 0.2 - (i * 0.018));
+                });
+                break;
+            }
+            case 'pulse': {
+                [0, 0.18, 0.36, 0.54].forEach((offset, i) => {
+                    playSmoothTone(ctx, 'square', i % 2 === 0 ? 220 : 330, now + offset, 0.13, 0.11);
+                    playNoiseBurst(ctx, 'pink', now + offset, 0.11, 0.018, 520, 1.4);
+                });
+                break;
+            }
+            case 'beacon': {
+                [880, 660, 880].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.28), 0.42, 0.18, freq * 1.035);
+                });
+                break;
+            }
+            case 'bubbles': {
+                [620, 740, 880, 1046.5, 1318.5, 1568].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.055), 0.22, 0.13 - (i * 0.01), freq * 1.08);
+                });
+                break;
+            }
+            case 'pluck': {
+                [246.94, 369.99, 493.88].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.07), 0.5, 0.2 - (i * 0.035));
+                    playNoiseBurst(ctx, 'brown', now + (i * 0.07), 0.08, 0.018, 1200 + (i * 260), 3);
+                });
+                break;
+            }
+            case 'flare': {
+                const fOsc = ctx.createOscillator();
+                const fGain = ctx.createGain();
+                const fFilter = ctx.createBiquadFilter();
+                fOsc.type = 'sawtooth';
+                fOsc.frequency.setValueAtTime(180, now);
+                fOsc.frequency.exponentialRampToValueAtTime(1480, now + 0.58);
+                fFilter.type = 'lowpass';
+                fFilter.frequency.setValueAtTime(420, now);
+                fFilter.frequency.exponentialRampToValueAtTime(3200, now + 0.42);
+                fFilter.Q.value = 1.2;
+                fGain.gain.setValueAtTime(0.0001, now);
+                fGain.gain.linearRampToValueAtTime(0.18, now + 0.04);
+                fGain.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
+                fOsc.connect(fFilter);
+                fFilter.connect(fGain);
+                fGain.connect(ctx.destination);
+                fOsc.start(now);
+                fOsc.stop(now + 0.9);
+                break;
+            }
+            case 'drift': {
+                [987.77, 739.99, 554.37, 415.3].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.16), 0.95, 0.16 - (i * 0.02), freq * 0.985);
+                });
+                break;
+            }
+            case 'orbit': {
+                const oDelay = ctx.createDelay();
+                const oFeedback = ctx.createGain();
+                oDelay.delayTime.setValueAtTime(0.18, now);
+                oFeedback.gain.setValueAtTime(0.26, now);
+                oDelay.connect(oFeedback);
+                oFeedback.connect(oDelay);
+                oDelay.connect(ctx.destination);
+                [329.63, 493.88, 659.25, 987.77].forEach((freq, i) => {
+                    const oOsc = ctx.createOscillator();
+                    const oGain = ctx.createGain();
+                    oOsc.type = i % 2 === 0 ? 'sine' : 'triangle';
+                    oOsc.frequency.setValueAtTime(freq, now + (i * 0.12));
+                    oOsc.detune.setValueAtTime(i % 2 === 0 ? -5 : 6, now + (i * 0.12));
+                    oGain.gain.setValueAtTime(0.0001, now + (i * 0.12));
+                    oGain.gain.linearRampToValueAtTime(0.12, now + (i * 0.12) + 0.03);
+                    oGain.gain.exponentialRampToValueAtTime(0.001, now + (i * 0.12) + 0.7);
+                    oOsc.connect(oGain);
+                    oGain.connect(ctx.destination);
+                    oGain.connect(oDelay);
+                    oOsc.start(now + (i * 0.12));
+                    oOsc.stop(now + (i * 0.12) + 0.74);
+                });
+                break;
+            }
+            case 'tada': {
+                [
+                    { freq: 523.25, start: 0, dur: 0.22, gain: 0.075 },
+                    { freq: 659.25, start: 0.08, dur: 0.22, gain: 0.075 },
+                    { freq: 783.99, start: 0.16, dur: 0.48, gain: 0.095 },
+                    { freq: 1046.5, start: 0.24, dur: 0.54, gain: 0.07 },
+                ].forEach((note) => {
+                    playTrumpetVoice(ctx, note.freq, now + note.start, note.dur, note.gain);
+                });
+                playNoiseBurst(ctx, 'white', now + 0.22, 0.18, 0.025, 2600, 1.7);
+                break;
+            }
         }
     } catch(e) { console.error(e); }
 };
