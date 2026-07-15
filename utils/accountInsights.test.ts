@@ -12,6 +12,7 @@ const makeLog = ({
   start,
   end,
   reason = '',
+  source,
   categoryId = null,
   categoryName,
 }: {
@@ -19,6 +20,7 @@ const makeLog = ({
   start: string;
   end: string;
   reason?: string;
+  source?: LogEntry['source'];
   categoryId?: number | null;
   categoryName?: string;
 }): LogEntry => ({
@@ -27,6 +29,7 @@ const makeLog = ({
   end,
   duration: Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000),
   reason,
+  source,
   task: null,
   color: undefined,
   categoryId,
@@ -213,6 +216,29 @@ describe('computeAccountInsights', () => {
     expect(insights.today.pomodoros).toBeCloseTo(1.8, 5);
     expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(1.8, 5);
     expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(1.8, 5);
+  });
+
+  it('converts manually logged focus minutes to standard pomodoros in today and trend stats', () => {
+    const today = '2026-01-14';
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-01T00:00:00',
+      nowMs: Date.parse(`${today}T23:00:00`),
+      categories,
+      logs: [
+        makeLog({
+          start: `${today}T08:00:00`,
+          end: `${today}T10:00:00`,
+          reason: 'Manual Focus',
+          source: 'manual',
+          categoryId: 1,
+        }),
+      ],
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(120, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(4.8, 5);
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(4.8, 5);
+    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(4.8, 5);
   });
 
   it('builds recent daily trend points and session lanes for interactive charts', () => {

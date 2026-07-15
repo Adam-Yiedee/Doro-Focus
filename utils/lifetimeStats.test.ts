@@ -55,7 +55,7 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 25 });
   });
 
-  it('tracks manually logged focus as normal focus and as manual focus', () => {
+  it('tracks manually logged focus as focus time, manual focus, and standard pomos', () => {
     const stats = calculateLifetimeStatsFromData([], [
       makeLog({
         start: '2026-03-12T09:00:00.000Z',
@@ -68,7 +68,7 @@ describe('calculateLifetimeStatsFromData', () => {
 
     expect(stats.totalFocusHours).toBeCloseTo(2, 5);
     expect(stats.manualFocusHours).toBeCloseTo(2, 5);
-    expect(stats.totalPomos).toBe(0);
+    expect(stats.totalPomos).toBeCloseTo(4.8, 5);
     expect(stats.activeDays).toBe(1);
     expect(stats.categoryBreakdown).toEqual({ Writing: 120 });
   });

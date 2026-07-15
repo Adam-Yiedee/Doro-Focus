@@ -170,7 +170,7 @@ describe('account store blob compatibility', () => {
     });
   });
 
-  it('tracks manually logged focus separately while counting it as focus time', () => {
+  it('tracks manually logged focus separately while counting it as focus time and standard pomos', () => {
     const stats = calculateLifetimeStatsFromAccountData([], [
       {
         type: 'work',
@@ -190,7 +190,7 @@ describe('account store blob compatibility', () => {
     expect(stats).toMatchObject({
       totalFocusHours: 2,
       manualFocusHours: 2,
-      totalPomos: 0,
+      totalPomos: 4.8,
       activeDays: 1,
       categoryBreakdown: {
         Writing: 120,

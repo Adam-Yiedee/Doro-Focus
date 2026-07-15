@@ -112,7 +112,9 @@ const isManualFocusLog = (entry) => {
 
 const getPomodoroEquivalentWeight = (entry) => {
   if (!entry || entry.type !== 'work') return 0;
-  if (isManualFocusLog(entry)) return 0;
+  if (isManualFocusLog(entry)) {
+    return clampNumber(entry.duration, 0) / ACCOUNT_STATS_POMODORO_SECONDS;
+  }
   const reason = cleanString(entry.reason).trim().toLowerCase();
   if (reason === POMODORO_COMPLETE_REASON) return 1;
   if (reason === MINI_POMODORO_COMPLETE_REASON) {

@@ -43,7 +43,9 @@ export const getAccountStatsPomodoroEquivalent = (
   entry: Pick<LogEntry, 'type' | 'reason' | 'duration' | 'source'>,
 ) => {
   if (entry.type !== 'work') return 0;
-  if (entry.source === 'manual') return 0;
+  if (entry.source === 'manual') {
+    return getPositiveDurationSeconds(entry.duration) / ACCOUNT_STATS_POMODORO_SECONDS;
+  }
 
   const normalized = normalizeReason(entry.reason);
   if (normalized === POMODORO_COMPLETE_REASON.toLowerCase()) return 1;

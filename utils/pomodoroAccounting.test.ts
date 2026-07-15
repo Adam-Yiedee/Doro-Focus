@@ -54,4 +54,13 @@ describe('pomodoro accounting', () => {
       },
     })).toBeCloseTo(6.6, 5);
   });
+
+  it('converts manually logged focus minutes into account pomodoro equivalents', () => {
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'work',
+      reason: 'Manual Focus',
+      source: 'manual',
+      duration: 7200,
+    })).toBeCloseTo(4.8, 5);
+  });
 });
