@@ -154,6 +154,26 @@ export interface TimerRuntimeSnapshot {
   activityStartIso: string | null;
 }
 
+export interface TimerSpectatorState {
+  version: 1;
+  hostName: string;
+  activeMode: TimerMode;
+  timerStarted: boolean;
+  isIdle: boolean;
+  workTime: number;
+  breakTime: number;
+  pomodoroCount: number;
+  allPauseActive: boolean;
+  allPauseTime: number;
+  graceOpen: boolean;
+  graceContext: 'afterWork' | 'afterBreak' | null;
+  activeTaskName: string | null;
+  activeColor?: string;
+  settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval' | 'timerPreset' | 'twoInARowMode'>;
+  runtime: TimerRuntimeSnapshot | null;
+  updatedAtMs: number;
+}
+
 // Group Study Types
 export interface GroupSyncConfig {
   syncTimers: boolean;

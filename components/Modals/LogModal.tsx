@@ -7,7 +7,10 @@ import { CATEGORY_ICON_OPTIONS, getIcon } from '../../utils/icons';
 import { computeAccountInsights } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { getActiveCategories } from '../../utils/categoryVisibility';
-import { DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG } from '../../utils/groupStudy';
+import {
+  DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG,
+  TIMER_ONLY_GROUP_SYNC_CONFIG,
+} from '../../utils/groupStudy';
 import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import {
   formatPomodoroCount,
@@ -18,6 +21,13 @@ import {
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm, startFocusSoundPreview, stopFocusSoundPreview } from '../../utils/sound';
 import { TIMER_PRESETS, getMatchingTimerPreset } from '../../utils/timerRuntime';
+import {
+  buildTimerSpectatorUrl,
+  formatTimerShareDuration,
+  formatTimerShareEndLabel,
+  getTimerShareEstimate,
+  getTimerShareModeLabel,
+} from '../../utils/timerShare';
 
 interface LogModalProps {
   isOpen: boolean;
@@ -728,6 +738,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     addManualFocusLog,
     settings,
     updateSettings,
+    workTime,
+    breakTime,
+    activeMode,
+    timerStarted,
+    isIdle,
+    allPauseActive,
+    graceOpen,
+    activeTask,
     hardReset,
     pastSessions,
     categories,
@@ -786,6 +804,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [hostDraftConfig, setHostDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [joinDraftConfig, setJoinDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [inviteSessionId, setInviteSessionId] = useState('');
+  const [timerShareBusy, setTimerShareBusy] = useState(false);
+  const [timerShareMessage, setTimerShareMessage] = useState<string | null>(null);
+  const [showTimerShareQr, setShowTimerShareQr] = useState(false);
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -1095,6 +1116,28 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const groupInviteUrl = useMemo(() => (
     safeGroupSessionId ? buildGroupInviteUrl(safeGroupSessionId) : ''
   ), [safeGroupSessionId]);
+  const timerShareEstimate = useMemo(() => getTimerShareEstimate({
+    activeMode,
+    timerStarted,
+    isIdle,
+    workTime,
+    breakTime,
+    allPauseActive,
+    graceOpen,
+  }), [activeMode, allPauseActive, breakTime, graceOpen, isIdle, timerStarted, workTime]);
+  const timerShareEndLabel = useMemo(() => (
+    formatTimerShareEndLabel(timerShareEstimate.endMs, timerShareEstimate.status === 'idle' ? 'Not running' : 'No end time')
+  ), [timerShareEstimate.endMs, timerShareEstimate.status]);
+  const timerShareUrl = useMemo(() => (
+    safeGroupSessionId
+      ? buildTimerSpectatorUrl(safeGroupSessionId, {
+          activeMode,
+          endMs: timerShareEstimate.endMs,
+          endLabel: timerShareEndLabel,
+          remainingSeconds: timerShareEstimate.remainingSeconds,
+        })
+      : ''
+  ), [activeMode, safeGroupSessionId, timerShareEndLabel, timerShareEstimate.endMs, timerShareEstimate.remainingSeconds]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1660,6 +1703,55 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setGroupLocalError(error instanceof Error ? error.message : 'Failed to create session.');
     } finally {
       setGroupBusy(false);
+    }
+  };
+
+  const buildCurrentTimerShareUrl = (sessionId: string) => {
+    const latestEstimate = getTimerShareEstimate({
+      activeMode,
+      timerStarted,
+      isIdle,
+      workTime,
+      breakTime,
+      allPauseActive,
+      graceOpen,
+    });
+    const latestEndLabel = formatTimerShareEndLabel(
+      latestEstimate.endMs,
+      latestEstimate.status === 'idle' ? 'Not running' : 'No end time',
+    );
+
+    return buildTimerSpectatorUrl(sessionId, {
+      activeMode,
+      endMs: latestEstimate.endMs,
+      endLabel: latestEndLabel,
+      remainingSeconds: latestEstimate.remainingSeconds,
+    });
+  };
+
+  const handleCopyTimerShareLink = async () => {
+    if (timerShareBusy) return;
+    setTimerShareBusy(true);
+    setTimerShareMessage(null);
+
+    try {
+      let sessionId = safeGroupSessionId;
+
+      if (!sessionId) {
+        const shareName = groupName.trim() || safeUser?.username || safeUserName || 'Host';
+        setGroupName(shareName);
+        setHostDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
+        sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG);
+      }
+
+      const link = buildCurrentTimerShareUrl(sessionId);
+      const copied = await copyToClipboard(link);
+      setTimerShareMessage(copied ? 'Spectator link copied.' : 'Could not copy link. Try again from this browser.');
+      if (copied) setShowTimerShareQr(false);
+    } catch (error) {
+      setTimerShareMessage(error instanceof Error ? error.message : 'Failed to prepare spectator link.');
+    } finally {
+      setTimerShareBusy(false);
     }
   };
 
@@ -2496,6 +2588,77 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const groupError = groupLocalError || peerError;
     const hostControls = safeHostSyncConfig;
     const clientControls = safeClientSyncConfig;
+    const timerShareModeLabel = getTimerShareModeLabel(activeMode);
+    const timerShareTaskLabel = activeMode === 'work' && activeTask?.name ? activeTask.name : timerShareModeLabel;
+    const timerShareRemainingLabel = timerShareEstimate.status === 'overdue'
+      ? `${formatTimerShareDuration(timerShareEstimate.remainingSeconds)} overdue`
+      : formatTimerShareDuration(timerShareEstimate.remainingSeconds);
+    const timerSharePrimaryLabel = safeGroupSessionId ? 'Copy Spectator Link' : 'Start & Copy Link';
+    const timerShareCard = (
+      <div className="rounded-[1.75rem] border border-emerald-300/16 bg-emerald-400/[0.055] p-5 md:p-6 space-y-4">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/18 bg-emerald-400/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100/85">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-200" />
+              Read-Only Timer Link
+            </div>
+            <h4 className="mt-3 text-xl font-semibold tracking-tight text-white">Share Timer View</h4>
+            <p className="mt-2 text-sm leading-relaxed text-white/44">
+              Friends can watch your focus and break bank timers with the estimated end time. They cannot control or change anything.
+            </p>
+          </div>
+
+          <div className="rounded-[1.15rem] border border-white/10 bg-black/18 px-4 py-3 md:min-w-[11rem] md:text-right">
+            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/36">
+              {timerShareTaskLabel}
+            </div>
+            <div className="mt-1 text-2xl font-semibold tracking-tight text-white">
+              {timerShareEndLabel}
+            </div>
+            <div className="mt-1 font-mono text-[11px] font-bold uppercase tracking-[0.12em] text-white/42">
+              {timerShareRemainingLabel}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={handleCopyTimerShareLink}
+            disabled={timerShareBusy}
+            className="rounded-[0.95rem] border border-emerald-300/22 bg-emerald-400/[0.11] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-100 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-emerald-400/[0.17] disabled:cursor-not-allowed disabled:opacity-55"
+          >
+            {timerShareBusy ? 'Preparing...' : timerSharePrimaryLabel}
+          </button>
+          {safeGroupSessionId && timerShareUrl && (
+            <button
+              type="button"
+              onClick={() => setShowTimerShareQr(prev => !prev)}
+              className="rounded-[0.95rem] border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/72 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-white/[0.08] hover:text-white"
+            >
+              {showTimerShareQr ? 'Hide QR' : 'Show QR'}
+            </button>
+          )}
+        </div>
+
+        {timerShareMessage && (
+          <div className="rounded-[0.9rem] border border-white/8 bg-black/14 px-3 py-2 text-[11px] leading-relaxed text-white/58">
+            {timerShareMessage}
+          </div>
+        )}
+
+        {showTimerShareQr && safeGroupSessionId && timerShareUrl && (
+          <div className="space-y-3 rounded-[1.2rem] border border-white/8 bg-white/[0.025] px-4 py-4">
+            <div className="flex justify-center rounded-[1rem] bg-white p-4">
+              <QRCodeSVG value={timerShareUrl} size={180} />
+            </div>
+            <div className="text-center text-[11px] leading-relaxed text-white/46">
+              This opens the spectator timer view only.
+            </div>
+          </div>
+        )}
+      </div>
+    );
 
     if (groupBusy) {
       return (
@@ -2597,6 +2760,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
             </div>
 
+            {timerShareCard}
+
             {isHost ? (
               <div className="rounded-[1.75rem] border border-white/8 bg-white/[0.03] p-5 md:p-6 space-y-3">
                 <div>
@@ -2636,6 +2801,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               onClick={() => {
                 leaveGroupSession();
                 setShowGroupQr(false);
+                setShowTimerShareQr(false);
+                setTimerShareMessage(null);
                 inviteAutoJoinKeyRef.current = null;
                 setInviteSessionId('');
                 setGroupFlow('menu');
@@ -2658,6 +2825,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               Sync timers and study with friends.
             </p>
           </div>
+
+          {timerShareCard}
 
           {groupError && (
             <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
@@ -2821,14 +2990,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const isCompactTimerPreset = activeTimerPreset === 'compact';
 
     return (
-      <div className="p-4 pt-8 pb-12 md:px-8 md:pt-10 md:pb-14 space-y-8 md:space-y-10 max-w-2xl mx-auto">
+      <div className="settings-panel-content p-4 pt-8 pb-12 md:px-8 md:pt-10 md:pb-14 space-y-8 md:space-y-10 max-w-2xl mx-auto">
         <div>
           <h3 className={modalPanelTitleClass}>Settings</h3>
         </div>
 
         <div className="space-y-4">
           <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Alarm Sound</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+          <div className="settings-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
             {ALARM_OPTIONS.map(option => (
               <button
                 key={option.value}
@@ -2837,7 +3006,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   updateTimerSettings({ alarmSound: option.value });
                   void playAlarm(option.value);
                 }}
-                className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
                   settings.alarmSound === option.value
                     ? 'bg-white/20 border-white/30 text-white'
                     : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
@@ -2851,13 +3020,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
         <div className="space-y-4 pt-8 md:pt-9 border-t border-white/[0.08]">
           <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Focus Sound</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+          <div className="settings-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
             {FOCUS_SOUND_OPTIONS.map(option => (
               <button
                 key={option.value}
                 type="button"
                 onClick={() => updateTimerSettings({ focusSound: option.value })}
-                className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
                   settings.focusSound === option.value
                     ? 'bg-white/20 border-white/30 text-white'
                     : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
@@ -3009,7 +3178,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   }`}
                 >
                   <div className="mb-3 text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Auto-Start Sound</div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                  <div className="settings-sound-grid settings-auto-start-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
                     {ALARM_OPTIONS.map(option => (
                       <button
                         key={`two-in-a-row-sound-${option.value}`}
@@ -3018,7 +3187,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                           updateTimerSettings({ twoInARowStartSound: option.value });
                           void playAlarm(option.value);
                         }}
-                        className={`settings-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                        className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
                           settings.twoInARowStartSound === option.value
                             ? 'bg-white/20 border-white/30 text-white'
                             : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
@@ -4074,6 +4243,129 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-no-spin[type='number'] {
           -moz-appearance: textfield;
           appearance: textfield;
+        }
+        @media (max-width: 767px) {
+          .doro-settings-shell {
+            height: calc(100dvh - 1rem) !important;
+            max-height: calc(100dvh - 1rem);
+            border-radius: 1.45rem !important;
+          }
+          .doro-settings-shell input,
+          .doro-settings-shell textarea,
+          .doro-settings-shell select {
+            font-size: 16px;
+          }
+          .settings-tabbar {
+            padding: 0.46rem 0.38rem 0.4rem !important;
+            gap: 0.25rem !important;
+          }
+          .settings-tablist {
+            display: grid !important;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            min-width: 100% !important;
+            width: 100%;
+            gap: 0.16rem;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+          }
+          .settings-tab-btn {
+            flex: initial !important;
+            min-width: 0;
+            width: 100%;
+            padding: 0.78rem 0.32rem !important;
+            font-size: clamp(0.48rem, 1.72vw, 0.625rem) !important;
+            letter-spacing: 0.13em !important;
+            text-align: center;
+          }
+          .settings-tab-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .settings-tab-indicator {
+            top: 0.32rem;
+            bottom: 0.32rem;
+          }
+          .settings-close-slot {
+            width: 3rem !important;
+            margin-left: 0.18rem !important;
+          }
+          .settings-close-btn {
+            width: 2.5rem !important;
+            height: 2.5rem !important;
+          }
+          .settings-body {
+            overscroll-behavior: contain;
+          }
+          .doro-settings-panel-view > div {
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+          }
+          .settings-panel-content {
+            padding-top: 1.25rem !important;
+            padding-bottom: 2rem !important;
+          }
+          .settings-panel-content button {
+            min-height: 2.35rem;
+          }
+          .settings-option-btn {
+            min-height: 2.35rem;
+          }
+          .settings-sound-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+            gap: 0.45rem !important;
+          }
+          .settings-sound-option-btn {
+            min-height: 2.15rem !important;
+            border-radius: 0.7rem !important;
+            padding: 0.52rem 0.38rem !important;
+            font-size: 0.53rem !important;
+            letter-spacing: 0.085em !important;
+            line-height: 1.05;
+          }
+          .doro-auto-start-sound-panel {
+            border-radius: 0.9rem !important;
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+          }
+          .doro-focus-preview-btn {
+            width: 2.5rem;
+            height: 2.5rem;
+            flex-basis: 2.5rem;
+          }
+          .doro-focus-sound-slider-shell,
+          .doro-focus-sound-slider,
+          .doro-focus-sound-slider::-webkit-slider-runnable-track,
+          .doro-focus-sound-slider::-moz-range-track {
+            height: 2.25rem !important;
+          }
+          .doro-focus-sound-slider {
+            min-height: 2.25rem !important;
+            box-sizing: border-box;
+            padding-block: 0.45rem !important;
+          }
+          .doro-focus-sound-slider-track {
+            height: 0.8rem !important;
+          }
+          .doro-focus-sound-slider::-webkit-slider-thumb {
+            width: 1.35rem;
+            height: 1.35rem;
+          }
+          .doro-focus-sound-slider::-moz-range-thumb {
+            width: 1.35rem;
+            height: 1.35rem;
+          }
+          .doro-category-editor-shell {
+            border-radius: 1.1rem !important;
+            padding: 0.875rem !important;
+          }
+          .doro-category-editor-field {
+            min-width: 100% !important;
+          }
+          .doro-category-editor-actions button,
+          .doro-category-editor-footer button {
+            min-height: 2.75rem;
+          }
         }
         .doro-settings-shell.theme-light {
           position: relative;

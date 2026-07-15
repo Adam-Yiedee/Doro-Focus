@@ -615,7 +615,7 @@ const Layout: React.FC = () => {
 
   return (
     <div 
-      className="min-h-screen w-full flex flex-col items-center p-4 relative overflow-x-hidden transition-[background-color,background-image] duration-1000 ease-[cubic-bezier(0.25,1,0.5,1)]"
+      className="doro-app-shell min-h-screen w-full flex flex-col items-center p-4 relative overflow-x-hidden transition-[background-color,background-image] duration-1000 ease-[cubic-bezier(0.25,1,0.5,1)]"
       style={containerStyle}
     >
       <style>{`
@@ -848,6 +848,44 @@ const Layout: React.FC = () => {
           opacity: 0;
           transform: translateY(12px) scale(0.96);
         }
+        @media (max-width: 767px) {
+          .doro-app-shell {
+            min-height: 100dvh;
+            padding: max(0.75rem, env(safe-area-inset-top)) 0.75rem max(0.9rem, env(safe-area-inset-bottom));
+          }
+          .doro-notification-stack {
+            top: max(0.5rem, env(safe-area-inset-top));
+            width: calc(100vw - 1rem);
+            gap: 0.45rem;
+          }
+          .doro-daily-welcome-banner,
+          .doro-group-banner {
+            border-radius: 1.15rem !important;
+            padding: 0.75rem 0.875rem !important;
+          }
+          .doro-mobile-topbar {
+            margin-bottom: 0.55rem;
+            padding-inline: 0.25rem;
+          }
+          .doro-mobile-topbar button {
+            min-width: 2.75rem;
+            min-height: 2.75rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .doro-main-surface {
+            border-radius: 1.6rem !important;
+            padding: 0.875rem 0.75rem 1rem !important;
+          }
+          .doro-main-surface-inner {
+            gap: 2rem !important;
+          }
+          .doro-timer-section {
+            padding-top: 1rem !important;
+            padding-bottom: 0.75rem !important;
+          }
+        }
         @media (prefers-reduced-motion: reduce) {
           .doro-all-tasks-celebration,
           .doro-all-tasks-celebration-backdrop,
@@ -868,7 +906,7 @@ const Layout: React.FC = () => {
         }
       `}</style>
 
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,34rem)] pointer-events-none flex flex-col gap-2">
+      <div className="doro-notification-stack fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,34rem)] pointer-events-none flex flex-col gap-2">
         {dailyWelcomeBanner && (
           <button
             type="button"
@@ -1026,7 +1064,7 @@ const Layout: React.FC = () => {
         style={contentStyle}
       >
         {/* Top Bar */}
-        <div className="w-full max-w-4xl flex justify-end items-center z-30 mb-4">
+        <div className="doro-mobile-topbar w-full max-w-4xl flex justify-end items-center z-30 mb-4">
           <div className="flex gap-2">
             <button 
               onClick={() => setShowPauseModal(true)}
@@ -1048,13 +1086,13 @@ const Layout: React.FC = () => {
         {/* Main Content Area */}
         <div className="w-full max-w-5xl z-10">
           <div
-            className={`relative overflow-hidden rounded-[2rem] md:rounded-[2.6rem] px-4 py-5 md:px-7 md:py-7 ${mainSurfaceClass}`}
+            className={`doro-main-surface relative overflow-hidden rounded-[2rem] md:rounded-[2.6rem] px-4 py-5 md:px-7 md:py-7 ${mainSurfaceClass}`}
             style={mainSurfaceShellStyle}
           >
             <div className="pointer-events-none absolute inset-0" style={{ borderRadius: 'inherit', ...mainSurfaceEdgeStyle }} />
-            <div className="relative flex flex-col gap-12">
+            <div className="doro-main-surface-inner relative flex flex-col gap-12">
               {/* Timer Section */}
-              <div className="w-full flex justify-center animate-slide-up py-6 md:py-8">
+              <div className="doro-timer-section w-full flex justify-center animate-slide-up py-6 md:py-8">
                 <TimerDisplay />
               </div>
 

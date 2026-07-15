@@ -14,58 +14,53 @@ const SummaryView: React.FC = () => {
     return `${Math.max(1, Math.round(minutes))}`;
   };
   const pomoDisplay = getSessionPomoDisplay(sessionStats);
+  const statCards = [
+    { label: 'Focus Minutes', value: formatSummaryMinutes(sessionStats.totalWorkMinutes), tone: 'text-white' },
+    { label: 'Break Minutes', value: formatSummaryMinutes(sessionStats.totalBreakMinutes), tone: 'text-teal-200' },
+    { label: pomoDisplay.label, value: pomoDisplay.value, tone: 'text-white' },
+    { label: 'Tasks Done', value: sessionStats.tasksCompleted, tone: 'text-white' },
+  ];
+  const categoryEntries = Object.entries(sessionStats.categoryStats);
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden bg-black animate-fade-in">
-        <div className="absolute inset-0 z-0">
-             <div className="absolute top-[-20%] left-[10%] h-[600px] w-[600px] rounded-full bg-blue-500/16 blur-[150px]" />
-             <div className="absolute bottom-[-20%] right-[10%] h-[600px] w-[600px] rounded-full bg-purple-500/16 blur-[150px]" />
-        </div>
-
-        <div className="relative z-10 min-h-full px-4 py-5 sm:px-6 sm:py-6">
+    <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden bg-black/72 backdrop-blur-xl animate-fade-in">
+        <div className="relative z-10 flex min-h-full items-center justify-center px-3 py-5 sm:px-6 sm:py-8">
+          <div className="w-full max-w-4xl overflow-hidden rounded-[1.8rem] border border-white/10 bg-[#0f0f11]/88 p-4 shadow-[0_32px_90px_-48px_rgba(0,0,0,0.92)] backdrop-blur-2xl sm:p-6 md:p-8 animate-slide-up">
           <button
             onClick={closeSummary}
-            className="sticky top-0 z-20 ml-auto flex h-11 items-center rounded-full border border-white/10 bg-black/45 px-4 text-[11px] font-bold uppercase tracking-[0.14em] text-white/72 backdrop-blur-md transition-colors hover:border-white/20 hover:bg-black/60 hover:text-white"
+            className="ml-auto flex h-10 items-center rounded-full border border-white/10 bg-white/[0.045] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 transition-colors hover:border-white/18 hover:bg-white/[0.075] hover:text-white"
           >
             Close
           </button>
 
-          <div className="mx-auto mt-4 flex w-full max-w-4xl flex-col items-center gap-6 sm:gap-8 md:gap-10 animate-slide-up">
-            <div className="text-center space-y-3 sm:space-y-4">
-                <h1 className="text-4xl sm:text-5xl md:text-7xl lg:text-8xl font-bold text-white tracking-tighter drop-shadow-2xl">
+          <div className="mx-auto mt-3 flex w-full flex-col items-center gap-6 sm:gap-7">
+            <div className="text-center">
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/42">Session Summary</div>
+                <h1 className="mt-2 text-3xl font-bold leading-tight text-white sm:text-4xl md:text-5xl">
                     Session Complete
                 </h1>
-                <p className="text-sm sm:text-base text-white/50 uppercase tracking-[0.26em] font-medium">Great Work Today</p>
+                <p className="mt-3 text-sm leading-relaxed text-white/48">Great work today.</p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 md:gap-6 w-full">
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-6 flex min-h-[9rem] sm:min-h-[11rem] xl:aspect-square flex-col items-center justify-center gap-2">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{formatSummaryMinutes(sessionStats.totalWorkMinutes)}</span>
-                    <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Focus Mins</span>
-                </div>
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-6 flex min-h-[9rem] sm:min-h-[11rem] xl:aspect-square flex-col items-center justify-center gap-2">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-teal-200">{formatSummaryMinutes(sessionStats.totalBreakMinutes)}</span>
-                    <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Break Mins</span>
-                </div>
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-6 flex min-h-[9rem] sm:min-h-[11rem] xl:aspect-square flex-col items-center justify-center gap-2">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{pomoDisplay.value}</span>
-                    <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">{pomoDisplay.label}</span>
-                </div>
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-6 flex min-h-[9rem] sm:min-h-[11rem] xl:aspect-square flex-col items-center justify-center gap-2">
-                    <span className="text-4xl md:text-5xl font-mono font-bold text-white">{sessionStats.tasksCompleted}</span>
-                    <span className="text-[10px] md:text-xs uppercase tracking-widest text-white/50 text-center">Tasks Done</span>
-                </div>
+            <div className="grid w-full grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+                {statCards.map((card) => (
+                    <div key={card.label} className="flex min-h-[7.5rem] flex-col justify-between rounded-[1.2rem] border border-white/10 bg-white/[0.045] px-4 py-4 shadow-[0_18px_34px_-30px_rgba(0,0,0,0.65)] sm:min-h-[8.25rem] sm:px-5">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">{card.label}</span>
+                        <span className={`font-sans text-[2.35rem] font-bold leading-none tabular-nums ${card.tone} md:text-[2.75rem]`}>
+                          {card.value}
+                        </span>
+                    </div>
+                ))}
             </div>
 
-            {/* Category Breakdown */}
-            {Object.keys(sessionStats.categoryStats).length > 0 && (
-                <div className="w-full max-w-2xl">
-                     <h3 className="text-white/40 uppercase tracking-widest text-xs font-bold text-center mb-4">Focus Distribution</h3>
-                     <div className="flex gap-3 sm:gap-4 flex-wrap justify-center">
-                          {Object.entries(sessionStats.categoryStats).map(([name, mins]) => (
-                              <div key={name} className="bg-white/10 rounded-xl px-4 py-2 border border-white/5">
-                                  <span className="text-white font-bold">{name}</span>
-                                  <span className="text-white/50 ml-2 text-sm">{Math.round(mins as number)}m</span>
+            {categoryEntries.length > 0 && (
+                <div className="w-full rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-4 py-4 sm:px-5">
+                     <h3 className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">Focus Distribution</h3>
+                     <div className="mt-3 flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide sm:flex-wrap sm:overflow-visible sm:pb-0">
+                          {categoryEntries.map(([name, mins]) => (
+                              <div key={name} className="flex shrink-0 items-center gap-2 rounded-xl border border-white/8 bg-white/[0.045] px-3 py-2">
+                                  <span className="max-w-[11rem] truncate text-sm font-semibold text-white">{name}</span>
+                                  <span className="text-xs font-semibold text-white/48">{Math.round(mins as number)}m</span>
                               </div>
                          ))}
                      </div>
@@ -74,10 +69,11 @@ const SummaryView: React.FC = () => {
 
             <button 
                 onClick={closeSummary}
-                className="mb-3 mt-2 sm:mt-4 px-8 sm:px-12 py-4 sm:py-5 bg-white text-black rounded-full font-bold uppercase tracking-widest text-sm hover:scale-105 active:scale-95 transition-all shadow-[0_0_40px_-10px_rgba(255,255,255,0.5)] hover:shadow-[0_0_60px_-10px_rgba(255,255,255,0.8)]"
+                className="mt-1 w-full rounded-xl border border-white/12 bg-white/12 px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition-all hover:border-white/22 hover:bg-white/18 active:scale-[0.99] sm:w-auto sm:min-w-[14rem]"
             >
                 Start New Session
             </button>
+          </div>
           </div>
         </div>
     </div>

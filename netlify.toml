@@ -5,3 +5,14 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/share/:session"
+  to = "/.netlify/functions/spectate-link?session=:session"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/spectate/:session"
+  to = "/index.html"
+  status = 200

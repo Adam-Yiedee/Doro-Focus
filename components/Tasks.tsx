@@ -45,7 +45,7 @@ const getDateKey = (date: Date) => {
 
 const getColorSwatchClass = (selected: boolean, size: 'sm' | 'md' = 'md') => {
   const baseSize = size === 'sm' ? 'w-4 h-4' : 'w-5 h-5';
-  return `${baseSize} rounded-full transform-gpu transition-all duration-300 ease-out ${
+  return `doro-task-color-swatch ${baseSize} rounded-full transform-gpu transition-all duration-300 ease-out ${
     selected
       ? 'ring-2 ring-white ring-offset-1 ring-offset-transparent shadow-[0_0_12px_rgba(255,255,255,0.25)] scale-105'
       : 'opacity-75 hover:opacity-100 hover:-translate-y-[1px] hover:scale-110 hover:shadow-[0_0_10px_rgba(255,255,255,0.18)] active:scale-95'
@@ -72,14 +72,14 @@ const getCategoryTrayClass = (hasSelection: boolean, extraClassName = '') => (
 );
 
 const getCategoryChipClass = (selected: boolean) => (
-  `shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${
+  `doro-task-category-chip shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${
     selected
       ? 'bg-white/[0.11] border-white/[0.18] opacity-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
       : 'bg-white/[0.04] border-white/[0.08] opacity-60 hover:opacity-100 hover:bg-white/[0.07]'
   }`
 );
 
-const ADD_CATEGORY_CHIP_CLASS = 'shrink-0 flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 transition-all opacity-75 hover:opacity-100 hover:bg-white/[0.07]';
+const ADD_CATEGORY_CHIP_CLASS = 'doro-task-add-category-chip shrink-0 flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 transition-all opacity-75 hover:opacity-100 hover:bg-white/[0.07]';
 
 interface TasksProps {
   onPreviewSurfaceColorChange?: (color?: string) => void;
@@ -234,11 +234,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const isVisibleInList = showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task));
   const isDraggedTask = isTopLevel && draggingTaskId === task.id;
   const editPickerRowClass = isNestedTask
-    ? 'flex flex-col gap-2 overflow-hidden py-1 sm:flex-row sm:items-center sm:pl-1'
-    : 'flex items-center gap-2 overflow-hidden pl-1 py-1';
+    ? 'doro-task-picker-row flex flex-col gap-2 overflow-hidden py-1 sm:flex-row sm:items-center sm:pl-1'
+    : 'doro-task-picker-row flex items-center gap-2 overflow-hidden pl-1 py-1';
   const editFooterClass = isNestedTask
-    ? 'flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'
-    : 'flex items-center justify-between gap-3';
+    ? 'doro-task-edit-footer flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'
+    : 'doro-task-edit-footer flex items-center justify-between gap-3';
 
   if (isEditing) {
     return (
@@ -264,7 +264,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 e.stopPropagation();
                 toggleTaskExpansion(task.id);
               }}
-              className="p-1 text-white/40 hover:text-white transition-colors rounded hover:bg-white/10"
+              className="doro-task-expand-btn p-1 text-white/40 hover:text-white transition-colors rounded hover:bg-white/10"
             >
               <svg
                 className={`w-3 h-3 transition-transform duration-300 ${task.isExpanded ? 'rotate-90' : ''}`}
@@ -281,7 +281,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           <button
             type="button"
             onClick={handleCheck}
-            className={`
+            className={`doro-task-check-target
               rounded-full border relative flex h-5 w-5 shrink-0 items-center justify-center border-[1.5px] transition-all duration-300
               ${task.checked
                 ? 'bg-white border-white'
@@ -373,7 +373,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           <div className={editFooterClass}>
             <div className="flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
               <span className="font-bold uppercase">Est</span>
-              <div className="flex items-center rounded-lg border border-white/15 bg-black/18 overflow-hidden">
+              <div className="doro-task-estimate-stepper flex items-center rounded-lg border border-white/15 bg-black/18 overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setEditEst(prev => clampPomoEstimate(prev - 1))}
@@ -476,6 +476,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         onClick={() => selectTask(task.id)}
         className={`
           group relative rounded-lg cursor-pointer transform-gpu transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
+          doro-task-card-row
           flex items-center gap-3 border
           p-3
           ${task.selected
@@ -508,7 +509,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         {task.subtasks.length > 0 ? (
           <button 
             onClick={(e) => { e.stopPropagation(); toggleTaskExpansion(task.id); }}
-            className="p-1 text-white/40 hover:text-white transition-colors z-20 rounded hover:bg-white/10"
+            className="doro-task-expand-btn p-1 text-white/40 hover:text-white transition-colors z-20 rounded hover:bg-white/10"
           >
             <svg 
               className={`w-3 h-3 transition-transform duration-300 ${task.isExpanded ? 'rotate-90' : ''}`} 
@@ -523,7 +524,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
         <div 
           onClick={handleCheck}
-          className={`
+          className={`doro-task-check-target
             rounded-full border relative flex items-center justify-center transition-all duration-300 shrink-0 z-20
             w-5 h-5 border-[1.5px]
             ${task.checked 
@@ -542,13 +543,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
           )}
         </div>
         
-        <div className="flex-1 min-w-0 flex flex-col justify-center">
-            <div className="flex items-center gap-2">
-                <div className={`text-glass-text truncate transition-colors ${task.checked ? 'line-through' : (task.selected ? 'text-white' : 'group-hover:text-white')} font-medium text-sm`}>
+        <div className="doro-task-name-block flex-1 min-w-0 flex flex-col justify-center">
+            <div className="doro-task-name-line flex items-center gap-2">
+                <div className={`doro-task-title-text text-glass-text truncate transition-colors ${task.checked ? 'line-through' : (task.selected ? 'text-white' : 'group-hover:text-white')} font-medium text-sm`}>
                     {task.name}
                 </div>
                 {category && depth === 0 && (
-                     <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/10 border border-white/5">
+                     <div className="doro-task-category-badge flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/10 border border-white/5">
                          <div className="w-3 h-3 text-white" style={{color: category.color}}>
                              {getIcon(category.icon)}
                          </div>
@@ -561,7 +562,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           )}
         </div>
 
-        <div className="text-glass-textMuted font-mono text-[10px] bg-black/20 px-2 py-0.5 rounded-md backdrop-blur-sm group-hover:bg-black/30 transition-colors border border-white/5">
+        <div className="doro-task-pomo-pill text-glass-textMuted font-mono text-[10px] bg-black/20 px-2 py-0.5 rounded-md backdrop-blur-sm group-hover:bg-black/30 transition-colors border border-white/5">
           <span className={task.completed >= task.estimated ? 'text-green-400 font-bold' : ''}>{task.completed}</span>
           <span className="opacity-40 mx-0.5">/</span>
           <span>{task.estimated}</span>
@@ -585,7 +586,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
       <div className={isTopLevel ? 'pl-6 md:pl-8' : 'pl-5 md:pl-6'}>
         {isAddingSub && (
-          <form onSubmit={handleAddSubtask} className="doro-soft-expand mb-2.5 flex flex-col gap-2 rounded-lg border border-white/10 bg-white/5 p-2.5 backdrop-blur-sm sm:flex-row sm:items-center">
+          <form onSubmit={handleAddSubtask} className="doro-subtask-form doro-soft-expand mb-2.5 flex flex-col gap-2 rounded-lg border border-white/10 bg-white/5 p-2.5 backdrop-blur-sm sm:flex-row sm:items-center">
             <input 
               autoFocus
               type="text" 
@@ -594,7 +595,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               value={subName}
               onChange={e => setSubName(e.target.value)}
             />
-            <div className="flex items-center rounded-lg border border-white/15 bg-black/20 overflow-hidden">
+            <div className="doro-task-estimate-stepper flex items-center rounded-lg border border-white/15 bg-black/20 overflow-hidden">
               <button
                 type="button"
                 onClick={() => setSubEst(prev => clampSubEstimate(prev - 1))}
@@ -622,7 +623,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 +
               </button>
             </div>
-            <button type="submit" className="text-green-400 px-1 hover:scale-110 transition-transform" aria-label="Save subtask">
+            <button type="submit" className="doro-subtask-save-btn text-green-400 px-1 hover:scale-110 transition-transform" aria-label="Save subtask">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
@@ -1101,22 +1102,24 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             filter: saturate(0.98);
           }
           62% {
-            max-height: 24rem;
+            max-height: var(--doro-task-edit-expanded-height);
             opacity: 1;
             transform: translateY(-1px) scale(1.006);
             filter: saturate(1.03);
           }
           100% {
-            max-height: 24rem;
+            max-height: var(--doro-task-edit-expanded-height);
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: saturate(1);
           }
         }
         .doro-task-edit-shell {
-          max-height: 24rem;
+          max-height: var(--doro-task-edit-expanded-height);
           min-height: var(--doro-task-edit-collapsed-height);
           --doro-task-edit-collapsed-height: 2.875rem;
+          --doro-task-edit-expanded-height: 24rem;
+          --doro-task-edit-controls-height: 18rem;
           transform-origin: top center;
           will-change: max-height, transform, opacity, filter;
         }
@@ -1147,7 +1150,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           transform-origin: center;
         }
         .doro-task-edit-controls {
-          max-height: 18rem;
+          max-height: var(--doro-task-edit-controls-height);
           overflow: hidden;
           transform-origin: top center;
           will-change: max-height, opacity, transform, padding, border-color;
@@ -1162,7 +1165,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             border-color: rgba(255, 255, 255, 0);
           }
           62% {
-            max-height: 18rem;
+            max-height: var(--doro-task-edit-controls-height);
             opacity: 1;
             padding-top: 0.75rem;
             padding-bottom: 0.75rem;
@@ -1170,7 +1173,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             border-color: rgba(255, 255, 255, 0.07);
           }
           100% {
-            max-height: 18rem;
+            max-height: var(--doro-task-edit-controls-height);
             opacity: 1;
             padding-top: 0.75rem;
             padding-bottom: 0.75rem;
@@ -1193,7 +1196,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         @keyframes doro-task-edit-close-save {
           0% {
-            max-height: 24rem;
+            max-height: var(--doro-task-edit-expanded-height);
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
@@ -1214,7 +1217,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         @keyframes doro-task-edit-close-cancel {
           0% {
-            max-height: 24rem;
+            max-height: var(--doro-task-edit-expanded-height);
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
@@ -1314,13 +1317,274 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         .doro-task-list-drag-active {
           transition: background-color 220ms ease;
         }
+        @media (max-width: 767px) {
+          .doro-task-edit-shell {
+            --doro-task-edit-collapsed-height: 3.05rem;
+            --doro-task-edit-expanded-height: 29rem;
+            --doro-task-edit-controls-height: 22rem;
+          }
+          .doro-task-edit-row,
+          .doro-task-card-row {
+            gap: 0.55rem !important;
+            padding: 0.75rem 0.65rem !important;
+          }
+          .doro-task-card-row {
+            display: grid !important;
+            grid-template-columns: 2rem 1.65rem minmax(0, 1fr) max-content max-content;
+            align-items: center !important;
+            column-gap: 0.5rem !important;
+            min-height: 3.85rem;
+            padding: 0.6rem 0.65rem !important;
+          }
+          .doro-task-card-row > .doro-task-expand-btn {
+            grid-column: 1 / 2;
+            justify-self: center;
+            width: 2rem;
+            height: 2rem;
+            min-width: 2rem;
+            min-height: 2rem;
+            padding: 0 !important;
+          }
+          .doro-task-card-row > .doro-task-check-target {
+            grid-column: 2 / 3;
+            justify-self: center;
+          }
+          .doro-task-name-block {
+            grid-column: 3 / 4;
+            min-width: 0;
+            width: 100%;
+          }
+          .doro-task-name-line {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.2rem !important;
+            min-width: 0;
+          }
+          .doro-task-title-text {
+            display: -webkit-box !important;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            width: 100%;
+            white-space: normal !important;
+            overflow: hidden !important;
+            text-overflow: clip !important;
+            line-height: 1.25;
+            word-break: break-word;
+            max-width: 100%;
+          }
+          .doro-task-category-badge {
+            max-width: 100%;
+          }
+          .doro-task-category-badge span {
+            max-width: 9.5rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .doro-task-pomo-pill {
+            position: static;
+            grid-column: 4 / 5;
+            justify-self: end;
+            align-self: center;
+            min-width: 2.75rem;
+            text-align: center;
+            white-space: nowrap;
+          }
+          .doro-task-edit-row input,
+          .doro-subtask-form input,
+          .doro-task-create-input {
+            font-size: 16px;
+          }
+          .doro-new-task-details.doro-new-task-details-open {
+            max-height: 18.5rem !important;
+          }
+          .doro-task-expand-btn {
+            min-width: 2rem;
+            min-height: 2rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .doro-task-check-target {
+            width: 1.6rem !important;
+            height: 1.6rem !important;
+          }
+          .doro-task-color-swatch {
+            width: 1.38rem !important;
+            height: 1.38rem !important;
+          }
+          .doro-task-category-chip,
+          .doro-task-add-category-chip {
+            min-height: 1.65rem;
+            padding: 0.26rem 0.5rem !important;
+            border-radius: 0.65rem !important;
+          }
+          .doro-task-edit-row .doro-task-action-rail {
+            display: none;
+          }
+          .doro-task-card-row .doro-task-action-rail {
+            position: static;
+            grid-column: 5 / 6;
+            justify-self: end;
+            align-self: center;
+            width: auto;
+            min-width: max-content;
+            gap: 0.16rem;
+            opacity: 1;
+          }
+          .doro-task-action-rail button {
+            min-width: 1.6rem;
+            min-height: 1.6rem;
+            flex: 0 0 1.6rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.55rem;
+          }
+          .doro-task-edit-controls {
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+          }
+          .doro-task-picker-row {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 0.42rem !important;
+            overflow: visible !important;
+            padding-left: 0 !important;
+          }
+          .doro-task-picker-row > .flex.shrink-0 {
+            flex-wrap: wrap;
+            gap: 0.4rem !important;
+            row-gap: 0.4rem !important;
+          }
+          .doro-task-edit-footer {
+            align-items: center !important;
+            gap: 0.5rem !important;
+          }
+          .doro-task-create-footer,
+          .doro-task-edit-footer {
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            gap: 0.5rem !important;
+            flex-wrap: nowrap;
+          }
+          .doro-task-edit-footer > div:first-child {
+            flex: 0 1 auto;
+            min-width: 0;
+            gap: 0.45rem !important;
+          }
+          .doro-task-create-estimate {
+            flex: 0 1 auto;
+            min-width: 0;
+            gap: 0.45rem !important;
+          }
+          .doro-task-create-actions,
+          .doro-task-edit-footer > div:last-child {
+            flex: 0 0 auto;
+            gap: 0.4rem !important;
+            align-items: center;
+            white-space: nowrap;
+          }
+          .doro-task-create-footer button,
+          .doro-task-edit-footer button,
+          .doro-task-estimate-stepper button {
+            min-height: 2rem;
+          }
+          .doro-task-estimate-stepper {
+            align-self: flex-start;
+          }
+          .doro-task-create-footer .doro-task-estimate-stepper,
+          .doro-task-edit-footer .doro-task-estimate-stepper {
+            align-self: center;
+            height: 2rem;
+          }
+          .doro-task-create-footer .doro-task-estimate-stepper button,
+          .doro-task-edit-footer .doro-task-estimate-stepper button {
+            padding-left: 0.44rem !important;
+            padding-right: 0.44rem !important;
+          }
+          .doro-task-estimate-stepper button {
+            min-width: 2rem;
+          }
+          .doro-task-estimate-stepper input {
+            min-width: 2rem;
+            height: 2rem;
+            font-size: 16px;
+          }
+          .doro-task-create-footer .doro-task-estimate-stepper button,
+          .doro-task-edit-footer .doro-task-estimate-stepper button {
+            min-width: 2rem;
+            width: 2rem;
+          }
+          .doro-task-create-footer .doro-task-estimate-stepper input,
+          .doro-task-edit-footer .doro-task-estimate-stepper input {
+            min-width: 2rem;
+            width: 2rem;
+            height: 2rem;
+          }
+          .doro-task-schedule-btn {
+            min-height: 2rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .doro-task-create-footer .doro-task-schedule-btn,
+          .doro-task-create-actions button {
+            min-height: 2rem;
+            height: 2rem;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+          }
+          .doro-task-create-footer .doro-task-schedule-btn {
+            padding-left: 0.62rem !important;
+            padding-right: 0.62rem !important;
+          }
+          .doro-task-create-actions button[type="submit"] {
+            padding-left: 0.82rem !important;
+            padding-right: 0.82rem !important;
+          }
+          .doro-task-edit-footer > div:last-child button {
+            min-height: 2rem;
+            height: 2rem;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+          }
+          .doro-task-edit-footer > div:last-child button:first-child {
+            padding-left: 0.68rem !important;
+            padding-right: 0.68rem !important;
+          }
+          .doro-task-edit-footer > div:last-child button:last-child {
+            padding-left: 0.86rem !important;
+            padding-right: 0.86rem !important;
+          }
+          .doro-subtask-form {
+            padding: 0.65rem !important;
+            gap: 0.55rem !important;
+          }
+          .doro-subtask-form .doro-task-estimate-stepper {
+            align-self: stretch;
+            justify-content: center;
+          }
+          .doro-subtask-save-btn {
+            min-width: 2.15rem;
+            min-height: 2.15rem;
+            align-self: flex-end;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.65rem;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+          }
+        }
       `}</style>
       <div 
-        className="w-full max-w-lg mx-auto min-h-[24rem] md:min-h-[25rem] transition-opacity duration-250"
+        className="w-full max-w-lg mx-auto min-h-[20rem] md:min-h-[25rem] transition-opacity duration-250"
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-      <div className="relative flex min-h-[24rem] md:min-h-[25rem] flex-col">
+      <div className="relative flex min-h-[20rem] md:min-h-[25rem] flex-col">
         {/* Header */}
         <div className={`flex justify-between items-center mb-4 px-2 transition-opacity duration-250 ${blurClass}`}>
           <h2 className="text-[10px] font-bold text-white/50 tracking-[0.2em] uppercase">Task List</h2>
@@ -1355,7 +1619,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                 <input 
                   type="text" 
                   placeholder={isInputFocused ? "Describe task..." : "+ New Task"} 
-                  className="flex-1 bg-transparent px-4 py-2 text-glass-text placeholder-white/30 outline-none font-medium text-sm"
+                  className="doro-task-create-input min-w-0 flex-1 bg-transparent px-4 py-2 text-glass-text placeholder-white/30 outline-none font-medium text-sm"
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
                 />
@@ -1368,20 +1632,20 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                             setWeeklyScheduleOpen(true);
                         }}
                         onClick={() => setWeeklyScheduleOpen(true)}
-                        className="mr-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-transparent hover:border-white/10"
+                        className="doro-task-schedule-btn mr-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-transparent hover:border-white/10"
                     >
                         Schedule
                     </button>
                  )}
             </div>
             
-            <div className={`
+            <div className={`doro-new-task-details ${isInputFocused ? 'doro-new-task-details-open' : ''}
               overflow-hidden border-t transition-[max-height,opacity,padding,border-color] duration-300 ease-in-out
               ${isInputFocused ? 'doro-soft-expand max-h-40 border-white/5 opacity-100 py-2 px-4' : 'max-h-0 border-white/0 opacity-0 py-0 px-4'}
             `}>
               <div className="flex flex-col gap-3">
                   {/* Category & Color Selection */}
-                  <div className="flex items-center gap-2 overflow-hidden pl-1 py-1">
+                  <div className="doro-task-picker-row flex items-center gap-2 overflow-hidden pl-1 py-1">
                       <div className="flex shrink-0 items-center gap-1.5">
                           {PRESET_COLORS.map(c => (
                             <button
@@ -1447,10 +1711,10 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                       </div>
                   </div>
 
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
+                  <div className="doro-task-create-footer flex justify-between items-center">
+                    <div className="doro-task-create-estimate flex items-center gap-2 text-[10px] text-white/60 font-mono tracking-wide">
                       <span className="font-bold">EST</span>
-                      <div className="flex items-center rounded-lg border border-white/20 bg-black/20 overflow-hidden">
+                      <div className="doro-task-estimate-stepper flex items-center rounded-lg border border-white/20 bg-black/20 overflow-hidden">
                           <button
                               type="button"
                               onClick={() => setNewEst(prev => clampPomoEstimate(prev - 1))}
@@ -1480,11 +1744,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                       </div>
                     </div>
                     
-                    <div className="flex gap-2">
+                    <div className="doro-task-create-actions flex gap-2">
                         <button 
                             type="button" 
                             onClick={() => setWeeklyScheduleOpen(true)}
-                            className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
+                            className="doro-task-schedule-btn px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
                         >
                             Schedule
                         </button>

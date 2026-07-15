@@ -1246,6 +1246,59 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             pointer-events: auto;
           }
         }
+        @media (max-width: 767px) {
+          .doro-weekly-shell {
+            border-left-width: 0;
+          }
+          .doro-weekly-shell button,
+          .doro-weekly-shell input,
+          .doro-weekly-shell textarea {
+            touch-action: manipulation;
+          }
+          .doro-weekly-shell input,
+          .doro-weekly-shell textarea,
+          .doro-weekly-shell select {
+            font-size: 16px;
+          }
+          .schedule-header-group {
+            padding: 0.8rem 0.875rem !important;
+          }
+          .schedule-header-group h2 {
+            font-size: 1.18rem;
+          }
+          .schedule-reveal-slot {
+            flex: 1 0 100%;
+            order: 3;
+            width: 100%;
+            max-width: 100%;
+            min-height: auto;
+          }
+          .schedule-reveal-controls {
+            width: 100%;
+            flex-wrap: wrap;
+            gap: 0.45rem !important;
+            white-space: normal;
+          }
+          .schedule-reveal-controls .schedule-glass-button {
+            flex: 1 1 calc(50% - 0.45rem);
+            min-height: 2.35rem;
+            padding: 0.55rem 0.6rem !important;
+            letter-spacing: 0.1em;
+            line-height: 1.1;
+            text-align: center;
+          }
+          .schedule-reveal-controls .schedule-glass-button:last-child {
+            flex-basis: 100%;
+          }
+          .schedule-glass-button--icon {
+            min-width: 2.75rem;
+            min-height: 2.75rem;
+          }
+          .weekly-body {
+            padding: 0.75rem !important;
+            overscroll-behavior: contain;
+          }
+        }
       `}</style>
       <div
         className={`fixed inset-0 z-40 transition-opacity duration-500 ${

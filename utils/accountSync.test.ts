@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectLocalPayloadForAccountSync } from './accountSync';
+import { selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from './accountSync';
 
 describe('selectLocalPayloadForAccountSync', () => {
   it('prefers live payload for the active signed-in user over stale cache', () => {
@@ -49,5 +49,15 @@ describe('selectLocalPayloadForAccountSync', () => {
       livePayload,
       cachedPayload: null,
     })).toBe(livePayload);
+  });
+});
+
+describe('shouldApplyAccountSyncSnapshot', () => {
+  it('applies a cloud save response when local sync-worthy data has not changed', () => {
+    expect(shouldApplyAccountSyncSnapshot(4, 4)).toBe(true);
+  });
+
+  it('rejects a cloud save response that started before newer local changes', () => {
+    expect(shouldApplyAccountSyncSnapshot(4, 5)).toBe(false);
   });
 });

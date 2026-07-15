@@ -17,6 +17,7 @@ import {
   SessionRecord,
   TimerRuntimePhase,
   TimerRuntimeSnapshot,
+  TimerSpectatorState,
 } from '../types';
 import { playAlarm, playSwitch, resumeAudioContext, startFocusSound, stopFocusSound } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
@@ -74,9 +75,10 @@ import {
   getPomodoroCompletionStatsFromLogs,
   getStandardPomodoroCountForTimer,
 } from '../utils/pomodoroAccounting';
-import { selectLocalPayloadForAccountSync } from '../utils/accountSync';
+import { selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from '../utils/accountSync';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
+import { pickTimerSpectatorSettings } from '../utils/timerShare';
 
 export interface ScheduleBreak {
   id: string;
@@ -294,6 +296,10 @@ const GROUP_EVENT_TYPES: GroupEventType[] = [
   'timer-reset',
   'grace-resolved',
 ];
+
+const isSpectatorConnection = (connection: Pick<DataConnection, 'metadata'> | null | undefined) => (
+  Boolean(connection && (connection.metadata as any)?.spectator === true)
+);
 
 const isGroupEventType = (value: unknown): value is GroupEventType => {
   return typeof value === 'string' && GROUP_EVENT_TYPES.includes(value as GroupEventType);
@@ -902,6 +908,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const skipSaveRef = useRef(false);
   const isCloudSyncInFlightRef = useRef(false);
   const isApplyingCloudSnapshotRef = useRef(false);
+  const accountSyncVersionRef = useRef(0);
+  const pendingAccountSyncAfterInFlightRef = useRef(false);
+  const syncAccountNowRef = useRef<(() => Promise<boolean>) | null>(null);
   const accountRevisionRef = useRef(0);
   const hasHydratedCloudForUserRef = useRef<string | null>(null);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
@@ -1762,7 +1771,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const syncAccountNow = useCallback(async (): Promise<boolean> => {
       if (!user || !authToken || isApplyingCloudSnapshotRef.current || isPreviewAuthToken(authToken)) return false;
-      if (isCloudSyncInFlightRef.current) return false;
+      if (isCloudSyncInFlightRef.current) {
+          pendingAccountSyncAfterInFlightRef.current = true;
+          setAccountSyncState((prev) => (prev === 'syncing' ? prev : 'pending'));
+          return false;
+      }
+
+      const syncVersionAtStart = accountSyncVersionRef.current;
+      let completedRequest = false;
 
       try {
           isCloudSyncInFlightRef.current = true;
@@ -1788,6 +1804,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             },
           );
           const persisted = await persistAccountPayload(authToken, normalizedPayload, payloadUser);
+          completedRequest = true;
+          accountRevisionRef.current = Math.max(accountRevisionRef.current, getPayloadRevision(persisted));
+
+          if (!shouldApplyAccountSyncSnapshot(syncVersionAtStart, accountSyncVersionRef.current)) {
+              pendingAccountSyncAfterInFlightRef.current = true;
+              setAccountSyncState('pending');
+              return false;
+          }
+
           applyAccountSnapshot(user.username, persisted);
           hasHydratedCloudForUserRef.current = user.username;
           setLastAccountSyncAt(Date.now());
@@ -1803,8 +1828,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return false;
       } finally {
           isCloudSyncInFlightRef.current = false;
+          if (completedRequest && pendingAccountSyncAfterInFlightRef.current) {
+              pendingAccountSyncAfterInFlightRef.current = false;
+              globalThis.setTimeout(() => {
+                  void syncAccountNowRef.current?.();
+              }, 0);
+          }
       }
   }, [authToken, applyAccountSnapshot, buildPersistencePayload, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
+
+  syncAccountNowRef.current = syncAccountNow;
 
   const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
       if (!user || !authToken || isPreviewAuthToken(authToken)) return false;
@@ -2086,6 +2119,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
       if (!user || !authToken || isPreviewAuthToken(authToken)) return;
       if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
+      accountSyncVersionRef.current += 1;
       setAccountSyncState((prev) => (prev === 'syncing' ? prev : 'pending'));
       // Debounce signed-in saves from timer phase transitions, not per-second countdown ticks.
       const timeout = setTimeout(() => { void syncAccountNow(); }, 2500);
@@ -2211,7 +2245,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const openConnections = pruneConnections();
     if (openConnections.length === 0) return;
     openConnections.forEach(conn => {
-      if (conn.open && conn.peer !== excludeConnId) {
+      if (conn.open && conn.peer !== excludeConnId && !isSpectatorConnection(conn)) {
         conn.send({ type: 'GROUP_EVENT', event });
       }
     });
@@ -2359,6 +2393,35 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, []);
 
+  const buildTimerSpectatorState = useCallback((state: any): TimerSpectatorState => {
+    const activeContext = Array.isArray(state?.tasks)
+      ? findActiveContext(state.tasks)
+      : { task: null, color: undefined };
+    const runtime = isRuntimeSnapshot(state?.runtime) ? state.runtime : runtimeRef.current;
+
+    return {
+      version: 1,
+      hostName: sanitizeGroupMemberName(state?.userName ?? userNameRef.current, 'Host'),
+      activeMode: state?.activeMode === 'break' ? 'break' : 'work',
+      timerStarted: Boolean(state?.timerStarted),
+      isIdle: Boolean(state?.isIdle),
+      workTime: typeof state?.workTime === 'number' && Number.isFinite(state.workTime) ? state.workTime : DEFAULT_SETTINGS.workDuration,
+      breakTime: typeof state?.breakTime === 'number' && Number.isFinite(state.breakTime) ? state.breakTime : 0,
+      pomodoroCount: typeof state?.pomodoroCount === 'number' && Number.isFinite(state.pomodoroCount) ? state.pomodoroCount : 0,
+      allPauseActive: Boolean(state?.allPauseActive),
+      allPauseTime: typeof state?.allPauseTime === 'number' && Number.isFinite(state.allPauseTime) ? state.allPauseTime : 0,
+      graceOpen: Boolean(state?.graceOpen),
+      graceContext: state?.graceContext === 'afterWork' || state?.graceContext === 'afterBreak' ? state.graceContext : null,
+      activeTaskName: typeof activeContext.task?.name === 'string' && activeContext.task.name.trim()
+        ? activeContext.task.name.trim().slice(0, 80)
+        : null,
+      activeColor: typeof activeContext.color === 'string' && activeContext.color.trim() ? activeContext.color : undefined,
+      settings: pickTimerSpectatorSettings(state?.settings),
+      runtime,
+      updatedAtMs: Date.now(),
+    };
+  }, []);
+
   const buildFilteredGroupState = useCallback((state: any, config: GroupSyncConfig) => {
       const filteredState: any = { ...state };
       if (!config.syncTimers) {
@@ -2468,12 +2531,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const fullState = getCurrentState();
 
       const filteredState = buildFilteredGroupState(fullState, hostSyncConfigRef.current);
+      const spectatorState = buildTimerSpectatorState(fullState);
       openConnections.forEach(conn => {
           if (conn.open && conn.peer !== excludeConnId) {
+              if (isSpectatorConnection(conn)) {
+                  conn.send({ type: 'SPECTATOR_STATE', state: spectatorState });
+                  return;
+              }
               conn.send({ type: 'STATE_UPDATE', state: filteredState });
           }
       });
-  }, [getCurrentState, buildFilteredGroupState, pruneConnections]);
+  }, [getCurrentState, buildFilteredGroupState, buildTimerSpectatorState, pruneConnections]);
 
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
@@ -2484,15 +2552,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const updateMembersList = useCallback(() => {
       if (!isHostRef.current) return;
       const openConnections = pruneConnections();
+      const memberConnections = openConnections.filter(connection => !isSpectatorConnection(connection));
       const hostId = localPeerIdRef.current || groupSessionIdRef.current || 'host';
       const hostName = rememberMemberName(hostId, userNameRef.current, 'Host');
       const memberList = buildHostMemberList(
         hostId,
         hostName,
-        openConnections.map(c => ({ id: c.peer, name: getConnectionMemberName(c) })),
+        memberConnections.map(c => ({ id: c.peer, name: getConnectionMemberName(c) })),
       );
       setMembers(memberList);
-      openConnections.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
+      memberConnections.forEach(c => { if(c.open) c.send({ type: 'MEMBERS_UPDATE', members: memberList }); });
   }, [getConnectionMemberName, pruneConnections, rememberMemberName]);
 
   const upsertClientMembers = useCallback((hostId: string, rawHostName: unknown, selfId: string | null | undefined, rawSelfName: unknown) => {
@@ -2624,22 +2693,27 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   try { conn.close(); } catch {}
                   return;
                 }
+                const spectatorConnection = isSpectatorConnection(conn);
+                const sendSpectatorUpdate = () => {
+                  if (!conn.open) return;
+                  conn.send({ type: 'SPECTATOR_STATE', state: buildTimerSpectatorState(getCurrentState()) });
+                };
                 const cleanupConnection = () => {
                   const { remainingConnections, hasPeerConnection } = removePeerConnectionInstance(connectionsRef.current, conn);
                   connectionsRef.current = remainingConnections;
-                  if (!hasPeerConnection) {
+                  if (!spectatorConnection && !hasPeerConnection) {
                     delete memberNamesRef.current[conn.peer];
                     announcedPeerIdsRef.current.delete(conn.peer);
                   }
                   const replacementConnection = remainingConnections.find(connection => connection.peer === conn.peer);
-                  if (shouldRefreshMembersAfterPeerCleanup({
+                  if (!spectatorConnection && shouldRefreshMembersAfterPeerCleanup({
                     hasPeerConnection,
                     replacementConnectionOpen: Boolean(replacementConnection?.open),
                   })) {
                     updateMembersList();
                   }
                 };
-                rememberMemberName(conn.peer, (conn.metadata as any)?.name);
+                if (!spectatorConnection) rememberMemberName(conn.peer, (conn.metadata as any)?.name);
                 connectionsRef.current = connectionsRef.current.filter(existing => {
                   if (existing.peer !== conn.peer) return true;
                   try { existing.close(); } catch {}
@@ -2651,6 +2725,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   if (isStale()) return;
                   connectionsRef.current = connectionsRef.current.filter(existing => existing.peer !== conn.peer);
                   connectionsRef.current.push(conn);
+                  if (spectatorConnection) {
+                    sendSpectatorUpdate();
+                    return;
+                  }
                   const initialState = buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current);
                   conn.send({ type: 'STATE_UPDATE', state: initialState });
                   const remoteName = getConnectionMemberName(conn);
@@ -2663,6 +2741,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 conn.on('data', (data: any) => {
                     if (isStale()) return;
                     if (!data || typeof data !== 'object') return;
+                    if (spectatorConnection) {
+                        if (data.type === 'SPECTATOR_REQUEST' || data.type === 'STATE_REQUEST' || data.type === 'TIMER_STATE') {
+                          sendSpectatorUpdate();
+                        }
+                        return;
+                    }
                     if (data.type === 'MEMBER_INTRO') {
                         const remoteName = rememberMemberName(conn.peer, data.name);
                         updateMembersList();
@@ -4194,27 +4278,34 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return categoryName || 'Task';
   };
 
+  const markAccountSyncDirty = () => {
+    if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
+    accountSyncVersionRef.current += 1;
+  };
+
   const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => {
+    markAccountSyncDirty();
     const todayKey = getDateKey(new Date());
     const deferred = Boolean(isFuture) || (typeof scheduledDate === 'string' && scheduledDate > todayKey);
     const newTask: Task = {
       id: createTaskId(), name: getDefaultedTaskName(name, catId), estimated, completed: 0, checked: false,
-      selected: tasks.length === 0 && !parentId && !deferred, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
+      selected: false, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
     };
     if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
-    else setTasks(prev => [...prev, newTask]);
+    else setTasks(prev => [...prev, { ...newTask, selected: prev.length === 0 && !deferred }]);
   };
 
   const addDetailedTask = (taskProps: Partial<Task> & { name: string, estimated: number }) => {
+      markAccountSyncDirty();
       const todayKey = getDateKey(new Date());
       const deferred = Boolean(taskProps.isFuture) || (typeof taskProps.scheduledDate === 'string' && taskProps.scheduledDate > todayKey);
       const categoryId = taskProps.categoryId || null;
       const newTask: Task = {
         id: createTaskId(), name: getDefaultedTaskName(taskProps.name, categoryId), estimated: taskProps.estimated, completed: 0, checked: false,
-        selected: tasks.length === 0 && !deferred, categoryId, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
+        selected: false, categoryId, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
         isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
-      setTasks(prev => [...prev, newTask]);
+      setTasks(prev => [...prev, { ...newTask, selected: prev.length === 0 && !deferred }]);
       return newTask.id;
   };
 

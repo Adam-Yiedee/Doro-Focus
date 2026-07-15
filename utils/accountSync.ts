@@ -27,3 +27,8 @@ export const selectLocalPayloadForAccountSync = <T extends PayloadLike>(
 
   return options.livePayload ?? null;
 };
+
+export const shouldApplyAccountSyncSnapshot = (
+  syncVersionAtStart: number,
+  currentSyncVersion: number,
+): boolean => currentSyncVersion === syncVersionAtStart;
