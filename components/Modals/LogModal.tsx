@@ -2979,11 +2979,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const focusSoundSliderTrack = settings.themeMode === 'light'
       ? 'rgba(15, 23, 42, 0.12)'
       : 'rgba(255, 255, 255, 0.08)';
-    const focusSoundSliderProgressWidth = focusSoundVolumePercent <= 0
-      ? '0%'
-      : focusSoundVolumePercent >= 100
-        ? '100%'
-        : `calc(${focusSoundVolumePercent}% + 0.5rem)`;
+    const focusSoundSliderProgressWidth = `${focusSoundVolumePercent}%`;
     const activeTimerPreset = settings.timerPreset === 'classic' || settings.timerPreset === 'compact'
       ? settings.timerPreset
       : 'custom';
@@ -4169,7 +4165,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-focus-sound-slider-fill {
           height: 100%;
           border-radius: inherit;
-          transition: width 160ms ease;
+          transition: background-color 160ms ease;
         }
         .doro-focus-sound-slider {
           -webkit-appearance: none;

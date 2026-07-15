@@ -29,17 +29,18 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
       onClose();
   };
 
-  const themeColor = activeMode === 'break' ? 'text-teal-200 border-teal-500/30' : 'text-red-200 border-red-500/30';
-  const overlayClass = "fixed inset-0 z-50 flex items-center justify-center p-3 md:p-4 bg-black/65 backdrop-blur-xl animate-fade-in";
-  const panelClass = "w-full max-w-md overflow-hidden rounded-[1.75rem] border border-white/10 bg-[#0f0f11]/88 p-6 shadow-[0_28px_70px_-42px_rgba(0,0,0,0.85)] backdrop-blur-2xl md:p-8 animate-slide-up";
+  const themeColor = activeMode === 'break' ? 'text-teal-100 focus:shadow-[0_0_0_1px_rgba(94,234,212,0.22),0_24px_52px_-34px_rgba(45,212,191,0.45)]' : 'text-rose-100 focus:shadow-[0_0_0_1px_rgba(251,113,133,0.24),0_24px_52px_-34px_rgba(251,113,133,0.45)]';
+  const overlayClass = "fixed inset-0 z-50 flex items-center justify-center p-3 md:p-4 bg-black/42 backdrop-blur-xl animate-fade-in";
+  const panelClass = "w-full max-w-md overflow-hidden rounded-[1.75rem] bg-white/[0.075] p-6 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl md:p-8 animate-slide-up";
   const labelClass = "text-[10px] font-bold uppercase tracking-[0.18em] text-white/42";
-  const secondaryButtonClass = "rounded-xl border border-white/10 bg-white/[0.045] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 transition-all hover:border-white/18 hover:bg-white/[0.075] hover:text-white active:scale-[0.99]";
-  const primaryButtonClass = "rounded-xl border border-white/12 bg-white/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition-all hover:border-white/22 hover:bg-white/18 active:scale-[0.99]";
+  const raisedButtonClass = "rounded-xl bg-white/[0.065] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_20px_42px_-30px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.035)] transition-all duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.095] hover:shadow-[0_30px_54px_-30px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.045)] active:translate-y-0 active:scale-[0.99]";
+  const secondaryButtonClass = `${raisedButtonClass} text-white/62 hover:text-white`;
+  const primaryButtonClass = `${raisedButtonClass} text-white bg-white/[0.10] hover:bg-white/[0.14]`;
 
   if (isConfirmingEnd) {
       return (
         <div className={overlayClass}>
-          <div className="w-full max-w-sm overflow-hidden rounded-[1.6rem] border border-white/10 bg-[#0f0f11]/90 p-6 shadow-[0_28px_70px_-42px_rgba(0,0,0,0.85)] backdrop-blur-2xl md:p-7 animate-slide-up">
+          <div className="w-full max-w-sm overflow-hidden rounded-[1.6rem] bg-white/[0.075] p-6 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl md:p-7 animate-slide-up">
             <div className="text-center">
               <div className={labelClass}>Confirm</div>
               <h3 className="mt-2 text-2xl font-bold text-white">End Work Session?</h3>
@@ -47,7 +48,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
             </div>
             <div className="mt-6 flex gap-3 w-full">
               <button onClick={() => setIsConfirmingEnd(false)} className={`flex-1 ${secondaryButtonClass}`}>Back</button>
-              <button onClick={handleEndSession} className="flex-1 rounded-xl border border-red-400/24 bg-red-500/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/82 transition-all hover:border-red-300/30 hover:bg-red-500/18 hover:text-red-100 active:scale-[0.99]">End Session</button>
+              <button onClick={handleEndSession} className="flex-1 rounded-xl bg-red-500/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/82 shadow-[0_20px_42px_-30px_rgba(127,29,29,0.95)] transition-all duration-300 hover:-translate-y-1 hover:bg-red-500/18 hover:text-red-100 hover:shadow-[0_30px_54px_-30px_rgba(127,29,29,0.95)] active:translate-y-0 active:scale-[0.99]">End Session</button>
             </div>
           </div>
         </div>
@@ -67,7 +68,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
           autoFocus
           type="text"
           placeholder="Reason (optional)"
-          className={`w-full rounded-[1rem] border bg-white/[0.045] px-4 py-3.5 text-center text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:bg-white/[0.07] ${themeColor}`}
+          className={`w-full rounded-[1rem] bg-white/[0.065] px-4 py-3.5 text-center text-sm font-semibold text-white shadow-[0_20px_42px_-32px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.035)] outline-none transition-all duration-300 placeholder:text-white/24 focus:-translate-y-0.5 focus:bg-white/[0.09] ${themeColor}`}
           value={reason}
           onChange={e => setReason(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleConfirm()}
@@ -90,7 +91,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
 
         <button 
             onClick={() => setIsConfirmingEnd(true)}
-            className="mx-auto mt-1 min-h-10 rounded-full border border-red-400/12 bg-red-500/[0.055] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/58 transition-all hover:border-red-400/22 hover:bg-red-500/10 hover:text-red-100/82 md:min-h-0 md:py-2"
+            className="mx-auto mt-1 min-h-10 rounded-full bg-red-500/[0.075] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/62 shadow-[0_18px_36px_-28px_rgba(127,29,29,0.75)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-red-500/12 hover:text-red-100/86 hover:shadow-[0_24px_44px_-28px_rgba(127,29,29,0.82)] md:min-h-0 md:py-2"
         >
             End Work Session
         </button>
@@ -108,30 +109,35 @@ export const ResumeModal: React.FC = () => {
   const secs = Math.floor(allPauseTime % 60);
   const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
 
-  const accentHoverBorder = activeMode === 'break' ? 'hover:border-teal-300/28' : 'hover:border-red-300/28';
-  const accentSurface = activeMode === 'break' ? 'bg-teal-400/[0.08]' : 'bg-red-400/[0.08]';
+  const accentSurface = activeMode === 'break' ? 'bg-teal-300/[0.13]' : 'bg-rose-300/[0.13]';
   const accentText = activeMode === 'break' ? 'text-teal-200' : 'text-red-200';
+  const accentGlow = activeMode === 'break'
+    ? 'hover:shadow-[0_34px_68px_-34px_rgba(20,184,166,0.42),0_30px_72px_-44px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]'
+    : 'hover:shadow-[0_34px_68px_-34px_rgba(244,63,94,0.38),0_30px_72px_-44px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
 
   const addToBankAmount = allPauseTime / 5; 
   const deductFromBankAmount = allPauseTime;
 
   const buttonBaseClass = `
     group relative w-full overflow-hidden rounded-[1.35rem]
-    border border-white/10 bg-white/[0.045] px-4 py-5 backdrop-blur-xl
-    text-left transition-all duration-300 ease-out
-    hover:-translate-y-[1px] hover:border-white/18 hover:bg-white/[0.075]
+    bg-white/[0.065] px-5 py-5 backdrop-blur-xl
+    text-center shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)]
+    transition-all duration-300 ease-out
+    hover:-translate-y-1.5 hover:bg-white/[0.085] ${accentGlow}
     active:translate-y-0 active:scale-[0.99]
     cursor-pointer
   `;
 
   const secondaryButtonClass = `
-    mt-2 rounded-full px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em]
-    text-white/48 transition-all duration-300 hover:bg-white/[0.055] hover:text-white
+    mt-3 w-full rounded-full bg-white/[0.055] px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em]
+    text-white/52 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.78)]
+    transition-all duration-300 hover:-translate-y-1 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_26px_46px_-28px_rgba(0,0,0,0.86)]
+    active:translate-y-0 active:scale-[0.99]
   `;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 md:p-4 bg-black/72 backdrop-blur-xl animate-fade-in">
-       <div className="w-full max-w-3xl overflow-hidden rounded-[1.8rem] border border-white/10 bg-[#0f0f11]/88 p-5 shadow-[0_28px_80px_-44px_rgba(0,0,0,0.9)] backdrop-blur-2xl md:p-8 animate-slide-up">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 md:p-4 bg-black/42 backdrop-blur-xl animate-fade-in">
+       <div className="w-full max-w-3xl overflow-hidden rounded-[1.8rem] bg-white/[0.075] p-5 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl md:p-8 animate-slide-up">
          
          <div className="text-center">
             <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/42">System Paused</div>
@@ -145,17 +151,17 @@ export const ResumeModal: React.FC = () => {
              <div className="flex flex-col items-center w-full">
                 <button 
                    onClick={() => resumeFromPause('work', -addToBankAmount, 'work')}
-                   className={`${buttonBaseClass} ${accentHoverBorder}`}
+                   className={buttonBaseClass}
                 >
-                    <div className={`absolute inset-x-0 top-0 h-[3px] ${accentSurface}`} />
-                    <div className="relative z-10 flex min-h-[5.4rem] flex-col justify-between gap-4">
+                    <div className={`pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100 ${accentSurface}`} />
+                    <div className="relative z-10 flex min-h-[5.9rem] flex-col items-center justify-center gap-3">
                         <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">
                            Paused Time
                         </span>
                         <span className="text-xl font-bold leading-tight text-white">
                            I WAS WORKING
                         </span>
-                        <span className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-opacity ${accentText}`}>
+                        <span className={`rounded-full bg-white/[0.085] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_14px_28px_-22px_rgba(0,0,0,0.8)] transition-all group-hover:bg-white/[0.11] ${accentText}`}>
                             Add {formatDuration(addToBankAmount)}
                         </span>
                     </div>
@@ -172,17 +178,17 @@ export const ResumeModal: React.FC = () => {
              <div className="flex flex-col items-center w-full">
                 <button 
                    onClick={() => resumeFromPause('break', deductFromBankAmount, 'break')}
-                   className={`${buttonBaseClass} ${accentHoverBorder}`}
+                   className={buttonBaseClass}
                 >
-                    <div className={`absolute inset-x-0 top-0 h-[3px] ${accentSurface}`} />
-                    <div className="relative z-10 flex min-h-[5.4rem] flex-col justify-between gap-4">
+                    <div className={`pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100 ${accentSurface}`} />
+                    <div className="relative z-10 flex min-h-[5.9rem] flex-col items-center justify-center gap-3">
                         <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">
                            Paused Time
                         </span>
                         <span className="text-xl font-bold leading-tight text-white">
                            I WAS RESTING
                         </span>
-                        <span className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-opacity ${accentText}`}>
+                        <span className={`rounded-full bg-white/[0.085] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_14px_28px_-22px_rgba(0,0,0,0.8)] transition-all group-hover:bg-white/[0.11] ${accentText}`}>
                             Use {formatDuration(deductFromBankAmount)}
                         </span>
                     </div>
