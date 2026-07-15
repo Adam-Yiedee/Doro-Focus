@@ -62,10 +62,10 @@ const SummaryView: React.FC = () => {
     ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
     : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
   const surfaceStyle = { backgroundColor: surfaceColor };
-  const raisedCardClass = 'doro-summary-raised-card rounded-[1.2rem] bg-white/[0.06] shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)] transition-[transform,box-shadow,background-color] duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.075] hover:shadow-[0_34px_66px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
+  const raisedCardClass = 'doro-summary-raised-card doro-summary-item-in rounded-[1.2rem] bg-white/[0.06] shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)] transition-[transform,box-shadow,background-color] duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.075] hover:shadow-[0_34px_66px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden animate-fade-in" style={surfaceStyle}>
+    <div className="doro-summary-surface-in fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden" style={surfaceStyle}>
         <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
           {confettiPieces.map((piece) => (
             <span
@@ -87,6 +87,86 @@ const SummaryView: React.FC = () => {
           ))}
         </div>
         <style>{`
+          @keyframes doroSummarySurfaceIn {
+            0% {
+              opacity: 0;
+              filter: saturate(0.94);
+            }
+            100% {
+              opacity: 1;
+              filter: saturate(1);
+            }
+          }
+          @keyframes doroSummaryPanelIn {
+            0% {
+              opacity: 0;
+              transform: translateY(32px) scale(0.94);
+              filter: blur(8px) saturate(0.9);
+            }
+            62% {
+              opacity: 1;
+              transform: translateY(-5px) scale(1.018);
+              filter: blur(0) saturate(1.045);
+            }
+            100% {
+              opacity: 1;
+              transform: translateY(0) scale(1);
+              filter: blur(0) saturate(1);
+            }
+          }
+          @keyframes doroSummaryTitleIn {
+            0% {
+              opacity: 0;
+              transform: translateY(18px) scale(0.94);
+              filter: blur(5px) saturate(0.92);
+            }
+            64% {
+              opacity: 1;
+              transform: translateY(-2px) scale(1.016);
+              filter: blur(0) saturate(1.04);
+            }
+            100% {
+              opacity: 1;
+              transform: translateY(0) scale(1);
+              filter: blur(0) saturate(1);
+            }
+          }
+          @keyframes doroSummaryItemIn {
+            0% {
+              opacity: 0;
+              transform: translateY(14px) scale(0.968);
+              filter: blur(4px);
+            }
+            66% {
+              opacity: 1;
+              transform: translateY(-1px) scale(1.006);
+              filter: blur(0);
+            }
+            100% {
+              opacity: 1;
+              transform: translateY(0) scale(1);
+              filter: blur(0);
+            }
+          }
+          .doro-summary-surface-in {
+            animation: doroSummarySurfaceIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          }
+          .doro-summary-panel-in {
+            animation: doroSummaryPanelIn 560ms cubic-bezier(0.16, 0.92, 0.28, 1.08) both;
+            transform-origin: center;
+            will-change: transform, opacity, filter;
+          }
+          .doro-summary-title-in {
+            animation: doroSummaryTitleIn 560ms cubic-bezier(0.16, 0.92, 0.28, 1.08) 80ms both;
+            transform-origin: center;
+            will-change: transform, opacity, filter;
+          }
+          .doro-summary-item-in {
+            animation: doroSummaryItemIn 460ms cubic-bezier(0.18, 0.9, 0.32, 1.08) both;
+            animation-delay: var(--doro-summary-delay, 0ms);
+            transform-origin: center;
+            will-change: transform, opacity, filter;
+          }
           @keyframes doroSummaryConfettiFall {
             0% {
               opacity: 0;
@@ -117,23 +197,28 @@ const SummaryView: React.FC = () => {
           }
           @media (prefers-reduced-motion: reduce) {
             .doro-summary-confetti-piece,
-            .doro-summary-raised-card {
+            .doro-summary-raised-card,
+            .doro-summary-surface-in,
+            .doro-summary-panel-in,
+            .doro-summary-title-in,
+            .doro-summary-item-in {
               animation: none !important;
               transition: none !important;
             }
           }
         `}</style>
         <div className="relative z-10 flex min-h-full items-center justify-center px-3 py-5 sm:px-6 sm:py-8">
-          <div className="w-full max-w-4xl overflow-hidden rounded-[1.8rem] p-4 shadow-[0_34px_96px_-48px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.16)] sm:p-6 md:p-8 animate-slide-up" style={surfaceStyle}>
+          <div className="doro-summary-panel-in w-full max-w-4xl overflow-hidden rounded-[1.8rem] p-4 shadow-[0_34px_96px_-48px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.16)] sm:p-6 md:p-8" style={surfaceStyle}>
           <button
             onClick={closeSummary}
-            className="ml-auto flex h-10 items-center rounded-full bg-white/[0.055] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.76)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_24px_44px_-28px_rgba(0,0,0,0.82)]"
+            className="doro-summary-item-in ml-auto flex h-10 items-center rounded-full bg-white/[0.055] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.76)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_24px_44px_-28px_rgba(0,0,0,0.82)]"
+            style={{ ['--doro-summary-delay' as any]: '120ms' }}
           >
             Close
           </button>
 
           <div className="mx-auto mt-3 flex w-full flex-col items-center gap-6 sm:gap-7">
-            <div className="text-center">
+            <div className="doro-summary-title-in text-center">
                 <h1 className="text-3xl font-bold leading-tight text-white sm:text-4xl md:text-5xl">
                     Session Complete
                 </h1>
@@ -141,8 +226,12 @@ const SummaryView: React.FC = () => {
             </div>
 
             <div className="grid w-full grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
-                {statCards.map((card) => (
-                    <div key={card.label} className={`flex min-h-[7.5rem] flex-col items-center justify-center gap-3 px-4 py-4 text-center sm:min-h-[8.25rem] sm:px-5 ${raisedCardClass}`}>
+                {statCards.map((card, index) => (
+                    <div
+                      key={card.label}
+                      className={`flex min-h-[7.5rem] flex-col items-center justify-center gap-3 px-4 py-4 text-center sm:min-h-[8.25rem] sm:px-5 ${raisedCardClass}`}
+                      style={{ ['--doro-summary-delay' as any]: `${170 + index * 48}ms` }}
+                    >
                         <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">{card.label}</span>
                         <span className={`font-sans text-[2.35rem] font-bold leading-none tabular-nums ${card.tone} md:text-[2.75rem]`}>
                           {card.value}
@@ -152,11 +241,15 @@ const SummaryView: React.FC = () => {
             </div>
 
             {categoryEntries.length > 0 && (
-                <div className={`w-full px-4 py-4 sm:px-5 ${raisedCardClass}`}>
+                <div className={`w-full px-4 py-4 sm:px-5 ${raisedCardClass}`} style={{ ['--doro-summary-delay' as any]: '370ms' }}>
                      <h3 className="text-center text-[10px] font-bold uppercase tracking-[0.14em] text-white/38 sm:text-left">Focus Distribution</h3>
                      <div className="mt-3 flex justify-center gap-2.5 overflow-x-auto pb-1 scrollbar-hide sm:flex-wrap sm:justify-start sm:overflow-visible sm:pb-0">
-                          {categoryEntries.map(([name, mins]) => (
-                              <div key={name} className="flex shrink-0 items-center gap-2 rounded-xl bg-white/[0.07] px-3 py-2 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.74)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.09] hover:shadow-[0_22px_38px_-24px_rgba(0,0,0,0.82)]">
+                          {categoryEntries.map(([name, mins], index) => (
+                              <div
+                                key={name}
+                                className="doro-summary-item-in flex shrink-0 items-center gap-2 rounded-xl bg-white/[0.07] px-3 py-2 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.74)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.09] hover:shadow-[0_22px_38px_-24px_rgba(0,0,0,0.82)]"
+                                style={{ ['--doro-summary-delay' as any]: `${420 + index * 42}ms` }}
+                              >
                                   <span className="max-w-[11rem] truncate text-sm font-semibold text-white">{name}</span>
                                   <span className="text-xs font-semibold text-white/48">{Math.round(mins as number)}m</span>
                               </div>
@@ -167,7 +260,8 @@ const SummaryView: React.FC = () => {
 
             <button 
                 onClick={closeSummary}
-                className="mt-1 w-full rounded-xl bg-white/12 px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white shadow-[0_24px_48px_-32px_rgba(0,0,0,0.86)] transition-all duration-300 hover:-translate-y-1 hover:bg-white/18 hover:shadow-[0_32px_56px_-32px_rgba(0,0,0,0.92)] active:scale-[0.99] sm:w-auto sm:min-w-[14rem]"
+                className="doro-summary-item-in mt-1 w-full rounded-xl bg-white/12 px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white shadow-[0_24px_48px_-32px_rgba(0,0,0,0.86)] transition-all duration-300 hover:-translate-y-1 hover:bg-white/18 hover:shadow-[0_32px_56px_-32px_rgba(0,0,0,0.92)] active:scale-[0.99] sm:w-auto sm:min-w-[14rem]"
+                style={{ ['--doro-summary-delay' as any]: '470ms' }}
             >
                 Start New Session
             </button>
