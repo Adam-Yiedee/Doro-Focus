@@ -929,6 +929,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const pendingPostLoadReconcileRef = useRef(false);
   const pendingRuntimeMigrationRef = useRef(false);
   const isCrossTabApplyingRef = useRef(false);
+  const lastExternalPayloadAppliedAtRef = useRef(0);
   const [legacyRuntimeMode, setLegacyRuntimeMode] = useState(() => {
     try {
       return localStorage.getItem(LEGACY_RUNTIME_FLAG) === '1';
@@ -3317,9 +3318,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         
         let updatedTasks = incrementCompletedInTree(prevTasks, selected.id);
         
-        const updatedSelected = findSelectedTask(updatedTasks);
+        const updatedSelected = findTask(updatedTasks, selected.id);
         if (updatedSelected) {
-             if (updatedSelected.completed === updatedSelected.estimated) {
+             if (!updatedSelected.checked && updatedSelected.completed >= updatedSelected.estimated) {
                  updatedTasks = updateTaskInTree(updatedTasks, { ...updatedSelected, checked: true });
                  sendNotification("Goal Reached", `${updatedSelected.name} goal met. Continuing...`);
              }
@@ -3715,6 +3716,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const parsed: TimerPersistencePayload = JSON.parse(event.newValue);
         if (!isRuntimeSnapshot(parsed.runtime)) return;
         applyExternalTimerState(parsed, parsed.runtime);
+        const payloadUpdatedAtMs = getPayloadUpdatedAtMs(parsed);
+        if (payloadUpdatedAtMs > lastExternalPayloadAppliedAtRef.current) {
+          lastExternalPayloadAppliedAtRef.current = payloadUpdatedAtMs;
+          isCrossTabApplyingRef.current = true;
+          if (Array.isArray(parsed.tasks)) setTasks(parsed.tasks);
+          if (Array.isArray(parsed.categories)) setCategories(parsed.categories);
+          if (Array.isArray(parsed.logs)) setLogs(parsed.logs);
+          if (Array.isArray(parsed.pastSessions)) setPastSessions(parsed.pastSessions);
+          setTimeout(() => { isCrossTabApplyingRef.current = false; }, 0);
+        }
       } catch {
         // Ignore invalid payloads.
       }
