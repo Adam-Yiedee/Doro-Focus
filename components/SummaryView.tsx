@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { useTimer } from '../context/TimerContext';
 import { getSessionPomoDisplay } from '../utils/pomodoroAccounting';
+import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 
 type SummaryConfettiPiece = {
   id: number;
@@ -40,7 +41,7 @@ const buildSummaryConfettiPieces = (seed: number): SummaryConfettiPiece[] => (
 );
 
 const SummaryView: React.FC = () => {
-  const { showSummary, sessionStats, closeSummary } = useTimer();
+  const { showSummary, sessionStats, closeSummary, activeMode, activeColor } = useTimer();
   const confettiPieces = useMemo(() => buildSummaryConfettiPieces(Date.now()), [showSummary]);
 
   if (!showSummary || !sessionStats) return null;
@@ -57,10 +58,14 @@ const SummaryView: React.FC = () => {
     { label: 'Tasks Done', value: sessionStats.tasksCompleted, tone: 'text-white' },
   ];
   const categoryEntries = Object.entries(sessionStats.categoryStats);
+  const surfaceColor = activeMode === 'break'
+    ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
+    : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
+  const surfaceStyle = { backgroundColor: surfaceColor };
   const raisedCardClass = 'doro-summary-raised-card rounded-[1.2rem] bg-white/[0.06] shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)] transition-[transform,box-shadow,background-color] duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.075] hover:shadow-[0_34px_66px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden bg-black/72 backdrop-blur-xl animate-fade-in">
+    <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden animate-fade-in" style={surfaceStyle}>
         <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
           {confettiPieces.map((piece) => (
             <span
@@ -119,7 +124,7 @@ const SummaryView: React.FC = () => {
           }
         `}</style>
         <div className="relative z-10 flex min-h-full items-center justify-center px-3 py-5 sm:px-6 sm:py-8">
-          <div className="w-full max-w-4xl overflow-hidden rounded-[1.8rem] bg-[#0f0f11]/88 p-4 shadow-[0_34px_96px_-48px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl sm:p-6 md:p-8 animate-slide-up">
+          <div className="w-full max-w-4xl overflow-hidden rounded-[1.8rem] p-4 shadow-[0_34px_96px_-48px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.16)] sm:p-6 md:p-8 animate-slide-up" style={surfaceStyle}>
           <button
             onClick={closeSummary}
             className="ml-auto flex h-10 items-center rounded-full bg-white/[0.055] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.76)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_24px_44px_-28px_rgba(0,0,0,0.82)]"

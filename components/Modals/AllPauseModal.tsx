@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { useTimer } from '../../context/TimerContext';
+import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../../utils/palette';
 
 // Helper for formatting duration
 const formatDuration = (seconds: number) => {
@@ -12,7 +13,7 @@ const formatDuration = (seconds: number) => {
 };
 
 const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onClose, isOpen }) => {
-  const { confirmAllPause, activeMode, endSession } = useTimer();
+  const { confirmAllPause, activeMode, activeColor, endSession } = useTimer();
   const [reason, setReason] = useState('');
   const [isConfirmingEnd, setIsConfirmingEnd] = useState(false);
 
@@ -29,9 +30,13 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
       onClose();
   };
 
-  const themeColor = activeMode === 'break' ? 'text-teal-100 focus:shadow-[0_0_0_1px_rgba(94,234,212,0.22),0_24px_52px_-34px_rgba(45,212,191,0.45)]' : 'text-rose-100 focus:shadow-[0_0_0_1px_rgba(251,113,133,0.24),0_24px_52px_-34px_rgba(251,113,133,0.45)]';
-  const overlayClass = "fixed inset-0 z-50 flex items-center justify-center p-3 md:p-4 bg-black/42 backdrop-blur-xl animate-fade-in";
-  const panelClass = "w-full max-w-md overflow-hidden rounded-[1.75rem] bg-white/[0.075] p-6 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl md:p-8 animate-slide-up";
+  const themeColor = activeMode === 'break' ? 'focus:shadow-[0_0_0_1px_rgba(94,234,212,0.22),0_24px_52px_-34px_rgba(45,212,191,0.45)]' : 'focus:shadow-[0_0_0_1px_rgba(251,113,133,0.24),0_24px_52px_-34px_rgba(251,113,133,0.45)]';
+  const surfaceColor = activeMode === 'break'
+    ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
+    : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
+  const surfaceStyle = { backgroundColor: surfaceColor };
+  const overlayClass = "fixed inset-0 z-50 flex items-center justify-center p-3 md:p-4 animate-fade-in";
+  const panelClass = "w-full max-w-md overflow-hidden rounded-[1.75rem] p-6 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.16)] md:p-8 animate-slide-up";
   const labelClass = "text-[10px] font-bold uppercase tracking-[0.18em] text-white/42";
   const raisedButtonClass = "rounded-xl bg-white/[0.065] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_20px_42px_-30px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.035)] transition-all duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.095] hover:shadow-[0_30px_54px_-30px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.045)] active:translate-y-0 active:scale-[0.99]";
   const secondaryButtonClass = `${raisedButtonClass} text-white/62 hover:text-white`;
@@ -39,8 +44,8 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
 
   if (isConfirmingEnd) {
       return (
-        <div className={overlayClass}>
-          <div className="w-full max-w-sm overflow-hidden rounded-[1.6rem] bg-white/[0.075] p-6 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl md:p-7 animate-slide-up">
+        <div className={overlayClass} style={surfaceStyle}>
+          <div className="w-full max-w-sm overflow-hidden rounded-[1.6rem] p-6 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.16)] md:p-7 animate-slide-up" style={surfaceStyle}>
             <div className="text-center">
               <div className={labelClass}>Confirm</div>
               <h3 className="mt-2 text-2xl font-bold text-white">End Work Session?</h3>
@@ -56,8 +61,8 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
   }
 
   return (
-    <div className={overlayClass}>
-      <div className={`${panelClass} flex flex-col gap-5`}>
+    <div className={overlayClass} style={surfaceStyle}>
+      <div className={`${panelClass} flex flex-col gap-5`} style={surfaceStyle}>
         <div className="text-center">
           <div className={labelClass}>Pause Timer</div>
           <h3 className="mt-2 text-2xl font-bold text-white">Pause Session?</h3>
@@ -101,7 +106,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
 };
 
 export const ResumeModal: React.FC = () => {
-  const { allPauseActive, allPauseTime, resumeFromPause, activeMode } = useTimer();
+  const { allPauseActive, allPauseTime, resumeFromPause, activeMode, activeColor } = useTimer();
 
   if (!allPauseActive) return null;
 
@@ -110,7 +115,11 @@ export const ResumeModal: React.FC = () => {
   const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
 
   const accentSurface = activeMode === 'break' ? 'bg-teal-300/[0.13]' : 'bg-rose-300/[0.13]';
-  const accentText = activeMode === 'break' ? 'text-teal-200' : 'text-red-200';
+  const accentText = 'text-white/82';
+  const surfaceColor = activeMode === 'break'
+    ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
+    : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
+  const surfaceStyle = { backgroundColor: surfaceColor };
   const accentGlow = activeMode === 'break'
     ? 'hover:shadow-[0_34px_68px_-34px_rgba(20,184,166,0.42),0_30px_72px_-44px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]'
     : 'hover:shadow-[0_34px_68px_-34px_rgba(244,63,94,0.38),0_30px_72px_-44px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
@@ -136,8 +145,8 @@ export const ResumeModal: React.FC = () => {
   `;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 md:p-4 bg-black/42 backdrop-blur-xl animate-fade-in">
-       <div className="w-full max-w-3xl overflow-hidden rounded-[1.8rem] bg-white/[0.075] p-5 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-2xl md:p-8 animate-slide-up">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 md:p-4 animate-fade-in" style={surfaceStyle}>
+       <div className="w-full max-w-3xl overflow-hidden rounded-[1.8rem] p-5 shadow-[0_34px_90px_-44px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.16)] md:p-8 animate-slide-up" style={surfaceStyle}>
          
          <div className="text-center">
             <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/42">System Paused</div>
