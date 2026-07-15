@@ -280,6 +280,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const [hoveredSessionLaneKey, setHoveredSessionLaneKey] = useState<string | null>(null);
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
   const [hoveredHeatmapDateKey, setHoveredHeatmapDateKey] = useState<string | null>(null);
+  const [selectedHeatmapDateKey, setSelectedHeatmapDateKey] = useState<string | null>(null);
   const [selectedSessionWeekStartMs, setSelectedSessionWeekStartMs] = useState<number | null>(null);
   const sessionClockTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -482,12 +483,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   }, [hoveredCategoryTrendDateKey, rangeDailyBuckets]);
 
   useEffect(() => {
-    const activeDayExists = hoveredHeatmapDateKey && rangeDailyBuckets.some((day) => day.dateKey === hoveredHeatmapDateKey);
-    if (!activeDayExists) {
+    const selectedDayExists = selectedHeatmapDateKey && rangeDailyBuckets.some((day) => day.dateKey === selectedHeatmapDateKey);
+    if (!selectedDayExists) {
       const fallbackDay = [...rangeDailyBuckets].reverse().find((day) => day.totalMinutes > 0) || rangeDailyBuckets[rangeDailyBuckets.length - 1];
-      setHoveredHeatmapDateKey(fallbackDay?.dateKey ?? null);
+      setSelectedHeatmapDateKey(fallbackDay?.dateKey ?? null);
     }
-  }, [hoveredHeatmapDateKey, rangeDailyBuckets]);
+    setHoveredHeatmapDateKey(null);
+  }, [analyticsRange, rangeDailyBuckets, selectedHeatmapDateKey]);
 
   const activeCategory = categorySlices.find((slice) => slice.name === activeCategoryName) || categorySlices[0] || null;
   const dominantDayPartsLabel = insights.dominantDayParts.length > 0
@@ -625,11 +627,34 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     rangeDailyBuckets.length * (categoryTrendBarWidth + (analyticsRange === 'year' ? 5 : 8)),
   );
   const rangeFocusTotal = rangeDailyBuckets.reduce((sum, day) => sum + day.totalMinutes, 0);
-  const heatmapMaxMinutes = Math.max(1, ...rangeDailyBuckets.map((day) => day.totalMinutes));
-  const activeHeatmapDay = rangeDailyBuckets.find((day) => day.dateKey === hoveredHeatmapDateKey)
-    || [...rangeDailyBuckets].reverse().find((day) => day.totalMinutes > 0)
+  const rangeActiveHeatmapDays = rangeDailyBuckets.filter((day) => day.totalMinutes > 0).length;
+  const heatmapScaleMaxMinutes = useMemo(() => {
+    const positiveMinutes = rangeDailyBuckets
+      .map((day) => day.totalMinutes)
+      .filter((minutes) => minutes > 0)
+      .sort((left, right) => left - right);
+    if (positiveMinutes.length === 0) return 1;
+    const percentileIndex = Math.max(0, Math.ceil(positiveMinutes.length * 0.9) - 1);
+    return Math.max(1, positiveMinutes[Math.min(positiveMinutes.length - 1, percentileIndex)]);
+  }, [rangeDailyBuckets]);
+  const defaultHeatmapDay = [...rangeDailyBuckets].reverse().find((day) => day.totalMinutes > 0)
     || rangeDailyBuckets[rangeDailyBuckets.length - 1]
     || null;
+  const activeHeatmapDay = rangeDailyBuckets.find((day) => day.dateKey === hoveredHeatmapDateKey)
+    || rangeDailyBuckets.find((day) => day.dateKey === selectedHeatmapDateKey)
+    || defaultHeatmapDay;
+  const heatmapCellClass = analyticsRange === 'year'
+    ? 'h-3.5 w-3.5 rounded-[4px]'
+    : analyticsRange === 'month'
+      ? 'h-5 w-5 rounded-md'
+      : 'h-7 w-7 rounded-lg';
+  const heatmapLabelClass = analyticsRange === 'year'
+    ? 'h-3.5 w-8'
+    : analyticsRange === 'month'
+      ? 'h-5 w-8'
+      : 'h-7 w-8';
+  const heatmapGapStyle = { gap: analyticsRange === 'year' ? '0.375rem' : '0.5rem' };
+  const heatmapLegendSteps = [0.18, 0.38, 0.6, 0.8, 1];
   const heatmapWeeks = useMemo(() => {
     if (rangeDailyBuckets.length === 0) return [] as Array<Array<DailyCategoryBucket | null>>;
     const leadingPadding = new Date(rangeDailyBuckets[0].dateMs).getDay();
@@ -1462,6 +1487,9 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                     : 'No focus saved on that day yet.'
                   : 'No saved days yet.'}
               </div>
+              <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/34">
+                {rangeActiveHeatmapDays}/{rangeDailyBuckets.length} active days - {formatMinutesPrecise(rangeFocusTotal)} total
+              </div>
             </div>
             {renderAnalyticsRangeToggle()}
           </div>
@@ -1488,27 +1516,26 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               )}
 
               <div className="inline-flex items-start gap-3">
-                <div className="grid grid-rows-7 gap-1.5 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/32">
+                <div className="grid grid-rows-7 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/32" style={heatmapGapStyle}>
                   {HEATMAP_WEEKDAY_LABELS.map((label) => (
-                    <div key={label} className={analyticsRange === 'year' ? 'h-3.5 leading-[0.85rem]' : 'h-4 leading-4'}>
+                    <div key={label} className={`${heatmapLabelClass} flex items-center justify-end`}>
                       {label}
                     </div>
                   ))}
                 </div>
 
-                <div className="flex gap-1.5">
+                <div className="flex" style={heatmapGapStyle}>
                   {heatmapWeeks.map((week, weekIndex) => (
-                    <div key={`heatmap-week-${weekIndex}`} className="grid grid-rows-7 gap-1.5">
+                    <div key={`heatmap-week-${weekIndex}`} className="grid grid-rows-7" style={heatmapGapStyle}>
                       {week.map((day, dayIndex) => {
-                        const baseClass = analyticsRange === 'year' ? 'h-3.5 w-3.5' : 'h-4 w-4';
                         if (!day) {
                           return (
                             <div
                               key={`heatmap-empty-${weekIndex}-${dayIndex}`}
-                              className={`${baseClass} rounded-[4px] border`}
+                              className={`${heatmapCellClass} border`}
                               style={{
-                                backgroundColor: 'transparent',
-                                borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.12)' : 'rgba(255, 255, 255, 0.05)',
+                                backgroundColor: isLightTheme ? 'rgba(148, 163, 184, 0.035)' : 'rgba(255, 255, 255, 0.025)',
+                                borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.11)' : 'rgba(255, 255, 255, 0.045)',
                               }}
                             />
                           );
@@ -1516,12 +1543,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
 
                         const active = day.dateKey === activeHeatmapDay?.dateKey;
                         const hasFocus = day.totalMinutes > 0;
-                        const rawIntensity = hasFocus ? Math.min(1, day.totalMinutes / heatmapMaxMinutes) : 0;
-                        const intensity = hasFocus ? Math.pow(rawIntensity, 1.18) : 0;
-                        const heatmapBlue = isLightTheme ? '#2563EB' : '#60A5FA';
-                        const activeBlue = isLightTheme ? '#1D4ED8' : '#93C5FD';
+                        const rawIntensity = hasFocus
+                          ? Math.min(1, Math.log1p(day.totalMinutes) / Math.log1p(heatmapScaleMaxMinutes))
+                          : 0;
+                        const intensity = hasFocus ? Math.pow(rawIntensity, 0.92) : 0;
+                        const heatmapColor = day.topCategoryColor || accentColor;
                         const fillAlpha = hasFocus
-                          ? (isLightTheme ? 0.08 + (intensity * 0.82) : 0.1 + (intensity * 0.86))
+                          ? (isLightTheme ? 0.18 + (intensity * 0.7) : 0.16 + (intensity * 0.72))
                           : 0;
 
                         return (
@@ -1532,18 +1560,23 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                             onMouseLeave={() => setHoveredHeatmapDateKey(null)}
                             onFocus={() => setHoveredHeatmapDateKey(day.dateKey)}
                             onBlur={() => setHoveredHeatmapDateKey(null)}
-                            className={`${baseClass} rounded-[4px] border transition-all duration-200 focus:outline-none`}
+                            onClick={() => setSelectedHeatmapDateKey(day.dateKey)}
+                            className={`${heatmapCellClass} border transition-[background-color,border-color,box-shadow,transform] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40`}
                             style={{
-                              backgroundColor: hasFocus ? rgba(heatmapBlue, fillAlpha) : 'transparent',
+                              backgroundColor: hasFocus
+                                ? rgba(heatmapColor, fillAlpha)
+                                : (isLightTheme ? 'rgba(148, 163, 184, 0.06)' : 'rgba(255, 255, 255, 0.035)'),
                               borderColor: active
-                                ? rgba(activeBlue, isLightTheme ? 0.62 : 0.48)
+                                ? rgba(heatmapColor, isLightTheme ? 0.78 : 0.68)
                                 : hasFocus
-                                  ? rgba(heatmapBlue, isLightTheme ? 0.14 + (intensity * 0.24) : 0.14 + (intensity * 0.22))
-                                  : (isLightTheme ? 'rgba(148, 163, 184, 0.18)' : 'rgba(255, 255, 255, 0.08)'),
-                              boxShadow: hasFocus && active
-                                ? `0 10px 18px -14px ${rgba(activeBlue, isLightTheme ? 0.24 : 0.36)}`
+                                  ? rgba(heatmapColor, isLightTheme ? 0.28 + (intensity * 0.34) : 0.24 + (intensity * 0.32))
+                                  : (isLightTheme ? 'rgba(148, 163, 184, 0.16)' : 'rgba(255, 255, 255, 0.07)'),
+                              boxShadow: active
+                                ? `0 0 0 2px ${rgba(heatmapColor, isLightTheme ? 0.12 : 0.14)}, 0 10px 18px -14px ${rgba(heatmapColor, isLightTheme ? 0.3 : 0.46)}`
                                 : 'none',
+                              transform: active ? 'scale(1.08)' : 'scale(1)',
                             }}
+                            aria-pressed={day.dateKey === selectedHeatmapDateKey}
                             aria-label={`${formatDateKeyFullStamp(day.dateKey)} ${formatMinutesPrecise(day.totalMinutes)}`}
                           />
                         );
@@ -1551,6 +1584,27 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/34">
+              <div>{ANALYTICS_RANGE_LABELS[analyticsRange]} intensity by daily focus time</div>
+              <div className="flex items-center gap-1.5">
+                <span>Less</span>
+                {heatmapLegendSteps.map((step) => {
+                  const legendColor = activeHeatmapDay?.topCategoryColor || accentColor;
+                  const alpha = isLightTheme ? 0.18 + (step * 0.7) : 0.16 + (step * 0.72);
+                  return (
+                    <span
+                      key={`heatmap-legend-${step}`}
+                      className="h-3.5 w-3.5 rounded-[4px] border"
+                      style={{
+                        backgroundColor: rgba(legendColor, alpha),
+                        borderColor: rgba(legendColor, isLightTheme ? 0.28 + (step * 0.34) : 0.24 + (step * 0.32)),
+                      }}
+                    />
+                  );
+                })}
+                <span>More</span>
               </div>
             </div>
           </div>
