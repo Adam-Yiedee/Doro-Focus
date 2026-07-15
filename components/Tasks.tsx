@@ -58,8 +58,9 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
-const TASK_EDIT_CLOSE_DURATION_MS = 340;
-const TASK_EDIT_SETTLE_DURATION_MS = 190;
+const TASK_EDIT_OPEN_DURATION_MS = 380;
+const TASK_EDIT_CLOSE_DURATION_MS = 300;
+const TASK_EDIT_SETTLE_DURATION_MS = 160;
 const CATEGORY_RAIL_DRAG_THRESHOLD_PX = 6;
 
 const getCategoryTrayClass = (hasSelection: boolean, extraClassName = '') => (
@@ -255,7 +256,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               : 'doro-task-edit-open'
         }`}
       >
-        <div className="flex items-center gap-3 p-3">
+        <div className="doro-task-edit-row flex items-center gap-3 p-3">
           {task.subtasks.length > 0 ? (
             <button
               type="button"
@@ -314,6 +315,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
             <span className="opacity-40 mx-0.5">/</span>
             <span>{editEst}</span>
           </div>
+
+          <div className="doro-task-action-rail pointer-events-none shrink-0 opacity-0" aria-hidden="true" />
         </div>
 
         <div className="doro-task-edit-controls flex flex-col gap-3 border-t border-white/[0.07] px-4 py-3">
@@ -564,7 +567,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           <span>{task.estimated}</span>
         </div>
 
-        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-300">
+        <div className="doro-task-action-rail flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-300">
            <button 
              onClick={(e) => { e.stopPropagation(); setIsAddingSub(true); updateTask({ ...task, isExpanded: true }); }} 
              className="p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Add Subtask"
@@ -1092,16 +1095,16 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         @keyframes doro-task-edit-open {
           0% {
-            max-height: 3.875rem;
-            opacity: 0.96;
-            transform: translateY(0) scale(0.996);
-            filter: saturate(0.96);
+            max-height: var(--doro-task-edit-collapsed-height);
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(0.98);
           }
           62% {
             max-height: 24rem;
             opacity: 1;
-            transform: translateY(-1px) scale(1.004);
-            filter: saturate(1.05);
+            transform: translateY(-1px) scale(1.006);
+            filter: saturate(1.03);
           }
           100% {
             max-height: 24rem;
@@ -1112,43 +1115,80 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         }
         .doro-task-edit-shell {
           max-height: 24rem;
-          min-height: 3.875rem;
+          min-height: var(--doro-task-edit-collapsed-height);
+          --doro-task-edit-collapsed-height: 2.875rem;
           transform-origin: top center;
           will-change: max-height, transform, opacity, filter;
         }
-        .doro-task-edit-open {
-          animation: doro-task-edit-open 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+        .doro-task-action-rail {
+          width: 5.125rem;
+          min-width: 5.125rem;
+          justify-content: flex-end;
         }
-        @keyframes doro-task-edit-controls-in {
+        .doro-task-edit-open {
+          animation: doro-task-edit-open ${TASK_EDIT_OPEN_DURATION_MS}ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+        }
+        @keyframes doro-task-edit-row-in {
           0% {
-            opacity: 0;
-            transform: translateY(-8px) scale(0.992);
+            opacity: 0.96;
+            transform: translateY(0) scale(0.998);
           }
-          68% {
+          62% {
             opacity: 1;
-            transform: translateY(1px) scale(1.002);
+            transform: translateY(-0.5px) scale(1.002);
           }
           100% {
             opacity: 1;
             transform: translateY(0) scale(1);
           }
         }
-        .doro-task-edit-open .doro-task-edit-controls {
-          animation: doro-task-edit-controls-in 360ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+        .doro-task-edit-open .doro-task-edit-row {
+          animation: doro-task-edit-row-in ${TASK_EDIT_OPEN_DURATION_MS}ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+          transform-origin: center;
+        }
+        .doro-task-edit-controls {
+          max-height: 18rem;
+          overflow: hidden;
           transform-origin: top center;
+          will-change: max-height, opacity, transform, padding, border-color;
+        }
+        @keyframes doro-task-edit-controls-in {
+          0% {
+            max-height: 0;
+            opacity: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            transform: translateY(6px) scale(0.985);
+            border-color: rgba(255, 255, 255, 0);
+          }
+          62% {
+            max-height: 18rem;
+            opacity: 1;
+            padding-top: 0.75rem;
+            padding-bottom: 0.75rem;
+            transform: translateY(-1px) scale(1.008);
+            border-color: rgba(255, 255, 255, 0.07);
+          }
+          100% {
+            max-height: 18rem;
+            opacity: 1;
+            padding-top: 0.75rem;
+            padding-bottom: 0.75rem;
+            transform: translateY(0) scale(1);
+            border-color: rgba(255, 255, 255, 0.07);
+          }
+        }
+        .doro-task-edit-open .doro-task-edit-controls {
+          animation: doro-task-edit-controls-in ${TASK_EDIT_OPEN_DURATION_MS}ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
         }
         @keyframes doro-task-edit-controls-out {
           0% {
             opacity: 1;
             transform: translateY(0) scale(1);
           }
-          45% {
-            opacity: 0;
-            transform: translateY(-4px) scale(0.996);
-          }
           100% {
             opacity: 0;
-            transform: translateY(-4px) scale(0.996);
+            transform: translateY(6px) scale(0.975);
           }
         }
         @keyframes doro-task-edit-close-save {
@@ -1158,25 +1198,19 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
-          62% {
-            max-height: 3.875rem;
-            opacity: 1;
-            transform: translateY(0) scale(1);
-            filter: brightness(1.03) saturate(1.02);
-          }
           100% {
-            max-height: 3.875rem;
+            max-height: var(--doro-task-edit-collapsed-height);
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
         }
         .doro-task-edit-close-save {
-          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
           pointer-events: none;
         }
         .doro-task-edit-close-save .doro-task-edit-controls {
-          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
         }
         @keyframes doro-task-edit-close-cancel {
           0% {
@@ -1185,25 +1219,19 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
-          62% {
-            max-height: 3.875rem;
-            opacity: 1;
-            transform: translateY(0) scale(1);
-            filter: brightness(0.98) saturate(0.96);
-          }
           100% {
-            max-height: 3.875rem;
+            max-height: var(--doro-task-edit-collapsed-height);
             opacity: 1;
             transform: translateY(0) scale(1);
             filter: brightness(1) saturate(1);
           }
         }
         .doro-task-edit-close-cancel {
-          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
           pointer-events: none;
         }
         .doro-task-edit-close-cancel .doro-task-edit-controls {
-          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
         }
         @keyframes doro-task-edit-return-settle {
           0% {

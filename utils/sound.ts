@@ -28,9 +28,15 @@ type FocusSoundState = {
   teardown: Array<AudioNode>;
 };
 
+type FocusSoundPreviewState = FocusSoundState & {
+  stopTimer: ReturnType<typeof globalThis.setTimeout> | null;
+};
+
 let focusSoundState: FocusSoundState | null = null;
+let focusSoundPreviewState: FocusSoundPreviewState | null = null;
 let sharedFocusAudioContext: AudioContext | null = null;
 let focusSoundRequestToken = 0;
+let focusSoundPreviewRequestToken = 0;
 
 const getBrowserAudioContextConstructor = () => {
   if (typeof window === 'undefined') return null;
@@ -43,6 +49,13 @@ const nextFocusSoundRequestToken = () => {
 };
 
 const isFocusSoundRequestCurrent = (requestToken: number) => focusSoundRequestToken === requestToken;
+
+const nextFocusSoundPreviewRequestToken = () => {
+  focusSoundPreviewRequestToken += 1;
+  return focusSoundPreviewRequestToken;
+};
+
+const isFocusSoundPreviewRequestCurrent = (requestToken: number) => focusSoundPreviewRequestToken === requestToken;
 
 export const resumeAudioContext = async () => {
   try {
@@ -202,6 +215,94 @@ export const stopFocusSound = () => {
   const activeState = focusSoundState;
   focusSoundState = null;
   disconnectFocusSoundState(activeState);
+};
+
+const scheduleFocusSoundPreviewStop = (state: FocusSoundPreviewState, durationMs: number) => {
+  if (state.stopTimer) {
+    globalThis.clearTimeout(state.stopTimer);
+    state.stopTimer = null;
+  }
+
+  const safeDurationMs = Number.isFinite(durationMs) ? Math.max(500, durationMs) : 2500;
+  state.stopTimer = globalThis.setTimeout(() => {
+    if (focusSoundPreviewState === state) {
+      stopFocusSoundPreview();
+    }
+  }, safeDurationMs);
+};
+
+const disconnectFocusSoundPreviewState = (state: FocusSoundPreviewState) => {
+  if (state.stopTimer) {
+    globalThis.clearTimeout(state.stopTimer);
+    state.stopTimer = null;
+  }
+  disconnectFocusSoundState(state);
+};
+
+export const stopFocusSoundPreview = () => {
+  nextFocusSoundPreviewRequestToken();
+  if (!focusSoundPreviewState) return;
+  const activeState = focusSoundPreviewState;
+  focusSoundPreviewState = null;
+  disconnectFocusSoundPreviewState(activeState);
+};
+
+export const startFocusSoundPreview = async (soundType: FocusSound, volume = 100, durationMs = 2500) => {
+  if (soundType === 'off') {
+    stopFocusSoundPreview();
+    return;
+  }
+
+  const requestToken = nextFocusSoundPreviewRequestToken();
+
+  if (focusSoundPreviewState?.preset === soundType) {
+    if (focusSoundPreviewState.ctx.state === 'suspended') {
+      try {
+        await focusSoundPreviewState.ctx.resume();
+      } catch {}
+    }
+    if (!isFocusSoundPreviewRequestCurrent(requestToken) || !focusSoundPreviewState) return;
+    updateFocusSoundVolume(focusSoundPreviewState, FOCUS_SOUND_PRESETS[soundType], volume);
+    scheduleFocusSoundPreviewStop(focusSoundPreviewState, durationMs);
+    return;
+  }
+
+  if (focusSoundPreviewState) {
+    const activeState = focusSoundPreviewState;
+    focusSoundPreviewState = null;
+    disconnectFocusSoundPreviewState(activeState);
+  }
+
+  const ctx = await getAudioContext();
+  if (!ctx || !isFocusSoundPreviewRequestCurrent(requestToken)) return;
+
+  const preset = FOCUS_SOUND_PRESETS[soundType];
+  const safeVolume = clampFocusSoundVolume(volume);
+  const { source, masterGain, teardown } = createFocusNoiseSource(ctx, preset, safeVolume);
+  const previewState: FocusSoundPreviewState = {
+    ctx,
+    preset: soundType,
+    volume: safeVolume,
+    source,
+    masterGain,
+    teardown,
+    stopTimer: null,
+  };
+
+  if (!isFocusSoundPreviewRequestCurrent(requestToken)) {
+    disconnectFocusSoundPreviewState(previewState);
+    return;
+  }
+
+  source.start();
+
+  if (!isFocusSoundPreviewRequestCurrent(requestToken)) {
+    disconnectFocusSoundPreviewState(previewState);
+    return;
+  }
+
+  focusSoundPreviewState = previewState;
+  scheduleFocusSoundPreviewStop(previewState, durationMs);
 };
 
 export const startFocusSound = async (soundType: FocusSound, volume = 100) => {
@@ -579,16 +680,11 @@ export const playAlarm = async (soundType: AlarmSound) => {
                 });
                 break;
             }
-            case 'tada': {
-                [
-                    { freq: 523.25, start: 0, dur: 0.22, gain: 0.075 },
-                    { freq: 659.25, start: 0.08, dur: 0.22, gain: 0.075 },
-                    { freq: 783.99, start: 0.16, dur: 0.48, gain: 0.095 },
-                    { freq: 1046.5, start: 0.24, dur: 0.54, gain: 0.07 },
-                ].forEach((note) => {
-                    playTrumpetVoice(ctx, note.freq, now + note.start, note.dur, note.gain);
+            case 'twinkle': {
+                [1174.66, 1567.98, 1318.51, 1760.0, 2093.0].forEach((freq, i) => {
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.075), 0.42, 0.12 - (i * 0.012), freq * 1.012);
                 });
-                playNoiseBurst(ctx, 'white', now + 0.22, 0.18, 0.025, 2600, 1.7);
+                playNoiseBurst(ctx, 'white', now + 0.03, 0.34, 0.012, 4200, 3.4);
                 break;
             }
             case 'echo': {

@@ -39,6 +39,7 @@ const ACCOUNT_STATS_POMODORO_SECONDS = 25 * 60;
 
 const defaultLifetimeStats = () => ({
   totalFocusHours: 0,
+  manualFocusHours: 0,
   totalSessions: 0,
   totalPomos: 0,
   activeDays: 0,
@@ -105,8 +106,13 @@ const isPauseCreditedWorkLog = (entry) => {
   return reason.startsWith('paused') || reason.includes('pause credit');
 };
 
+const isManualFocusLog = (entry) => {
+  return entry?.type === 'work' && entry.source === 'manual';
+};
+
 const getPomodoroEquivalentWeight = (entry) => {
   if (!entry || entry.type !== 'work') return 0;
+  if (isManualFocusLog(entry)) return 0;
   const reason = cleanString(entry.reason).trim().toLowerCase();
   if (reason === POMODORO_COMPLETE_REASON) return 1;
   if (reason === MINI_POMODORO_COMPLETE_REASON) {
@@ -157,8 +163,12 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   );
 
   const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
+  const manualWorkSecondsFromLogs = productiveLogs.reduce((acc, entry) => (
+    acc + (isManualFocusLog(entry) ? Math.max(0, entry.duration) : 0)
+  ), 0);
   const productiveLogDateKeys = new Set();
   productiveLogs.forEach((entry) => {
+    if (isManualFocusLog(entry)) return;
     const key = getLocalDateKeyFromIso(entry.start);
     if (key) productiveLogDateKeys.add(key);
   });
@@ -246,6 +256,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   return {
     ...defaultLifetimeStats(),
     totalFocusHours: (workSecondsFromLogs / 3600) + (workMinutesFromFallbackSessions / 60),
+    manualFocusHours: manualWorkSecondsFromLogs / 3600,
     totalSessions: safeSessions.length,
     totalPomos: completedPomodoroWeightFromLogs + fallbackSessions.reduce((acc, session) => acc + getSessionPomodoros(session), 0),
     activeDays: sortedDates.length,

@@ -33,6 +33,7 @@ export interface LogEntry {
   end: string;
   duration: number;
   reason?: string;
+  source?: 'timer' | 'manual';
   task?: { id: number; name: string } | null;
   color?: string;
   categoryId?: number | null;
@@ -62,7 +63,7 @@ export type AlarmSound =
   | 'flare'
   | 'drift'
   | 'orbit'
-  | 'tada'
+  | 'twinkle'
   | 'echo'
   | 'sprout'
   | 'comet';
@@ -113,6 +114,7 @@ export interface User {
     joinedAt: string;
     lifetimeStats: {
         totalFocusHours: number;
+        manualFocusHours: number;
         totalSessions: number;
         totalPomos: number;
         activeDays: number;

@@ -142,6 +142,7 @@ describe('focus sound engine', () => {
 
   afterEach(async () => {
     const sound = await import('./sound');
+    sound.stopFocusSoundPreview();
     sound.stopFocusSound();
     try {
       vi.runOnlyPendingTimers();
@@ -254,5 +255,24 @@ describe('focus sound engine', () => {
     await sound.startFocusSound('brown-deep', 0);
 
     expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBe(0);
+  });
+
+  it('previews a focus sound without replacing the active focus loop', async () => {
+    vi.useFakeTimers();
+    const fakeAudio = installFakeAudioContext();
+    const sound = await import('./sound');
+
+    await sound.startFocusSound('white-soft', 100);
+    await sound.startFocusSoundPreview('pink-soft', 60, 1000);
+
+    expect(fakeAudio.startedSources).toHaveLength(2);
+
+    vi.advanceTimersByTime(1180);
+
+    expect(fakeAudio.stoppedSources).toHaveLength(1);
+
+    await sound.startFocusSound('white-soft', 70);
+
+    expect(fakeAudio.startedSources).toHaveLength(2);
   });
 });

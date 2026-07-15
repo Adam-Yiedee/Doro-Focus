@@ -170,6 +170,34 @@ describe('account store blob compatibility', () => {
     });
   });
 
+  it('tracks manually logged focus separately while counting it as focus time', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T11:00:00.000Z',
+        duration: 7200,
+        reason: 'Pomodoro Complete',
+        source: 'manual',
+        task: null,
+        color: undefined,
+        categoryId: 1,
+      },
+    ], [
+      { id: 1, name: 'Writing', color: '#C86D80', icon: 'pen' },
+    ]);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 2,
+      manualFocusHours: 2,
+      totalPomos: 0,
+      activeDays: 1,
+      categoryBreakdown: {
+        Writing: 120,
+      },
+    });
+  });
+
   it('converts mini-pomodoro work minutes to standard pomodoros from work logs', () => {
     const stats = calculateLifetimeStatsFromAccountData([], [
       {

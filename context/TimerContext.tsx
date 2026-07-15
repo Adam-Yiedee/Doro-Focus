@@ -208,6 +208,7 @@ interface TimerContextType {
   selectCategory: (id: number | null) => void;
   updateSettings: (newSettings: TimerSettings) => void;
   clearLogs: () => void;
+  addManualFocusLog: (minutes: number, note?: string, categoryId?: number | null) => void;
   resetTimers: () => void;
   setPomodoroCount: (count: number) => void;
   addScheduleBreak: (brk: ScheduleBreak) => void;
@@ -239,12 +240,24 @@ const DEFAULT_SETTINGS: TimerSettings = {
   themeMode: 'dark'
 };
 
+const normalizeAlarmSound = (sound: unknown): AlarmSound => {
+  if (sound === 'tada') return 'twinkle';
+  const validSounds: AlarmSound[] = [
+    'bell', 'digital', 'chime', 'gong', 'pop', 'wood', 'marimba', 'crystal',
+    'blade', 'cosmic', 'ripple', 'news', 'harp', 'pulse', 'beacon', 'bubbles',
+    'pluck', 'flare', 'drift', 'orbit', 'twinkle', 'echo', 'sprout', 'comet',
+  ];
+  return validSounds.includes(sound as AlarmSound) ? sound as AlarmSound : 'bell';
+};
+
 const normalizeSettings = (settings?: Partial<TimerSettings> | null): TimerSettings => {
   const source = settings || {};
   const nextSettings: TimerSettings = {
     ...DEFAULT_SETTINGS,
     ...source,
   };
+  nextSettings.alarmSound = normalizeAlarmSound(source.alarmSound);
+  nextSettings.twoInARowStartSound = normalizeAlarmSound(source.twoInARowStartSound);
   const hasExplicitPreset = Object.prototype.hasOwnProperty.call(source, 'timerPreset');
   const presetIsValid = (
     nextSettings.timerPreset === 'classic'
@@ -3086,6 +3099,44 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setLogs(prev => [entry, ...prev]);
   }, [categories, tasks]);
 
+  const addManualFocusLog = useCallback((minutes: number, note: string = '', categoryId: number | null = null) => {
+    const safeMinutes = Math.max(0, Math.round(Number(minutes)));
+    if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+
+    const selectedCategory = typeof categoryId === 'number' && Number.isFinite(categoryId)
+      ? categories.find(category => category.id === categoryId && !category.archived)
+      : null;
+    const resolvedCategoryId = selectedCategory?.id ?? null;
+    const categorySnapshot = buildCategorySnapshot(categories, resolvedCategoryId);
+    const end = new Date();
+    const start = new Date(end.getTime() - (safeMinutes * 60_000));
+    const trimmedNote = typeof note === 'string' ? note.trim() : '';
+    const entry: LogEntry = {
+      type: 'work',
+      start: start.toISOString(),
+      end: end.toISOString(),
+      duration: safeMinutes * 60,
+      reason: trimmedNote || 'Manual Focus',
+      source: 'manual',
+      task: null,
+      color: selectedCategory?.color,
+      categoryId: resolvedCategoryId,
+      ...categorySnapshot,
+    };
+    const nextLogs = [entry, ...logs];
+    setLogs(nextLogs);
+    if (user) {
+      setUser(prev => (
+        prev
+          ? {
+              ...prev,
+              lifetimeStats: calculateLifetimeStatsFromData(pastSessions, nextLogs, categories),
+            }
+          : prev
+      ));
+    }
+  }, [categories, logs, pastSessions, user]);
+
   const sendNotification = useCallback((title: string, body: string) => {
     if ("Notification" in window) {
        if (Notification.permission === "granted") {
@@ -4344,7 +4395,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       toggleTaskFuture, setTaskSchedule,
       addCategory, updateCategory, archiveCategory, deleteCategory, moveCategory, selectCategory: setSelectedCategoryId,
       addScheduleBreak, deleteScheduleBreak, setScheduleStartTime,
-      updateSettings, clearLogs, resetTimers, setPomodoroCount
+      updateSettings, clearLogs, addManualFocusLog, resetTimers, setPomodoroCount
     }}>
       {children}
     </TimerContext.Provider>

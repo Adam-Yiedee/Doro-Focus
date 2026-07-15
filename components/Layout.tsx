@@ -54,7 +54,8 @@ const GROUP_BANNER_EXIT_MS = 600;
 const GROUP_BANNER_VISIBLE_MS = 8200;
 const GROUP_BANNER_TOTAL_MS = GROUP_BANNER_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
 const DAILY_WELCOME_VISIBLE_MS = 9600;
-const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
+const DAILY_WELCOME_EXIT_MS = 680;
+const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + DAILY_WELCOME_EXIT_MS;
 const DAILY_WELCOME_SHOW_DELAY_MS = 1150;
 const DAILY_WELCOME_STORAGE_KEY = 'doro_daily_welcome_seen_date';
 const ALL_TASKS_CELEBRATION_DISMISS_MS = 360;
@@ -342,7 +343,7 @@ const Layout: React.FC = () => {
       const closingId = current.id;
 
       clearDailyWelcomeTimers();
-      dailyWelcomeTimersRef.current.remove.remainingMs = GROUP_BANNER_EXIT_MS;
+      dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_EXIT_MS;
       startPausableTimeout(dailyWelcomeTimersRef.current.remove, () => {
         setDailyWelcomeBanner((latest) => (latest?.id === closingId ? null : latest));
         clearDailyWelcomeTimers();
@@ -626,8 +627,54 @@ const Layout: React.FC = () => {
           0% { transform: scaleX(1); }
           100% { transform: scaleX(0); }
         }
+        @keyframes doroDailyWelcomeIn {
+          0% {
+            opacity: 0;
+            transform: translateY(-18px) scale(0.972);
+            filter: blur(6px) saturate(0.9);
+          }
+          64% {
+            opacity: 1;
+            transform: translateY(2px) scale(1.006);
+            filter: blur(0) saturate(1.05);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doroDailyWelcomeOut {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          32% {
+            opacity: 1;
+            transform: translateY(4px) scale(1.006);
+            filter: blur(0) saturate(1.06);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-24px) scale(0.94);
+            filter: blur(8px) saturate(0.82);
+          }
+        }
         .doro-group-banner {
           animation: doroGroupBannerIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-daily-welcome-banner {
+          animation: doroDailyWelcomeIn 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+          will-change: transform, opacity, filter;
+        }
+        .doro-daily-welcome-banner-exit {
+          pointer-events: none;
+          animation: doroDailyWelcomeOut ${DAILY_WELCOME_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+        }
+        .doro-daily-welcome-banner-exit .doro-group-banner-progress {
+          opacity: 0;
+          transition: opacity 220ms ease-out;
         }
         .doro-group-banner-progress {
           transform-origin: left;
@@ -808,8 +855,15 @@ const Layout: React.FC = () => {
           .doro-all-tasks-celebration-glow,
           .doro-all-tasks-celebration-halo,
           .doro-all-tasks-celebration-sheen,
-          .doro-all-tasks-confetti-piece {
+          .doro-all-tasks-confetti-piece,
+          .doro-daily-welcome-banner,
+          .doro-daily-welcome-banner-exit {
             animation: none !important;
+          }
+          .doro-daily-welcome-banner-exit {
+            opacity: 0 !important;
+            transform: translateY(-8px) scale(0.98) !important;
+            filter: none !important;
           }
         }
       `}</style>
@@ -821,12 +875,12 @@ const Layout: React.FC = () => {
             key={dailyWelcomeBanner.id}
             onClick={dismissDailyWelcomeBanner}
             aria-label="Dismiss welcome message"
-            className={`doro-group-banner pointer-events-auto relative w-full overflow-hidden rounded-[1.7rem] border px-4 py-4 text-left shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 hover:-translate-y-0.5 hover:border-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/45 ${
+            className={`doro-daily-welcome-banner pointer-events-auto relative w-full overflow-hidden rounded-[1.7rem] border px-4 py-4 text-left shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-[border-color,box-shadow] duration-300 hover:border-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/45 ${
               settings.disableBlur
                 ? 'border-white/18 bg-black/70'
                 : 'border-white/22 bg-[linear-gradient(160deg,rgba(255,245,247,0.18),rgba(255,255,255,0.07))] backdrop-blur-2xl'
             } ${
-              dailyWelcomeBanner.exiting ? 'opacity-0 -translate-y-2 scale-[0.985]' : 'opacity-100 translate-y-0 scale-100'
+              dailyWelcomeBanner.exiting ? 'doro-daily-welcome-banner-exit' : ''
             }`}
           >
             <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_12%_-18%,rgba(255,255,255,0.34),transparent_44%)]" />

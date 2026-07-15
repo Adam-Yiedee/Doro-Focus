@@ -7,6 +7,7 @@ import {
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
+  manualFocusHours: 0,
   totalSessions: 0,
   totalPomos: 0,
   activeDays: 0,
@@ -28,6 +29,10 @@ const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
   const reason = (entry.reason || '').trim().toLowerCase();
   return reason.startsWith('paused') || reason.includes('pause credit');
 };
+
+const isManualFocusLog = (entry: LogEntry): boolean => (
+  entry.type === 'work' && entry.source === 'manual'
+);
 
 const getSessionWorkMinutes = (session: SessionRecord): number => {
   const minutes = Number(session.stats?.totalWorkMinutes || 0);
@@ -73,9 +78,14 @@ export const calculateLifetimeStatsFromData = (
   );
 
   const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
+  const manualWorkSecondsFromLogs = productiveLogs.reduce(
+    (acc, entry) => acc + (isManualFocusLog(entry) ? Math.max(0, entry.duration) : 0),
+    0,
+  );
   const workHoursFromLogs = workSecondsFromLogs / 3600;
   const productiveLogDateKeys = new Set<string>();
   productiveLogs.forEach((entry) => {
+    if (isManualFocusLog(entry)) return;
     const key = getLocalDateKeyFromIso(entry.start);
     if (key) productiveLogDateKeys.add(key);
   });
@@ -172,6 +182,7 @@ export const calculateLifetimeStatsFromData = (
   return {
     ...EMPTY_LIFETIME_STATS,
     totalFocusHours,
+    manualFocusHours: manualWorkSecondsFromLogs / 3600,
     totalSessions: safeSessions.length,
     totalPomos: completedPomodoroWeightFromLogs + totalPomosFromFallbackSessions,
     activeDays,

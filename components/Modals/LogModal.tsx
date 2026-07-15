@@ -16,7 +16,7 @@ import {
   POMODORO_COMPLETE_REASON,
 } from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
-import { playAlarm } from '../../utils/sound';
+import { playAlarm, startFocusSoundPreview, stopFocusSoundPreview } from '../../utils/sound';
 import { TIMER_PRESETS, getMatchingTimerPreset } from '../../utils/timerRuntime';
 
 interface LogModalProps {
@@ -73,7 +73,7 @@ const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
   { label: 'Flare', value: 'flare' },
   { label: 'Drift', value: 'drift' },
   { label: 'Orbit', value: 'orbit' },
-  { label: 'Tada', value: 'tada' },
+  { label: 'Twinkle', value: 'twinkle' },
   { label: 'Echo', value: 'echo' },
   { label: 'Sprout', value: 'sprout' },
   { label: 'Comet', value: 'comet' },
@@ -89,6 +89,8 @@ const FOCUS_SOUND_OPTIONS: Array<{ label: string; value: FocusSound }> = [
   { label: 'Brown Warm', value: 'brown-warm' },
   { label: 'Green Calm', value: 'green-calm' },
 ];
+
+const FOCUS_SOUND_PREVIEW_MS = 2600;
 
 const TIMER_PRESET_OPTIONS: Array<{ label: string; value: Exclude<TimerPreset, 'custom'>; detail: string }> = [
   { label: 'Classic', value: 'classic', detail: '25 / 5 / 15' },
@@ -179,6 +181,7 @@ const PREVIEW_ACCOUNT_USERNAME = 'master';
 const PREVIEW_ACCOUNT_PASSWORD = 'master';
 const CATEGORY_EDITOR_CLOSE_DURATION_MS = 220;
 const SETTINGS_PANEL_TRANSITION_MS = 240;
+const AUTO_START_SOUND_PANEL_EXIT_MS = 300;
 const CATEGORY_DRAG_HOLD_MS = 180;
 const CATEGORY_DRAG_CANCEL_DISTANCE_PX = 8;
 const CATEGORY_DRAG_DEAD_ZONE_MIN_PX = 14;
@@ -189,6 +192,7 @@ const CATEGORY_FLIP_MAX_ITEMS = 24;
 const LOG_ENTRY_TYPES = new Set<LogEntry['type']>(['work', 'break', 'allpause', 'task-complete', 'grace']);
 const EMPTY_ACCOUNT_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
+  manualFocusHours: 0,
   totalSessions: 0,
   totalPomos: 0,
   activeDays: 0,
@@ -249,6 +253,7 @@ const getSafeLogEntry = (value: unknown): LogEntry | null => {
     end: entry.end,
     duration: entry.duration,
     reason: typeof entry.reason === 'string' ? entry.reason : undefined,
+    source: entry.source === 'manual' ? 'manual' : undefined,
     task: safeTask && safeTask.name ? safeTask : null,
     color: typeof entry.color === 'string' ? entry.color : undefined,
     categoryId: typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId) ? entry.categoryId : null,
@@ -333,6 +338,7 @@ const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
   const rawStats = user?.lifetimeStats;
   const rawBreakdown = rawStats?.categoryBreakdown;
   const safeTotalFocusHours = Number(rawStats?.totalFocusHours);
+  const safeManualFocusHours = Number(rawStats?.manualFocusHours);
   const safeCategoryBreakdown = rawBreakdown && typeof rawBreakdown === 'object' && !Array.isArray(rawBreakdown)
     ? Object.fromEntries(
         Object.entries(rawBreakdown).filter(([name, minutes]) => (
@@ -345,6 +351,7 @@ const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
     ...EMPTY_ACCOUNT_STATS,
     ...(rawStats || {}),
     totalFocusHours: Number.isFinite(safeTotalFocusHours) && safeTotalFocusHours > 0 ? safeTotalFocusHours : 0,
+    manualFocusHours: Number.isFinite(safeManualFocusHours) && safeManualFocusHours > 0 ? safeManualFocusHours : 0,
     totalSessions: Math.max(0, Math.floor(Number(rawStats?.totalSessions || 0))),
     totalPomos: Math.max(0, Number.isFinite(Number(rawStats?.totalPomos || 0)) ? Number(rawStats?.totalPomos || 0) : 0),
     activeDays: Math.max(0, Math.floor(Number(rawStats?.activeDays || 0))),
@@ -363,6 +370,10 @@ const clampInt = (value: number, min: number, max: number) => {
 const isGraceLike = (entry: LogEntry) => {
   return entry.type === 'grace' || (typeof entry.reason === 'string' && entry.reason.startsWith('Grace Period'));
 };
+
+const isManualFocusLog = (entry: LogEntry) => (
+  entry.type === 'work' && entry.source === 'manual'
+);
 
 const getDateKey = (date: Date) => {
   const y = date.getFullYear();
@@ -469,6 +480,14 @@ const getActivityLogTaskName = (entry: LogEntry) => (
 
 const getActivityLogPrimaryLabel = (entry: ActivityLogDisplayEntry) => {
   if (entry.mode === 'focus') {
+    const manualEntry = entry.rawEntries.find(isManualFocusLog);
+    if (manualEntry) {
+      const detail = getLogDisplayReason(manualEntry);
+      return detail && detail.toLowerCase() !== 'manual focus'
+        ? `Manual Focus - ${detail}`
+        : 'Manual Focus';
+    }
+
     const miniPomoCount = entry.rawEntries.filter(
       (rawEntry) => getPomodoroEquivalentWeightForReason(rawEntry.reason) === 0.5,
     ).length;
@@ -500,6 +519,7 @@ const shouldMergeActivityLogEntries = (
   if (previousDisplayEntry.mode !== nextMode) return false;
   const previousRawEntry = previousDisplayEntry.rawEntries[previousDisplayEntry.rawEntries.length - 1] || null;
   if (!hasContinuousLogTransition(previousRawEntry, nextEntry)) return false;
+  if (previousRawEntry && (isManualFocusLog(previousRawEntry) || isManualFocusLog(nextEntry))) return false;
 
   if (nextMode === 'focus') {
     if (previousDisplayEntry.taskName && nextTaskName && previousDisplayEntry.taskName !== nextTaskName) return false;
@@ -705,6 +725,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const {
     logs,
     clearLogs,
+    addManualFocusLog,
     settings,
     updateSettings,
     hardReset,
@@ -786,7 +807,17 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [draggingCategoryId, setDraggingCategoryId] = useState<number | null>(null);
   const [categoryDropHint, setCategoryDropHint] = useState<{ categoryId: number; position: DragInsertPosition } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [manualFocusHoursInput, setManualFocusHoursInput] = useState('');
+  const [manualFocusMinutesInput, setManualFocusMinutesInput] = useState('');
+  const [manualFocusNote, setManualFocusNote] = useState('');
+  const [manualFocusCategoryId, setManualFocusCategoryId] = useState<number | null>(null);
+  const [manualFocusError, setManualFocusError] = useState<string | null>(null);
+  const [showAutoStartSoundPanel, setShowAutoStartSoundPanel] = useState(settings.twoInARowMode);
+  const [autoStartSoundPanelExiting, setAutoStartSoundPanelExiting] = useState(false);
+  const [isFocusSoundPreviewing, setIsFocusSoundPreviewing] = useState(false);
   const categoryEditorTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoStartSoundPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusSoundPreviewTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const categoryCardRefsRef = useRef(new Map<number, HTMLDivElement>());
   const previousCategoryTopsRef = useRef<Map<number, number>>(new Map());
   const categoryFlipAnimationsRef = useRef(new Map<number, Animation>());
@@ -877,6 +908,90 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       };
     });
   }, [categoriesById, orderedLogs]);
+
+  useEffect(() => {
+    if (manualFocusCategoryId === null) return;
+    if (!safeActiveCategoryIds.includes(manualFocusCategoryId)) {
+      setManualFocusCategoryId(null);
+    }
+  }, [manualFocusCategoryId, safeActiveCategoryIds]);
+
+  useEffect(() => {
+    if (settings.twoInARowMode) {
+      if (autoStartSoundPanelTimeoutRef.current) {
+        clearTimeout(autoStartSoundPanelTimeoutRef.current);
+        autoStartSoundPanelTimeoutRef.current = null;
+      }
+      setShowAutoStartSoundPanel(true);
+      setAutoStartSoundPanelExiting(false);
+      return;
+    }
+
+    if (!showAutoStartSoundPanel || autoStartSoundPanelExiting) return;
+    setAutoStartSoundPanelExiting(true);
+    autoStartSoundPanelTimeoutRef.current = setTimeout(() => {
+      setShowAutoStartSoundPanel(false);
+      setAutoStartSoundPanelExiting(false);
+      autoStartSoundPanelTimeoutRef.current = null;
+    }, AUTO_START_SOUND_PANEL_EXIT_MS);
+  }, [autoStartSoundPanelExiting, settings.twoInARowMode, showAutoStartSoundPanel]);
+
+  const clearFocusSoundPreviewTimer = useCallback(() => {
+    if (focusSoundPreviewTimeoutRef.current) {
+      clearTimeout(focusSoundPreviewTimeoutRef.current);
+      focusSoundPreviewTimeoutRef.current = null;
+    }
+  }, []);
+
+  const stopSettingsFocusSoundPreview = useCallback(() => {
+    clearFocusSoundPreviewTimer();
+    stopFocusSoundPreview();
+    setIsFocusSoundPreviewing(false);
+  }, [clearFocusSoundPreviewTimer]);
+
+  useEffect(() => {
+    if (!isFocusSoundPreviewing) return;
+
+    if (!isOpen || displayedTab !== 'settings' || settings.focusSound === 'off') {
+      stopSettingsFocusSoundPreview();
+      return;
+    }
+
+    const previewVolume = clampInt(Math.round(settings.focusSoundVolume ?? 100), 0, 100);
+    clearFocusSoundPreviewTimer();
+    void startFocusSoundPreview(settings.focusSound, previewVolume, FOCUS_SOUND_PREVIEW_MS).catch(() => {
+      clearFocusSoundPreviewTimer();
+      setIsFocusSoundPreviewing(false);
+    });
+
+    focusSoundPreviewTimeoutRef.current = setTimeout(() => {
+      focusSoundPreviewTimeoutRef.current = null;
+      setIsFocusSoundPreviewing(false);
+    }, FOCUS_SOUND_PREVIEW_MS + 220);
+  }, [
+    clearFocusSoundPreviewTimer,
+    displayedTab,
+    isFocusSoundPreviewing,
+    isOpen,
+    settings.focusSound,
+    settings.focusSoundVolume,
+    stopSettingsFocusSoundPreview,
+  ]);
+
+  useEffect(() => () => {
+    clearFocusSoundPreviewTimer();
+    stopFocusSoundPreview();
+  }, [clearFocusSoundPreviewTimer]);
+
+  const handleFocusSoundPreviewToggle = useCallback(() => {
+    if (isFocusSoundPreviewing) {
+      stopSettingsFocusSoundPreview();
+      return;
+    }
+
+    if (settings.focusSound === 'off') return;
+    setIsFocusSoundPreviewing(true);
+  }, [isFocusSoundPreviewing, settings.focusSound, stopSettingsFocusSoundPreview]);
 
   const accountError = authLocalError || accountSyncError || null;
   const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(safeLastAccountSyncAt), [safeLastAccountSyncAt]);
@@ -1386,6 +1501,27 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     updateTimerSettings({ longBreakInterval: clampInt(parsed, 1, 24) });
   };
 
+  const handleManualFocusLog = () => {
+    const rawHours = manualFocusHoursInput.trim() ? Number(manualFocusHoursInput) : 0;
+    const rawMinutes = manualFocusMinutesInput.trim() ? Number(manualFocusMinutesInput) : 0;
+    const totalMinutes = (rawHours * 60) + rawMinutes;
+
+    if (!Number.isFinite(rawHours) || !Number.isFinite(rawMinutes) || rawHours < 0 || rawMinutes < 0 || totalMinutes <= 0) {
+      setManualFocusError('Enter focused time before logging it.');
+      return;
+    }
+    if (totalMinutes > 24 * 60) {
+      setManualFocusError('Log 24 hours or less at a time.');
+      return;
+    }
+
+    addManualFocusLog(totalMinutes, manualFocusNote, manualFocusCategoryId);
+    setManualFocusHoursInput('');
+    setManualFocusMinutesInput('');
+    setManualFocusNote('');
+    setManualFocusError(null);
+  };
+
   const handleTabClick = (tab: TabButton) => {
     if (settingsPanelTransitionPhase !== 'idle') return;
     const direction: SettingsPanelTransitionDirection = TAB_ORDER[tab] >= TAB_ORDER[activeTab] ? 'forward' : 'backward';
@@ -1576,6 +1712,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     return () => {
+      if (autoStartSoundPanelTimeoutRef.current) clearTimeout(autoStartSoundPanelTimeoutRef.current);
       if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
       pendingCategoryCommitRef.current = null;
     };
@@ -1868,7 +2005,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                         {firstStart && lastEnd ? formatTimeRange(firstStart, lastEnd) : `${entries.length} events`}
                       </div>
                       <div className="mt-1 text-sm text-white/44">
-                        {entries.length} timer block{entries.length === 1 ? '' : 's'}
+                        {entries.length} activity block{entries.length === 1 ? '' : 's'}
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-x-5 gap-y-3 md:justify-end">
@@ -1890,8 +2027,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                       const hasMiniPomoCompletion = entry.mode === 'focus' && entry.rawEntries.some(
                         (rawEntry) => getPomodoroEquivalentWeightForReason(rawEntry.reason) === 0.5,
                       );
+                      const hasManualFocus = entry.mode === 'focus' && entry.rawEntries.some(isManualFocusLog);
                       const modeLabel = entry.mode === 'focus'
-                        ? (hasMiniPomoCompletion ? 'Mini-Pomo' : 'Focus')
+                        ? (hasManualFocus ? 'Manual' : hasMiniPomoCompletion ? 'Mini-Pomo' : 'Focus')
                         : entry.mode === 'break'
                           ? 'Break'
                           : entry.mode === 'pause'
@@ -1965,6 +2103,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const activeDays = Math.max(0, Math.floor(stats.activeDays || 0));
     const dailyAvgHours = activeDays > 0 ? stats.totalFocusHours / activeDays : 0;
     const focusHoursLabel = formatCompactHours(stats.totalFocusHours);
+    const manualFocusHoursLabel = formatCompactHours(stats.manualFocusHours || 0);
     const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
     const profileName = safeUserName.trim();
     const profileNameLabel = profileName && profileName !== safeUser.username ? profileName : 'Matches username';
@@ -1985,6 +2124,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       valueClassName?: string;
     }> = [
       { label: 'Focus Time', value: focusHoursLabel, color: accountPrimaryColor },
+      { label: 'Manual Focus', value: manualFocusHoursLabel, color: PRESET_COLORS[5] },
       { label: 'Pomodoros', value: formatPomodoroCount(stats.totalPomos), color: PRESET_COLORS[2] },
       { label: 'Sessions', value: `${stats.totalSessions}`, color: PRESET_COLORS[1] },
       {
@@ -2732,8 +2872,26 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Volume</div>
               <div className="text-[11px] font-semibold text-white/55">{focusSoundVolumePercent}%</div>
             </div>
-            <div className="mt-3">
-              <div className="doro-focus-sound-slider-shell">
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleFocusSoundPreviewToggle}
+                disabled={settings.focusSound === 'off'}
+                className={`doro-focus-preview-btn ${isFocusSoundPreviewing ? 'is-playing' : ''}`}
+                aria-label={isFocusSoundPreviewing ? 'Stop focus sound preview' : 'Play focus sound preview'}
+                title={settings.focusSound === 'off' ? 'Choose a focus sound to preview' : (isFocusSoundPreviewing ? 'Stop preview' : 'Play preview')}
+              >
+                {isFocusSoundPreviewing ? (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5.5v13l10-6.5-10-6.5Z" />
+                  </svg>
+                )}
+              </button>
+              <div className="doro-focus-sound-slider-shell flex-1 min-w-0">
                 <div
                   className="doro-focus-sound-slider-track"
                   style={{
@@ -2844,8 +3002,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 tone="quiet"
                 switchTone="neutral"
               />
-              {settings.twoInARowMode && (
-                <div className="doro-auto-start-sound-panel rounded-[1rem] border border-white/[0.08] bg-white/[0.035] px-4 py-3.5">
+              {showAutoStartSoundPanel && (
+                <div
+                  className={`doro-auto-start-sound-panel rounded-[1rem] border border-white/[0.08] bg-white/[0.035] px-4 py-3.5 ${
+                    autoStartSoundPanelExiting ? 'doro-auto-start-sound-panel-out' : 'doro-auto-start-sound-panel-in'
+                  }`}
+                >
                   <div className="mb-3 text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Auto-Start Sound</div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
                     {ALARM_OPTIONS.map(option => (
@@ -3137,6 +3299,103 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         </div>
 
+        <div className="space-y-4 pt-8 md:pt-9 border-t border-white/[0.08]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Manual Focus Log</div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Hours</label>
+              <input
+                type="number"
+                min={0}
+                step={0.25}
+                inputMode="decimal"
+                value={manualFocusHoursInput}
+                onChange={event => {
+                  setManualFocusHoursInput(event.target.value);
+                  if (manualFocusError) setManualFocusError(null);
+                }}
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none transition-colors placeholder:text-white/22 focus:border-white/30"
+                placeholder="0"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Minutes</label>
+              <input
+                type="number"
+                min={0}
+                step={5}
+                inputMode="numeric"
+                value={manualFocusMinutesInput}
+                onChange={event => {
+                  setManualFocusMinutesInput(event.target.value);
+                  if (manualFocusError) setManualFocusError(null);
+                }}
+                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none transition-colors placeholder:text-white/22 focus:border-white/30"
+                placeholder="0"
+              />
+            </div>
+          </div>
+          <input
+            type="text"
+            value={manualFocusNote}
+            onChange={event => {
+              setManualFocusNote(event.target.value);
+              if (manualFocusError) setManualFocusError(null);
+            }}
+            className="w-full rounded-xl border border-white/10 bg-white/[0.045] px-3.5 py-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-white/24 focus:border-white/28"
+            placeholder="Optional note"
+          />
+          {safeActiveCategories.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Category</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setManualFocusCategoryId(null)}
+                  className={`rounded-xl border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] transition-all ${
+                    manualFocusCategoryId === null
+                      ? 'border-white/28 bg-white/18 text-white'
+                      : 'border-white/10 bg-white/[0.045] text-white/58 hover:bg-white/10 hover:text-white/78'
+                  }`}
+                >
+                  None
+                </button>
+                {safeActiveCategories.map(category => (
+                  <button
+                    key={`manual-focus-category-${category.id}`}
+                    type="button"
+                    onClick={() => setManualFocusCategoryId(category.id)}
+                    className={`flex max-w-full items-center gap-2 rounded-xl border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] transition-all ${
+                      manualFocusCategoryId === category.id
+                        ? 'border-white/28 bg-white/18 text-white'
+                        : 'border-white/10 bg-white/[0.045] text-white/58 hover:bg-white/10 hover:text-white/78'
+                    }`}
+                  >
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-white" style={{ backgroundColor: category.color }}>
+                      {getIcon(category.icon, { size: 10, strokeWidth: 2.3 })}
+                    </span>
+                    <span className="truncate">{category.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {manualFocusError && (
+            <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-100/80">
+              {manualFocusError}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleManualFocusLog}
+            className="w-full rounded-xl border border-white/12 bg-white/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition-all hover:border-white/22 hover:bg-white/18 active:scale-[0.99]"
+          >
+            Log Focus Time
+          </button>
+        </div>
+
         <div className="pt-4 border-t border-white/10">
           {showResetConfirm ? (
             <div className="flex gap-2">
@@ -3225,6 +3484,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           .doro-account-stat-card,
           .doro-account-stat-rail,
           .doro-auto-start-sound-panel,
+          .doro-auto-start-sound-panel-in,
+          .doro-auto-start-sound-panel-out,
           .doro-category-editor-shell,
           .doro-category-editor-content,
           .doro-category-editor-section,
@@ -3236,6 +3497,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           .doro-category-editor-footer {
             animation: none !important;
             transition: none !important;
+          }
+          .doro-auto-start-sound-panel-out {
+            max-height: 0 !important;
+            opacity: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            transform: translateY(-4px) scale(0.99) !important;
+            border-color: rgba(255, 255, 255, 0) !important;
           }
         }
         @keyframes doro-auto-start-sound-panel-in {
@@ -3267,12 +3536,47 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             border-color: rgba(255, 255, 255, 0.08);
           }
         }
+        @keyframes doro-auto-start-sound-panel-out {
+          0% {
+            max-height: 28rem;
+            opacity: 1;
+            padding-top: 0.875rem;
+            padding-bottom: 0.875rem;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+            border-color: rgba(255, 255, 255, 0.08);
+          }
+          38% {
+            max-height: 28rem;
+            opacity: 0.92;
+            padding-top: 0.875rem;
+            padding-bottom: 0.875rem;
+            transform: translateY(-3px) scale(0.996);
+            filter: saturate(0.96);
+            border-color: rgba(255, 255, 255, 0.06);
+          }
+          100% {
+            max-height: 0;
+            opacity: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            transform: translateY(-8px) scale(0.982);
+            filter: saturate(0.9);
+            border-color: rgba(255, 255, 255, 0);
+          }
+        }
         .doro-auto-start-sound-panel {
           max-height: 28rem;
           overflow: hidden;
           transform-origin: top center;
           will-change: max-height, padding, transform, opacity, filter, border-color;
+        }
+        .doro-auto-start-sound-panel-in {
           animation: doro-auto-start-sound-panel-in 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+        }
+        .doro-auto-start-sound-panel-out {
+          pointer-events: none;
+          animation: doro-auto-start-sound-panel-out ${AUTO_START_SOUND_PANEL_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
         }
         @keyframes doro-category-editor-open {
           0% {
@@ -3637,6 +3941,45 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .settings-option-btn:active {
           transform: translateY(0) scale(0.985);
         }
+        .doro-focus-preview-btn {
+          width: 2rem;
+          height: 2rem;
+          flex: 0 0 2rem;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 0.75rem;
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          background: rgba(255, 255, 255, 0.06);
+          color: rgba(255, 255, 255, 0.68);
+          transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+        }
+        .doro-focus-preview-btn:hover:not(:disabled) {
+          transform: translateY(-1px) scale(1.03);
+          border-color: rgba(255, 255, 255, 0.18);
+          background: rgba(255, 255, 255, 0.10);
+          color: rgba(255, 255, 255, 0.92);
+          box-shadow: 0 12px 22px -16px rgba(0, 0, 0, 0.68);
+        }
+        .doro-focus-preview-btn:active:not(:disabled) {
+          transform: translateY(0) scale(0.96);
+        }
+        .doro-focus-preview-btn:disabled {
+          cursor: not-allowed;
+          opacity: 0.36;
+        }
+        .doro-focus-preview-btn.is-playing {
+          border-color: rgba(255, 255, 255, 0.24);
+          background: rgba(255, 255, 255, 0.16);
+          color: white;
+          box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 12px 24px -18px rgba(255, 255, 255, 0.32);
+        }
+        .doro-focus-preview-btn svg {
+          transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-focus-preview-btn:hover:not(:disabled) svg {
+          transform: scale(1.08);
+        }
         .doro-focus-sound-slider-shell {
           position: relative;
           display: flex;
@@ -3871,6 +4214,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-settings-shell.theme-light .settings-option-btn:hover {
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 22px 36px -28px rgba(76, 96, 130, 0.42);
+        }
+        .doro-settings-shell.theme-light .doro-focus-preview-btn {
+          border-color: rgba(15, 23, 42, 0.14) !important;
+          background: rgba(15, 23, 42, 0.06) !important;
+          color: rgba(15, 23, 42, 0.62) !important;
+        }
+        .doro-settings-shell.theme-light .doro-focus-preview-btn:hover:not(:disabled) {
+          border-color: rgba(15, 23, 42, 0.22) !important;
+          background: rgba(15, 23, 42, 0.10) !important;
+          color: rgba(15, 23, 42, 0.88) !important;
+          box-shadow: 0 12px 22px -16px rgba(15, 23, 42, 0.35);
+        }
+        .doro-settings-shell.theme-light .doro-focus-preview-btn.is-playing {
+          border-color: rgba(15, 23, 42, 0.26) !important;
+          background: rgba(15, 23, 42, 0.14) !important;
+          color: rgb(15, 23, 42) !important;
+          box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.05), 0 12px 24px -18px rgba(15, 23, 42, 0.3);
         }
         .doro-settings-shell.theme-light .doro-focus-sound-slider-shell:hover .doro-focus-sound-slider-track {
           border-color: rgba(15, 23, 42, 0.18);

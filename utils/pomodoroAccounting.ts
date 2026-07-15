@@ -29,9 +29,9 @@ export const isMiniPomodoroCompleteReason = (reason: unknown) => (
 );
 
 export const getPomodoroEquivalentWeight = (
-  entry: Pick<LogEntry, 'type' | 'reason'>,
+  entry: Pick<LogEntry, 'type' | 'reason' | 'source'>,
 ) => (
-  entry.type === 'work' ? getPomodoroEquivalentWeightForReason(entry.reason) : 0
+  entry.type === 'work' && entry.source !== 'manual' ? getPomodoroEquivalentWeightForReason(entry.reason) : 0
 );
 
 const getPositiveDurationSeconds = (duration: unknown) => {
@@ -40,9 +40,10 @@ const getPositiveDurationSeconds = (duration: unknown) => {
 };
 
 export const getAccountStatsPomodoroEquivalent = (
-  entry: Pick<LogEntry, 'type' | 'reason' | 'duration'>,
+  entry: Pick<LogEntry, 'type' | 'reason' | 'duration' | 'source'>,
 ) => {
   if (entry.type !== 'work') return 0;
+  if (entry.source === 'manual') return 0;
 
   const normalized = normalizeReason(entry.reason);
   if (normalized === POMODORO_COMPLETE_REASON.toLowerCase()) return 1;
@@ -55,7 +56,7 @@ export const getAccountStatsPomodoroEquivalent = (
   return 0;
 };
 
-export const isCompletedPomodoroLog = (entry: Pick<LogEntry, 'type' | 'reason'>) => (
+export const isCompletedPomodoroLog = (entry: Pick<LogEntry, 'type' | 'reason' | 'source'>) => (
   getPomodoroEquivalentWeight(entry) > 0
 );
 
@@ -72,7 +73,7 @@ export const getStandardPomodoroCountForTimer = (
 };
 
 export const getPomodoroCompletionStatsFromLogs = (
-  entries: Array<Pick<LogEntry, 'type' | 'reason'>>,
+  entries: Array<Pick<LogEntry, 'type' | 'reason' | 'source'>>,
 ) => {
   let standardPomosCompleted = 0;
   let miniPomosCompleted = 0;

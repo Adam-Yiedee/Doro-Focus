@@ -14,6 +14,7 @@ const makeLog = ({
   reason = '',
   categoryId = null,
   categoryName,
+  source,
 }: {
   type?: LogEntry['type'];
   start: string;
@@ -21,12 +22,14 @@ const makeLog = ({
   reason?: string;
   categoryId?: number | null;
   categoryName?: string;
+  source?: LogEntry['source'];
 }): LogEntry => ({
   type,
   start,
   end,
   duration: Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000),
   reason,
+  source,
   task: null,
   color: undefined,
   categoryId,
@@ -47,8 +50,27 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.totalFocusHours).toBeCloseTo(25 / 60, 5);
     expect(stats.totalPomos).toBe(1);
     expect(stats.totalSessions).toBe(0);
+    expect(stats.manualFocusHours).toBe(0);
     expect(stats.activeDays).toBe(1);
     expect(stats.categoryBreakdown).toEqual({ Writing: 25 });
+  });
+
+  it('tracks manually logged focus as normal focus and as manual focus', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T11:00:00.000Z',
+        reason: 'Pomodoro Complete',
+        source: 'manual',
+        categoryId: 1,
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(2, 5);
+    expect(stats.manualFocusHours).toBeCloseTo(2, 5);
+    expect(stats.totalPomos).toBe(0);
+    expect(stats.activeDays).toBe(1);
+    expect(stats.categoryBreakdown).toEqual({ Writing: 120 });
   });
 
   it('converts mini-pomodoro work minutes to standard pomodoros from logs', () => {
