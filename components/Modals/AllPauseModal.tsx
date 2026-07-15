@@ -73,7 +73,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
           autoFocus
           type="text"
           placeholder="Reason (optional)"
-          className={`w-full rounded-[1rem] bg-white/[0.065] px-4 py-3.5 text-center text-sm font-semibold text-white shadow-[0_20px_42px_-32px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.035)] outline-none transition-all duration-300 placeholder:text-white/24 focus:-translate-y-0.5 focus:bg-white/[0.09] ${themeColor}`}
+          className={`w-full rounded-[1rem] bg-white/[0.095] px-4 py-3.5 text-center text-sm font-semibold text-white shadow-[0_22px_44px_-32px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.06)] outline-none transition-all duration-300 placeholder:text-white/58 focus:-translate-y-0.5 focus:bg-white/[0.12] focus:placeholder:text-white/40 ${themeColor}`}
           value={reason}
           onChange={e => setReason(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleConfirm()}
