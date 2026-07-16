@@ -218,6 +218,46 @@ describe('computeAccountInsights', () => {
     expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(1.8, 5);
   });
 
+  it('keeps today pomodoros aligned with all productive work minutes', () => {
+    const today = '2026-01-14';
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-01T00:00:00',
+      nowMs: Date.parse(`${today}T23:00:00`),
+      categories,
+      logs: [
+        makeLog({
+          start: `${today}T08:00:00`,
+          end: `${today}T08:15:00`,
+          reason: 'Mini-Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: `${today}T08:18:00`,
+          end: `${today}T08:33:00`,
+          reason: 'Mini-Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: `${today}T08:36:00`,
+          end: `${today}T10:36:00`,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: `${today}T11:00:00`,
+          end: `${today}T12:30:00`,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(240, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(9.6, 5);
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(9.6, 5);
+    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(9.6, 5);
+  });
+
   it('converts manually logged focus minutes to standard pomodoros in today and trend stats', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({

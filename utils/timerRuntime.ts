@@ -3,6 +3,7 @@ import { TimerMode, TimerPreset, TimerRuntimePhase, TimerRuntimeSnapshot, TimerS
 export const TIMER_RUNTIME_VERSION = 2 as const;
 export const LONG_GRACE_SESSION_TIMEOUT_SECONDS = 3 * 60 * 60;
 export const LONG_GRACE_SESSION_TIMEOUT_MS = LONG_GRACE_SESSION_TIMEOUT_SECONDS * 1000;
+export const TIMER_LOCK_AUTO_UNLOCK_MS = 4 * 60 * 60 * 1000;
 
 export const TIMER_PRESETS: Record<Exclude<TimerPreset, 'custom'>, Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval'>> = {
   classic: {
@@ -49,6 +50,33 @@ export const shouldAutoStartTwoInARowFocus = (
   );
 };
 
+export const getTimerLockAutoUnlockDelay = (
+  lockedAtMs: number | null | undefined,
+  nowMs: number,
+  maxLockMs: number = TIMER_LOCK_AUTO_UNLOCK_MS,
+) => {
+  const safeMaxLockMs = typeof maxLockMs === 'number' && Number.isFinite(maxLockMs) && maxLockMs > 0
+    ? maxLockMs
+    : TIMER_LOCK_AUTO_UNLOCK_MS;
+
+  if (
+    typeof lockedAtMs !== 'number'
+    || !Number.isFinite(lockedAtMs)
+    || typeof nowMs !== 'number'
+    || !Number.isFinite(nowMs)
+  ) {
+    return safeMaxLockMs;
+  }
+
+  return Math.max(0, safeMaxLockMs - Math.max(0, nowMs - lockedAtMs));
+};
+
+export const isTimerLockExpired = (
+  lockedAtMs: number | null | undefined,
+  nowMs: number,
+  maxLockMs: number = TIMER_LOCK_AUTO_UNLOCK_MS,
+) => getTimerLockAutoUnlockDelay(lockedAtMs, nowMs, maxLockMs) <= 0;
+
 export interface RuntimeDerivedValues {
   workTime: number;
   breakTime: number;
@@ -75,6 +103,8 @@ type ResettablePersistedTimerSessionState = {
   activeMode?: 'work' | 'break';
   timerStarted?: boolean;
   isIdle?: boolean;
+  lockedTimerMode?: 'work' | 'break' | null;
+  lockedTimerStartedAtMs?: number | null;
   pomodoroCount?: number;
   allPauseActive?: boolean;
   allPauseTime?: number;
@@ -95,6 +125,8 @@ type ResetPersistedTimerSessionStateResult<T> = Omit<T,
   | 'activeMode'
   | 'timerStarted'
   | 'isIdle'
+  | 'lockedTimerMode'
+  | 'lockedTimerStartedAtMs'
   | 'pomodoroCount'
   | 'allPauseActive'
   | 'allPauseTime'
@@ -112,6 +144,8 @@ type ResetPersistedTimerSessionStateResult<T> = Omit<T,
   activeMode: 'work';
   timerStarted: false;
   isIdle: true;
+  lockedTimerMode: null;
+  lockedTimerStartedAtMs: null;
   pomodoroCount: number;
   allPauseActive: false;
   allPauseTime: number;
@@ -186,6 +220,8 @@ export const resetPersistedTimerSessionState = <T extends ResettablePersistedTim
     activeMode: 'work',
     timerStarted: false,
     isIdle: true,
+    lockedTimerMode: null,
+    lockedTimerStartedAtMs: null,
     pomodoroCount: 0,
     allPauseActive: false,
     allPauseTime: 0,

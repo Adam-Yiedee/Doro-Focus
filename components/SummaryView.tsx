@@ -1,6 +1,7 @@
 
 
 import React, { useMemo } from 'react';
+import { BarChart3, CheckCircle2, Clock3, Coffee, ListChecks, RotateCcw, Trophy, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 import { getSessionPomoDisplay } from '../utils/pomodoroAccounting';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
@@ -52,17 +53,19 @@ const SummaryView: React.FC = () => {
   };
   const pomoDisplay = getSessionPomoDisplay(sessionStats);
   const statCards = [
-    { label: 'Focus Minutes', value: formatSummaryMinutes(sessionStats.totalWorkMinutes), tone: 'text-white' },
-    { label: 'Break Minutes', value: formatSummaryMinutes(sessionStats.totalBreakMinutes), tone: 'text-teal-200' },
-    { label: pomoDisplay.label, value: pomoDisplay.value, tone: 'text-white' },
-    { label: 'Tasks Done', value: sessionStats.tasksCompleted, tone: 'text-white' },
+    { label: 'Focus Minutes', value: formatSummaryMinutes(sessionStats.totalWorkMinutes), tone: 'text-white', icon: Clock3 },
+    { label: 'Break Minutes', value: formatSummaryMinutes(sessionStats.totalBreakMinutes), tone: 'text-teal-200', icon: Coffee },
+    { label: pomoDisplay.label, value: pomoDisplay.value, tone: 'text-white', icon: CheckCircle2 },
+    { label: 'Tasks Done', value: sessionStats.tasksCompleted, tone: 'text-white', icon: ListChecks },
   ];
   const categoryEntries = Object.entries(sessionStats.categoryStats);
   const surfaceColor = activeMode === 'break'
     ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
     : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
   const surfaceStyle = { backgroundColor: surfaceColor };
-  const raisedCardClass = 'doro-summary-raised-card doro-summary-item-in rounded-[1.2rem] bg-white/[0.06] shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)] transition-[transform,box-shadow,background-color] duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.075] hover:shadow-[0_34px_66px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
+  const raisedCardClass = 'doro-summary-raised-card doro-summary-item-in rounded-[1.2rem] border border-white/[0.08] bg-white/[0.055] shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)] transition-[transform,box-shadow,background-color] duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.075] hover:shadow-[0_34px_66px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
+  const compactButtonClass = 'inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.055] px-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.76)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_24px_44px_-28px_rgba(0,0,0,0.82)] active:translate-y-0 active:scale-95';
+  const primaryButtonClass = 'doro-summary-item-in mt-1 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-white/[0.10] bg-white/12 px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white shadow-[0_24px_48px_-32px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.045)] transition-all duration-300 hover:-translate-y-1 hover:bg-white/18 hover:shadow-[0_32px_56px_-32px_rgba(0,0,0,0.92)] active:translate-y-0 active:scale-[0.99] sm:w-auto sm:min-w-[14rem]';
 
   return (
     <div className="doro-summary-surface-in fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden" style={surfaceStyle}>
@@ -208,17 +211,24 @@ const SummaryView: React.FC = () => {
           }
         `}</style>
         <div className="relative z-10 flex min-h-full items-center justify-center px-3 py-5 sm:px-6 sm:py-8">
-          <div className="doro-summary-panel-in w-full max-w-4xl overflow-hidden rounded-[1.8rem] p-4 shadow-[0_34px_96px_-48px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.16)] sm:p-6 md:p-8" style={surfaceStyle}>
+          <div className="doro-summary-panel-in relative w-full max-w-4xl overflow-hidden rounded-[1.8rem] border border-white/[0.10] bg-white/[0.045] p-4 shadow-[0_34px_96px_-48px_rgba(0,0,0,0.95),inset_0_1px_0_rgba(255,255,255,0.16)] backdrop-blur-xl sm:p-6 md:p-8" style={surfaceStyle}>
+          <div className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_0_50px_rgba(255,255,255,0.035)]" />
+          <div className="relative z-10">
           <button
             onClick={closeSummary}
-            className="doro-summary-item-in ml-auto flex h-10 items-center rounded-full bg-white/[0.055] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.76)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_24px_44px_-28px_rgba(0,0,0,0.82)]"
+            className={`doro-summary-item-in ml-auto ${compactButtonClass}`}
             style={{ ['--doro-summary-delay' as any]: '120ms' }}
           >
+            <X size={14} strokeWidth={2.4} />
             Close
           </button>
 
           <div className="mx-auto mt-3 flex w-full flex-col items-center gap-6 sm:gap-7">
             <div className="doro-summary-title-in text-center">
+                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/[0.10] bg-white/[0.075] text-white shadow-[0_24px_48px_-32px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.07)]">
+                  <Trophy size={24} strokeWidth={2.3} />
+                </div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/42">Session Wrap</div>
                 <h1 className="text-3xl font-bold leading-tight text-white sm:text-4xl md:text-5xl">
                     Session Complete
                 </h1>
@@ -226,28 +236,37 @@ const SummaryView: React.FC = () => {
             </div>
 
             <div className="grid w-full grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
-                {statCards.map((card, index) => (
+                {statCards.map((card, index) => {
+                  const Icon = card.icon;
+                  return (
                     <div
                       key={card.label}
-                      className={`flex min-h-[7.5rem] flex-col items-center justify-center gap-3 px-4 py-4 text-center sm:min-h-[8.25rem] sm:px-5 ${raisedCardClass}`}
+                      className={`flex min-h-[7.5rem] flex-col items-center justify-center gap-3 px-3 py-4 text-center sm:min-h-[8.25rem] sm:px-5 ${raisedCardClass}`}
                       style={{ ['--doro-summary-delay' as any]: `${170 + index * 48}ms` }}
                     >
+                        <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.07] text-white/72 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.78)]">
+                          <Icon size={16} strokeWidth={2.4} />
+                        </span>
                         <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">{card.label}</span>
                         <span className={`font-sans text-[2.35rem] font-bold leading-none tabular-nums ${card.tone} md:text-[2.75rem]`}>
                           {card.value}
                         </span>
                     </div>
-                ))}
+                  );
+                })}
             </div>
 
             {categoryEntries.length > 0 && (
                 <div className={`w-full px-4 py-4 sm:px-5 ${raisedCardClass}`} style={{ ['--doro-summary-delay' as any]: '370ms' }}>
-                     <h3 className="text-center text-[10px] font-bold uppercase tracking-[0.14em] text-white/38 sm:text-left">Focus Distribution</h3>
+                     <h3 className="flex items-center justify-center gap-2 text-center text-[10px] font-bold uppercase tracking-[0.14em] text-white/38 sm:justify-start sm:text-left">
+                       <BarChart3 size={14} strokeWidth={2.4} />
+                       Focus Distribution
+                     </h3>
                      <div className="mt-3 flex justify-center gap-2.5 overflow-x-auto pb-1 scrollbar-hide sm:flex-wrap sm:justify-start sm:overflow-visible sm:pb-0">
                           {categoryEntries.map(([name, mins], index) => (
                               <div
                                 key={name}
-                                className="doro-summary-item-in flex shrink-0 items-center gap-2 rounded-xl bg-white/[0.07] px-3 py-2 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.74)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.09] hover:shadow-[0_22px_38px_-24px_rgba(0,0,0,0.82)]"
+                                className="doro-summary-item-in flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.065] px-3 py-2 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.74)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.09] hover:shadow-[0_22px_38px_-24px_rgba(0,0,0,0.82)]"
                                 style={{ ['--doro-summary-delay' as any]: `${420 + index * 42}ms` }}
                               >
                                   <span className="max-w-[11rem] truncate text-sm font-semibold text-white">{name}</span>
@@ -260,11 +279,13 @@ const SummaryView: React.FC = () => {
 
             <button 
                 onClick={closeSummary}
-                className="doro-summary-item-in mt-1 w-full rounded-xl bg-white/12 px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white shadow-[0_24px_48px_-32px_rgba(0,0,0,0.86)] transition-all duration-300 hover:-translate-y-1 hover:bg-white/18 hover:shadow-[0_32px_56px_-32px_rgba(0,0,0,0.92)] active:scale-[0.99] sm:w-auto sm:min-w-[14rem]"
+                className={primaryButtonClass}
                 style={{ ['--doro-summary-delay' as any]: '470ms' }}
             >
+                <RotateCcw size={14} strokeWidth={2.5} />
                 Start New Session
             </button>
+          </div>
           </div>
           </div>
         </div>

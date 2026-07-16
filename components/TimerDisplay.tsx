@@ -1,5 +1,6 @@
 
 import React, { useEffect, useRef, useState } from 'react';
+import { Lock } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 
 const formatTime = (seconds: number) => {
@@ -95,14 +96,54 @@ interface TimerSquareProps {
   activeMode: 'work' | 'break';
   label?: string;
   isIdle: boolean;
+  isLocked: boolean;
   disableBlur: boolean;
   onActivate: (type: 'work' | 'break') => void;
+  onToggleLock: (type: 'work' | 'break') => void;
 }
 
-const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMode, label, isIdle, disableBlur, onActivate }) => {
+const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMode, label, isIdle, isLocked, disableBlur, onActivate, onToggleLock }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const lockTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressClickRef = useRef(false);
+  const lockPressFiredRef = useRef(false);
   const isActive = !isIdle && activeMode === type;
   const isWork = type === 'work';
+
+  const clearLockTimeout = () => {
+    if (lockTimeoutRef.current) {
+      clearTimeout(lockTimeoutRef.current);
+      lockTimeoutRef.current = null;
+    }
+  };
+
+  useEffect(() => clearLockTimeout, []);
+
+  const clearSuppressedClickSoon = () => {
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+      lockPressFiredRef.current = false;
+    }, 350);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!isActive || isLocked) return;
+
+    lockPressFiredRef.current = false;
+    clearLockTimeout();
+    lockTimeoutRef.current = setTimeout(() => {
+      lockTimeoutRef.current = null;
+      lockPressFiredRef.current = true;
+      suppressClickRef.current = true;
+      onToggleLock(type);
+    }, 550);
+  };
+
+  const handlePointerEnd = () => {
+    clearLockTimeout();
+    if (lockPressFiredRef.current) clearSuppressedClickSoon();
+  };
 
   // Calculate Fill Percentage
   let fillPercent = 0;
@@ -140,7 +181,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   const hoverBlurEffect = disableBlur ? '' : 'backdrop-blur-md';
 
   if (isActive) {
-    containerClasses = `z-20 scale-100 opacity-100 blur-0 bg-white/10 border-white/20 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] ring-1 ring-white/30 border ${blurEffect}`;
+    containerClasses = `z-20 scale-100 opacity-100 blur-0 bg-white/10 border-white/20 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] ring-1 ring-white/30 border cursor-pointer ${blurEffect}`;
     textClasses = "scale-100 text-white drop-shadow-2xl";
     labelClasses = "text-white/90 translate-y-0";
   } else if (isHovered) {
@@ -160,12 +201,28 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
         transition-all duration-700 cubic-bezier(0.2, 0.8, 0.2, 1)
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
+        ${isLocked ? 'cursor-pointer' : ''}
         group
       `}
       onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        handlePointerEnd();
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
       onClick={(e) => {
         e.stopPropagation();
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          lockPressFiredRef.current = false;
+          return;
+        }
+        if (isLocked) {
+          onToggleLock(type);
+          return;
+        }
         if (!isActive) {
           onActivate(type);
         }
@@ -207,21 +264,26 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       </div>
 
       {/* Action Hint */}
-      {!isActive && (
-        <div className={`
-           z-20 absolute bottom-8 text-[10px] text-white/80 uppercase tracking-widest 
-           transition-all duration-300 transform drop-shadow-md
-           ${isHovered ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
-        `}>
-           Click to {isWork ? 'Focus' : 'Switch'}
-        </div>
-      )}
+      <div className={`
+         z-20 absolute bottom-8 flex items-center justify-center gap-1.5 text-[10px] text-white/80 uppercase tracking-widest whitespace-nowrap
+         transition-all duration-300 transform drop-shadow-md pointer-events-none
+         ${isLocked || isHovered ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
+      `}>
+         {isLocked ? (
+           <>
+             <Lock size={12} strokeWidth={2.4} className="text-white" aria-hidden="true" />
+             <span className="text-white">Timer Locked</span>
+           </>
+         ) : (
+           <span>{isActive ? 'Hold to Lock' : `Click to ${isWork ? 'Focus' : 'Switch'}`}</span>
+         )}
+      </div>
     </div>
   );
 };
 
 const TimerDisplay: React.FC = () => {
-  const { workTime, breakTime, activeMode, isIdle, activateMode, restartActiveTimer, activeTask, settings } = useTimer();
+  const { workTime, breakTime, activeMode, isIdle, lockedTimerMode, activateMode, toggleTimerLock, restartActiveTimer, activeTask, settings } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   
@@ -388,8 +450,10 @@ const TimerDisplay: React.FC = () => {
             activeMode={activeMode} 
             label={activeTask ? activeTask.name : 'Focus'}
             isIdle={isIdle} 
+            isLocked={lockedTimerMode === 'work'}
             disableBlur={settings.disableBlur}
             onActivate={activateMode} 
+            onToggleLock={toggleTimerLock}
         />
         <TimerSquare 
             type="break" 
@@ -397,8 +461,10 @@ const TimerDisplay: React.FC = () => {
             maxTime={settings.longBreakDuration}
             activeMode={activeMode} 
             isIdle={isIdle} 
+            isLocked={lockedTimerMode === 'break'}
             disableBlur={settings.disableBlur}
             onActivate={activateMode} 
+            onToggleLock={toggleTimerLock}
         />
       </div>
     </div>

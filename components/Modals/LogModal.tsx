@@ -163,13 +163,13 @@ const formatRelativeTimeFromMs = (timestamp: unknown) => {
 
 const formatCompactHours = (hours: number) => {
   const safe = Math.max(0, hours);
-  return safe >= 100 ? `${Math.round(safe)}h` : `${safe.toFixed(1)}h`;
+  return `${safe.toFixed(1)}h`;
 };
 
 const formatCompactMinutes = (minutes: number) => {
   const safe = Math.max(0, minutes);
   if (safe >= 60) {
-    return `${(safe / 60).toFixed(safe >= 120 ? 0 : 1)}h`;
+    return `${(safe / 60).toFixed(1)}h`;
   }
   return `${Math.max(1, Math.round(safe))}m`;
 };

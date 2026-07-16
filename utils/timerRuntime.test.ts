@@ -9,8 +9,11 @@ import {
   getCompletedPhaseDuration,
   getPomodoroCycleProgress,
   getProjectedTaskFinishSeconds,
+  getTimerLockAutoUnlockDelay,
   resolveGraceBreakBank,
+  isTimerLockExpired,
   TIMER_PRESETS,
+  TIMER_LOCK_AUTO_UNLOCK_MS,
   getTimerStateFreshnessStamp,
   getGraceCompensation,
   getPauseCompensation,
@@ -329,6 +332,23 @@ describe('restored grace sanitization', () => {
   });
 });
 
+describe('timer lock guard', () => {
+  it('reports the remaining lock duration until the guard expires', () => {
+    const lockedAtMs = BASE_NOW;
+
+    expect(getTimerLockAutoUnlockDelay(lockedAtMs, BASE_NOW)).toBe(TIMER_LOCK_AUTO_UNLOCK_MS);
+    expect(getTimerLockAutoUnlockDelay(lockedAtMs, BASE_NOW + 90_000)).toBe(TIMER_LOCK_AUTO_UNLOCK_MS - 90_000);
+  });
+
+  it('expires timer locks once the maximum lock duration has elapsed', () => {
+    const lockedAtMs = BASE_NOW;
+
+    expect(isTimerLockExpired(lockedAtMs, BASE_NOW + TIMER_LOCK_AUTO_UNLOCK_MS - 1)).toBe(false);
+    expect(isTimerLockExpired(lockedAtMs, BASE_NOW + TIMER_LOCK_AUTO_UNLOCK_MS)).toBe(true);
+    expect(getTimerLockAutoUnlockDelay(lockedAtMs, BASE_NOW + TIMER_LOCK_AUTO_UNLOCK_MS + 30_000)).toBe(0);
+  });
+});
+
 describe('persisted session reset', () => {
   it('clears transient timer and grace state while preserving durable payload data', () => {
     const payload = {
@@ -338,6 +358,8 @@ describe('persisted session reset', () => {
       activeMode: 'break' as const,
       timerStarted: true,
       isIdle: false,
+      lockedTimerMode: 'break' as const,
+      lockedTimerStartedAtMs: BASE_NOW - 60000,
       pomodoroCount: 7,
       allPauseActive: true,
       allPauseTime: 55,
@@ -365,6 +387,8 @@ describe('persisted session reset', () => {
     expect(reset.activeMode).toBe('work');
     expect(reset.timerStarted).toBe(false);
     expect(reset.isIdle).toBe(true);
+    expect(reset.lockedTimerMode).toBeNull();
+    expect(reset.lockedTimerStartedAtMs).toBeNull();
     expect(reset.pomodoroCount).toBe(0);
     expect(reset.allPauseActive).toBe(false);
     expect(reset.allPauseTime).toBe(0);

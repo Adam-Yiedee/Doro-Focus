@@ -32,6 +32,8 @@ import {
   getCompletedPhaseDuration,
   getMatchingTimerPreset,
   getTimerStateFreshnessStamp,
+  getTimerLockAutoUnlockDelay,
+  isTimerLockExpired,
   resolveGraceBreakBank,
   normalizeGraceWindow,
   resetPersistedTimerSessionState,
@@ -98,6 +100,8 @@ export interface SessionStats {
 
 type PendingMenuAction = 'new-category';
 
+const ACCOUNT_SYNC_SAVE_DEBOUNCE_MS = 2500;
+
 interface AuthResult {
   ok: boolean;
   error: string | null;
@@ -111,6 +115,7 @@ interface TimerContextType {
   activeMode: TimerMode;
   timerStarted: boolean;
   isIdle: boolean; 
+  lockedTimerMode: TimerMode | null;
   pomodoroCount: number;
   allPauseActive: boolean;
   allPauseTime: number;
@@ -165,6 +170,7 @@ interface TimerContextType {
   startTimer: () => void;
   stopTimer: () => void;
   toggleTimer: () => void;
+  toggleTimerLock: (mode: TimerMode) => void;
   switchMode: () => void; 
   activateMode: (mode: TimerMode) => void;
   startAllPause: () => void;
@@ -331,7 +337,7 @@ const isDeferredTaskFromToday = (task: Pick<Task, 'isFuture' | 'scheduledDate'>,
 
 let lastTaskIdSeed = 0;
 const createTaskId = () => {
-  const candidate = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+  const candidate = Date.now();
   if (candidate <= lastTaskIdSeed) {
     lastTaskIdSeed += 1;
   } else {
@@ -339,6 +345,109 @@ const createTaskId = () => {
   }
   return lastTaskIdSeed;
 };
+
+const isSelectableTask = (task: Pick<Task, 'checked' | 'isFuture' | 'scheduledDate'>, todayKey: string = getDateKey(new Date())) => (
+  !task.checked && !isDeferredTaskFromToday(task, todayKey)
+);
+
+const getUniqueTaskId = (candidateId: unknown, usedIds: Set<number>): number => {
+  let nextId = typeof candidateId === 'number' && Number.isFinite(candidateId)
+    ? Math.floor(candidateId)
+    : createTaskId();
+
+  while (usedIds.has(nextId)) {
+    nextId = createTaskId();
+  }
+
+  usedIds.add(nextId);
+  return nextId;
+};
+
+const normalizeTaskIds = (tasks: Task[], usedIds: Set<number> = new Set()): Task[] => (
+  tasks.map((task) => {
+    const nextId = getUniqueTaskId(task.id, usedIds);
+    const subtasks = Array.isArray(task.subtasks)
+      ? normalizeTaskIds(task.subtasks, usedIds)
+      : [];
+
+    return {
+      ...task,
+      id: nextId,
+      subtasks,
+    };
+  })
+);
+
+const normalizeTaskSelection = (
+  tasks: Task[],
+  options?: {
+    preferredSelectedId?: number | null;
+    selectFirstAvailableIfNoSelection?: boolean;
+    todayKey?: string;
+  },
+): Task[] => {
+  const todayKey = options?.todayKey || getDateKey(new Date());
+  const preferredSelectedId = options && Object.prototype.hasOwnProperty.call(options, 'preferredSelectedId')
+    ? options.preferredSelectedId
+    : undefined;
+  let selectedCount = 0;
+  let firstSelectedSelectableId: number | null = null;
+  let firstSelectableId: number | null = null;
+  let preferredIsSelectable = false;
+
+  const visit = (items: Task[]) => {
+    items.forEach((task) => {
+      const selectable = isSelectableTask(task, todayKey);
+      if (selectable && firstSelectableId === null) firstSelectableId = task.id;
+      if (task.selected) {
+        selectedCount += 1;
+        if (selectable && firstSelectedSelectableId === null) firstSelectedSelectableId = task.id;
+      }
+      if (preferredSelectedId !== undefined && task.id === preferredSelectedId && selectable) {
+        preferredIsSelectable = true;
+      }
+      if (task.subtasks.length > 0) visit(task.subtasks);
+    });
+  };
+
+  visit(tasks);
+
+  let targetSelectedId: number | null = null;
+  if (preferredSelectedId !== undefined) {
+    targetSelectedId = preferredIsSelectable ? preferredSelectedId : null;
+  } else if (selectedCount > 0) {
+    targetSelectedId = firstSelectedSelectableId ?? firstSelectableId;
+  } else if (options?.selectFirstAvailableIfNoSelection) {
+    targetSelectedId = firstSelectableId;
+  }
+
+  const applySelection = (items: Task[]): Task[] => (
+    items.map(task => ({
+      ...task,
+      selected: targetSelectedId !== null && task.id === targetSelectedId,
+      subtasks: applySelection(task.subtasks),
+    }))
+  );
+
+  return applySelection(tasks);
+};
+
+const hasSelectedSelectableTask = (tasks: Task[], todayKey: string = getDateKey(new Date())): boolean => {
+  for (const task of tasks) {
+    if (task.selected && isSelectableTask(task, todayKey)) return true;
+    if (task.subtasks.length > 0 && hasSelectedSelectableTask(task.subtasks, todayKey)) return true;
+  }
+  return false;
+};
+
+const normalizeTaskState = (
+  tasks: Task[],
+  options?: {
+    preferredSelectedId?: number | null;
+    selectFirstAvailableIfNoSelection?: boolean;
+    todayKey?: string;
+  },
+): Task[] => normalizeTaskSelection(normalizeTaskIds(tasks), options);
 
 let lastCategoryIdSeed = 0;
 const getMaxCategoryId = (categories: Category[]): number => (
@@ -407,14 +516,6 @@ const deleteTaskInTree = (tasks: Task[], id: number): Task[] => {
         const newSubtasks = deleteTaskInTree(t.subtasks, id);
         return recalculateStats({ ...t, subtasks: newSubtasks });
     });
-};
-
-const selectTaskInTree = (tasks: Task[], id: number): Task[] => {
-  return tasks.map(t => ({
-    ...t,
-    selected: t.id === id,
-    subtasks: selectTaskInTree(t.subtasks, id)
-  }));
 };
 
 const addTaskToTree = (tasks: Task[], parentId: number, newTask: Task): Task[] => {
@@ -544,6 +645,8 @@ interface TimerPersistencePayload {
   activeMode?: TimerMode;
   timerStarted?: boolean;
   isIdle?: boolean;
+  lockedTimerMode?: TimerMode | null;
+  lockedTimerStartedAtMs?: number | null;
   allPauseActive?: boolean;
   allPauseTime?: number;
   allPauseReason?: string;
@@ -565,6 +668,8 @@ type PersistedRuntimeTimerState = Pick<TimerPersistencePayload,
   | 'activeMode'
   | 'timerStarted'
   | 'isIdle'
+  | 'lockedTimerMode'
+  | 'lockedTimerStartedAtMs'
   | 'pomodoroCount'
   | 'allPauseActive'
   | 'allPauseTime'
@@ -579,6 +684,27 @@ type PersistedRuntimeTimerState = Pick<TimerPersistencePayload,
 
 const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
   return !!value && typeof value === 'object' && value.version === TIMER_RUNTIME_VERSION && typeof value.updatedAtMs === 'number' && typeof value.phase === 'string';
+};
+
+const normalizeLockedTimerMode = (value: unknown): TimerMode | null => (
+  value === 'work' || value === 'break' ? value : null
+);
+
+const normalizeLockedTimerState = (
+  modeValue: unknown,
+  startedAtValue: unknown,
+  nowMs: number = Date.now(),
+): { mode: TimerMode | null; startedAtMs: number | null } => {
+  const mode = normalizeLockedTimerMode(modeValue);
+  if (!mode) return { mode: null, startedAtMs: null };
+
+  const startedAtMs = typeof startedAtValue === 'number' && Number.isFinite(startedAtValue)
+    ? startedAtValue
+    : nowMs;
+
+  return isTimerLockExpired(startedAtMs, nowMs)
+    ? { mode: null, startedAtMs: null }
+    : { mode, startedAtMs };
 };
 
 const collapseHydratedGraceState = ({
@@ -801,6 +927,8 @@ const buildPreviewAccountPayload = (sourceTabId: string): TimerPersistencePayloa
     activeMode: 'work',
     timerStarted: false,
     isIdle: true,
+    lockedTimerMode: null,
+    lockedTimerStartedAtMs: null,
     allPauseActive: false,
     allPauseTime: 0,
     allPauseReason: '',
@@ -837,6 +965,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [activeMode, setActiveMode] = useState<TimerMode>('work');
   const [timerStarted, setTimerStarted] = useState(false);
   const [isIdle, setIsIdle] = useState(true); 
+  const [lockedTimerMode, setLockedTimerMode] = useState<TimerMode | null>(null);
+  const [lockedTimerStartedAtMs, setLockedTimerStartedAtMs] = useState<number | null>(null);
   const [pomodoroCount, setPomodoroCount] = useState(0);
   
   const [allPauseActive, setAllPauseActive] = useState(false);
@@ -909,6 +1039,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const isCloudSyncInFlightRef = useRef(false);
   const isApplyingCloudSnapshotRef = useRef(false);
   const accountSyncVersionRef = useRef(0);
+  const hasPendingLocalAccountChangesRef = useRef(false);
   const pendingAccountSyncAfterInFlightRef = useRef(false);
   const syncAccountNowRef = useRef<(() => Promise<boolean>) | null>(null);
   const accountRevisionRef = useRef(0);
@@ -949,6 +1080,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     activeMode,
     timerStarted,
     isIdle,
+    lockedTimerMode,
+    lockedTimerStartedAtMs,
     workTime,
     breakTime,
     pomodoroCount,
@@ -1007,6 +1140,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeMode: runtimeMode,
         timerStarted: typeof timerState?.timerStarted === 'boolean' ? timerState.timerStarted : runtimeRunning,
         isIdle: typeof timerState?.isIdle === 'boolean' ? timerState.isIdle : snapshot.phase === 'idle',
+        lockedTimerMode: timerState?.lockedTimerMode !== undefined ? timerState.lockedTimerMode : lockedTimerMode,
+        lockedTimerStartedAtMs: timerState?.lockedTimerStartedAtMs !== undefined ? timerState.lockedTimerStartedAtMs : lockedTimerStartedAtMs,
         allPauseActive: typeof timerState?.allPauseActive === 'boolean' ? timerState.allPauseActive : snapshot.phase === 'all-pause',
         allPauseTime: typeof timerState?.allPauseTime === 'number' ? timerState.allPauseTime : allPauseTime,
         allPauseReason: timerState?.allPauseReason ?? allPauseReason,
@@ -1029,6 +1164,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     breakTime,
     pomodoroCount,
     workTime,
+    lockedTimerMode,
+    lockedTimerStartedAtMs,
     allPauseTime,
     allPauseReason,
     allPauseStartTime,
@@ -1043,6 +1180,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode?: TimerMode;
       timerStarted?: boolean;
       isIdle?: boolean;
+      lockedTimerMode?: TimerMode | null;
+      lockedTimerStartedAtMs?: number | null;
       allPauseActive?: boolean;
       allPauseTime?: number;
       allPauseReason?: string;
@@ -1086,6 +1225,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode: phaseMode,
       timerStarted: phaseImpliesRunning,
       isIdle: typeof overrides?.isIdle === 'boolean' ? overrides.isIdle : (phase === 'idle' ? isIdle : false),
+      lockedTimerMode: overrides?.lockedTimerMode !== undefined ? overrides.lockedTimerMode : lockedTimerMode,
+      lockedTimerStartedAtMs: overrides?.lockedTimerStartedAtMs !== undefined ? overrides.lockedTimerStartedAtMs : lockedTimerStartedAtMs,
       allPauseActive: typeof overrides?.allPauseActive === 'boolean' ? overrides.allPauseActive : phase === 'all-pause',
       allPauseTime: typeof overrides?.allPauseTime === 'number' ? overrides.allPauseTime : phaseAllPause,
       allPauseReason: overrides?.allPauseReason ?? allPauseReason,
@@ -1111,7 +1252,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
     }
     bumpAccountTimerSyncNonce();
-  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, isIdle, allPauseReason, allPauseStartTime, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
+  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, isIdle, lockedTimerMode, lockedTimerStartedAtMs, allPauseReason, allPauseStartTime, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
 
   // Load Data Helper
   const loadData = useCallback((username?: string) => {
@@ -1123,7 +1264,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         try {
             const parsed: TimerPersistencePayload = JSON.parse(saved);
             accountRevisionRef.current = getPayloadRevision(parsed);
-            const parsedTasks = parsed.tasks || [];
+            const rawParsedTasks = parsed.tasks || [];
+            lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(rawParsedTasks));
+            const parsedTasks = normalizeTaskState(rawParsedTasks);
             const parsedSessions = parsed.pastSessions || [];
             const parsedCategories = parsed.categories || [];
             const parsedLogs = parsed.logs || [];
@@ -1146,6 +1289,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setWorkTime(nextWorkTime);
             setActiveMode(parsed.activeMode || 'work');
             setIsIdle(nextInitialIdle);
+            const parsedTimerLock = normalizeLockedTimerState(parsed.lockedTimerMode, parsed.lockedTimerStartedAtMs);
+            setLockedTimerMode(parsedTimerLock.mode);
+            setLockedTimerStartedAtMs(parsedTimerLock.startedAtMs);
             
             if (username) {
                 const baseUser = parsed.user && typeof parsed.user.joinedAt === 'string'
@@ -1285,6 +1431,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setActiveMode('work');
           setTimerStarted(false);
           setIsIdle(true);
+          setLockedTimerMode(null);
+          setLockedTimerStartedAtMs(null);
           setAllPauseActive(false);
           setAllPauseTime(0);
           setAllPauseReason('');
@@ -1392,6 +1540,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode,
       timerStarted,
       isIdle: runtimeRef.current.phase === 'idle' ? true : isIdle,
+      lockedTimerMode,
+      lockedTimerStartedAtMs,
       allPauseActive,
       allPauseTime,
       allPauseReason,
@@ -1418,6 +1568,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     graceOpen,
     graceTotal,
     isIdle,
+    lockedTimerMode,
+    lockedTimerStartedAtMs,
     logs,
     pastSessions,
     pomodoroCount,
@@ -1529,10 +1681,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const mergeSeedDataIntoAccount = (guestData: TimerPersistencePayload, remoteData: TimerPersistencePayload): TimerPersistencePayload => {
     const guestUpdatedAt = getPayloadUpdatedAtMs(guestData);
     const remoteUpdatedAt = getPayloadUpdatedAtMs(remoteData);
+    const mergedTasks = mergeTaskLists(remoteData.tasks, guestData.tasks, 'local');
+    lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(mergedTasks));
     return {
       ...remoteData,
       settings: normalizeSettings(remoteData.settings),
-      tasks: mergeTaskLists(remoteData.tasks, guestData.tasks, 'local'),
+      tasks: normalizeTaskState(mergedTasks),
       categories: mergeOrderedEntitiesById<Category>(remoteData.categories, guestData.categories, 'local'),
       logs: mergeLogs(remoteData.logs, guestData.logs),
       pastSessions: mergeSessions(remoteData.pastSessions, guestData.pastSessions),
@@ -1557,12 +1711,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         payloadUpdatedAtMs: getPayloadUpdatedAtMs(payload),
       }),
     );
+    const timerLock = normalizeLockedTimerState(timerWinner.lockedTimerMode, timerWinner.lockedTimerStartedAtMs);
+    const mergedTasks = mergeTaskLists(remoteData.tasks, localData.tasks, prefer, { membership: 'preferred' });
+    lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(mergedTasks));
 
     return {
       schemaVersion: DATA_SCHEMA_VERSION,
       revision: Math.max(getPayloadRevision(localData), getPayloadRevision(remoteData)),
       settings: normalizeSettings(dataWinner.settings),
-      tasks: mergeTaskLists(remoteData.tasks, localData.tasks, prefer, { membership: 'preferred' }),
+      tasks: normalizeTaskState(mergedTasks),
       categories: mergeOrderedEntitiesById<Category>(remoteData.categories, localData.categories, prefer, { membership: 'preferred' }),
       logs: mergeLogs(remoteData.logs, localData.logs),
       pastSessions: mergeSessions(remoteData.pastSessions, localData.pastSessions),
@@ -1573,6 +1730,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode: timerWinner.activeMode === 'break' ? 'break' : 'work',
       timerStarted: typeof timerWinner.timerStarted === 'boolean' ? timerWinner.timerStarted : false,
       isIdle: typeof timerWinner.isIdle === 'boolean' ? timerWinner.isIdle : true,
+      lockedTimerMode: timerLock.mode,
+      lockedTimerStartedAtMs: timerLock.startedAtMs,
       allPauseActive: typeof timerWinner.allPauseActive === 'boolean' ? timerWinner.allPauseActive : false,
       allPauseTime: typeof timerWinner.allPauseTime === 'number' ? timerWinner.allPauseTime : 0,
       allPauseReason: typeof timerWinner.allPauseReason === 'string' ? timerWinner.allPauseReason : '',
@@ -1610,7 +1769,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ): TimerPersistencePayload => {
     const source = payload || {};
     const safeSettings = normalizeSettings(source.settings);
-    const safeTasks = Array.isArray(source.tasks) ? source.tasks : [];
+    const rawSafeTasks = Array.isArray(source.tasks) ? source.tasks : [];
+    lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(rawSafeTasks));
+    const safeTasks = normalizeTaskState(rawSafeTasks);
+    lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(safeTasks));
     const safeSessions = Array.isArray(source.pastSessions) ? source.pastSessions : [];
     const safeCategories = Array.isArray(source.categories) ? source.categories : [];
     const safeLogs = Array.isArray(source.logs) ? source.logs : [];
@@ -1657,6 +1819,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       rawGraceContext: source.graceContext,
       fallbackMode: safeMode,
     });
+    const normalizedTimerLock = normalizeLockedTimerState(source.lockedTimerMode, source.lockedTimerStartedAtMs, nowMs);
     const normalizedUserName = normalizeStoredUserName(source.userName, options?.fallbackUserName || payloadUser.username);
     const normalizedUser: User = {
       ...payloadUser,
@@ -1691,6 +1854,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       isIdle: collapsedGraceState
         ? collapsedGraceState.isIdle
         : (typeof source.isIdle === 'boolean' ? source.isIdle : normalizedRuntime.phase === 'idle'),
+      lockedTimerMode: normalizedTimerLock.mode,
+      lockedTimerStartedAtMs: normalizedTimerLock.startedAtMs,
       allPauseActive: collapsedGraceState
         ? collapsedGraceState.allPauseActive
         : (typeof source.allPauseActive === 'boolean' ? source.allPauseActive : normalizedRuntime.phase === 'all-pause'),
@@ -1815,6 +1980,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }
 
           applyAccountSnapshot(user.username, persisted);
+          hasPendingLocalAccountChangesRef.current = false;
           hasHydratedCloudForUserRef.current = user.username;
           setLastAccountSyncAt(Date.now());
           setAccountSyncState('synced');
@@ -1833,7 +1999,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               pendingAccountSyncAfterInFlightRef.current = false;
               globalThis.setTimeout(() => {
                   void syncAccountNowRef.current?.();
-              }, 0);
+              }, ACCOUNT_SYNC_SAVE_DEBOUNCE_MS);
           }
       }
   }, [authToken, applyAccountSnapshot, buildPersistencePayload, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
@@ -1843,13 +2009,22 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const refreshAccountFromCloud = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
       if (!user || !authToken || isPreviewAuthToken(authToken)) return false;
       if (isCloudSyncInFlightRef.current || isApplyingCloudSnapshotRef.current) return false;
+      if (hasPendingLocalAccountChangesRef.current) {
+          pendingAccountSyncAfterInFlightRef.current = true;
+          setAccountSyncState((prev) => (prev === 'syncing' ? prev : 'pending'));
+          return false;
+      }
 
       const force = options?.force ?? true;
+      const syncVersionAtStart = accountSyncVersionRef.current;
+      let completedRequest = false;
 
       try {
+          isCloudSyncInFlightRef.current = true;
           setAccountSyncState('syncing');
           setAccountSyncError(null);
           const remote = await fetchAccountData(authToken);
+          completedRequest = true;
           const cloudUser = remote.user;
           const localCacheKey = getUserKey(cloudUser.username);
           const cachedLocalRaw: TimerPersistencePayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
@@ -1901,6 +2076,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const hasRemoteDataChange = cloudRevision > localRevision || cloudUpdatedAt > localUpdatedAt;
 
           if (!hasRemoteTimerChange && !hasRemoteDataChange && !localDirty) {
+            if (!shouldApplyAccountSyncSnapshot(syncVersionAtStart, accountSyncVersionRef.current)) {
+              pendingAccountSyncAfterInFlightRef.current = true;
+              setAccountSyncState('pending');
+              return false;
+            }
             setAccountSyncState('synced');
             setLastAccountSyncAt(Date.now());
             hasHydratedCloudForUserRef.current = cloudUser.username;
@@ -1908,6 +2088,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }
 
           if (!force && !hasRemoteTimerChange && !hasRemoteDataChange) {
+              if (!shouldApplyAccountSyncSnapshot(syncVersionAtStart, accountSyncVersionRef.current)) {
+                  pendingAccountSyncAfterInFlightRef.current = true;
+                  setAccountSyncState('pending');
+                  return false;
+              }
               setAccountSyncState('synced');
               setLastAccountSyncAt(Date.now());
               hasHydratedCloudForUserRef.current = cloudUser.username;
@@ -1934,6 +2119,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }
 
           if (shouldPersistMergedPayload) {
+              if (!shouldApplyAccountSyncSnapshot(syncVersionAtStart, accountSyncVersionRef.current)) {
+                  pendingAccountSyncAfterInFlightRef.current = true;
+                  setAccountSyncState('pending');
+                  return false;
+              }
+
               nextPayload = await persistAccountPayload(
                 authToken,
                 normalizeAccountPayload(
@@ -1949,6 +2140,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               );
           }
 
+          if (!shouldApplyAccountSyncSnapshot(syncVersionAtStart, accountSyncVersionRef.current)) {
+              pendingAccountSyncAfterInFlightRef.current = true;
+              setAccountSyncState('pending');
+              return false;
+          }
+
           applyAccountSnapshot(cloudUser.username, nextPayload);
           hasHydratedCloudForUserRef.current = cloudUser.username;
           setLastAccountSyncAt(Date.now());
@@ -1962,6 +2159,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setAccountSyncState('error');
           setAccountSyncError(error instanceof Error ? error.message : 'Failed to refresh from cloud.');
           return false;
+      } finally {
+          isCloudSyncInFlightRef.current = false;
+          if (completedRequest && pendingAccountSyncAfterInFlightRef.current) {
+              pendingAccountSyncAfterInFlightRef.current = false;
+              globalThis.setTimeout(() => {
+                  void syncAccountNowRef.current?.();
+              }, ACCOUNT_SYNC_SAVE_DEBOUNCE_MS);
+          }
       }
   }, [authToken, applyAccountSnapshot, buildPersistencePayload, normalizeAccountPayload, persistAccountPayload, resetAccountSession, user, userName]);
 
@@ -2121,9 +2326,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!user || !authToken || isPreviewAuthToken(authToken)) return;
       if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
       accountSyncVersionRef.current += 1;
+      hasPendingLocalAccountChangesRef.current = true;
       setAccountSyncState((prev) => (prev === 'syncing' ? prev : 'pending'));
       // Debounce signed-in saves from timer phase transitions, not per-second countdown ticks.
-      const timeout = setTimeout(() => { void syncAccountNow(); }, 2500);
+      const timeout = setTimeout(() => { void syncAccountNow(); }, ACCOUNT_SYNC_SAVE_DEBOUNCE_MS);
       return () => clearTimeout(timeout);
   }, [
       user,
@@ -2137,6 +2343,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode,
       timerStarted,
       isIdle,
+      lockedTimerMode,
+      lockedTimerStartedAtMs,
       allPauseActive,
       allPauseReason,
       allPauseStartTime,
@@ -2428,6 +2636,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!config.syncTimers) {
           delete filteredState.workTime; delete filteredState.breakTime; delete filteredState.activeMode;
           delete filteredState.timerStarted; delete filteredState.isIdle;
+          delete filteredState.lockedTimerMode;
+          delete filteredState.lockedTimerStartedAtMs;
           delete filteredState.pomodoroCount;
           delete filteredState.allPauseActive; delete filteredState.allPauseTime; delete filteredState.allPauseReason;
           delete filteredState.allPauseStartTime; delete filteredState.graceOpen; delete filteredState.graceContext;
@@ -2466,7 +2676,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }));
       }
       if (mode === 'full' && config.syncTasks && Array.isArray(remote.tasks)) {
-          setTasks(remote.tasks);
+          lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(remote.tasks));
+          setTasks(normalizeTaskState(remote.tasks));
           if (Array.isArray(remote.categories)) setCategories(remote.categories);
       }
       if (mode === 'full' && config.syncHistory && Array.isArray(remote.logs)) setLogs(remote.logs);
@@ -2476,6 +2687,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (typeof remote.sessionStartTime === 'string' || remote.sessionStartTime === null) setSessionStartTime(remote.sessionStartTime ?? null);
       }
       if (config.syncTimers) {
+          if (Object.prototype.hasOwnProperty.call(remote, 'lockedTimerMode')) {
+              const remoteTimerLock = normalizeLockedTimerState(remote.lockedTimerMode, remote.lockedTimerStartedAtMs);
+              setLockedTimerMode(remoteTimerLock.mode);
+              setLockedTimerStartedAtMs(remoteTimerLock.startedAtMs);
+          }
           const remoteRuntime = isRuntimeSnapshot(remote.runtime) ? remote.runtime : null;
           if (shouldApplyIncomingRuntime({
             incomingRuntime: remoteRuntime,
@@ -2548,7 +2764,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
      if(!groupSessionId || isRemoteUpdate.current) return;
      const t = setTimeout(() => { broadcastState(); }, 80);
      return () => clearTimeout(t);
-  }, [tasks, settings, activeMode, timerStarted, isIdle, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
+  }, [tasks, settings, activeMode, timerStarted, isIdle, lockedTimerMode, lockedTimerStartedAtMs, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
 
   const updateMembersList = useCallback(() => {
       if (!isHostRef.current) return;
@@ -3246,6 +3462,38 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     playAlarm(settings.alarmSound);
     const roundedDebtMinutes = Math.max(0, Math.ceil(overflowSeconds / 60));
+    if (lockedTimerMode === 'break') {
+      const nextBreakTime = -Math.max(0, overflowSeconds);
+      const nextActivityStart = new Date(Date.now() - Math.max(0, overflowSeconds) * 1000);
+      sendNotification(
+        'Break Time Ended',
+        roundedDebtMinutes > 0
+          ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
+          : 'Break bank depleted. Continuing break timer.',
+      );
+      setTimerStarted(true);
+      setActiveMode('break');
+      setIsIdle(false);
+      setBreakTime(nextBreakTime);
+      setGraceContext(null);
+      setGraceTotal(0);
+      setGraceOpen(false);
+      currentActivityStartRef.current = nextActivityStart;
+      lastTickRef.current = Date.now();
+      anchorRuntimePhase('running-break', {
+        phaseStartWorkTime: workTime,
+        phaseStartBreakTime: nextBreakTime,
+        phaseStartGraceTotal: 0,
+        activityStartIso: nextActivityStart.toISOString(),
+        activeMode: 'break',
+        timerStarted: true,
+        isIdle: false,
+        graceOpen: false,
+        graceContext: null,
+        graceTotal: 0,
+      });
+      return;
+    }
     sendNotification(
       'Break Time Ended',
       roundedDebtMinutes > 0
@@ -3269,7 +3517,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       graceContext: 'afterBreak',
       graceTotal: Math.max(0, overflowSeconds),
     });
-  }, [anchorRuntimePhase, graceOpen, logActivity, sendNotification, settings.alarmSound, workTime]);
+  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, workTime]);
 
   const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
@@ -3286,8 +3534,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
     const completion = computeWorkCompletion(pomodoroCount, breakBankBase, settings);
     const shouldAutoStartNextFocus = shouldAutoStartTwoInARowFocus(completion.nextPomoCount, settings);
+    const shouldStartNextFocus = shouldAutoStartNextFocus || lockedTimerMode === 'work';
     playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound);
-    const nextWorkTime = shouldAutoStartNextFocus ? settings.workDuration : 0;
+    const nextWorkTime = shouldStartNextFocus ? settings.workDuration : 0;
 
     setBreakTime(completion.nextBreakTime);
     setPomodoroCount(completion.nextPomoCount);
@@ -3314,7 +3563,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const selected = findSelectedTask(prevTasks);
         if (!selected) return prevTasks;
         const todayKey = getDateKey(new Date());
-        if (isDeferredTaskFromToday(selected, todayKey)) return prevTasks;
+        if (selected.checked || isDeferredTaskFromToday(selected, todayKey)) {
+            return normalizeTaskState(prevTasks, { selectFirstAvailableIfNoSelection: true });
+        }
         
         let updatedTasks = incrementCompletedInTree(prevTasks, selected.id);
         
@@ -3326,7 +3577,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
              }
         }
         
-        return updatedTasks;
+        return normalizeTaskState(updatedTasks, { selectFirstAvailableIfNoSelection: true });
     });
 
     sendNotification(
@@ -3335,12 +3586,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         : settings.timerPreset === 'compact'
           ? "Mini-Pomo Complete"
           : "Focus Session Complete",
-      shouldAutoStartNextFocus
+      shouldStartNextFocus
         ? `${Math.floor(completion.reward/60)} minutes added to break bank. Next focus started.`
         : `${Math.floor(completion.reward/60)} minutes added to break bank.`,
     );
 
-    if (shouldAutoStartNextFocus) {
+    if (shouldStartNextFocus) {
       const nextActivityStart = new Date();
       currentActivityStartRef.current = nextActivityStart;
       setTimerStarted(true);
@@ -3385,7 +3636,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pomodoroCount: completion.nextPomoCount,
     });
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
-  }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase]);
+  }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase, lockedTimerMode]);
 
   useEffect(() => {
     if (!legacyRuntimeMode) return;
@@ -3613,6 +3864,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof payload.timerStarted === 'boolean') setTimerStarted(payload.timerStarted);
     else setTimerStarted(runtimeRunning);
     setIsIdle(runtime.phase === 'idle');
+    if (Object.prototype.hasOwnProperty.call(payload, 'lockedTimerMode')) {
+      const payloadTimerLock = normalizeLockedTimerState(payload.lockedTimerMode, payload.lockedTimerStartedAtMs);
+      setLockedTimerMode(payloadTimerLock.mode);
+      setLockedTimerStartedAtMs(payloadTimerLock.startedAtMs);
+    }
     if (typeof payload.pomodoroCount === 'number') setPomodoroCount(payload.pomodoroCount);
     if (typeof payload.allPauseActive === 'boolean') setAllPauseActive(payload.allPauseActive);
     else setAllPauseActive(runtime.phase === 'all-pause');
@@ -3717,10 +3973,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (!isRuntimeSnapshot(parsed.runtime)) return;
         applyExternalTimerState(parsed, parsed.runtime);
         const payloadUpdatedAtMs = getPayloadUpdatedAtMs(parsed);
-        if (payloadUpdatedAtMs > lastExternalPayloadAppliedAtRef.current) {
+        if (!hasPendingLocalAccountChangesRef.current && payloadUpdatedAtMs > lastExternalPayloadAppliedAtRef.current) {
           lastExternalPayloadAppliedAtRef.current = payloadUpdatedAtMs;
           isCrossTabApplyingRef.current = true;
-          if (Array.isArray(parsed.tasks)) setTasks(parsed.tasks);
+          if (Array.isArray(parsed.tasks)) {
+            lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(parsed.tasks));
+            setTasks(normalizeTaskState(parsed.tasks));
+          }
           if (Array.isArray(parsed.categories)) setCategories(parsed.categories);
           if (Array.isArray(parsed.logs)) setLogs(parsed.logs);
           if (Array.isArray(parsed.pastSessions)) setPastSessions(parsed.pastSessions);
@@ -3794,14 +4053,84 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     anchorRuntimePhase('idle');
     if (!opts?.silentGroupEvent) emitLocalGroupEvent('timer-stopped');
   };
+
+  const publishTimerLockState = (nextLockedTimerMode: TimerMode | null, nextLockedTimerStartedAtMs: number | null) => {
+    const currentRuntime = runtimeRef.current;
+    const nowMs = Date.now();
+    const derived = deriveRuntimeValues(currentRuntime, nowMs);
+    const runtimeMode: TimerMode = currentRuntime.phase === 'running-break'
+      ? 'break'
+      : currentRuntime.phase === 'running-work'
+        ? 'work'
+        : activeMode;
+
+    setLockedTimerMode(nextLockedTimerMode);
+    setLockedTimerStartedAtMs(nextLockedTimerStartedAtMs);
+    anchorRuntimePhase(currentRuntime.phase, {
+      phaseStartWorkTime: derived.workTime,
+      phaseStartBreakTime: derived.breakTime,
+      phaseStartAllPauseTime: derived.allPauseTime,
+      phaseStartGraceTotal: currentRuntime.phase === 'grace' ? derived.graceTotal : 0,
+      activityStartIso: currentRuntime.activityStartIso,
+      activeMode: runtimeMode,
+      timerStarted: currentRuntime.phase === 'running-work' || currentRuntime.phase === 'running-break',
+      isIdle,
+      allPauseActive: currentRuntime.phase === 'all-pause',
+      allPauseTime: derived.allPauseTime,
+      graceOpen: currentRuntime.phase === 'grace',
+      graceContext: currentRuntime.phase === 'grace' ? graceContext : null,
+      graceTotal: currentRuntime.phase === 'grace' ? derived.graceTotal : 0,
+      lockedTimerMode: nextLockedTimerMode,
+      lockedTimerStartedAtMs: nextLockedTimerStartedAtMs,
+    });
+  };
+
+  const publishTimerLockStateRef = useRef(publishTimerLockState);
+  publishTimerLockStateRef.current = publishTimerLockState;
+
+  const toggleTimerLock = (mode: TimerMode) => {
+    if (blockGuestTimerControl()) return;
+    const nowMs = Date.now();
+    const nextLockedTimerMode = lockedTimerMode === mode ? null : mode;
+    const nextLockedTimerStartedAtMs = nextLockedTimerMode ? nowMs : null;
+    publishTimerLockState(nextLockedTimerMode, nextLockedTimerStartedAtMs);
+  };
+
+  useEffect(() => {
+    if (!lockedTimerMode) return;
+    const nowMs = Date.now();
+    const safeLockedAtMs = lockedTimerStartedAtMs ?? nowMs;
+    const delayMs = getTimerLockAutoUnlockDelay(safeLockedAtMs, nowMs);
+
+    if (lockedTimerStartedAtMs === null) {
+      publishTimerLockStateRef.current(lockedTimerMode, safeLockedAtMs);
+    }
+
+    if (delayMs <= 0) {
+      publishTimerLockStateRef.current(null, null);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      publishTimerLockStateRef.current(null, null);
+    }, delayMs);
+
+    return () => window.clearTimeout(timeout);
+  }, [lockedTimerMode, lockedTimerStartedAtMs]);
+
   const toggleTimer = () => timerStarted ? stopTimer() : startTimer();
 
   const performSwitch = (targetMode: TimerMode) => {
     if (blockGuestTimerControl()) return;
+    const shouldClearTimerLock = lockedTimerMode !== null && lockedTimerMode !== targetMode;
     playSwitch();
     if (!isIdle && currentActivityStartRef.current) {
         const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
         logActivity(activeMode, currentActivityStartRef.current, duration, 'Switch');
+    }
+    if (shouldClearTimerLock) {
+      setLockedTimerMode(null);
+      setLockedTimerStartedAtMs(null);
     }
     setActiveMode(targetMode);
     setIsIdle(false);
@@ -3819,6 +4148,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       graceOpen: false,
       graceContext: null,
       graceTotal: 0,
+      lockedTimerMode: shouldClearTimerLock ? null : lockedTimerMode,
+      lockedTimerStartedAtMs: shouldClearTimerLock ? null : lockedTimerStartedAtMs,
     });
     emitLocalGroupEvent('mode-switched', { mode: targetMode });
   };
@@ -4155,13 +4486,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         categoryStats: catStats
     });
 
-    setTasks(prev => removeCompletedTasks(prev));
+    setTasks(prev => normalizeTaskState(removeCompletedTasks(prev), { selectFirstAvailableIfNoSelection: true }));
     setPomodoroCount(0);
     setWorkTime(settings.workDuration);
     setBreakTime(0);
     setActiveMode('work');
     setIsIdle(true);
     setTimerStarted(false);
+    setLockedTimerMode(null);
+    setLockedTimerStartedAtMs(null);
     setAllPauseActive(false);
     setAllPauseTime(0);
     setAllPauseReason('');
@@ -4189,6 +4522,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode: 'work',
       timerStarted: false,
       isIdle: true,
+      lockedTimerMode: null,
+      lockedTimerStartedAtMs: null,
       allPauseActive: false,
       allPauseTime: 0,
       allPauseReason: '',
@@ -4236,6 +4571,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setActiveMode('work');
       setTimerStarted(false);
       setIsIdle(true);
+      setLockedTimerMode(null);
+      setLockedTimerStartedAtMs(null);
       setAllPauseActive(false);
       setAllPauseTime(0);
       setAllPauseReason('');
@@ -4266,6 +4603,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeMode: 'work',
         timerStarted: false,
         isIdle: true,
+        lockedTimerMode: null,
+        lockedTimerStartedAtMs: null,
         allPauseActive: false,
         allPauseTime: 0,
         allPauseReason: '',
@@ -4292,18 +4631,34 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const markAccountSyncDirty = () => {
     if (skipSaveRef.current || isApplyingCloudSnapshotRef.current) return;
     accountSyncVersionRef.current += 1;
+    hasPendingLocalAccountChangesRef.current = true;
   };
 
   const addTask = (name: string, estimated: number, catId: number | null, parentId?: number, color?: string, isFuture?: boolean, scheduledStart?: string, scheduledDate?: string) => {
     markAccountSyncDirty();
     const todayKey = getDateKey(new Date());
     const deferred = Boolean(isFuture) || (typeof scheduledDate === 'string' && scheduledDate > todayKey);
-    const newTask: Task = {
+    const createNewTask = (): Task => ({
       id: createTaskId(), name: getDefaultedTaskName(name, catId), estimated, completed: 0, checked: false,
       selected: false, categoryId: catId, subtasks: [], isExpanded: true, color: color || undefined, isFuture, scheduledStart, scheduledDate
-    };
-    if (parentId) setTasks(prev => addTaskToTree(prev, parentId, newTask));
-    else setTasks(prev => [...prev, { ...newTask, selected: prev.length === 0 && !deferred }]);
+    });
+    if (parentId) {
+      setTasks(prev => {
+        lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(prev));
+        return normalizeTaskState(addTaskToTree(prev, parentId, createNewTask()));
+      });
+    } else {
+      setTasks(prev => {
+        lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(prev));
+        const newTask = createNewTask();
+        const shouldSelectNewTask = !deferred && !hasSelectedSelectableTask(prev);
+        const nextTasks = [...prev, newTask];
+        return normalizeTaskState(nextTasks, {
+          preferredSelectedId: shouldSelectNewTask ? newTask.id : undefined,
+          selectFirstAvailableIfNoSelection: !deferred,
+        });
+      });
+    }
   };
 
   const addDetailedTask = (taskProps: Partial<Task> & { name: string, estimated: number }) => {
@@ -4316,34 +4671,58 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         selected: false, categoryId, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
         isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
-      setTasks(prev => [...prev, { ...newTask, selected: prev.length === 0 && !deferred }]);
+      setTasks(prev => {
+        const shouldSelectNewTask = !deferred && !hasSelectedSelectableTask(prev);
+        return normalizeTaskState([...prev, newTask], {
+          preferredSelectedId: shouldSelectNewTask ? newTask.id : undefined,
+          selectFirstAvailableIfNoSelection: !deferred,
+        });
+      });
       return newTask.id;
   };
 
   const addSubtasksToTask = (parentId: number, subtasks: { name: string, est: number }[]) => {
+    markAccountSyncDirty();
     setTasks(prev => {
         let newTasks = [...prev];
         subtasks.forEach(sub => {
              const t: Task = { id: createTaskId(), name: sub.name, estimated: sub.est, completed: 0, checked: false, selected: false, categoryId: null, subtasks: [], isExpanded: false };
              newTasks = addTaskToTree(newTasks, parentId, t);
         });
-        return newTasks;
+        return normalizeTaskState(newTasks);
     });
   };
 
   const updateTask = (task: Task) => {
+    markAccountSyncDirty();
     const nextTask = task.selected && isDeferredTaskFromToday(task) ? { ...task, selected: false } : task;
-    setTasks(prev => updateTaskInTree(prev, nextTask));
+    setTasks(prev => normalizeTaskState(updateTaskInTree(prev, nextTask)));
   };
-  const deleteTask = (id: number) => setTasks(prev => deleteTaskInTree(prev, id));
-  const selectTask = (id: number) => setTasks(prev => selectTaskInTree(prev, id));
+  const deleteTask = (id: number) => {
+    markAccountSyncDirty();
+    setTasks(prev => normalizeTaskState(deleteTaskInTree(prev, id), { selectFirstAvailableIfNoSelection: true }));
+  };
+  const selectTask = (id: number) => {
+    const currentTarget = findTask(tasks, id);
+    if (!currentTarget || currentTarget.selected || !isSelectableTask(currentTarget)) return;
+    markAccountSyncDirty();
+    setTasks(prev => {
+      const target = findTask(prev, id);
+      if (!target || target.selected || !isSelectableTask(target)) return prev;
+      return normalizeTaskState(prev, { preferredSelectedId: id });
+    });
+  };
   
   const toggleTaskExpansion = (id: number) => {
     const task = findTask(tasks, id);
-    if (task) setTasks(prev => updateTaskInTree(prev, { ...task, isExpanded: !task.isExpanded }));
+    if (task) {
+      markAccountSyncDirty();
+      setTasks(prev => normalizeTaskState(updateTaskInTree(prev, { ...task, isExpanded: !task.isExpanded })));
+    }
   };
 
   const moveTask = (fromId: number, toId: number) => {
+    markAccountSyncDirty();
     setTasks(prev => {
         const newTasks = [...prev];
         const fromIndex = newTasks.findIndex(t => t.id === fromId);
@@ -4355,11 +4734,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         } else {
              newTasks.splice(toIndex, 0, moved);
         }
-        return newTasks;
+        return normalizeTaskState(newTasks);
     });
   };
 
   const moveSubtask = (fromParentId: number, toParentId: number, subId: number, targetSubId: number | null) => {
+    markAccountSyncDirty();
     setTasks(prev => {
         let movedSub: Task | null = null;
         const tasksWithoutSub = (list: Task[]): Task[] => {
@@ -4396,11 +4776,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 return t;
             });
         };
-        return insertSub(tempTasks);
+        return normalizeTaskState(insertSub(tempTasks));
     });
   };
 
   const splitTask = (taskId: number, splitAt: number) => {
+    markAccountSyncDirty();
     setTasks(prev => {
         const index = prev.findIndex(t => t.id === taskId);
         if (index === -1) return prev;
@@ -4408,11 +4789,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (splitAt <= task.completed || splitAt >= task.estimated) return prev;
         const remainingEst = task.estimated - splitAt;
         const part1 = { ...task, estimated: splitAt };
-        const part2 = { ...task, id: createTaskId(), name: `${task.name} (Part 2)`, estimated: remainingEst, completed: 0, subtasks: [] };
+        const part2 = { ...task, id: createTaskId(), name: `${task.name} (Part 2)`, estimated: remainingEst, completed: 0, selected: false, subtasks: [] };
         const newTasks = [...prev];
         newTasks[index] = part1;
         newTasks.splice(index + 1, 0, part2);
-        return newTasks;
+        return normalizeTaskState(newTasks, { preferredSelectedId: part1.selected ? part1.id : undefined });
     });
   };
 
@@ -4431,23 +4812,28 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const addCategory = (name: string, color: string, icon: string) => {
     const trimmedName = name.trim();
     if (!trimmedName) return;
+    markAccountSyncDirty();
     setCategories(prev => [...prev, { id: createCategoryId(prev), name: trimmedName, color, icon }]);
   };
   const updateCategory = (cat: Category) => {
     const trimmedName = cat.name.trim();
     if (!trimmedName) return;
+    markAccountSyncDirty();
     setCategories(prev => prev.map(c => (c.id === cat.id ? { ...c, ...cat, name: trimmedName } : c)));
   };
   const archiveCategory = (id: number) => {
+    markAccountSyncDirty();
     setCategories(prev => prev.map(c => (c.id === id ? { ...c, archived: true } : c)));
     if (selectedCategoryId === id) setSelectedCategoryId(null);
   };
   const deleteCategory = (id: number) => {
+    markAccountSyncDirty();
     setCategories(prev => prev.filter(c => c.id !== id));
-    setTasks(prev => clearCategoryFromTasks(prev, id));
+    setTasks(prev => normalizeTaskState(clearCategoryFromTasks(prev, id)));
     if (selectedCategoryId === id) setSelectedCategoryId(null);
   };
   const moveCategory = (fromId: number, toId: number) => {
+    markAccountSyncDirty();
     setCategories(prev => {
       const nextCategories = [...prev];
       const fromIndex = nextCategories.findIndex(category => category.id === fromId);
@@ -4482,7 +4868,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   return (
     <TimerContext.Provider value={{
-      user, workTime, breakTime, activeMode, timerStarted, isIdle, pomodoroCount,
+      user, workTime, breakTime, activeMode, timerStarted, isIdle, lockedTimerMode, pomodoroCount,
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, showCompletedTasks, setShowCompletedTasks,
@@ -4490,7 +4876,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
       accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
-      startTimer, stopTimer, toggleTimer, switchMode, activateMode,
+      startTimer, stopTimer, toggleTimer, toggleTimerLock, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,

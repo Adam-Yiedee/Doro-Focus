@@ -9,6 +9,11 @@ const normalizeReason = (reason: unknown) => (
   typeof reason === 'string' ? reason.trim().toLowerCase() : ''
 );
 
+const isPauseCreditedReason = (reason: unknown) => {
+  const normalized = normalizeReason(reason);
+  return normalized.startsWith('paused') || normalized.includes('pause credit');
+};
+
 export const getCompletionReasonForSettings = (
   settings: Pick<TimerSettings, 'timerPreset'>,
 ) => (
@@ -43,17 +48,15 @@ export const getAccountStatsPomodoroEquivalent = (
   entry: Pick<LogEntry, 'type' | 'reason' | 'duration' | 'source'>,
 ) => {
   if (entry.type !== 'work') return 0;
-  if (entry.source === 'manual') {
-    return getPositiveDurationSeconds(entry.duration) / ACCOUNT_STATS_POMODORO_SECONDS;
-  }
+  if (isPauseCreditedReason(entry.reason)) return 0;
+
+  const durationSeconds = getPositiveDurationSeconds(entry.duration);
+  if (durationSeconds > 0) return durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS;
 
   const normalized = normalizeReason(entry.reason);
   if (normalized === POMODORO_COMPLETE_REASON.toLowerCase()) return 1;
   if (normalized === MINI_POMODORO_COMPLETE_REASON.toLowerCase()) {
-    const durationSeconds = getPositiveDurationSeconds(entry.duration);
-    return durationSeconds > 0
-      ? durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS
-      : MINI_POMODORO_WEIGHT;
+    return MINI_POMODORO_WEIGHT;
   }
   return 0;
 };
@@ -115,12 +118,9 @@ export const getSessionPomodoroEquivalent = (session: SessionRecord) => {
 };
 
 export const getAccountStatsSessionPomodoroEquivalent = (session: SessionRecord) => {
-  const miniPomos = Number(session.stats?.miniPomosCompleted || 0);
-  if (Number.isFinite(miniPomos) && miniPomos > 0) {
-    const workMinutes = Number(session.stats?.totalWorkMinutes || 0);
-    if (Number.isFinite(workMinutes) && workMinutes > 0) {
-      return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
-    }
+  const workMinutes = Number(session.stats?.totalWorkMinutes || 0);
+  if (Number.isFinite(workMinutes) && workMinutes > 0) {
+    return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
   }
 
   return getSessionPomodoroEquivalent(session);

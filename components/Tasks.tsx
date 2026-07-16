@@ -126,6 +126,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [subName, setSubName] = useState('');
   const [subEst, setSubEst] = useState(1);
   const [isRemoving, setIsRemoving] = useState(false);
+  const isRemovingRef = useRef(false);
   const [isCheckAnimating, setIsCheckAnimating] = useState(false);
   const removeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const checkAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -193,7 +194,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     return () => document.removeEventListener('pointerdown', handlePointerDownOutside, true);
   }, [editCloseState, isEditing]);
 
-  const startEditing = (e: React.MouseEvent) => {
+  const startEditing = (e: React.SyntheticEvent) => {
     e.stopPropagation();
     if (editTransitionTimeoutRef.current) clearTimeout(editTransitionTimeoutRef.current);
     if (editSettleTimeoutRef.current) clearTimeout(editSettleTimeoutRef.current);
@@ -218,13 +219,27 @@ const TaskItem: React.FC<TaskItemProps> = ({
     setIsAddingSub(false);
   };
 
-  const handleDelete = (e: React.MouseEvent) => {
+  const handleDelete = (e: React.SyntheticEvent) => {
     e.stopPropagation();
-    if (isRemoving) return;
+    if (isRemovingRef.current) return;
+    isRemovingRef.current = true;
     setIsRemoving(true);
     removeTimeoutRef.current = setTimeout(() => {
       deleteTask(task.id);
     }, 280);
+  };
+
+  const handleStartAddingSubtask = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsAddingSub(true);
+    updateTask({ ...task, isExpanded: true });
+  };
+
+  const handleSelectPress = (e: React.SyntheticEvent<HTMLDivElement>) => {
+    const target = e.target instanceof HTMLElement ? e.target : null;
+    if (target?.closest('button, input, textarea, select, a, form, .doro-task-check-target, .doro-task-action-rail')) return;
+    selectTask(task.id);
   };
 
   const category = task.categoryId ? categories.find(c => c.id === task.categoryId) : null;
@@ -427,6 +442,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   return (
     <div
       ref={isTopLevel && registerTaskRef ? (node) => registerTaskRef(task.id, node) : undefined}
+      data-task-id={task.id}
       draggable={isTopLevel && !isRemoving && isVisibleInList}
       onDragStart={(event) => {
         if (!isTopLevel || !onDragStartTask || !isVisibleInList) return;
@@ -473,7 +489,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
       aria-hidden={!isVisibleInList}
     >
       <div 
-        onClick={() => selectTask(task.id)}
+        data-task-row-id={task.id}
+        onClick={handleSelectPress}
         className={`
           group relative rounded-lg cursor-pointer transform-gpu transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
           doro-task-card-row
@@ -568,17 +585,18 @@ const TaskItem: React.FC<TaskItemProps> = ({
           <span>{task.estimated}</span>
         </div>
 
-        <div className="doro-task-action-rail flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-300">
+        <div className="doro-task-action-rail pointer-events-auto flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-300">
            <button 
-             onClick={(e) => { e.stopPropagation(); setIsAddingSub(true); updateTask({ ...task, isExpanded: true }); }} 
-             className="p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Add Subtask"
+             type="button"
+             onClick={handleStartAddingSubtask}
+             className="pointer-events-auto p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Add Subtask"
            >
              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
            </button>
-          <button onClick={startEditing} className="p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Edit">
+          <button type="button" onClick={startEditing} className="pointer-events-auto p-1.5 text-glass-text hover:text-white hover:bg-white/10 rounded transition-colors" title="Edit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
-          <button onClick={handleDelete} className="p-1.5 text-glass-text hover:text-red-300 hover:bg-red-500/20 rounded transition-colors" title="Delete">
+          <button type="button" onClick={handleDelete} className="pointer-events-auto p-1.5 text-glass-text hover:text-red-300 hover:bg-red-500/20 rounded transition-colors" title="Delete">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -679,6 +697,8 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
   const [hoverTarget, setHoverTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
   const [isCategoryRailDragging, setIsCategoryRailDragging] = useState(false);
+  const newTaskInputRef = useRef<HTMLInputElement | null>(null);
+  const lastTaskSubmitRef = useRef<{ key: string; at: number } | null>(null);
   const didInitTaskIdsRef = useRef(false);
   const mountAtRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
   const prevTaskIdsRef = useRef<number[]>([]);
@@ -709,17 +729,20 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     () => filteredTasks.some(task => !task.checked),
     [filteredTasks]
   );
-  const visibleTaskIds = useMemo(
+  const visibleTasks = useMemo(
     () => filteredTasks
-      .filter(task => showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task)))
-      .map(task => task.id),
+      .filter(task => showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task))),
     [filteredTasks, keepSelectedCompletedVisible, showCompletedTasks]
+  );
+  const visibleTaskIds = useMemo(
+    () => visibleTasks.map(task => task.id),
+    [visibleTasks]
   );
   const filteredTaskIds = useMemo(() => visibleTaskIds, [visibleTaskIds]);
   const filteredTaskOrderKey = useMemo(() => filteredTaskIds.join('|'), [filteredTaskIds]);
 
   useEffect(() => {
-    const currentIds = filteredTasks.map(task => task.id);
+    const currentIds = visibleTaskIds;
     if (!didInitTaskIdsRef.current) {
       didInitTaskIdsRef.current = true;
       prevTaskIdsRef.current = currentIds;
@@ -741,12 +764,18 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     prevTaskIdsRef.current = currentIds;
     if (addedIds.length === 0) return;
 
+    requestAnimationFrame(() => {
+      const lastAddedId = addedIds[addedIds.length - 1];
+      const node = taskCardRefsRef.current.get(lastAddedId);
+      node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+
     setEnteringTaskIds(prev => Array.from(new Set([...prev, ...addedIds])));
     const timeoutId = setTimeout(() => {
       setEnteringTaskIds(prev => prev.filter(id => !addedIds.includes(id)));
     }, 650);
     return () => clearTimeout(timeoutId);
-  }, [filteredTasks]);
+  }, [visibleTaskIds]);
 
   useEffect(() => {
     if (draggingTaskId && !filteredTaskIds.includes(draggingTaskId)) {
@@ -1030,12 +1059,28 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     requestNewCategoryFlow();
   }, [requestNewCategoryFlow]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const canSubmitNewTask = newName.trim().length > 0 || newCatId !== null;
+
+  const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
-    addTask(newName, clampPomoEstimate(newEst), newCatId, undefined, newColor);
+    const submittedName = (newTaskInputRef.current?.value ?? newName).trim();
+    if (!submittedName && newCatId === null) return;
+
+    const now = Date.now();
+    const submitKey = `${submittedName}|${newCatId ?? 'none'}|${clampPomoEstimate(newEst)}|${newColor}`;
+    const lastSubmit = lastTaskSubmitRef.current;
+    if (lastSubmit?.key === submitKey && now - lastSubmit.at < 500) return;
+    lastTaskSubmitRef.current = { key: submitKey, at: now };
+
+    addTask(submittedName, clampPomoEstimate(newEst), newCatId, undefined, newColor);
     setNewName('');
     setNewEst(1);
     setIsPreviewingNewTaskColor(false);
+  };
+
+  const handleNewTaskKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
+    handleSubmit(e);
   };
 
   const isSectionActive = isHovered || isInputFocused;
@@ -1617,11 +1662,14 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           `}>
             <div className="flex items-center p-1.5">
                 <input 
+                  ref={newTaskInputRef}
+                  data-testid="task-create-input"
                   type="text" 
                   placeholder={isInputFocused ? "Describe task..." : "+ New Task"} 
                   className="doro-task-create-input min-w-0 flex-1 bg-transparent px-4 py-2 text-glass-text placeholder-white/30 outline-none font-medium text-sm"
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
+                  onKeyDown={handleNewTaskKeyDown}
                 />
                 
                  {!isInputFocused && (
@@ -1747,6 +1795,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                     <div className="doro-task-create-actions flex gap-2">
                         <button 
                             type="button" 
+                            onPointerDown={(event) => event.preventDefault()}
                             onClick={() => setWeeklyScheduleOpen(true)}
                             className="doro-task-schedule-btn px-3 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all border border-white/5"
                         >
@@ -1754,7 +1803,14 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                         </button>
                         <button 
                             type="submit"
-                            className="px-4 py-1 bg-white text-black text-[10px] rounded-lg font-bold hover:bg-gray-200 transition-all shadow-lg active:scale-95 uppercase tracking-wider"
+                            data-testid="task-create-add"
+                            disabled={!canSubmitNewTask}
+                            onPointerDown={(event) => event.preventDefault()}
+                            className={`px-4 py-1 text-[10px] rounded-lg font-bold transition-all shadow-lg active:scale-95 uppercase tracking-wider ${
+                              canSubmitNewTask
+                                ? 'bg-white text-black hover:bg-gray-200'
+                                : 'cursor-not-allowed bg-white/20 text-white/35 shadow-none'
+                            }`}
                         >
                             Add
                         </button>
@@ -1777,7 +1833,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           }}
           className={`flex-1 min-h-0 -mx-2 space-y-3 overflow-y-auto px-2 pt-2 pb-10 scrollbar-hide transition-opacity duration-250 ${blurClass} ${draggingTaskId ? 'doro-task-list-drag-active' : ''}`}
         >
-          {filteredTasks.map(task => (
+          {visibleTasks.map(task => (
             <TaskItem
               key={task.id}
               task={task}

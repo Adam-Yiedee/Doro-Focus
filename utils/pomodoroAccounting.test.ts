@@ -55,6 +55,34 @@ describe('pomodoro accounting', () => {
     })).toBeCloseTo(6.6, 5);
   });
 
+  it('converts archived account session pomodoros from total work minutes', () => {
+    expect(getAccountStatsSessionPomodoroEquivalent({
+      id: 'archived-session',
+      startTime: '2026-03-12T09:00:00.000Z',
+      endTime: '2026-03-12T13:00:00.000Z',
+      stats: {
+        totalWorkMinutes: 240,
+        totalBreakMinutes: 0,
+        pomosCompleted: 6.1,
+        tasksCompleted: 0,
+      },
+    })).toBeCloseTo(9.6, 5);
+  });
+
+  it('converts account pomodoros from any productive logged work minutes', () => {
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'work',
+      reason: 'Session End',
+      duration: 240 * 60,
+    })).toBeCloseTo(9.6, 5);
+
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'work',
+      reason: POMODORO_COMPLETE_REASON,
+      duration: 30 * 60,
+    })).toBeCloseTo(1.2, 5);
+  });
+
   it('converts manually logged focus minutes into account pomodoro equivalents', () => {
     expect(getAccountStatsPomodoroEquivalent({
       type: 'work',
@@ -62,5 +90,13 @@ describe('pomodoro accounting', () => {
       source: 'manual',
       duration: 7200,
     })).toBeCloseTo(4.8, 5);
+  });
+
+  it('does not count pause-credit work logs in account pomodoro totals', () => {
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'work',
+      reason: 'Paused session (Pause Credit: Working)',
+      duration: 25 * 60,
+    })).toBe(0);
   });
 });

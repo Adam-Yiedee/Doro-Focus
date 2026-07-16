@@ -106,6 +106,39 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 60 });
   });
 
+  it('keeps account pomodoros aligned with productive work minutes from mixed mini-pomo logs', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:15:00.000Z',
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-03-12T09:18:00.000Z',
+        end: '2026-03-12T09:33:00.000Z',
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-03-12T09:36:00.000Z',
+        end: '2026-03-12T10:36:00.000Z',
+        reason: 'Session End',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-03-12T11:00:00.000Z',
+        end: '2026-03-12T13:30:00.000Z',
+        reason: 'Session End',
+        categoryId: 1,
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(4, 5);
+    expect(stats.totalPomos).toBeCloseTo(9.6, 5);
+    expect(stats.categoryBreakdown).toEqual({ Writing: 240 });
+  });
+
   it('converts archived mini-pomodoro session work minutes to standard pomodoros', () => {
     const sessions: SessionRecord[] = [
       {
@@ -126,6 +159,29 @@ describe('calculateLifetimeStatsFromData', () => {
     const stats = calculateLifetimeStatsFromData(sessions, [], categories);
 
     expect(stats.totalPomos).toBeCloseTo(2.4, 5);
+    expect(stats.totalSessions).toBe(1);
+  });
+
+  it('converts archived session work minutes to standard pomodoros even when the saved count is stale', () => {
+    const sessions: SessionRecord[] = [
+      {
+        id: 'session-stale-pomos',
+        startTime: '2026-03-10T08:00:00.000Z',
+        endTime: '2026-03-10T12:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 6.1,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+    ];
+
+    const stats = calculateLifetimeStatsFromData(sessions, [], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(4, 5);
+    expect(stats.totalPomos).toBeCloseTo(9.6, 5);
     expect(stats.totalSessions).toBe(1);
   });
 
