@@ -70,17 +70,18 @@ import {
   shouldRefreshMembersAfterPeerCleanup,
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
-import { buildCategorySnapshot, resolveLogEntryCategory } from '../utils/categoryTracking';
+import { buildCategorySnapshot } from '../utils/categoryTracking';
 import { isActiveCategory } from '../utils/categoryVisibility';
-import {
-  getCompletionReasonForSettings,
-  getPomodoroCompletionStatsFromLogs,
-  getStandardPomodoroCountForTimer,
-} from '../utils/pomodoroAccounting';
+import { getCompletionReasonForSettings } from '../utils/pomodoroAccounting';
 import { selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from '../utils/accountSync';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
 import { pickTimerSpectatorSettings } from '../utils/timerShare';
+import {
+  buildEndSessionStats,
+  type EndSessionPendingActivity,
+  getEndSessionPendingActivityWindow,
+} from '../utils/sessionStats';
 
 export interface ScheduleBreak {
   id: string;
@@ -622,12 +623,6 @@ const clearCategoryFromTasks = (tasks: Task[], categoryId: number): Task[] => {
   });
 
   return changed ? nextTasks : tasks;
-};
-
-const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
-  if (entry.type !== 'work') return false;
-  const reason = (entry.reason || '').trim().toLowerCase();
-  return reason.startsWith('paused') || reason.includes('pause credit');
 };
 
 interface TimerPersistencePayload {
@@ -4335,101 +4330,56 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const effectiveEndDate = new Date(effectiveEndMs);
     const effectiveEndIso = effectiveEndDate.toISOString();
 
-    let pendingActiveDuration = 0;
-    let pendingActiveMode: TimerMode | null = null;
-    let pendingActiveCategoryId: number | null | undefined = null;
-    let pendingActiveCategorySnapshot: Pick<LogEntry, 'categoryName' | 'categoryColor' | 'categoryIcon'> = {};
-    let pendingActiveStartIso: string | null = null;
-
-    if (!isIdle && currentActivityStartRef.current) {
-      const elapsed = (effectiveEndMs - currentActivityStartRef.current.getTime()) / 1000;
-      if (Number.isFinite(elapsed) && elapsed > 0.5) {
-        pendingActiveDuration = elapsed;
-        pendingActiveMode = activeMode;
-        pendingActiveCategoryId = activeTask?.categoryId;
-        pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
-        pendingActiveStartIso = currentActivityStartRef.current.toISOString();
-        const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
-        const sessionEndEntry: LogEntry = {
-          type: activeMode,
-          start: pendingActiveStartIso,
-          end: effectiveEndIso,
-          duration: elapsed,
-          reason: 'Session End',
-          task: selectedTask,
-          color: activeColor,
-          categoryId: pendingActiveCategoryId ?? null,
-          ...pendingActiveCategorySnapshot,
-        };
-        setLogs(prev => [sessionEndEntry, ...prev]);
-      }
-    }
-
-    const sessionFloor = sessionStartTime || '';
-    const workLogs = logs.filter((l) => l.type === 'work' && l.start >= sessionFloor && !isPauseCreditedWorkLog(l));
-    const breakLogs = logs.filter((l) => l.type === 'break' && l.start >= sessionFloor);
-    const pendingWorkSeconds = pendingActiveMode === 'work' ? pendingActiveDuration : 0;
-    const pendingBreakSeconds = pendingActiveMode === 'break' ? pendingActiveDuration : 0;
-    const totalWork = (workLogs.reduce((acc, l) => acc + l.duration, 0) + pendingWorkSeconds) / 60;
-    const totalBreak = (breakLogs.reduce((acc, l) => acc + l.duration, 0) + pendingBreakSeconds) / 60;
-    const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
-
-    // Calculate Category Stats
-    const categoryDetailsByKey = new Map<string, SessionCategoryStat>();
-    const addSessionCategoryMinutes = (
-      entry: Pick<LogEntry, 'categoryId' | 'categoryName' | 'categoryColor' | 'categoryIcon'>,
-      rawMinutes: number,
-    ) => {
-      const safeMinutes = Number(rawMinutes);
-      if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
-
-      const resolvedCategory = resolveLogEntryCategory(entry, categories);
-      const resolvedName = resolvedCategory.name || 'Uncategorized';
-      const detailKey = typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId)
-        ? `id:${entry.categoryId}`
-        : `name:${resolvedName}`;
-      const existing = categoryDetailsByKey.get(detailKey);
-
-      if (existing) {
-        existing.minutes += safeMinutes;
-        if (!existing.categoryName && resolvedName) existing.categoryName = resolvedName;
-        if (!existing.categoryColor && resolvedCategory.color) existing.categoryColor = resolvedCategory.color;
-        if (!existing.categoryIcon && resolvedCategory.icon) existing.categoryIcon = resolvedCategory.icon;
-        return;
-      }
-
-      categoryDetailsByKey.set(detailKey, {
-        categoryId: typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId) ? entry.categoryId : null,
-        categoryName: resolvedName,
-        categoryColor: resolvedCategory.color || undefined,
-        categoryIcon: resolvedCategory.icon || undefined,
-        minutes: safeMinutes,
-      });
-    };
-
-    workLogs.forEach((logEntry) => {
-      addSessionCategoryMinutes(logEntry, logEntry.duration / 60);
+    let sessionEndEntry: LogEntry | null = null;
+    let pendingActivity: EndSessionPendingActivity | null = null;
+    const pendingWindow = getEndSessionPendingActivityWindow({
+      isIdle,
+      activityStartMs: currentActivityStartRef.current?.getTime() ?? null,
+      effectiveEndMs,
+      allPauseActive,
+      allPauseStartTime,
     });
-    if (pendingWorkSeconds > 0) {
-      addSessionCategoryMinutes({
+
+    if (pendingWindow) {
+      const pendingActiveCategoryId = activeTask?.categoryId;
+      const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
+      const pendingActiveStartIso = new Date(pendingWindow.startMs).toISOString();
+      const pendingActiveEndIso = new Date(pendingWindow.endMs).toISOString();
+      const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+
+      pendingActivity = {
+        mode: activeMode,
+        durationSeconds: pendingWindow.durationSeconds,
         categoryId: pendingActiveCategoryId ?? null,
         ...pendingActiveCategorySnapshot,
-      }, pendingWorkSeconds / 60);
+      };
+      const nextSessionEndEntry: LogEntry = {
+        type: activeMode,
+        start: pendingActiveStartIso,
+        end: pendingActiveEndIso,
+        duration: pendingWindow.durationSeconds,
+        reason: 'Session End',
+        source: 'timer',
+        task: selectedTask,
+        color: activeColor,
+        categoryId: pendingActiveCategoryId ?? null,
+        ...pendingActiveCategorySnapshot,
+      };
+      sessionEndEntry = nextSessionEndEntry;
+      setLogs(prev => [nextSessionEndEntry, ...prev]);
     }
 
-    const categoryDetails = Array.from(categoryDetailsByKey.values());
-    const catStats = categoryDetails.reduce<Record<string, number>>((acc, detail) => {
-      const key = detail.categoryName || 'Uncategorized';
-      acc[key] = (acc[key] || 0) + detail.minutes;
-      return acc;
-    }, {});
-    const loggedCompletionStats = getPomodoroCompletionStatsFromLogs(workLogs);
-    const standardPomosCompleted = loggedCompletionStats.completedLogs > 0
-      ? loggedCompletionStats.standardPomosCompleted
-      : getStandardPomodoroCountForTimer(pomodoroCount, settings);
-    const miniPomosCompleted = loggedCompletionStats.completedLogs > 0
-      ? loggedCompletionStats.miniPomosCompleted
-      : (settings.timerPreset === 'compact' ? pomodoroCount : undefined);
+    const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
+    const sessionSummary = buildEndSessionStats({
+      logs,
+      sessionStartTime,
+      categories,
+      pendingActivity,
+      pomodoroCount,
+      settings: { timerPreset: settings.timerPreset },
+      tasksCompleted: completedTasksCount,
+    });
+    const logsIncludingSessionEnd = sessionEndEntry ? [sessionEndEntry, ...logs] : logs;
 
     // Archive Session
     if (sessionStartTime) {
@@ -4438,13 +4388,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             startTime: sessionStartTime,
             endTime: effectiveEndIso,
             stats: {
-                totalWorkMinutes: totalWork,
-                totalBreakMinutes: totalBreak,
-                pomosCompleted: standardPomosCompleted,
-                ...(miniPomosCompleted !== undefined ? { miniPomosCompleted } : {}),
-                tasksCompleted: completedTasksCount,
-                categoryStats: catStats,
-                categoryDetails,
+                totalWorkMinutes: sessionSummary.totalWorkMinutes,
+                totalBreakMinutes: sessionSummary.totalBreakMinutes,
+                pomosCompleted: sessionSummary.pomosCompleted,
+                ...(sessionSummary.miniPomosCompleted !== undefined ? { miniPomosCompleted: sessionSummary.miniPomosCompleted } : {}),
+                tasksCompleted: sessionSummary.tasksCompleted,
+                categoryStats: sessionSummary.categoryStats,
+                categoryDetails: sessionSummary.categoryDetails,
             }
         };
 
@@ -4454,22 +4404,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (user) {
             setUser(prev => {
                 if (!prev) return null;
-                const pendingSessionLogs = pendingActiveDuration > 0 && pendingActiveStartIso
-                  ? [{
-                      type: pendingActiveMode === 'work' ? 'work' : 'break',
-                      start: pendingActiveStartIso,
-                      end: effectiveEndIso,
-                      duration: pendingActiveDuration,
-                      reason: 'Session End',
-                      task: activeTask ? { id: activeTask.id, name: activeTask.name } : null,
-                      color: activeColor,
-                      categoryId: pendingActiveCategoryId ?? null,
-                      ...pendingActiveCategorySnapshot,
-                    } as LogEntry]
-                  : [];
                 const nextStats = calculateLifetimeStats(
                   [record, ...pastSessions],
-                  [...pendingSessionLogs, ...logs],
+                  logsIncludingSessionEnd,
                   prev.joinedAt,
                   categories,
                 );
@@ -4479,11 +4416,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     setSessionStats({
-        totalWorkMinutes: totalWork, totalBreakMinutes: totalBreak,
-        tasksCompleted: completedTasksCount,
-        pomosCompleted: standardPomosCompleted,
-        ...(miniPomosCompleted !== undefined ? { miniPomosCompleted } : {}),
-        categoryStats: catStats
+        totalWorkMinutes: sessionSummary.totalWorkMinutes,
+        totalBreakMinutes: sessionSummary.totalBreakMinutes,
+        tasksCompleted: sessionSummary.tasksCompleted,
+        pomosCompleted: sessionSummary.pomosCompleted,
+        ...(sessionSummary.miniPomosCompleted !== undefined ? { miniPomosCompleted: sessionSummary.miniPomosCompleted } : {}),
+        categoryStats: sessionSummary.categoryStats
     });
 
     setTasks(prev => normalizeTaskState(removeCompletedTasks(prev), { selectFirstAvailableIfNoSelection: true }));
@@ -4541,6 +4479,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     activeColor,
     activeMode,
     activeTask,
+    allPauseActive,
+    allPauseStartTime,
     anchorRuntimePhase,
     blockGuestTimerControl,
     calculateLifetimeStats,
@@ -4550,6 +4490,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     pastSessions,
     pomodoroCount,
     sessionStartTime,
+    settings.timerPreset,
     settings.workDuration,
     tasks,
     user,
