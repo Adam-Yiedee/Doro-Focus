@@ -12,6 +12,50 @@ const formatTime = (seconds: number) => {
 };
 
 const clampPercent = (value: number, max: number = 1) => Math.max(0, Math.min(max, value));
+const clampUnit = (value: number) => Math.max(-1, Math.min(1, value));
+
+type TimerTiltState = {
+  x: number;
+  y: number;
+  intensity: number;
+};
+
+const TIMER_TILT_REST: TimerTiltState = { x: 0, y: 0, intensity: 0 };
+
+const usePrefersReducedMotion = () => {
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const syncPreference = () => setPrefersReducedMotion(media.matches);
+    syncPreference();
+    media.addEventListener('change', syncPreference);
+    return () => media.removeEventListener('change', syncPreference);
+  }, []);
+
+  return prefersReducedMotion;
+};
+
+const getTimerTiltShadow = (isActive: boolean, isHovered: boolean, tilt: TimerTiltState) => {
+  if (!isActive && !isHovered) return 'none';
+
+  const activeWeight = isActive ? 1 : 0.72;
+  const shadowX = Math.round(-tilt.x * 4 * activeWeight);
+  const shadowY = Math.round((isActive ? 32 : 24) + (tilt.intensity * 2));
+  const shadowBlur = Math.round((isActive ? 68 : 52) + (tilt.intensity * 3));
+  const liftShadow = isActive
+    ? '0 16px 34px -24px rgba(0,0,0,0.45)'
+    : '0 12px 26px -22px rgba(0,0,0,0.36)';
+
+  return [
+    `${shadowX}px ${shadowY}px ${shadowBlur}px -24px rgba(0,0,0,${isActive ? 0.42 : 0.3})`,
+    liftShadow,
+    'inset 0 1px 0 rgba(255,255,255,0.12)',
+    'inset 0 -24px 46px rgba(0,0,0,0.08)',
+  ].join(', ');
+};
 
 // Internal Liquid Component
 const LiquidWave = ({ percent, isVisible, isActive, colorMode = 'default' }: { percent: number, isVisible: boolean, isActive: boolean, colorMode?: 'default' | 'red' }) => {
@@ -104,7 +148,11 @@ interface TimerSquareProps {
 
 const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMode, label, isIdle, isLocked, disableBlur, onActivate, onToggleLock }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [tilt, setTilt] = useState<TimerTiltState>(TIMER_TILT_REST);
+  const prefersReducedMotion = usePrefersReducedMotion();
   const lockTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tiltFrameRef = useRef<number | null>(null);
+  const pendingTiltRef = useRef<TimerTiltState>(TIMER_TILT_REST);
   const suppressClickRef = useRef(false);
   const lockPressFiredRef = useRef(false);
   const isActive = !isIdle && activeMode === type;
@@ -117,7 +165,58 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
     }
   };
 
-  useEffect(() => clearLockTimeout, []);
+  useEffect(() => {
+    return () => {
+      clearLockTimeout();
+      if (tiltFrameRef.current !== null) {
+        window.cancelAnimationFrame(tiltFrameRef.current);
+        tiltFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  const commitTilt = (nextTilt: TimerTiltState) => {
+    pendingTiltRef.current = nextTilt;
+    if (tiltFrameRef.current !== null) return;
+
+    tiltFrameRef.current = window.requestAnimationFrame(() => {
+      tiltFrameRef.current = null;
+      const pendingTilt = pendingTiltRef.current;
+      setTilt(prev => {
+        const didMove = Math.abs(prev.x - pendingTilt.x) > 0.01
+          || Math.abs(prev.y - pendingTilt.y) > 0.01
+          || Math.abs(prev.intensity - pendingTilt.intensity) > 0.01;
+        return didMove ? pendingTilt : prev;
+      });
+    });
+  };
+
+  const resetTilt = () => {
+    pendingTiltRef.current = TIMER_TILT_REST;
+    if (tiltFrameRef.current !== null) {
+      window.cancelAnimationFrame(tiltFrameRef.current);
+      tiltFrameRef.current = null;
+    }
+    setTilt(TIMER_TILT_REST);
+  };
+
+  const updateTiltFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (prefersReducedMotion || (e.pointerType !== 'mouse' && e.pointerType !== 'pen')) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const x = clampUnit(((e.clientX - rect.left) / rect.width - 0.5) * 2);
+    const y = clampUnit(((e.clientY - rect.top) / rect.height - 0.5) * 2);
+    const easedX = Math.sign(x) * Math.pow(Math.abs(x), 0.86);
+    const easedY = Math.sign(y) * Math.pow(Math.abs(y), 0.86);
+
+    commitTilt({
+      x: easedX,
+      y: easedY,
+      intensity: Math.min(1, Math.hypot(easedX, easedY)),
+    });
+  };
 
   const clearSuppressedClickSoon = () => {
     window.setTimeout(() => {
@@ -181,18 +280,44 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   const hoverBlurEffect = disableBlur ? '' : 'backdrop-blur-md';
 
   if (isActive) {
-    containerClasses = `z-20 scale-100 opacity-100 blur-0 bg-white/10 border-white/20 shadow-[0_30px_60px_-10px_rgba(0,0,0,0.3)] ring-1 ring-white/30 border cursor-pointer ${blurEffect}`;
+    containerClasses = `z-20 opacity-100 blur-0 bg-white/10 border-white/20 ring-1 ring-white/30 border cursor-pointer ${blurEffect}`;
     textClasses = "scale-100 text-white drop-shadow-2xl";
     labelClasses = "text-white/90 translate-y-0";
   } else if (isHovered) {
-    containerClasses = `z-30 scale-[1.02] opacity-90 blur-0 grayscale-0 bg-white/10 border-white/20 shadow-[0_20px_40px_-5px_rgba(0,0,0,0.2)] -translate-y-2 cursor-pointer border ${hoverBlurEffect}`;
+    containerClasses = `z-30 opacity-90 blur-0 grayscale-0 bg-white/10 border-white/20 cursor-pointer border ${hoverBlurEffect}`;
     textClasses = "scale-95 text-white/90";
     labelClasses = "text-white/80 translate-y-0";
   } else {
-    containerClasses = "z-10 scale-90 opacity-60 bg-transparent border-transparent shadow-none";
+    containerClasses = "z-10 opacity-60 bg-transparent border-transparent";
     textClasses = `scale-90 text-white/50 saturate-50 ${disableBlur ? '' : 'blur-[3px]'}`; 
     labelClasses = `text-white/40 ${disableBlur ? '' : 'blur-[3px]'}`;
   }
+
+  const effectiveTilt = prefersReducedMotion ? TIMER_TILT_REST : tilt;
+  const baseScale = isActive ? 1 : isHovered ? 1.02 : 0.9;
+  const baseTranslateY = !isActive && isHovered ? -8 : 0;
+  const hoverDepth = isHovered ? 3 : 0;
+  const tiltBoost = isHovered ? 1 + (effectiveTilt.intensity * 0.0008) : 1;
+  const rotateX = -effectiveTilt.y * 1.05;
+  const rotateY = effectiveTilt.x * 1.2;
+  const timerSquareStyle: React.CSSProperties = {
+    boxShadow: getTimerTiltShadow(isActive, isHovered, effectiveTilt),
+    transform: `perspective(900px) translate3d(0, ${baseTranslateY}px, ${hoverDepth}px) scale(${baseScale * tiltBoost}) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
+    transformOrigin: 'center',
+    transformStyle: 'preserve-3d',
+    transition: prefersReducedMotion
+      ? 'background-color 220ms ease, border-color 220ms ease, opacity 220ms ease, filter 220ms ease'
+      : isHovered
+        ? 'transform 130ms ease-out, box-shadow 130ms ease-out, background-color 450ms ease, border-color 450ms ease, opacity 450ms ease, filter 450ms ease'
+        : 'transform 560ms cubic-bezier(0.16,0.9,0.3,1), box-shadow 560ms cubic-bezier(0.16,0.9,0.3,1), background-color 700ms cubic-bezier(0.2,0.8,0.2,1), border-color 700ms cubic-bezier(0.2,0.8,0.2,1), opacity 700ms cubic-bezier(0.2,0.8,0.2,1), filter 700ms cubic-bezier(0.2,0.8,0.2,1)',
+    willChange: 'transform, box-shadow',
+  };
+  const sheenStyle: React.CSSProperties = {
+    background: `radial-gradient(circle at ${50 + effectiveTilt.x * 7}% ${42 + effectiveTilt.y * 7}%, rgba(255,255,255,0.14), rgba(255,255,255,0.035) 32%, transparent 66%)`,
+    opacity: isHovered && !prefersReducedMotion ? 0.08 + (effectiveTilt.intensity * 0.03) : 0,
+    transform: 'translateZ(5px)',
+    transition: isHovered ? 'opacity 130ms ease-out, background 130ms ease-out' : 'opacity 420ms ease-out',
+  };
 
   return (
     <div
@@ -204,14 +329,25 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
         ${isLocked ? 'cursor-pointer' : ''}
         group
       `}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => {
+      style={timerSquareStyle}
+      onPointerEnter={(e) => {
+        if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+          setIsHovered(true);
+          updateTiltFromPointer(e);
+        }
+      }}
+      onPointerMove={updateTiltFromPointer}
+      onPointerLeave={() => {
         setIsHovered(false);
+        resetTilt();
         handlePointerEnd();
       }}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerEnd}
-      onPointerCancel={handlePointerEnd}
+      onPointerCancel={() => {
+        resetTilt();
+        handlePointerEnd();
+      }}
       onClick={(e) => {
         e.stopPropagation();
         if (suppressClickRef.current) {
@@ -235,6 +371,8 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
         isActive={isActive} 
         colorMode={liquidColor}
       />
+
+      <div className="pointer-events-none absolute inset-0 z-10 rounded-[3rem] mix-blend-screen" style={sheenStyle} />
 
       {/* Inner Glow */}
       {isActive && (

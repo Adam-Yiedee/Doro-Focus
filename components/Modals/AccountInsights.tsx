@@ -22,6 +22,23 @@ interface AccountInsightsProps {
 type CategorySliceWithColor = { name: string; minutes: number; share: number; color: string };
 type AnalyticsRangeKey = 'week' | 'month' | 'year';
 type FocusWindow = { startMs: number; endMs: number; categoryName: string; categoryColor: string };
+type SessionClockSegment = {
+  startMinutes: number;
+  endMinutes: number;
+  categoryName: string;
+  categoryColor: string;
+};
+type SessionClockSession = {
+  id: string;
+  startMs: number;
+  endMs: number | null;
+  closed: boolean;
+  startMinutes: number;
+  endMinutes: number;
+  durationMinutes: number;
+  segments: SessionClockSegment[];
+  primaryColor: string;
+};
 type DailyCategoryBucket = {
   dateKey: string;
   dateMs: number;
@@ -47,8 +64,17 @@ const ANALYTICS_RANGE_OPTIONS: Array<[AnalyticsRangeKey, string]> = [
   ['month', 'Month'],
   ['year', 'Year'],
 ];
+const SESSION_CLOCK_AXIS_MARKS = [
+  { minutes: 0, label: '12a' },
+  { minutes: 360, label: '6a' },
+  { minutes: 720, label: '12p' },
+  { minutes: 1080, label: '6p' },
+  { minutes: 1440, label: '12a' },
+] as const;
 const HEATMAP_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 const OTHER_CATEGORY_COLOR = '#94A3B8';
+
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 const rgba = (color: string, alpha: number) => {
   const a = Math.max(0, Math.min(1, alpha));
@@ -136,6 +162,21 @@ const startOfLocalWeek = (ms: number) => {
   return date.getTime();
 };
 
+const startOfLocalYear = (ms: number) => {
+  const date = new Date(ms);
+  return new Date(date.getFullYear(), 0, 1).getTime();
+};
+
+const startOfNextLocalYear = (ms: number) => {
+  const date = new Date(ms);
+  return new Date(date.getFullYear() + 1, 0, 1).getTime();
+};
+
+const getMinutesOfDay = (ms: number) => {
+  const date = new Date(ms);
+  return date.getHours() * 60 + date.getMinutes() + (date.getSeconds() / 60);
+};
+
 const getLocalDateKey = (ms: number) => {
   const date = new Date(ms);
   const year = date.getFullYear();
@@ -181,6 +222,66 @@ const distributeMinutesByDay = (
   }
 };
 
+const buildDailyCategoryBucketsForRange = (
+  startMs: number,
+  endMs: number,
+  focusWindows: FocusWindow[],
+): DailyCategoryBucket[] => {
+  const normalizedStartMs = startOfLocalDay(startMs);
+  const normalizedEndMs = startOfLocalDay(endMs);
+  if (normalizedEndMs <= normalizedStartMs) return [];
+
+  const dayCount = Math.max(0, Math.round((normalizedEndMs - normalizedStartMs) / DAY_MS));
+  const rawBuckets = Array.from({ length: dayCount }, (_, index) => {
+    const dateMs = normalizedStartMs + (index * DAY_MS);
+    return {
+      dateKey: getLocalDateKey(dateMs),
+      dateMs,
+      totalMinutes: 0,
+      categoryMap: new Map<string, { minutes: number; color: string }>(),
+    };
+  });
+  const bucketMap = new Map(rawBuckets.map((bucket) => [bucket.dateKey, bucket]));
+
+  focusWindows.forEach((window) => {
+    if (window.endMs <= normalizedStartMs || window.startMs >= normalizedEndMs) return;
+    distributeMinutesByDay(
+      Math.max(window.startMs, normalizedStartMs),
+      Math.min(window.endMs, normalizedEndMs),
+      (dateKey, minutes) => {
+        const bucket = bucketMap.get(dateKey);
+        if (!bucket) return;
+        bucket.totalMinutes += minutes;
+        const existing = bucket.categoryMap.get(window.categoryName);
+        bucket.categoryMap.set(window.categoryName, {
+          minutes: (existing?.minutes || 0) + minutes,
+          color: existing?.color || window.categoryColor,
+        });
+      },
+    );
+  });
+
+  return rawBuckets.map((bucket) => {
+    const categoriesForDay = Array.from(bucket.categoryMap.entries())
+      .map(([name, value]) => ({
+        name,
+        minutes: value.minutes,
+        share: bucket.totalMinutes > 0 ? value.minutes / bucket.totalMinutes : 0,
+        color: value.color,
+      }))
+      .sort((left, right) => right.minutes - left.minutes);
+
+    return {
+      dateKey: bucket.dateKey,
+      dateMs: bucket.dateMs,
+      totalMinutes: bucket.totalMinutes,
+      categories: categoriesForDay,
+      topCategoryName: categoriesForDay[0]?.name ?? null,
+      topCategoryColor: categoriesForDay[0]?.color ?? null,
+    };
+  });
+};
+
 const getDateFromKey = (dateKey: string) => new Date(`${dateKey}T12:00:00`);
 const formatDateKeyStamp = (dateKey: string) => getDateFromKey(dateKey).toLocaleDateString([], { month: 'short', day: 'numeric' });
 const formatDateKeyFullStamp = (dateKey: string) => getDateFromKey(dateKey).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
@@ -192,6 +293,16 @@ const formatWeekRangeLabel = (weekStartMs: number) => {
   const startLabel = start.toLocaleDateString([], { month: 'short', day: 'numeric' });
   const endLabel = end.toLocaleDateString([], sameMonth ? { day: 'numeric' } : { month: 'short', day: 'numeric' });
   return `${startLabel} - ${endLabel}`;
+};
+
+const findScrollableParent = (element: HTMLElement | null) => {
+  let current = element?.parentElement || null;
+  while (current) {
+    const style = window.getComputedStyle(current);
+    if (/(auto|scroll)/.test(style.overflowY)) return current;
+    current = current.parentElement;
+  }
+  return null;
 };
 
 const dayPartLabels: Record<DayPartKey, string> = {
@@ -274,6 +385,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const [activeCategoryName, setActiveCategoryName] = useState<string | null>(categorySlices[0]?.name ?? null);
   const [isCategoryShareChartHovered, setIsCategoryShareChartHovered] = useState(false);
   const [analyticsRange, setAnalyticsRange] = useState<AnalyticsRangeKey>('month');
+  const [heatmapRange, setHeatmapRange] = useState<AnalyticsRangeKey>('month');
   const [hoveredTrendDateKey, setHoveredTrendDateKey] = useState<string | null>(null);
   const [hoveredCategoryTrendDateKey, setHoveredCategoryTrendDateKey] = useState<string | null>(null);
   const [hoveredCategoryFlowName, setHoveredCategoryFlowName] = useState<string | null>(null);
@@ -301,64 +413,32 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       .filter((window): window is FocusWindow => Boolean(window));
   }, [accentColor, categories, categoryColors, logs]);
 
-  const allDailyCategoryBuckets = useMemo<DailyCategoryBucket[]>(() => {
+  const rollingDailyCategoryBuckets = useMemo<DailyCategoryBucket[]>(() => {
     const todayStartMs = startOfLocalDay(Date.now());
     const tomorrowStartMs = todayStartMs + DAY_MS;
     const startMs = todayStartMs - ((ANALYTICS_RANGE_DAYS.year - 1) * DAY_MS);
-    const rawBuckets = Array.from({ length: ANALYTICS_RANGE_DAYS.year }, (_, index) => {
-      const dateMs = startMs + (index * DAY_MS);
-      return {
-        dateKey: getLocalDateKey(dateMs),
-        dateMs,
-        totalMinutes: 0,
-        categoryMap: new Map<string, { minutes: number; color: string }>(),
-      };
-    });
-    const bucketMap = new Map(rawBuckets.map((bucket) => [bucket.dateKey, bucket]));
-
-    focusWindows.forEach((window) => {
-      if (window.endMs <= startMs || window.startMs >= tomorrowStartMs) return;
-      distributeMinutesByDay(
-        Math.max(window.startMs, startMs),
-        Math.min(window.endMs, tomorrowStartMs),
-        (dateKey, minutes) => {
-          const bucket = bucketMap.get(dateKey);
-          if (!bucket) return;
-          bucket.totalMinutes += minutes;
-          const existing = bucket.categoryMap.get(window.categoryName);
-          bucket.categoryMap.set(window.categoryName, {
-            minutes: (existing?.minutes || 0) + minutes,
-            color: existing?.color || window.categoryColor,
-          });
-        },
-      );
-    });
-
-    return rawBuckets.map((bucket) => {
-      const categoriesForDay = Array.from(bucket.categoryMap.entries())
-        .map(([name, value]) => ({
-          name,
-          minutes: value.minutes,
-          share: bucket.totalMinutes > 0 ? value.minutes / bucket.totalMinutes : 0,
-          color: value.color,
-        }))
-        .sort((left, right) => right.minutes - left.minutes);
-
-      return {
-        dateKey: bucket.dateKey,
-        dateMs: bucket.dateMs,
-        totalMinutes: bucket.totalMinutes,
-        categories: categoriesForDay,
-        topCategoryName: categoriesForDay[0]?.name ?? null,
-        topCategoryColor: categoriesForDay[0]?.color ?? null,
-      };
-    });
+    return buildDailyCategoryBucketsForRange(startMs, tomorrowStartMs, focusWindows);
   }, [focusWindows]);
 
   const rangeDayCount = ANALYTICS_RANGE_DAYS[analyticsRange];
   const rangeDailyBuckets = useMemo(
-    () => allDailyCategoryBuckets.slice(-rangeDayCount),
-    [allDailyCategoryBuckets, rangeDayCount],
+    () => rollingDailyCategoryBuckets.slice(-rangeDayCount),
+    [rollingDailyCategoryBuckets, rangeDayCount],
+  );
+  const calendarYearDailyBuckets = useMemo<DailyCategoryBucket[]>(() => {
+    const nowMs = Date.now();
+    return buildDailyCategoryBucketsForRange(
+      startOfLocalYear(nowMs),
+      startOfNextLocalYear(nowMs),
+      focusWindows,
+    );
+  }, [focusWindows]);
+  const heatmapDayCount = ANALYTICS_RANGE_DAYS[heatmapRange];
+  const heatmapDailyBuckets = useMemo(
+    () => heatmapRange === 'year'
+      ? calendarYearDailyBuckets
+      : rollingDailyCategoryBuckets.slice(-heatmapDayCount),
+    [calendarYearDailyBuckets, heatmapDayCount, heatmapRange, rollingDailyCategoryBuckets],
   );
   const focusMinutesByDateKey = useMemo(() => {
     const totals = new Map<string, number>();
@@ -370,24 +450,39 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     return totals;
   }, [focusWindows]);
   const sessionClockSessionsByDateKey = useMemo(() => {
-    const sessionsByDay = new Map<string, Array<{
-      id: string;
-      startMs: number;
-      endMs: number | null;
-      closed: boolean;
-      startMinutes: number;
-      endMinutes: number;
-      durationMinutes: number;
-    }>>();
+    const sessionsByDay = new Map<string, SessionClockSession[]>();
 
     insights.sessions.forEach((session) => {
       const dateKey = getLocalDateKey(session.startMs);
       const sessionEndMs = session.endMs;
-      const sessionEndDateKey = sessionEndMs !== null ? getLocalDateKey(sessionEndMs) : null;
-      const startMinutes = new Date(session.startMs).getHours() * 60 + new Date(session.startMs).getMinutes();
-      const endMinutes = sessionEndMs !== null && sessionEndDateKey === dateKey
-        ? (new Date(sessionEndMs).getHours() * 60) + new Date(sessionEndMs).getMinutes()
-        : 1440;
+      const dayStartMs = startOfLocalDay(session.startMs);
+      const dayEndMs = dayStartMs + DAY_MS;
+      const visualEndMs = sessionEndMs ?? Math.min(dayEndMs, session.startMs + Math.max(1, session.activeDurationMinutes) * 60_000);
+      const clippedStartMs = Math.max(session.startMs, dayStartMs);
+      const clippedEndMs = Math.min(Math.max(visualEndMs, clippedStartMs + 60_000), dayEndMs);
+      const startMinutes = getMinutesOfDay(clippedStartMs);
+      const endMinutes = clippedEndMs >= dayEndMs ? 1440 : getMinutesOfDay(clippedEndMs);
+      const segments = focusWindows
+        .map((window) => {
+          const segmentStartMs = Math.max(window.startMs, clippedStartMs);
+          const segmentEndMs = Math.min(window.endMs, clippedEndMs);
+          if (segmentEndMs <= segmentStartMs) return null;
+          return {
+            startMinutes: getMinutesOfDay(segmentStartMs),
+            endMinutes: segmentEndMs >= dayEndMs ? 1440 : getMinutesOfDay(segmentEndMs),
+            categoryName: window.categoryName,
+            categoryColor: window.categoryColor,
+          };
+        })
+        .filter((segment): segment is SessionClockSegment => Boolean(segment))
+        .sort((left, right) => left.startMinutes - right.startMinutes);
+      const primaryColor = segments.length > 0
+        ? segments.reduce((best, segment) => (
+          (segment.endMinutes - segment.startMinutes) > (best.endMinutes - best.startMinutes)
+            ? segment
+            : best
+        ), segments[0]).categoryColor
+        : accentColor;
       const existing = sessionsByDay.get(dateKey) || [];
       existing.push({
         id: `${session.startMs}:${session.endMs ?? 'open'}`,
@@ -397,13 +492,15 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         startMinutes,
         endMinutes: Math.max(startMinutes + 1, endMinutes),
         durationMinutes: Math.max(1, session.activeDurationMinutes),
+        segments,
+        primaryColor,
       });
       sessionsByDay.set(dateKey, existing);
     });
 
     sessionsByDay.forEach((sessions) => sessions.sort((left, right) => left.startMs - right.startMs));
     return sessionsByDay;
-  }, [insights.sessions]);
+  }, [accentColor, focusWindows, insights.sessions]);
   const sessionClockWeekStarts = useMemo(() => {
     const currentWeekStartMs = startOfLocalWeek(Date.now());
     const earliestSessionStartMs = insights.sessions.reduce((earliest, session) => (
@@ -483,13 +580,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   }, [hoveredCategoryTrendDateKey, rangeDailyBuckets]);
 
   useEffect(() => {
-    const selectedDayExists = selectedHeatmapDateKey && rangeDailyBuckets.some((day) => day.dateKey === selectedHeatmapDateKey);
+    const selectedDayExists = selectedHeatmapDateKey && heatmapDailyBuckets.some((day) => day.dateKey === selectedHeatmapDateKey);
     if (!selectedDayExists) {
-      const fallbackDay = [...rangeDailyBuckets].reverse().find((day) => day.totalMinutes > 0) || rangeDailyBuckets[rangeDailyBuckets.length - 1];
+      const fallbackDay = [...heatmapDailyBuckets].reverse().find((day) => day.totalMinutes > 0) || heatmapDailyBuckets[heatmapDailyBuckets.length - 1];
       setSelectedHeatmapDateKey(fallbackDay?.dateKey ?? null);
     }
     setHoveredHeatmapDateKey(null);
-  }, [analyticsRange, rangeDailyBuckets, selectedHeatmapDateKey]);
+  }, [heatmapDailyBuckets, heatmapRange, selectedHeatmapDateKey]);
 
   const activeCategory = categorySlices.find((slice) => slice.name === activeCategoryName) || categorySlices[0] || null;
   const dominantDayPartsLabel = insights.dominantDayParts.length > 0
@@ -627,40 +724,38 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     rangeDailyBuckets.length * (categoryTrendBarWidth + (analyticsRange === 'year' ? 5 : 8)),
   );
   const rangeFocusTotal = rangeDailyBuckets.reduce((sum, day) => sum + day.totalMinutes, 0);
-  const rangeActiveHeatmapDays = rangeDailyBuckets.filter((day) => day.totalMinutes > 0).length;
   const heatmapScaleMaxMinutes = useMemo(() => {
-    const positiveMinutes = rangeDailyBuckets
+    const positiveMinutes = heatmapDailyBuckets
       .map((day) => day.totalMinutes)
       .filter((minutes) => minutes > 0)
       .sort((left, right) => left - right);
     if (positiveMinutes.length === 0) return 1;
     const percentileIndex = Math.max(0, Math.ceil(positiveMinutes.length * 0.9) - 1);
     return Math.max(1, positiveMinutes[Math.min(positiveMinutes.length - 1, percentileIndex)]);
-  }, [rangeDailyBuckets]);
-  const defaultHeatmapDay = [...rangeDailyBuckets].reverse().find((day) => day.totalMinutes > 0)
-    || rangeDailyBuckets[rangeDailyBuckets.length - 1]
+  }, [heatmapDailyBuckets]);
+  const defaultHeatmapDay = [...heatmapDailyBuckets].reverse().find((day) => day.totalMinutes > 0)
+    || heatmapDailyBuckets[heatmapDailyBuckets.length - 1]
     || null;
-  const activeHeatmapDay = rangeDailyBuckets.find((day) => day.dateKey === hoveredHeatmapDateKey)
-    || rangeDailyBuckets.find((day) => day.dateKey === selectedHeatmapDateKey)
+  const activeHeatmapDay = heatmapDailyBuckets.find((day) => day.dateKey === hoveredHeatmapDateKey)
+    || heatmapDailyBuckets.find((day) => day.dateKey === selectedHeatmapDateKey)
     || defaultHeatmapDay;
-  const heatmapCellClass = analyticsRange === 'year'
+  const heatmapCellClass = heatmapRange === 'year'
     ? 'h-3.5 w-3.5 rounded-[4px]'
-    : analyticsRange === 'month'
+    : heatmapRange === 'month'
       ? 'h-5 w-5 rounded-md'
       : 'h-7 w-7 rounded-lg';
-  const heatmapLabelClass = analyticsRange === 'year'
+  const heatmapLabelClass = heatmapRange === 'year'
     ? 'h-3.5 w-8'
-    : analyticsRange === 'month'
+    : heatmapRange === 'month'
       ? 'h-5 w-8'
       : 'h-7 w-8';
-  const heatmapGapStyle = { gap: analyticsRange === 'year' ? '0.375rem' : '0.5rem' };
-  const heatmapLegendSteps = [0.18, 0.38, 0.6, 0.8, 1];
+  const heatmapGapStyle = { gap: heatmapRange === 'year' ? '0.375rem' : '0.5rem' };
   const heatmapWeeks = useMemo(() => {
-    if (rangeDailyBuckets.length === 0) return [] as Array<Array<DailyCategoryBucket | null>>;
-    const leadingPadding = new Date(rangeDailyBuckets[0].dateMs).getDay();
+    if (heatmapDailyBuckets.length === 0) return [] as Array<Array<DailyCategoryBucket | null>>;
+    const leadingPadding = new Date(heatmapDailyBuckets[0].dateMs).getDay();
     const paddedDays: Array<DailyCategoryBucket | null> = [
       ...Array.from({ length: leadingPadding }, () => null),
-      ...rangeDailyBuckets,
+      ...heatmapDailyBuckets,
     ];
     while (paddedDays.length % 7 !== 0) paddedDays.push(null);
 
@@ -669,7 +764,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       weeks.push(paddedDays.slice(index, index + 7));
     }
     return weeks;
-  }, [rangeDailyBuckets]);
+  }, [heatmapDailyBuckets]);
   const heatmapMonthMarkers = useMemo(() => {
     let previousMonth: number | null = null;
     return heatmapWeeks.map((week, weekIndex) => {
@@ -937,8 +1032,11 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       )}
     </Card>
   );
-  const renderAnalyticsRangeToggle = () => {
-    const activeIndex = ANALYTICS_RANGE_OPTIONS.findIndex(([range]) => range === analyticsRange);
+  const renderAnalyticsRangeToggle = (
+    activeRange: AnalyticsRangeKey = analyticsRange,
+    onRangeChange: React.Dispatch<React.SetStateAction<AnalyticsRangeKey>> = setAnalyticsRange,
+  ) => {
+    const activeIndex = ANALYTICS_RANGE_OPTIONS.findIndex(([range]) => range === activeRange);
 
     return (
       <div className="relative flex min-w-[11.75rem] rounded-[0.95rem] border border-white/10 bg-white/[0.03] p-1">
@@ -951,12 +1049,22 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           }}
         />
         {ANALYTICS_RANGE_OPTIONS.map(([range, label]) => {
-          const active = analyticsRange === range;
+          const active = activeRange === range;
           return (
             <button
               key={range}
               type="button"
-              onClick={() => setAnalyticsRange(range)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                const scrollParent = findScrollableParent(event.currentTarget);
+                const scrollTop = scrollParent?.scrollTop ?? null;
+                onRangeChange(range);
+                if (scrollParent && scrollTop !== null) {
+                  window.requestAnimationFrame(() => {
+                    scrollParent.scrollTop = scrollTop;
+                  });
+                }
+              }}
               className={`relative z-10 flex-1 rounded-[0.7rem] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] transition-[color,transform] duration-300 ${
                 active
                   ? 'text-white'
@@ -992,6 +1100,77 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     if (Math.abs(deltaX) < 44 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
     moveSessionClockWeek(deltaX < 0 ? -1 : 1);
   };
+  const renderSessionClockBar = (
+    lane: { dateKey: string },
+    session: SessionClockSession,
+    active: boolean,
+  ) => {
+    const sessionStart = clamp01(session.startMinutes / 1440);
+    const sessionEnd = clamp01(session.endMinutes / 1440);
+    const sessionRangeMinutes = Math.max(1, session.endMinutes - session.startMinutes);
+    const widthPct = Math.max((sessionEnd - sessionStart) * 100, 1.1);
+
+    return (
+      <button
+        key={session.id}
+        type="button"
+        onMouseEnter={() => {
+          setHoveredSessionLaneKey(lane.dateKey);
+          setHoveredSessionId(session.id);
+        }}
+        onMouseLeave={() => setHoveredSessionId(null)}
+        onFocus={() => {
+          setHoveredSessionLaneKey(lane.dateKey);
+          setHoveredSessionId(session.id);
+        }}
+        onBlur={() => setHoveredSessionId(null)}
+        className="absolute top-1.5 bottom-1.5 overflow-hidden rounded-[0.85rem] border transition-[border-color,box-shadow,transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] focus:outline-none"
+        style={{
+          left: `${sessionStart * 100}%`,
+          width: `${widthPct}%`,
+          background: `linear-gradient(90deg, ${rgba(session.primaryColor, active ? 0.42 : 0.28)}, ${rgba(session.primaryColor, active ? 0.28 : 0.18)})`,
+          borderColor: active ? rgba('#ffffff', 0.34) : rgba('#ffffff', 0.12),
+          boxShadow: active ? `0 14px 26px -18px ${rgba(session.primaryColor, 0.58)}` : `0 10px 22px -20px ${rgba(session.primaryColor, 0.22)}`,
+          transform: active ? 'translateY(-1px) scaleY(1.04)' : 'translateY(0) scaleY(1)',
+          opacity: active ? 1 : 0.9,
+        }}
+        aria-label={`${formatDateKeyStamp(lane.dateKey)} ${formatSessionRange(session.startMs, session.endMs)} ${formatMinutesPrecise(session.durationMinutes)}`}
+      >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-[inherit]"
+          style={{
+            background: `linear-gradient(180deg, rgba(255,255,255,${active ? 0.18 : 0.1}), transparent 62%)`,
+          }}
+        />
+        {session.segments.map((segment, segmentIndex) => {
+          const leftPct = clamp01((segment.startMinutes - session.startMinutes) / sessionRangeMinutes) * 100;
+          const segmentWidthPct = Math.max(
+            (clamp01((segment.endMinutes - session.startMinutes) / sessionRangeMinutes) * 100) - leftPct,
+            1.4,
+          );
+          return (
+            <span
+              key={`${session.id}-${segment.categoryName}-${segment.startMinutes}-${segmentIndex}`}
+              aria-hidden="true"
+              className="pointer-events-none absolute top-0 bottom-0 rounded-[0.8rem]"
+              style={{
+                left: `${Math.max(0, leftPct - 0.7)}%`,
+                width: `${Math.min(100, segmentWidthPct + 1.4)}%`,
+                backgroundColor: rgba(segment.categoryColor, active ? 0.86 : 0.64),
+                filter: 'blur(3px) saturate(1.08)',
+                transform: 'translateZ(0)',
+              }}
+            />
+          );
+        })}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-10px_22px_rgba(0,0,0,0.08)]"
+        />
+      </button>
+    );
+  };
   const sessionClockCard = (
     <Card title="Session Clock" isLightTheme={isLightTheme}>
       <div
@@ -1009,7 +1188,9 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             <div className="mt-1.5 text-sm text-white/54">
               {selectedSessionEntry
                 ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} · ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)}`
-                : 'No saved sessions in this week yet.'}
+                : sessionWeekFocusTotal > 0
+                  ? `${formatMinutesPrecise(sessionWeekFocusTotal)} focus this week`
+                  : 'No focus logged this week'}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1057,69 +1238,53 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </div>
 
         <div className="mt-4 overflow-x-auto pb-1" style={{ touchAction: 'pan-y' }}>
-          <div className="min-w-[34rem]">
-            <div className="grid grid-cols-[3.25rem_minmax(0,1fr)] gap-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/28">
+          <div className="min-w-[42rem]">
+            <div className="grid grid-cols-[3.75rem_minmax(0,1fr)] gap-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/32">
               <div />
-              <div className="grid gap-1.5" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-                <div>12a</div>
-                <div className="text-center">6a</div>
-                <div className="text-center">12p</div>
-                <div className="text-right">6p</div>
+              <div className="relative h-5">
+                {SESSION_CLOCK_AXIS_MARKS.map((mark) => {
+                  const pct = clamp01(mark.minutes / 1440) * 100;
+                  const transform = mark.minutes === 0
+                    ? 'translateX(0)'
+                    : mark.minutes === 1440
+                      ? 'translateX(-100%)'
+                      : 'translateX(-50%)';
+                  return (
+                    <div
+                      key={`session-axis-${mark.minutes}`}
+                      className="absolute top-0"
+                      style={{ left: `${pct}%`, transform }}
+                    >
+                      {mark.label}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="mt-3 space-y-2">
+            <div className="mt-2 space-y-2">
               {displayedSessionLanes.map((lane) => {
                 const activeLane = lane.dateKey === activeSessionLane?.dateKey;
                 return (
-                  <div key={lane.dateKey} className="grid grid-cols-[3.25rem_minmax(0,1fr)] gap-3 items-center">
+                  <div key={lane.dateKey} className="grid grid-cols-[3.75rem_minmax(0,1fr)] gap-3 items-center">
                     <button
                       type="button"
                       onMouseEnter={() => setHoveredSessionLaneKey(lane.dateKey)}
                       onMouseLeave={() => setHoveredSessionLaneKey(null)}
                       onFocus={() => setHoveredSessionLaneKey(lane.dateKey)}
                       onBlur={() => setHoveredSessionLaneKey(null)}
-                      className={`rounded-[0.95rem] border px-2.5 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.12em] transition-[background-color,border-color,color] duration-200 ${activeLane ? 'border-white/12 bg-white/[0.08] text-white' : 'border-white/8 bg-white/[0.02] text-white/48 hover:bg-white/[0.045] hover:text-white/72'}`}
+                      className={`flex items-center justify-between rounded-[0.95rem] border px-2.5 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.1em] transition-[background-color,border-color,color] duration-200 ${activeLane ? 'border-white/12 bg-white/[0.08] text-white' : 'border-white/8 bg-white/[0.02] text-white/48 hover:bg-white/[0.045] hover:text-white/72'}`}
                     >
-                      {WEEKDAY_SHORT_LABELS[lane.weekday]}
+                      <span>{WEEKDAY_SHORT_LABELS[lane.weekday]}</span>
+                      <span className="text-white/38">{new Date(lane.dateMs).getDate()}</span>
                     </button>
                     <div className={`relative h-12 overflow-hidden rounded-[1rem] border transition-[border-color,background-color] duration-200 ${activeLane ? 'border-white/14 bg-white/[0.06]' : 'border-white/8 bg-white/[0.024]'}`}>
-                      {[25, 50, 75].map((pct) => (
-                        <div key={pct} className="absolute top-0 bottom-0 w-px bg-white/6" style={{ left: `${pct}%` }} />
+                      {SESSION_CLOCK_AXIS_MARKS.slice(1, -1).map((mark) => (
+                        <div key={mark.minutes} className="absolute top-0 bottom-0 w-px bg-white/6" style={{ left: `${(mark.minutes / 1440) * 100}%` }} />
                       ))}
-                      {lane.sessions.length === 0 && (
-                        <div className="absolute inset-0 flex items-center px-3.5 text-[11px] text-white/28">
-                          No saved sessions
-                        </div>
-                      )}
-                      {lane.sessions.map((session, index) => {
-                        const widthPct = Math.max((((Math.min(1440, session.endMinutes) - session.startMinutes) / 1440) * 100), 1.1);
+                      {lane.sessions.map((session) => {
                         const active = hoveredSessionId === session.id || (!hoveredSessionId && selectedSessionEntry?.session.id === session.id);
-                        return (
-                          <button
-                            key={session.id}
-                            type="button"
-                            onMouseEnter={() => {
-                              setHoveredSessionLaneKey(lane.dateKey);
-                              setHoveredSessionId(session.id);
-                            }}
-                            onMouseLeave={() => setHoveredSessionId(null)}
-                            onFocus={() => {
-                              setHoveredSessionLaneKey(lane.dateKey);
-                              setHoveredSessionId(session.id);
-                            }}
-                            onBlur={() => setHoveredSessionId(null)}
-                            className="absolute top-1.5 bottom-1.5 rounded-[0.85rem] border transition-all duration-300 focus:outline-none"
-                            style={{
-                              left: `${(session.startMinutes / 1440) * 100}%`,
-                              width: `${widthPct}%`,
-                              backgroundColor: rgba(PRESET_COLORS[(index + 1) % PRESET_COLORS.length], active ? 0.86 : 0.56),
-                              borderColor: active ? rgba('#ffffff', 0.34) : rgba('#ffffff', 0.12),
-                              boxShadow: active ? `0 12px 24px -18px ${rgba(PRESET_COLORS[(index + 1) % PRESET_COLORS.length], 0.52)}` : 'none',
-                            }}
-                            aria-label={`${formatDateKeyStamp(lane.dateKey)} ${formatSessionRange(session.startMs, session.endMs)}`}
-                          />
-                        );
+                        return renderSessionClockBar(lane, session, active);
                       })}
                     </div>
                   </div>
@@ -1480,23 +1645,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               <div className="text-base font-semibold tracking-tight text-white">
                 {activeHeatmapDay ? formatDateKeyFullStamp(activeHeatmapDay.dateKey) : 'Daily focus'}
               </div>
-              <div className="mt-1 text-sm text-white/56">
-                {activeHeatmapDay
-                  ? activeHeatmapDay.totalMinutes > 0
-                    ? `${formatMinutesPrecise(activeHeatmapDay.totalMinutes)} saved${activeHeatmapDay.topCategoryName ? `, top category ${activeHeatmapDay.topCategoryName}.` : '.'}`
-                    : 'No focus saved on that day yet.'
-                  : 'No saved days yet.'}
-              </div>
-              <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/34">
-                {rangeActiveHeatmapDays}/{rangeDailyBuckets.length} active days - {formatMinutesPrecise(rangeFocusTotal)} total
-              </div>
             </div>
-            {renderAnalyticsRangeToggle()}
+            {renderAnalyticsRangeToggle(heatmapRange, setHeatmapRange)}
           </div>
 
           <div className="mt-5 rounded-[1.2rem] border px-4 py-4 md:px-5" style={getInsightInsetStyle(PRESET_COLORS[2])}>
             <div className="overflow-x-auto pb-2">
-              {analyticsRange === 'year' && heatmapWeeks.length > 0 && (
+              {heatmapRange === 'year' && heatmapWeeks.length > 0 && (
                 <div className="mb-2 inline-flex items-end gap-3">
                   <div className="grid grid-rows-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-transparent">
                     <div>Sun</div>
@@ -1584,27 +1739,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                     </div>
                   ))}
                 </div>
-              </div>
-            </div>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/34">
-              <div>{ANALYTICS_RANGE_LABELS[analyticsRange]} intensity by daily focus time</div>
-              <div className="flex items-center gap-1.5">
-                <span>Less</span>
-                {heatmapLegendSteps.map((step) => {
-                  const legendColor = activeHeatmapDay?.topCategoryColor || accentColor;
-                  const alpha = isLightTheme ? 0.18 + (step * 0.7) : 0.16 + (step * 0.72);
-                  return (
-                    <span
-                      key={`heatmap-legend-${step}`}
-                      className="h-3.5 w-3.5 rounded-[4px] border"
-                      style={{
-                        backgroundColor: rgba(legendColor, alpha),
-                        borderColor: rgba(legendColor, isLightTheme ? 0.28 + (step * 0.34) : 0.24 + (step * 0.32)),
-                      }}
-                    />
-                  );
-                })}
-                <span>More</span>
               </div>
             </div>
           </div>
