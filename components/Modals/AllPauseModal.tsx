@@ -13,6 +13,26 @@ const formatDuration = (seconds: number) => {
   return `${m}:${rem.toString().padStart(2, '0')}`;
 };
 
+const pauseRgba = (color: string, alpha: number) => {
+  const a = Math.max(0, Math.min(1, alpha));
+  const value = color.trim();
+  if (/^#([0-9a-f]{3})$/i.test(value)) {
+    const hex = value.slice(1);
+    const r = parseInt(hex[0] + hex[0], 16);
+    const g = parseInt(hex[1] + hex[1], 16);
+    const b = parseInt(hex[2] + hex[2], 16);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+  if (/^#([0-9a-f]{6})$/i.test(value)) {
+    const hex = value.slice(1);
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+  return `rgba(255, 255, 255, ${a})`;
+};
+
 const PauseMotionStyles = () => (
   <style>{`
     @keyframes doroPauseSurfaceIn {
@@ -138,11 +158,11 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
   const labelClass = "text-[10px] font-bold uppercase tracking-[0.18em] text-white/42";
   const iconBadgeClass = "mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/[0.10] bg-white/[0.075] text-white shadow-[0_22px_42px_-30px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.07)]";
   const panelHighlight = "pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_0_42px_rgba(255,255,255,0.035)]";
-  const closeButtonClass = "absolute right-4 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.045] text-white/56 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.82)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.08] hover:text-white active:translate-y-0 active:scale-95";
-  const raisedButtonClass = "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.065] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_20px_42px_-30px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.035)] transition-all duration-300 ease-out hover:-translate-y-1 hover:bg-white/[0.095] hover:shadow-[0_30px_54px_-30px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.045)] active:translate-y-0 active:scale-[0.99]";
-  const secondaryButtonClass = `${raisedButtonClass} text-white/62 hover:text-white`;
-  const primaryButtonClass = `${raisedButtonClass} text-white bg-white/[0.12] hover:bg-white/[0.16]`;
-  const dangerButtonClass = "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200/[0.10] bg-red-500/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/82 shadow-[0_20px_42px_-30px_rgba(127,29,29,0.95)] transition-all duration-300 hover:-translate-y-1 hover:bg-red-500/18 hover:text-red-100 hover:shadow-[0_30px_54px_-30px_rgba(127,29,29,0.95)] active:translate-y-0 active:scale-[0.99]";
+  const closeButtonClass = "absolute right-4 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.14] bg-white/[0.075] text-white/72 shadow-[0_22px_42px_-30px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.10)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/[0.12] hover:text-white active:translate-y-0 active:scale-95";
+  const taskButtonClass = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-white/[0.15] bg-white/[0.08] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.12em] shadow-[0_24px_48px_-34px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.12),inset_0_-18px_34px_rgba(0,0,0,0.06)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:bg-white/[0.13] hover:border-white/20 hover:shadow-[0_30px_58px_-34px_rgba(0,0,0,0.88),inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-18px_34px_rgba(0,0,0,0.05)] active:translate-y-0 active:scale-[0.99]";
+  const secondaryButtonClass = `${taskButtonClass} text-white/78 hover:text-white`;
+  const primaryButtonClass = `${taskButtonClass} text-white/90 hover:text-white`;
+  const dangerButtonClass = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-rose-200/28 bg-rose-500/[0.085] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.12em] text-rose-50/92 shadow-[0_30px_64px_-34px_rgba(127,29,29,0.62),0_20px_48px_-34px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.14),inset_0_-20px_36px_rgba(127,29,29,0.12)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:border-rose-100/42 hover:bg-rose-400/[0.16] hover:text-white hover:shadow-[0_34px_72px_-34px_rgba(127,29,29,0.78),0_28px_58px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.18),inset_0_-18px_34px_rgba(127,29,29,0.12)] active:translate-y-0 active:scale-[0.99]";
 
   if (isConfirmingEnd) {
       return (
@@ -155,7 +175,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
               <div className={`${iconBadgeClass} text-red-100/88`}>
                 <Square size={20} strokeWidth={2.3} />
               </div>
-              <div className={labelClass}>Confirm</div>
+              <div className={`mt-3 ${labelClass}`}>Confirm</div>
               <h3 className="mt-2 text-2xl font-bold text-white">End Work Session?</h3>
               <p className="mt-3 text-sm leading-relaxed text-white/46">This will clear completed tasks and reset timers.</p>
             </div>
@@ -188,16 +208,14 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
           <div className={iconBadgeClass}>
             <Pause size={20} strokeWidth={2.5} />
           </div>
-          <div className={labelClass}>Pause Timer</div>
-          <h3 className="mt-2 text-2xl font-bold text-white">Pause Session</h3>
-          <p className="mt-2 text-sm leading-relaxed text-white/46">Timer will stop completely.</p>
+          <h3 className="mt-4 text-2xl font-bold text-white">Pause Timer</h3>
         </div>
         
         <input
           autoFocus
           type="text"
           placeholder="Reason (optional)"
-          className={`relative z-10 doro-pause-item-in w-full rounded-[1rem] border border-white/[0.08] bg-white/[0.085] px-4 py-3.5 text-center text-sm font-semibold text-white shadow-[0_22px_44px_-32px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.06)] outline-none transition-all duration-300 placeholder:text-white/54 focus:-translate-y-0.5 focus:bg-white/[0.12] focus:placeholder:text-white/40 ${themeColor}`}
+          className={`relative z-10 doro-pause-item-in w-full rounded-[1rem] border border-white/[0.08] bg-white/[0.085] px-4 py-3.5 text-center text-sm font-semibold text-white shadow-[0_22px_44px_-32px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.06)] outline-none transition-all duration-300 placeholder:text-white/[0.54] focus:-translate-y-0.5 focus:bg-white/[0.12] focus:placeholder:text-white/[0.54] ${themeColor}`}
           style={{ ['--doro-pause-delay' as any]: '125ms' }}
           value={reason}
           onChange={e => setReason(e.target.value)}
@@ -224,7 +242,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
         <button 
             onClick={() => setIsConfirmingEnd(true)}
             style={{ ['--doro-pause-delay' as any]: '245ms' }}
-            className="relative z-10 doro-pause-item-in mx-auto mt-1 inline-flex min-h-10 items-center justify-center gap-2 rounded-full border border-red-200/[0.08] bg-red-500/[0.075] px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/62 shadow-[0_18px_36px_-28px_rgba(127,29,29,0.75)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-red-500/12 hover:text-red-100/86 hover:shadow-[0_24px_44px_-28px_rgba(127,29,29,0.82)] md:min-h-0 md:py-2"
+            className={`relative z-10 doro-pause-item-in mx-auto mt-1 ${dangerButtonClass}`}
         >
             <Square size={12} strokeWidth={2.5} />
             End Work Session
@@ -235,7 +253,7 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
 };
 
 export const ResumeModal: React.FC = () => {
-  const { allPauseActive, allPauseTime, resumeFromPause, activeMode, activeColor } = useTimer();
+  const { allPauseActive, allPauseTime, resumeFromPause, activeMode, activeColor, endSession } = useTimer();
 
   if (!allPauseActive) return null;
 
@@ -243,33 +261,48 @@ export const ResumeModal: React.FC = () => {
   const secs = Math.floor(allPauseTime % 60);
   const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
 
-  const accentSurface = activeMode === 'break' ? 'bg-teal-300/[0.13]' : 'bg-rose-300/[0.13]';
   const accentText = 'text-white/82';
   const surfaceColor = activeMode === 'break'
     ? getMutedSurfaceColor(DEFAULT_BREAK_SURFACE, DEFAULT_BREAK_SURFACE)
     : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
   const surfaceStyle = { backgroundColor: surfaceColor };
-  const accentGlow = activeMode === 'break'
-    ? 'hover:shadow-[0_34px_68px_-34px_rgba(20,184,166,0.42),0_30px_72px_-44px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]'
-    : 'hover:shadow-[0_34px_68px_-34px_rgba(244,63,94,0.38),0_30px_72px_-44px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.045)]';
+  const getPauseChoiceCardStyle = (accent: string): React.CSSProperties => ({
+    background: `linear-gradient(180deg, rgba(255,255,255,0.155), rgba(255,255,255,0.078)), ${pauseRgba(accent, 0.07)}`,
+    borderColor: 'rgba(255,255,255,0.16)',
+    boxShadow: `0 24px 54px -38px rgba(0,0,0,0.82), 0 10px 24px -22px ${pauseRgba(accent, 0.34)}, inset 0 1px 0 rgba(255,255,255,0.16), inset 0 -22px 42px rgba(0,0,0,0.08)`,
+  });
+  const getPauseIconStyle = (accent: string): React.CSSProperties => ({
+    color: '#ffffff',
+    backgroundColor: pauseRgba(accent, 0.34),
+    borderColor: 'rgba(255,255,255,0.2)',
+    boxShadow: `0 18px 34px -24px rgba(0,0,0,0.78), 0 8px 18px -12px ${pauseRgba(accent, 0.46)}, inset 0 1px 0 rgba(255,255,255,0.14)`,
+  });
 
   const addToBankAmount = allPauseTime / 5; 
   const deductFromBankAmount = allPauseTime;
 
   const buttonBaseClass = `
-    doro-pause-item-in group relative w-full overflow-hidden rounded-[1.35rem]
-    border border-white/[0.08] bg-white/[0.055] px-5 py-5 backdrop-blur-xl
-    text-center shadow-[0_24px_54px_-34px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.035)]
-    transition-all duration-300 ease-out
-    hover:-translate-y-1.5 hover:bg-white/[0.085] ${accentGlow}
+    doro-pause-item-in group relative w-full overflow-hidden rounded-lg
+    border px-5 py-5 backdrop-blur-xl
+    text-center transform-gpu
+    transition-[background-color,border-color,box-shadow,transform] duration-300 ease-out
+    hover:-translate-y-0.5 hover:bg-white/[0.13] hover:border-white/20 hover:shadow-[0_30px_58px_-34px_rgba(0,0,0,0.88),inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-18px_34px_rgba(0,0,0,0.05)]
     active:translate-y-0 active:scale-[0.99]
     cursor-pointer
   `;
 
   const secondaryButtonClass = `
-    doro-pause-item-in mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.055] px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em]
-    text-white/52 shadow-[0_18px_36px_-28px_rgba(0,0,0,0.78)]
-    transition-all duration-300 hover:-translate-y-1 hover:bg-white/[0.085] hover:text-white hover:shadow-[0_26px_46px_-28px_rgba(0,0,0,0.86)]
+    doro-pause-item-in mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-white/[0.15] bg-white/[0.08] px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.12em]
+    text-white/78 shadow-[0_20px_40px_-32px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.10)] transform-gpu
+    transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out
+    hover:-translate-y-0.5 hover:bg-white/[0.13] hover:border-white/20 hover:text-white hover:shadow-[0_28px_52px_-34px_rgba(0,0,0,0.88),inset_0_1px_0_rgba(255,255,255,0.14)]
+    active:translate-y-0 active:scale-[0.99]
+  `;
+  const endSessionButtonClass = `
+    doro-pause-item-in inline-flex min-h-11 w-full max-w-xs items-center justify-center gap-2 rounded-lg border border-rose-200/28 bg-rose-500/[0.085] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.12em]
+    text-rose-50/92 shadow-[0_30px_64px_-34px_rgba(127,29,29,0.62),0_20px_48px_-34px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.14),inset_0_-20px_36px_rgba(127,29,29,0.12)] transform-gpu
+    transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out
+    hover:-translate-y-0.5 hover:border-rose-100/42 hover:bg-rose-400/[0.16] hover:text-white hover:shadow-[0_34px_72px_-34px_rgba(127,29,29,0.78),0_28px_58px_-34px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.18),inset_0_-18px_34px_rgba(127,29,29,0.12)]
     active:translate-y-0 active:scale-[0.99]
   `;
 
@@ -283,32 +316,32 @@ export const ResumeModal: React.FC = () => {
             <div className="doro-pause-item-in mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/[0.10] bg-white/[0.075] text-white shadow-[0_22px_42px_-30px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.07)]" style={{ ['--doro-pause-delay' as any]: '35ms' }}>
               <TimerReset size={20} strokeWidth={2.4} />
             </div>
-            <div className="doro-pause-item-in mt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/42" style={{ ['--doro-pause-delay' as any]: '50ms' }}>System Paused</div>
+            <div className="doro-pause-item-in mt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/42" style={{ ['--doro-pause-delay' as any]: '50ms' }}>Time Paused</div>
             <div className="doro-pause-time-in mt-3 font-sans text-[4.25rem] font-bold leading-none text-white tabular-nums md:text-[5.75rem]">{timeStr}</div>
             <div className="doro-pause-item-in mt-3 text-sm text-white/44" style={{ ['--doro-pause-delay' as any]: '150ms' }}>Choose how to treat the paused time.</div>
          </div>
 
-         <div className="relative z-10 mt-7 grid w-full grid-cols-1 gap-3 md:grid-cols-2 md:gap-4">
+         <div className="relative z-10 mt-7 grid w-full grid-cols-2 gap-2.5 md:gap-4">
              
              {/* Left: I Was Working */}
              <div className="flex flex-col items-center w-full">
                 <button 
                    onClick={() => resumeFromPause('work', -addToBankAmount, 'work')}
                    className={buttonBaseClass}
-                   style={{ ['--doro-pause-delay' as any]: '210ms' }}
+                   style={{ ['--doro-pause-delay' as any]: '210ms', ...getPauseChoiceCardStyle(DEFAULT_WORK_SURFACE) }}
                 >
-                    <div className={`pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100 ${accentSurface}`} />
+                    <span className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_0_48px_rgba(255,255,255,0.065),inset_0_-14px_30px_rgba(0,0,0,0.05)]" />
                     <div className="relative z-10 flex min-h-[6.4rem] flex-col items-center justify-center gap-3">
-                        <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.075] text-white/82 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.8)]">
+                        <span
+                          className="flex h-9 w-9 items-center justify-center rounded-xl border"
+                          style={getPauseIconStyle(DEFAULT_WORK_SURFACE)}
+                        >
                           <Briefcase size={18} strokeWidth={2.3} />
                         </span>
-                        <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">
-                           Paused Time
-                        </span>
-                        <span className="text-xl font-bold leading-tight text-white">
+                        <span className="text-xl font-bold leading-tight text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.22)]">
                            I WAS WORKING
                         </span>
-                        <span className={`rounded-full bg-white/[0.085] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_14px_28px_-22px_rgba(0,0,0,0.8)] transition-all group-hover:bg-white/[0.11] ${accentText}`}>
+                        <span className={`rounded-full border border-white/[0.12] bg-white/[0.12] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] shadow-[0_14px_28px_-22px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.10)] transition-all group-hover:bg-white/[0.16] ${accentText}`}>
                             Add {formatDuration(addToBankAmount)}
                         </span>
                     </div>
@@ -328,20 +361,20 @@ export const ResumeModal: React.FC = () => {
                 <button 
                    onClick={() => resumeFromPause('break', deductFromBankAmount, 'break')}
                    className={buttonBaseClass}
-                   style={{ ['--doro-pause-delay' as any]: '260ms' }}
+                   style={{ ['--doro-pause-delay' as any]: '260ms', ...getPauseChoiceCardStyle(DEFAULT_BREAK_SURFACE) }}
                 >
-                    <div className={`pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100 ${accentSurface}`} />
+                    <span className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_0_48px_rgba(255,255,255,0.065),inset_0_-14px_30px_rgba(0,0,0,0.05)]" />
                     <div className="relative z-10 flex min-h-[6.4rem] flex-col items-center justify-center gap-3">
-                        <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.075] text-white/82 shadow-[0_16px_30px_-24px_rgba(0,0,0,0.8)]">
+                        <span
+                          className="flex h-9 w-9 items-center justify-center rounded-xl border"
+                          style={getPauseIconStyle(DEFAULT_BREAK_SURFACE)}
+                        >
                           <Coffee size={18} strokeWidth={2.3} />
                         </span>
-                        <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">
-                           Paused Time
-                        </span>
-                        <span className="text-xl font-bold leading-tight text-white">
+                        <span className="text-xl font-bold leading-tight text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.22)]">
                            I WAS RESTING
                         </span>
-                        <span className={`rounded-full bg-white/[0.085] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] shadow-[0_14px_28px_-22px_rgba(0,0,0,0.8)] transition-all group-hover:bg-white/[0.11] ${accentText}`}>
+                        <span className={`rounded-full border border-white/[0.12] bg-white/[0.12] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] shadow-[0_14px_28px_-22px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.10)] transition-all group-hover:bg-white/[0.16] ${accentText}`}>
                             Use {formatDuration(deductFromBankAmount)}
                         </span>
                     </div>
@@ -356,6 +389,16 @@ export const ResumeModal: React.FC = () => {
                 </button>
              </div>
 
+         </div>
+         <div className="relative z-10 mt-5 flex justify-center">
+            <button
+              onClick={() => endSession()}
+              className={endSessionButtonClass}
+              style={{ ['--doro-pause-delay' as any]: '390ms' }}
+            >
+              <Square size={12} strokeWidth={2.5} />
+              End Work Session
+            </button>
          </div>
        </div>
     </div>

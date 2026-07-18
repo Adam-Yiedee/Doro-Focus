@@ -753,16 +753,118 @@ export const playCelebrationTrumpet = async () => {
     const now = ctx.currentTime;
 
     [
-      { freq: 392.0, start: 0.00, dur: 0.24, gain: 0.08 },
-      { freq: 523.25, start: 0.09, dur: 0.24, gain: 0.08 },
-      { freq: 659.25, start: 0.18, dur: 0.28, gain: 0.09 },
-      { freq: 783.99, start: 0.30, dur: 0.62, gain: 0.11 },
-      { freq: 987.77, start: 0.36, dur: 0.72, gain: 0.085 },
+      { freq: 392.0, start: 0.00, dur: 0.22, gain: 0.054 },
+      { freq: 523.25, start: 0.1, dur: 0.22, gain: 0.056 },
+      { freq: 659.25, start: 0.2, dur: 0.26, gain: 0.064 },
+      { freq: 783.99, start: 0.34, dur: 0.56, gain: 0.078 },
+      { freq: 987.77, start: 0.42, dur: 0.62, gain: 0.056 },
     ].forEach((note) => {
       playTrumpetVoice(ctx, note.freq, now + note.start, note.dur, note.gain);
     });
   } catch (e) {
     console.error('Celebration trumpet failed', e);
+  }
+};
+
+export const playSummaryStatPop = async (delayMs = 0, pitchIndex = 0) => {
+  try {
+    const ctx = await resumeAudioContext();
+    if (!ctx) return;
+    const start = ctx.currentTime + (Math.max(0, delayMs) / 1000);
+    const baseFrequency = 430 + ((pitchIndex % 5) * 46);
+
+    playSmoothTone(ctx, 'triangle', baseFrequency, start, 0.16, 0.024, baseFrequency * 1.32);
+    playSmoothTone(ctx, 'sine', baseFrequency * 1.68, start + 0.032, 0.2, 0.011, baseFrequency * 1.82);
+    playNoiseBurst(ctx, 'pink', start + 0.008, 0.075, 0.0045, 1450 + ((pitchIndex % 4) * 190), 2.2);
+  } catch (e) {
+    console.error('Summary stat pop failed', e);
+  }
+};
+
+const easeSummarySoundTime = (progress: number) => (
+  0.5 - (Math.cos(Math.PI * Math.max(0, Math.min(1, progress))) / 2)
+);
+
+export const playSummaryCountSound = async (
+  value: number | string,
+  durationMs: number,
+  delayMs = 0,
+) => {
+  try {
+    const numericValue = Math.abs(Number(value));
+    if (!Number.isFinite(numericValue) || numericValue <= 0) return;
+
+    const ctx = await resumeAudioContext();
+    if (!ctx) return;
+
+    const start = ctx.currentTime + (Math.max(0, delayMs) / 1000);
+    const durationSeconds = Math.max(0.38, Math.min(1.7, durationMs / 1000));
+    const isSmallValue = numericValue <= 12;
+    const tickCount = isSmallValue
+      ? Math.max(1, Math.min(6, Math.round(numericValue)))
+      : Math.max(6, Math.min(11, Math.round(Math.log10(numericValue + 1) * 4.4)));
+
+    if (isSmallValue) {
+      Array.from({ length: tickCount }).forEach((_, index) => {
+        const progress = tickCount <= 1 ? 0.5 : index / (tickCount - 1);
+        const offset = 0.045 + (easeSummarySoundTime(progress) * Math.max(0.12, durationSeconds - 0.16));
+        const frequency = 540 + (index * 34) + Math.min(110, numericValue * 6);
+        playSmoothTone(ctx, 'sine', frequency, start + offset, 0.095, 0.011, frequency * 1.055);
+      });
+      return;
+    }
+
+    playSmoothTone(ctx, 'triangle', 280 + Math.min(180, numericValue * 0.2), start + 0.04, durationSeconds * 0.96, 0.0075, 720 + Math.min(420, numericValue * 0.48));
+    Array.from({ length: tickCount }).forEach((_, index) => {
+      const progress = tickCount <= 1 ? 0.5 : index / (tickCount - 1);
+      const offset = 0.06 + (easeSummarySoundTime(progress) * Math.max(0.18, durationSeconds - 0.2));
+      const frequency = 420 + (progress * 540) + Math.min(150, Math.log10(numericValue + 1) * 36);
+      playSmoothTone(ctx, index % 2 === 0 ? 'triangle' : 'sine', frequency, start + offset, 0.07, 0.0075, frequency * 1.012);
+    });
+  } catch (e) {
+    console.error('Summary count sound failed', e);
+  }
+};
+
+type SummaryDistributionSoundSegment = {
+  share?: number;
+};
+
+export const playSummaryDistributionSound = async (
+  segments: SummaryDistributionSoundSegment[],
+  baseDelayMs: number,
+  segmentGapMs: number,
+  drawDurationMs = 720,
+) => {
+  try {
+    if (segments.length === 0) return;
+
+    const ctx = await resumeAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const scale = [293.66, 329.63, 392.0, 493.88, 587.33, 659.25, 783.99];
+    const drawDurationSeconds = Math.max(0.42, Math.min(0.9, drawDurationMs / 1000));
+
+    segments.forEach((segment, index) => {
+      const share = Number.isFinite(segment.share) ? Math.max(0.04, Math.min(1, Number(segment.share))) : 0.18;
+      const start = now + (Math.max(0, baseDelayMs + (index * segmentGapMs)) / 1000);
+      const baseFrequency = scale[index % scale.length];
+      const liftFrequency = baseFrequency * (1.08 + (share * 0.1));
+      const softGain = 0.006 + (Math.min(0.42, share) * 0.012);
+
+      playNoiseBurst(ctx, 'pink', start + 0.018, drawDurationSeconds * 0.42, 0.0026 + (share * 0.003), 1200 + (index * 170), 1.5);
+      playSmoothTone(ctx, 'triangle', baseFrequency, start + 0.035, drawDurationSeconds * 0.86, softGain, liftFrequency);
+      playSmoothTone(ctx, 'sine', baseFrequency * 1.5, start + (drawDurationSeconds * 0.48), 0.24, softGain * 0.52, baseFrequency * 1.52);
+    });
+
+    const settleStart = now + (
+      Math.max(0, baseDelayMs + ((segments.length - 1) * segmentGapMs) + drawDurationMs + 120) / 1000
+    );
+    playSmoothTone(ctx, 'sine', 523.25, settleStart, 0.32, 0.014, 523.25 * 0.995);
+    playSmoothTone(ctx, 'triangle', 783.99, settleStart + 0.045, 0.36, 0.0085, 783.99 * 1.006);
+  } catch (e) {
+    console.error('Summary distribution sound failed', e);
   }
 };
 
