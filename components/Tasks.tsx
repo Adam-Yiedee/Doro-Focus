@@ -7,7 +7,7 @@ import { getIcon } from '../utils/icons';
 import { getActiveCategories } from '../utils/categoryVisibility';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../utils/palette';
 import { getTimerPomoUnitLabel } from '../utils/pomodoroAccounting';
-import { getPomodoroCycleProgress, getProjectedTaskFinishSeconds } from '../utils/timerRuntime';
+import { getPomodoroCycleProgress, getProjectedTaskFinishSeconds, getRemainingPomodorosForTask } from '../utils/timerRuntime';
 
 const clampPomoEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
@@ -17,14 +17,6 @@ const clampPomoEstimate = (value: number) => {
 const clampSubEstimate = (value: number) => {
   if (!Number.isFinite(value)) return 1;
   return Math.min(10, Math.max(0, Math.floor(value)));
-};
-
-const getRemainingPomosForTask = (task: Task): number => {
-  if (task.checked) return 0;
-  if (task.subtasks.length > 0) {
-    return task.subtasks.reduce((acc, sub) => acc + getRemainingPomosForTask(sub), 0);
-  }
-  return Math.max(0, task.estimated - task.completed);
 };
 
 const hasSelectedTaskInSubtree = (task: Task): boolean => {
@@ -1097,7 +1089,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
   );
   const untilLongBreak = cycleProgress.untilLongBreak;
   const remainingTaskPomos = useMemo(
-    () => filteredTasks.reduce((acc, task) => acc + getRemainingPomosForTask(task), 0),
+    () => filteredTasks.reduce((acc, task) => acc + getRemainingPomodorosForTask(task), 0),
     [filteredTasks]
   );
   const predictedFinishTime = useMemo(() => {

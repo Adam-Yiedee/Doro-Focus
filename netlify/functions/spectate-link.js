@@ -1,4 +1,5 @@
 const FALLBACK_SITE_URL = 'https://dorofocus.netlify.app';
+const OG_IMAGE_VERSION = '4';
 
 const escapeHtml = (value) => String(value || '')
   .replace(/&/g, '&amp;')
@@ -76,6 +77,7 @@ export default async (request) => {
   }
 
   const mode = url.searchParams.get('mode') === 'break' ? 'break' : 'work';
+  const endKind = url.searchParams.get('endKind') === 'finish' ? 'finish' : 'phase';
   const end = url.searchParams.get('end') || '';
   const timezoneOffset = parseTimezoneOffset(url.searchParams.get('tzOffset'));
   const requestedEndLabel = sanitizePreviewText(url.searchParams.get('endLabel'), 40);
@@ -83,17 +85,20 @@ export default async (request) => {
   const endLabel = isPlaceholderEndLabel(requestedEndLabel) ? fallbackEndLabel : requestedEndLabel;
   const remaining = url.searchParams.get('remaining') || '';
   const appParams = new URLSearchParams({ spectate: sessionId, mode });
-  const imageParams = new URLSearchParams({ session: sessionId, mode });
-  const shareParams = new URLSearchParams({ mode });
+  const imageParams = new URLSearchParams({ session: sessionId, mode, v: OG_IMAGE_VERSION });
+  const shareParams = new URLSearchParams({ mode, preview: OG_IMAGE_VERSION });
 
+  appendOptionalParam(appParams, 'endKind', endKind === 'finish' ? endKind : '');
   appendOptionalParam(appParams, 'end', end);
   appendOptionalParam(appParams, 'endLabel', endLabel);
   appendOptionalParam(appParams, 'remaining', remaining);
   appendOptionalParam(appParams, 'tzOffset', timezoneOffset);
+  appendOptionalParam(imageParams, 'endKind', endKind === 'finish' ? endKind : '');
   appendOptionalParam(imageParams, 'end', end);
   appendOptionalParam(imageParams, 'endLabel', endLabel);
   appendOptionalParam(imageParams, 'remaining', remaining);
   appendOptionalParam(imageParams, 'tzOffset', timezoneOffset);
+  appendOptionalParam(shareParams, 'endKind', endKind === 'finish' ? endKind : '');
   appendOptionalParam(shareParams, 'end', end);
   appendOptionalParam(shareParams, 'endLabel', endLabel);
   appendOptionalParam(shareParams, 'remaining', remaining);
@@ -102,11 +107,8 @@ export default async (request) => {
   const appUrl = `${siteUrl}/?${appParams.toString()}`;
   const imageUrl = `${siteUrl}/.netlify/functions/spectate-og?${imageParams.toString()}`;
   const shareUrl = `${siteUrl}/share/${encodeURIComponent(sessionId)}?${shareParams.toString()}`;
-  const modeLabel = mode === 'break' ? 'Break' : 'Focus';
-  const title = endLabel ? `${modeLabel} Ends At ${endLabel}` : 'Doro Shared Timer';
-  const description = endLabel
-    ? `Open the Doro spectator timer. Estimated end: ${endLabel}.`
-    : 'Open the Doro spectator timer.';
+  const title = endLabel ? `Time Finished: ${endLabel}` : 'Doro Timer';
+  const description = 'Shared Doro timer.';
 
   const html = `<!doctype html>
 <html lang="en">

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { useTimer } from '../../context/TimerContext';
 import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
@@ -76,6 +77,7 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
+const ADD_TASK_FORM_CLOSE_DURATION_MS = 260;
 const DEFAULT_SCHEDULE_LOOKAHEAD_DAYS = 3;
 const EXTENDED_SCHEDULE_LOOKAHEAD_DAYS = 21;
 const HISTORY_LOOKBACK_DAYS = 21;
@@ -428,6 +430,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const [enteringTaskIds, setEnteringTaskIds] = useState<number[]>([]);
   const [hoveredLane, setHoveredLane] = useState<string | null>(null);
   const [addingDate, setAddingDate] = useState<string | null>(null);
+  const [closingAddDate, setClosingAddDate] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [extendSchedule, setExtendSchedule] = useState(false);
   const [showUnscheduled, setShowUnscheduled] = useState(false);
@@ -439,6 +442,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const openAtRef = useRef<number>(0);
   const todayAnchorRef = useRef<HTMLDivElement | null>(null);
   const dropAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addFormCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const entryAnimTimeoutsRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const lastHoverMoveKeyRef = useRef<string | null>(null);
   const lastReorderAtRef = useRef<number>(0);
@@ -461,6 +465,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   useEffect(() => {
     return () => {
       if (dropAnimTimeoutRef.current) clearTimeout(dropAnimTimeoutRef.current);
+      if (addFormCloseTimeoutRef.current) clearTimeout(addFormCloseTimeoutRef.current);
       entryAnimTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
       entryAnimTimeoutsRef.current.clear();
     };
@@ -475,6 +480,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       setDropAnimatedDayKey(null);
       setEnteringTaskIds([]);
       setAddingDate(null);
+      setClosingAddDate(null);
+      if (addFormCloseTimeoutRef.current) clearTimeout(addFormCloseTimeoutRef.current);
       setShowHistory(false);
       setExtendSchedule(false);
       setShowUnscheduled(false);
@@ -829,9 +836,29 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     clearDragState();
   };
 
+  const resetNewTaskDraft = useCallback(() => {
+    setNewTaskName('');
+    setNewTaskEst(1);
+    setNewTaskColor(activeColor || PRESET_COLORS[0]);
+    setNewTaskCategoryId(null);
+  }, [activeColor]);
+
+  const closeAddFormForDay = useCallback((dateKey: string) => {
+    if (addFormCloseTimeoutRef.current) clearTimeout(addFormCloseTimeoutRef.current);
+    setClosingAddDate(dateKey);
+    addFormCloseTimeoutRef.current = setTimeout(() => {
+      setAddingDate((current) => (current === dateKey ? null : current));
+      setClosingAddDate((current) => (current === dateKey ? null : current));
+      resetNewTaskDraft();
+      addFormCloseTimeoutRef.current = null;
+    }, ADD_TASK_FORM_CLOSE_DURATION_MS);
+  }, [resetNewTaskDraft]);
+
   const submitDayTask = (dateKey: string) => {
+    const trimmedName = newTaskName.trim();
+    if (!trimmedName || closingAddDate === dateKey) return;
     const createdTaskId = addDetailedTask({
-      name: newTaskName,
+      name: trimmedName,
       estimated: clampEstimate(newTaskEst),
       color: newTaskColor,
       categoryId: newTaskCategoryId,
@@ -840,17 +867,19 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     });
     triggerLaneFeedback(dateKey);
     markTaskAsEntering(createdTaskId);
-    setNewTaskName('');
-    setNewTaskEst(1);
-    setAddingDate(null);
+    closeAddFormForDay(dateKey);
   };
 
   const toggleAddForDay = (dateKey: string) => {
-    setAddingDate((prev) => (prev === dateKey ? null : dateKey));
-    setNewTaskName('');
-    setNewTaskEst(1);
-    setNewTaskColor(activeColor || PRESET_COLORS[0]);
-    setNewTaskCategoryId(null);
+    if (addingDate === dateKey && closingAddDate !== dateKey) {
+      closeAddFormForDay(dateKey);
+      return;
+    }
+
+    if (addFormCloseTimeoutRef.current) clearTimeout(addFormCloseTimeoutRef.current);
+    setClosingAddDate(null);
+    setAddingDate(dateKey);
+    resetNewTaskDraft();
   };
 
   const unscheduledPomos = unscheduledTasks.reduce((sum, task) => sum + getPredictedPomos(task), 0);
@@ -1099,6 +1128,86 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .doro-soft-expand {
           animation: doro-soft-expand 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
           transform-origin: top center;
+        }
+        @keyframes doro-weekly-task-create-in {
+          0% {
+            max-height: 0;
+            margin-top: 0;
+            opacity: 0;
+            transform: translateY(8px) scale(0.985);
+            border-color: rgba(255, 255, 255, 0);
+          }
+          62% {
+            max-height: 18rem;
+            margin-top: 0.625rem;
+            opacity: 1;
+            transform: translateY(-1px) scale(1.008);
+            border-color: rgba(255, 255, 255, 0.22);
+          }
+          100% {
+            max-height: 18rem;
+            margin-top: 0.625rem;
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            border-color: rgba(255, 255, 255, 0.12);
+          }
+        }
+        @keyframes doro-weekly-task-create-out {
+          0% {
+            max-height: 18rem;
+            margin-top: 0.625rem;
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          100% {
+            max-height: 0;
+            margin-top: 0;
+            opacity: 0;
+            transform: translateY(6px) scale(0.975);
+          }
+        }
+        .doro-weekly-task-create {
+          transform-origin: top center;
+          will-change: max-height, opacity, transform, margin;
+        }
+        .doro-weekly-task-create-open {
+          animation: doro-weekly-task-create-in 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08) both;
+        }
+        .doro-weekly-task-create-close {
+          animation: doro-weekly-task-create-out ${ADD_TASK_FORM_CLOSE_DURATION_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+          pointer-events: none;
+        }
+        .schedule-close-btn {
+          border-radius: 999px;
+          backdrop-filter: blur(18px) saturate(165%);
+          -webkit-backdrop-filter: blur(18px) saturate(165%);
+          transition:
+            transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            background-color 180ms ease,
+            border-color 180ms ease,
+            box-shadow 220ms ease,
+            color 180ms ease,
+            opacity 180ms ease;
+        }
+        .schedule-close-btn:hover {
+          border-color: rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.1);
+          color: rgba(255, 255, 255, 0.94);
+          box-shadow: 0 14px 26px -20px rgba(0, 0, 0, 0.72);
+        }
+        .schedule-close-btn:active {
+          transform: scale(0.97);
+        }
+        .doro-weekly-shell.theme-light .schedule-close-btn {
+          border-color: rgba(255, 255, 255, 0.42) !important;
+          background: rgba(255, 255, 255, 0.52) !important;
+          color: #203147 !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 16px 26px -22px rgba(82, 101, 136, 0.48) !important;
+        }
+        .doro-weekly-shell.theme-light .schedule-close-btn:hover {
+          border-color: rgba(255, 255, 255, 0.66) !important;
+          background: rgba(255, 255, 255, 0.72) !important;
+          color: #0f2033 !important;
         }
         @keyframes doro-drop-pop {
           0% {
@@ -1353,10 +1462,10 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
               <button
                 type="button"
                 onClick={onClose}
-                className="schedule-glass-button schedule-glass-button--icon w-8 h-8 rounded-lg border border-white/10 bg-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.12] transition-colors shrink-0"
+                className="schedule-close-btn flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-white/70"
                 aria-label="Close weekly schedule panel"
               >
-                X
+                <X size={16} strokeWidth={2.1} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -1426,7 +1535,9 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
               {dayRange.map((day) => {
                 const dayTasks = tasksByDate[day.key] || [];
                 const dayPredictedPomos = dayTasks.reduce((sum, task) => sum + (task.checked ? 0 : getPredictedPomos(task)), 0);
-                const isAddingHere = addingDate === day.key;
+                const isAddingHere = addingDate === day.key || closingAddDate === day.key;
+                const isClosingAddForm = closingAddDate === day.key;
+                const canSubmitNewTask = newTaskName.trim().length > 0 && !isClosingAddForm;
                 const isHovered = hoveredLane === day.key;
                 return (
                   <div
@@ -1494,7 +1605,16 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                       )}
                     </div>
                     {isAddingHere && (
-                      <div className="doro-soft-expand mt-2.5 rounded-xl border border-white/15 bg-black/25 p-2.5">
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          submitDayTask(day.key);
+                        }}
+                        className={`doro-weekly-task-create relative z-20 overflow-hidden rounded-xl border bg-white/[0.055] shadow-[0_18px_42px_-28px_rgba(0,0,0,0.35)] backdrop-blur-xl ${
+                          isClosingAddForm ? 'doro-weekly-task-create-close' : 'doro-weekly-task-create-open'
+                        }`}
+                      >
+                        <div className="flex items-center p-1.5">
                         <input
                           autoFocus
                           value={newTaskName}
@@ -1505,10 +1625,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                               submitDayTask(day.key);
                             }
                           }}
-                          placeholder="Task name..."
-                          className="w-full bg-transparent border-b border-white/20 pb-1.5 text-sm text-white placeholder-white/35 outline-none focus:border-white/45"
+                            placeholder="Describe task..."
+                            className="doro-task-create-input min-w-0 flex-1 bg-transparent px-4 py-2 text-sm font-medium text-glass-text placeholder-white/30 outline-none"
                         />
-                        <div className="mt-2">
+                        </div>
+                        <div className="border-t border-white/5 px-4 py-2">
                           <TaskCategoryPicker
                             categories={categories}
                             selectedCategoryId={newTaskCategoryId}
@@ -1523,17 +1644,17 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             }}
                             onRequestNewCategory={requestNewCategoryFlow}
                             swatchSize="sm"
-                            stretchCategoryTray={false}
+                            className="doro-task-picker-row overflow-hidden py-1"
+                            stretchCategoryTray
                           />
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 text-[10px] font-mono tracking-wide text-white/60">
+                          <div className="doro-task-create-footer mt-3 flex items-center justify-between gap-3">
+                          <div className="doro-task-create-estimate flex items-center gap-2 text-[10px] font-mono tracking-wide text-white/60">
                             <span className="font-bold">EST</span>
-                            <div className="flex items-center overflow-hidden rounded-lg border border-white/20 bg-black/20">
+                            <div className="doro-task-estimate-stepper flex items-center overflow-hidden rounded-lg border border-white/20 bg-black/20">
                               <button
                                 type="button"
                                 onClick={() => setNewTaskEst((value) => clampEstimate(value - 1))}
-                                className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                                className="px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                                 aria-label="Decrease new task estimate"
                               >
                                 -
@@ -1552,7 +1673,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                               <button
                                 type="button"
                                 onClick={() => setNewTaskEst((value) => clampEstimate(value + 1))}
-                                className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
+                                className="px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                                 aria-label="Increase new task estimate"
                               >
                                 +
@@ -1560,24 +1681,29 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             </div>
                           </div>
 
-                          <div className="ml-auto flex gap-2">
+                          <div className="doro-task-create-actions ml-auto flex gap-2">
                             <button
                               type="button"
-                              onClick={() => setAddingDate(null)}
-                              className="schedule-glass-button schedule-glass-button--ghost rounded-lg border border-white/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white/60 transition-all hover:bg-white/[0.08] hover:text-white"
+                              onClick={() => closeAddFormForDay(day.key)}
+                              className="rounded-lg border border-white/5 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white/60 transition-all hover:bg-white/10 hover:text-white active:scale-95"
                             >
                               Cancel
                             </button>
                             <button
-                              type="button"
-                              onClick={() => submitDayTask(day.key)}
-                              className="schedule-glass-button schedule-glass-button--primary rounded-lg border border-white/20 bg-white px-4 py-1 text-[10px] font-bold uppercase tracking-wider text-black shadow-lg transition-all hover:bg-white/90 active:scale-95"
+                              type="submit"
+                              disabled={!canSubmitNewTask}
+                              className={`rounded-lg px-4 py-1 text-[10px] font-bold uppercase tracking-wider shadow-lg transition-all active:scale-95 ${
+                                canSubmitNewTask
+                                  ? 'bg-white text-black hover:bg-gray-200'
+                                  : 'cursor-not-allowed bg-white/20 text-white/35 shadow-none'
+                              }`}
                             >
                               Add
                             </button>
                           </div>
                         </div>
-                      </div>
+                        </div>
+                      </form>
                     )}
                   </div>
                 );

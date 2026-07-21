@@ -6,7 +6,6 @@ import {
   formatTimerShareEndLabel,
   getSpectatorSettingsFallback,
   getTimerShareEstimateFromSpectatorState,
-  getTimerShareStatusLabel,
 } from '../utils/timerShare';
 import { deriveRuntimeValues } from '../utils/timerRuntime';
 
@@ -16,6 +15,7 @@ interface SpectatorTimerPageProps {
   previewEndLabel?: string | null;
   previewMode?: TimerMode;
   previewRemainingSeconds?: number | null;
+  previewEndKind?: 'phase' | 'finish';
 }
 
 type ConnectionStatus = 'connecting' | 'live' | 'disconnected' | 'error';
@@ -40,6 +40,10 @@ const formatTimerSquareTime = (seconds: number) => {
 };
 
 const clampPercent = (value: number, max: number = 1) => Math.max(0, Math.min(max, value));
+
+const getSafeTimestampMs = (value: unknown) => (
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+);
 
 interface SpectatorTimerTileProps {
   type: TimerMode;
@@ -231,6 +235,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
   previewEndLabel = null,
   previewMode = 'work',
   previewRemainingSeconds = null,
+  previewEndKind = 'phase',
 }) => {
   const normalizedSessionId = useMemo(() => normalizeSessionId(sessionId), [sessionId]);
   const [status, setStatus] = useState<ConnectionStatus>(normalizedSessionId ? 'connecting' : 'error');
@@ -345,11 +350,15 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
       : getPreviewEstimate(previewEndMs, previewRemainingSeconds, nowMs)
   ), [nowMs, previewEndMs, previewRemainingSeconds, remoteState]);
 
+  const projectedFinishEndMs = remoteState
+    ? getSafeTimestampMs(remoteState.projectedFinishEndMs)
+    : (previewEndKind === 'finish' ? getSafeTimestampMs(previewEndMs) : null);
+  const headlineEndMs = projectedFinishEndMs;
   const workTileLabel = remoteState?.activeTaskName || 'Focus';
-  const endLabel = estimate.endMs
-    ? formatTimerShareEndLabel(estimate.endMs)
-    : (previewEndLabel || formatTimerShareEndLabel(null));
-  const statusLabel = remoteState ? getTimerShareStatusLabel(estimate, timerValues.activeMode) : 'Estimated end';
+  const endLabel = headlineEndMs
+    ? formatTimerShareEndLabel(headlineEndMs)
+    : (previewEndKind === 'finish' && previewEndLabel ? previewEndLabel : formatTimerShareEndLabel(null));
+  const statusLabel = 'Time Finished';
   const spectatorSettings = remoteState?.settings || getSpectatorSettingsFallback();
   const hasKnownTimerState = remoteState
     ? (!remoteState.isIdle || estimate.status !== 'idle')
@@ -362,7 +371,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
 
   return (
     <div
-      className="min-h-screen w-full overflow-x-hidden overflow-y-auto px-3 py-4 text-white transition-colors duration-700 md:px-8 md:py-8"
+      className="flex min-h-screen w-full flex-col overflow-x-hidden overflow-y-auto px-3 pb-14 pt-4 text-white transition-colors duration-700 md:px-8 md:pb-16 md:pt-8"
       style={{ background: surfaceColor }}
     >
       <style>{`
@@ -403,22 +412,14 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         }
       `}</style>
 
-      <main className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col items-center justify-center gap-4 md:min-h-[calc(100vh-4rem)]">
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center gap-4">
         <section className="doro-spectator-shell relative w-full overflow-hidden rounded-[1.7rem] border border-white/[0.13] bg-white/[0.072] px-4 py-5 shadow-[0_34px_78px_-48px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.065)] backdrop-blur-xl md:px-7 md:py-7">
           <div className="pointer-events-none absolute inset-0 rounded-[inherit] border border-white/[0.08] shadow-[inset_0_-34px_70px_rgba(0,0,0,0.08)]" />
 
-          <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0 text-center md:text-left">
+          <div className="relative flex flex-col items-center gap-3">
+            <div className="min-w-0 text-center">
               <div className="truncate text-sm font-semibold text-white/72">
                 {hostLabel}
-              </div>
-            </div>
-            <div className="mx-auto rounded-lg border border-white/[0.12] bg-white/[0.055] px-3.5 py-2 text-center shadow-[0_18px_36px_-32px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.055)] md:mx-0 md:text-right">
-              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/38">
-                Session
-              </div>
-              <div className="mt-1 font-mono text-xs font-bold tracking-[0.18em] text-white/72">
-                {normalizedSessionId || 'UNKNOWN'}
               </div>
             </div>
           </div>
@@ -457,6 +458,16 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           )}
         </section>
       </main>
+      <footer className="fixed bottom-3 left-1/2 z-30 -translate-x-1/2 md:bottom-5">
+        <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.1] bg-white/[0.04] px-2.5 py-1.5 text-center shadow-[0_16px_32px_-30px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-xl">
+          <span className="text-[8px] font-bold uppercase tracking-[0.14em] text-white/32">
+            Session
+          </span>
+          <span className="font-mono text-[10px] font-bold uppercase leading-none tracking-[0.16em] text-white/62">
+            {normalizedSessionId || 'UNKNOWN'}
+          </span>
+        </div>
+      </footer>
     </div>
   );
 };

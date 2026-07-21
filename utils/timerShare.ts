@@ -2,6 +2,7 @@ import { TimerMode, TimerRuntimeSnapshot, TimerSettings, TimerSpectatorState } f
 import { deriveRuntimeValues } from './timerRuntime';
 
 export const TIMER_SHARE_BASE_URL = (import.meta.env.VITE_PUBLIC_SITE_URL || 'https://dorofocus.netlify.app').replace(/\/+$/, '');
+export const TIMER_SHARE_PREVIEW_VERSION = '4';
 
 export interface TimerShareEstimateInput {
   activeMode: TimerMode;
@@ -18,6 +19,8 @@ export interface TimerShareEstimate {
   endMs: number | null;
   status: 'running' | 'idle' | 'paused' | 'grace' | 'overdue';
 }
+
+export type TimerShareEndKind = 'phase' | 'finish';
 
 export const getTimerShareModeLabel = (mode: TimerMode) => (mode === 'break' ? 'Break Bank' : 'Focus');
 
@@ -119,12 +122,15 @@ export const buildTimerSpectatorUrl = (
     endLabel?: string;
     remainingSeconds?: number | null;
     timezoneOffset?: number | null;
+    endKind?: TimerShareEndKind;
   } = {},
 ) => {
   const normalizedSession = sessionId.trim().toUpperCase();
   const params = new URLSearchParams();
+  params.set('preview', TIMER_SHARE_PREVIEW_VERSION);
 
   if (options.activeMode) params.set('mode', options.activeMode);
+  if (options.endKind === 'finish') params.set('endKind', options.endKind);
   if (typeof options.endMs === 'number' && Number.isFinite(options.endMs)) params.set('end', String(Math.round(options.endMs)));
   if (options.endLabel) params.set('endLabel', options.endLabel);
   if (typeof options.remainingSeconds === 'number' && Number.isFinite(options.remainingSeconds)) {
@@ -146,12 +152,14 @@ export const buildTimerSpectatorAppUrl = (
     endLabel?: string;
     remainingSeconds?: number | null;
     timezoneOffset?: number | null;
+    endKind?: TimerShareEndKind;
   } = {},
 ) => {
   const normalizedSession = sessionId.trim().toUpperCase();
   const params = new URLSearchParams({ spectate: normalizedSession });
 
   if (options.activeMode) params.set('mode', options.activeMode);
+  if (options.endKind === 'finish') params.set('endKind', options.endKind);
   if (typeof options.endMs === 'number' && Number.isFinite(options.endMs)) params.set('end', String(Math.round(options.endMs)));
   if (options.endLabel) params.set('endLabel', options.endLabel);
   if (typeof options.remainingSeconds === 'number' && Number.isFinite(options.remainingSeconds)) {

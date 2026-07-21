@@ -1,4 +1,4 @@
-import { TimerMode, TimerPreset, TimerRuntimePhase, TimerRuntimeSnapshot, TimerSettings } from '../types';
+import { Task, TimerMode, TimerPreset, TimerRuntimePhase, TimerRuntimeSnapshot, TimerSettings } from '../types';
 
 export const TIMER_RUNTIME_VERSION = 2 as const;
 export const LONG_GRACE_SESSION_TIMEOUT_SECONDS = 3 * 60 * 60;
@@ -491,6 +491,23 @@ const getSafePositiveSeconds = (value: number, fallback = 0) => (
 const getSafeSignedSeconds = (value: number, fallback = 0) => (
   Number.isFinite(value) ? value : fallback
 );
+
+export const getRemainingPomodorosForTask = (task: Task): number => {
+  if (task.checked) return 0;
+  if (task.subtasks.length > 0) {
+    return task.subtasks.reduce((acc, subtask) => acc + getRemainingPomodorosForTask(subtask), 0);
+  }
+  return Math.max(0, task.estimated - task.completed);
+};
+
+export const getRemainingPomodorosForActiveTasks = (tasks: Task[], todayKey?: string): number => {
+  const activeTasks = tasks.filter(task => (
+    !task.isFuture
+    && (!todayKey || !task.scheduledDate || task.scheduledDate <= todayKey)
+  ));
+
+  return activeTasks.reduce((acc, task) => acc + getRemainingPomodorosForTask(task), 0);
+};
 
 export const computeWorkCompletion = (
   pomodoroCount: number,

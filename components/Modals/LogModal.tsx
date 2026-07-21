@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Copy, Link as LinkIcon, LogIn, Plus, QrCode, Share2 } from 'lucide-react';
+import { ChevronDown, Link as LinkIcon, LogIn, Plus, QrCode, Share2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
@@ -21,11 +21,15 @@ import {
 } from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm, startFocusSoundPreview, stopFocusSoundPreview } from '../../utils/sound';
-import { TIMER_PRESETS, getMatchingTimerPreset } from '../../utils/timerRuntime';
+import {
+  TIMER_PRESETS,
+  getMatchingTimerPreset,
+  getProjectedTaskFinishSeconds,
+  getRemainingPomodorosForActiveTasks,
+} from '../../utils/timerRuntime';
 import {
   buildTimerSpectatorUrl,
   formatTimerShareEndLabel,
-  getTimerShareEstimate,
 } from '../../utils/timerShare';
 
 interface LogModalProps {
@@ -771,9 +775,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     activeMode,
     timerStarted,
     isIdle,
+    pomodoroCount,
     allPauseActive,
     graceOpen,
+    graceContext,
     activeTask,
+    tasks,
     hardReset,
     pastSessions,
     categories,
@@ -829,6 +836,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [groupBusy, setGroupBusy] = useState(false);
   const [groupLocalError, setGroupLocalError] = useState<string | null>(null);
   const [showGroupQr, setShowGroupQr] = useState(false);
+  const [groupSyncControlsOpen, setGroupSyncControlsOpen] = useState(false);
   const [hostDraftConfig, setHostDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [joinDraftConfig, setJoinDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [inviteSessionId, setInviteSessionId] = useState('');
@@ -1722,26 +1730,35 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   };
 
   const buildCurrentTimerShareUrl = (sessionId: string) => {
-    const latestEstimate = getTimerShareEstimate({
-      activeMode,
-      timerStarted,
-      isIdle,
-      workTime,
-      breakTime,
-      allPauseActive,
-      graceOpen,
-    });
+    const nowMs = Date.now();
+    const remainingPomodoros = getRemainingPomodorosForActiveTasks(tasks, getDateKey(new Date(nowMs)));
+    const projectedFinishSeconds = remainingPomodoros > 0
+      ? getProjectedTaskFinishSeconds({
+          remainingPomodoros,
+          pomodoroCount,
+          workTime,
+          breakTime,
+          activeMode,
+          isIdle,
+          graceOpen,
+          graceContext,
+          settings,
+        })
+      : 0;
+    const projectedFinishEndMs = projectedFinishSeconds > 0 ? nowMs + (projectedFinishSeconds * 1000) : null;
+    const shareEndMs = projectedFinishEndMs;
     const latestEndLabel = formatTimerShareEndLabel(
-      latestEstimate.endMs,
-      latestEstimate.status === 'idle' ? 'Not running' : 'No end time',
+      shareEndMs,
+      'No end time',
     );
 
     return buildTimerSpectatorUrl(sessionId, {
       activeMode,
-      endMs: latestEstimate.endMs,
+      endMs: shareEndMs,
       endLabel: latestEndLabel,
-      remainingSeconds: latestEstimate.remainingSeconds,
+      remainingSeconds: projectedFinishSeconds > 0 ? projectedFinishSeconds : null,
       timezoneOffset: new Date().getTimezoneOffset(),
+      endKind: 'finish',
     });
   };
 
@@ -1812,6 +1829,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   }, [groupBusy, groupFlow, groupName, groupSessionId, groupSessionInput, handleJoinGroup, inviteSessionId, isOpen]);
 
   useEffect(() => {
+    setGroupSyncControlsOpen(false);
     if (groupSessionId) {
       inviteAutoJoinKeyRef.current = null;
     }
@@ -2661,7 +2679,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const groupError = groupLocalError || peerError;
     const hostControls = safeHostSyncConfig;
     const clientControls = safeClientSyncConfig;
-    const timerSharePrimaryLabel = timerShareMessage === 'copied' ? 'Link Copied' : 'Share Timer';
+    const timerSharePrimaryLabel = timerShareMessage === 'copied' ? 'Timer Copied' : 'Timer Link';
     const groupShellClass = 'rounded-[1.45rem] border border-white/[0.08] bg-white/[0.035] p-4 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.045)] md:p-5';
     const groupInsetClass = 'rounded-lg border border-white/[0.09] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]';
     const groupSectionLabelClass = 'text-[10px] font-bold uppercase tracking-[0.15em] text-white/36';
@@ -2703,7 +2721,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       disabled: timerShareBusy,
       icon: <Share2 size={15} strokeWidth={2.1} aria-hidden="true" />,
     });
-    const groupUtilityButtonClass = 'inline-flex min-h-[3.35rem] w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-[0.12em] transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0';
+    const groupUtilityButtonClass = 'inline-flex min-h-[3.35rem] w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-[0.12em] transition-[background-color,border-color,box-shadow,color,transform] duration-200 hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0';
     const groupUtilityPrimaryClass = `${groupUtilityButtonClass} border-blue-400/18 bg-blue-500/[0.09] text-blue-200 hover:bg-blue-500/[0.14] hover:text-blue-100`;
     const groupUtilityNeutralClass = `${groupUtilityButtonClass} border-white/10 bg-white/[0.04] text-white/72 hover:bg-white/[0.08] hover:text-white`;
     const timerShareErrorPanel = timerShareMessage && timerShareMessage !== 'copied' ? (
@@ -2722,44 +2740,35 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
 
     if (safeGroupSessionId) {
+      const groupSyncLabel = isHost ? 'Sync Controls' : 'Accepted Sync';
       return (
         <div className="p-4 md:p-8 min-h-[520px]">
           <div className="max-w-xl mx-auto space-y-4">
             <div className="space-y-2">
-              <div className="inline-flex items-center gap-2 rounded-full border border-blue-400/16 bg-blue-500/[0.07] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-100/82">
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-300" />
-                Live Session
-              </div>
               <h3 className="text-2xl font-semibold tracking-tight text-white">Group Study</h3>
-              <p className="text-sm text-white/42">
-                {safeMembers.length} member{safeMembers.length === 1 ? '' : 's'} connected - {isHost ? 'hosting' : 'joined'}
-              </p>
             </div>
 
             <div className={`${groupShellClass} space-y-4`}>
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_15rem] sm:items-stretch md:grid-cols-[minmax(0,1fr)_16rem]">
-                <div className={`flex min-h-[7.15rem] min-w-0 flex-col justify-center gap-3 px-4 py-4 text-center md:px-5 ${groupInsetClass}`}>
-                  <label className={groupSectionLabelClass}>Session Code</label>
-                  <div className="font-mono text-[1.8rem] font-bold leading-none tracking-[0.18em] text-white sm:text-[1.95rem] md:text-[2.1rem]">
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_11.75rem] sm:items-stretch md:grid-cols-[minmax(0,1fr)_12.75rem]">
+                <button
+                  type="button"
+                  onClick={async () => { await copyToClipboard(safeGroupSessionId); }}
+                  className={`group flex min-h-[7.15rem] min-w-0 transform-gpu flex-col justify-center gap-3 px-4 py-4 text-center transition-[background-color,border-color,box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.065] hover:shadow-[0_26px_50px_-38px_rgba(0,0,0,0.85),inset_0_1px_0_rgba(255,255,255,0.055)] active:translate-y-0 sm:min-h-[10.55rem] md:px-5 ${groupInsetClass}`}
+                  aria-label={`Copy session code ${safeGroupSessionId}`}
+                >
+                  <span className={`${groupSectionLabelClass} transition-colors group-hover:text-white/48`}>Session Code</span>
+                  <span className="font-mono text-[1.8rem] font-bold leading-none tracking-[0.18em] text-white transition-colors group-hover:text-blue-100 sm:text-[1.95rem] md:text-[2.1rem]">
                     {safeGroupSessionId}
-                  </div>
-                </div>
-                <div className="grid w-full grid-cols-2 gap-2 sm:h-full sm:auto-rows-fr">
-                  <button
-                    type="button"
-                    onClick={async () => { await copyToClipboard(safeGroupSessionId); }}
-                    className={groupUtilityPrimaryClass}
-                  >
-                    <Copy size={13} strokeWidth={2.2} aria-hidden="true" />
-                    Copy Code
-                  </button>
+                  </span>
+                </button>
+                <div className="grid w-full grid-cols-3 gap-2 sm:h-full sm:grid-cols-1 sm:auto-rows-fr">
                   <button
                     type="button"
                     onClick={async () => { await copyToClipboard(groupInviteUrl); }}
                     className={groupUtilityPrimaryClass}
                   >
                     <LinkIcon size={13} strokeWidth={2.2} aria-hidden="true" />
-                    Copy Link
+                    Invite Link
                   </button>
                   <button
                     type="button"
@@ -2767,7 +2776,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     className={groupUtilityNeutralClass}
                   >
                     <QrCode size={13} strokeWidth={2.2} aria-hidden="true" />
-                    {showGroupQr ? 'Hide QR' : 'Show QR'}
+                    {showGroupQr ? 'Hide QR' : 'Invite QR'}
                   </button>
                   <button
                     type="button"
@@ -2818,29 +2827,47 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
             {timerShareErrorPanel}
 
-            {isHost ? (
-              <div className={`${groupShellClass} space-y-3`}>
-                <div>
-                  <div className={groupSectionLabelClass}>Sync Controls</div>
+            <div className={`${groupShellClass} space-y-3`}>
+              <button
+                type="button"
+                onClick={() => setGroupSyncControlsOpen(prev => !prev)}
+                className="group flex w-full items-center justify-between gap-3 rounded-lg border border-white/[0.08] bg-white/[0.035] px-3.5 py-3 text-left transition-[background-color,border-color,transform] duration-200 hover:-translate-y-[1px] hover:border-white/[0.14] hover:bg-white/[0.065] active:translate-y-0"
+                aria-expanded={groupSyncControlsOpen}
+              >
+                <span className={groupSectionLabelClass}>{groupSyncLabel}</span>
+                <span className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.13em] text-white/42 transition-colors group-hover:text-white/68">
+                  {groupSyncControlsOpen ? 'Hide' : 'Show'}
+                  <ChevronDown
+                    size={14}
+                    strokeWidth={2.2}
+                    aria-hidden="true"
+                    className={`transition-transform duration-200 ${groupSyncControlsOpen ? 'rotate-180' : ''}`}
+                  />
+                </span>
+              </button>
+
+              {groupSyncControlsOpen && (
+                <div className="space-y-3 pt-1">
+                  {isHost ? (
+                    <>
+                      <ToggleRow label="Sync Timers" checked={hostControls.syncTimers} onToggle={() => toggleLiveHostSync('syncTimers')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Sync Tasks" checked={hostControls.syncTasks} onToggle={() => toggleLiveHostSync('syncTasks')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Sync Schedule" checked={hostControls.syncSchedule} onToggle={() => toggleLiveHostSync('syncSchedule')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Sync History" checked={hostControls.syncHistory} onToggle={() => toggleLiveHostSync('syncHistory')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} tone="quiet" switchTone="neutral" />
+                    </>
+                  ) : (
+                    <>
+                      <ToggleRow label="Timer Sync" checked={clientControls.syncTimers} onToggle={() => toggleLiveClientSync('syncTimers')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Task Sync" checked={clientControls.syncTasks} onToggle={() => toggleLiveClientSync('syncTasks')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Schedule Sync" checked={clientControls.syncSchedule} onToggle={() => toggleLiveClientSync('syncSchedule')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="History Sync" checked={clientControls.syncHistory} onToggle={() => toggleLiveClientSync('syncHistory')} tone="quiet" switchTone="neutral" />
+                      <ToggleRow label="Settings Sync" checked={clientControls.syncSettings} onToggle={() => toggleLiveClientSync('syncSettings')} tone="quiet" switchTone="neutral" />
+                    </>
+                  )}
                 </div>
-                <ToggleRow label="Sync Timers" checked={hostControls.syncTimers} onToggle={() => toggleLiveHostSync('syncTimers')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Sync Tasks" checked={hostControls.syncTasks} onToggle={() => toggleLiveHostSync('syncTasks')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Sync Schedule" checked={hostControls.syncSchedule} onToggle={() => toggleLiveHostSync('syncSchedule')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Sync History" checked={hostControls.syncHistory} onToggle={() => toggleLiveHostSync('syncHistory')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} tone="quiet" switchTone="neutral" />
-              </div>
-            ) : (
-              <div className={`${groupShellClass} space-y-3`}>
-                <div>
-                  <div className={groupSectionLabelClass}>Accepted Sync</div>
-                </div>
-                <ToggleRow label="Timer Sync" checked={clientControls.syncTimers} onToggle={() => toggleLiveClientSync('syncTimers')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Task Sync" checked={clientControls.syncTasks} onToggle={() => toggleLiveClientSync('syncTasks')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Schedule Sync" checked={clientControls.syncSchedule} onToggle={() => toggleLiveClientSync('syncSchedule')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="History Sync" checked={clientControls.syncHistory} onToggle={() => toggleLiveClientSync('syncHistory')} tone="quiet" switchTone="neutral" />
-                <ToggleRow label="Settings Sync" checked={clientControls.syncSettings} onToggle={() => toggleLiveClientSync('syncSettings')} tone="quiet" switchTone="neutral" />
-              </div>
-            )}
+              )}
+            </div>
 
             {groupError && (
               <div className="rounded-[1rem] border border-red-500/26 bg-red-500/10 px-4 py-3 text-xs text-red-200">
@@ -4309,26 +4336,26 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             gap: 0.25rem !important;
           }
           .settings-tablist {
-            display: grid !important;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            min-width: 100% !important;
-            width: 100%;
+            display: flex !important;
+            min-width: max-content !important;
+            width: max-content;
             gap: 0.16rem;
             padding-left: 0 !important;
             padding-right: 0 !important;
           }
           .settings-tab-btn {
-            flex: initial !important;
-            min-width: 0;
-            width: 100%;
-            padding: 0.78rem 0.32rem !important;
-            font-size: clamp(0.48rem, 1.72vw, 0.625rem) !important;
-            letter-spacing: 0.13em !important;
+            flex: 0 0 auto !important;
+            min-width: max-content;
+            width: auto;
+            padding: 0.78rem 0.72rem !important;
+            font-size: clamp(0.5rem, 1.72vw, 0.625rem) !important;
+            letter-spacing: 0.12em !important;
             text-align: center;
           }
           .settings-tab-label {
-            overflow: hidden;
-            text-overflow: ellipsis;
+            overflow: visible;
+            text-overflow: clip;
+            line-height: 1.15;
             white-space: nowrap;
           }
           .settings-tab-indicator {

@@ -379,7 +379,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     insights.categorySlices.map((slice, index) => ({
       ...slice,
       color: slice.name === 'Uncategorized'
-        ? accentColor
+        ? OTHER_CATEGORY_COLOR
         : (categoryColors.get(slice.name) || PRESET_COLORS[index % PRESET_COLORS.length]),
     }))
   ), [accentColor, categoryColors, insights.categorySlices]);

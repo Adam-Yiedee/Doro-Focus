@@ -169,6 +169,7 @@ export interface TimerSpectatorState {
   graceContext: 'afterWork' | 'afterBreak' | null;
   activeTaskName: string | null;
   activeColor?: string;
+  projectedFinishEndMs?: number | null;
   settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval' | 'timerPreset' | 'twoInARowMode'>;
   runtime: TimerRuntimeSnapshot | null;
   updatedAtMs: number;

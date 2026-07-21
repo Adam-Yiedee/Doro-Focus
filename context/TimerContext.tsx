@@ -31,6 +31,8 @@ import {
   getBreakBankBaseForWorkCompletion,
   getCompletedPhaseDuration,
   getMatchingTimerPreset,
+  getProjectedTaskFinishSeconds,
+  getRemainingPomodorosForActiveTasks,
   getTimerStateFreshnessStamp,
   getTimerLockAutoUnlockDelay,
   isTimerLockExpired,
@@ -2602,15 +2604,46 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const buildTimerSpectatorState = useCallback((state: any): TimerSpectatorState => {
+    const nowMs = Date.now();
     const activeContext = Array.isArray(state?.tasks)
       ? findActiveContext(state.tasks)
       : { task: null, color: undefined };
     const runtime = isRuntimeSnapshot(state?.runtime) ? state.runtime : runtimeRef.current;
+    const settings = pickTimerSpectatorSettings(state?.settings);
+    const activeMode = state?.activeMode === 'break' ? 'break' : 'work';
+    const derivedTimer = runtime
+      ? deriveRuntimeValues(runtime, nowMs)
+      : {
+          workTime: typeof state?.workTime === 'number' && Number.isFinite(state.workTime) ? state.workTime : DEFAULT_SETTINGS.workDuration,
+          breakTime: typeof state?.breakTime === 'number' && Number.isFinite(state.breakTime) ? state.breakTime : 0,
+        };
+    const runtimeMode = runtime?.phase === 'running-break' ? 'break' : activeMode;
+    const grace = normalizeGraceWindow({
+      graceOpenCandidate: runtime?.phase === 'grace' || Boolean(state?.graceOpen),
+      rawGraceContext: state?.graceContext,
+      fallbackMode: runtimeMode,
+    });
+    const remainingPomodoros = Array.isArray(state?.tasks)
+      ? getRemainingPomodorosForActiveTasks(state.tasks, getDateKey(new Date(nowMs)))
+      : 0;
+    const projectedFinishSeconds = remainingPomodoros > 0
+      ? getProjectedTaskFinishSeconds({
+          remainingPomodoros,
+          pomodoroCount: typeof state?.pomodoroCount === 'number' && Number.isFinite(state.pomodoroCount) ? state.pomodoroCount : 0,
+          workTime: derivedTimer.workTime,
+          breakTime: derivedTimer.breakTime,
+          activeMode: runtimeMode,
+          isIdle: runtime ? runtime.phase === 'idle' : Boolean(state?.isIdle),
+          graceOpen: grace.graceOpen,
+          graceContext: grace.graceContext,
+          settings,
+        })
+      : 0;
 
     return {
       version: 1,
       hostName: sanitizeGroupMemberName(state?.userName ?? userNameRef.current, 'Host'),
-      activeMode: state?.activeMode === 'break' ? 'break' : 'work',
+      activeMode,
       timerStarted: Boolean(state?.timerStarted),
       isIdle: Boolean(state?.isIdle),
       workTime: typeof state?.workTime === 'number' && Number.isFinite(state.workTime) ? state.workTime : DEFAULT_SETTINGS.workDuration,
@@ -2624,9 +2657,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ? activeContext.task.name.trim().slice(0, 80)
         : null,
       activeColor: typeof activeContext.color === 'string' && activeContext.color.trim() ? activeContext.color : undefined,
-      settings: pickTimerSpectatorSettings(state?.settings),
+      projectedFinishEndMs: projectedFinishSeconds > 0 ? nowMs + (projectedFinishSeconds * 1000) : null,
+      settings,
       runtime,
-      updatedAtMs: Date.now(),
+      updatedAtMs: nowMs,
     };
   }, []);
 
