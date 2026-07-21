@@ -22,8 +22,9 @@ describe('spectate-link function', () => {
     expect(html).toContain('<meta name="twitter:title" content="Time Finished: 1:38 PM">');
     expect(html).toContain('<meta property="og:image:alt" content="Time Finished: 1:38 PM">');
     expect(html).toContain('endLabel=1%3A38+PM');
-    expect(html).toContain('v=4');
-    expect(html).toContain('preview=4');
+    expect(html).toContain('endKind=finish');
+    expect(html).toContain('v=5');
+    expect(html).toContain('preview=5');
     expect(html).not.toContain('Focus until');
   });
 
@@ -48,6 +49,16 @@ describe('spectate-link function', () => {
     expect(html).toContain('Shared Doro timer.');
     expect(html).toContain('endKind=finish');
     expect(html).not.toContain('Break Ends At 1:38 PM');
+  });
+
+  it('cleans stale phase-end labels before rendering finish metadata', async () => {
+    const { html } = await renderPreview(
+      'https://dorofocus.netlify.app/share/MWRE7L?mode=work&end=1784666280000&endLabel=Focus%20Ends%20At%201%3A38%20PM&remaining=1380&tzOffset=420',
+    );
+
+    expect(html).toContain('<meta property="og:title" content="Time Finished: 1:38 PM">');
+    expect(html).toContain('endKind=finish');
+    expect(html).not.toContain('Focus Ends At');
   });
 
   it('does not present placeholder labels as estimated end times', async () => {

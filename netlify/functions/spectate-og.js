@@ -42,6 +42,8 @@ const formatEndFromTimestamp = (value, timezoneOffset) => {
 
 const sanitizeTimeLabel = (value) => String(value || '')
   .replace(/\s+/g, ' ')
+  .replace(/^(focus|break bank)\s*(time\s*)?ends?\s*(at)?\s*[:\-]?\s*/i, '')
+  .replace(/^time\s*finished\s*[:\-]?\s*/i, '')
   .replace(/[^\d:AaPpMm.\- ]/g, '')
   .trim()
   .slice(0, 18);

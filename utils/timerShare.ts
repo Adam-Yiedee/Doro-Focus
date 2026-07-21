@@ -2,7 +2,7 @@ import { TimerMode, TimerRuntimeSnapshot, TimerSettings, TimerSpectatorState } f
 import { deriveRuntimeValues } from './timerRuntime';
 
 export const TIMER_SHARE_BASE_URL = (import.meta.env.VITE_PUBLIC_SITE_URL || 'https://dorofocus.netlify.app').replace(/\/+$/, '');
-export const TIMER_SHARE_PREVIEW_VERSION = '4';
+export const TIMER_SHARE_PREVIEW_VERSION = '5';
 
 export interface TimerShareEstimateInput {
   activeMode: TimerMode;
@@ -106,8 +106,8 @@ export const formatTimerShareEndLabel = (endMs: number | null, fallback = 'Not r
   });
 };
 
-export const getTimerShareStatusLabel = (estimate: TimerShareEstimate, mode: TimerMode) => {
-  if (estimate.status === 'running') return `${getTimerShareModeLabel(mode)} ends at`;
+export const getTimerShareStatusLabel = (estimate: TimerShareEstimate, _mode: TimerMode) => {
+  if (estimate.status === 'running') return 'Time Finished';
   if (estimate.status === 'paused') return 'Timer paused';
   if (estimate.status === 'grace') return 'Grace window open';
   if (estimate.status === 'overdue') return 'Break bank overdue';
@@ -128,9 +128,10 @@ export const buildTimerSpectatorUrl = (
   const normalizedSession = sessionId.trim().toUpperCase();
   const params = new URLSearchParams();
   params.set('preview', TIMER_SHARE_PREVIEW_VERSION);
+  const endKind = options.endKind || 'finish';
 
   if (options.activeMode) params.set('mode', options.activeMode);
-  if (options.endKind === 'finish') params.set('endKind', options.endKind);
+  if (endKind === 'finish') params.set('endKind', endKind);
   if (typeof options.endMs === 'number' && Number.isFinite(options.endMs)) params.set('end', String(Math.round(options.endMs)));
   if (options.endLabel) params.set('endLabel', options.endLabel);
   if (typeof options.remainingSeconds === 'number' && Number.isFinite(options.remainingSeconds)) {
@@ -157,9 +158,10 @@ export const buildTimerSpectatorAppUrl = (
 ) => {
   const normalizedSession = sessionId.trim().toUpperCase();
   const params = new URLSearchParams({ spectate: normalizedSession });
+  const endKind = options.endKind || 'finish';
 
   if (options.activeMode) params.set('mode', options.activeMode);
-  if (options.endKind === 'finish') params.set('endKind', options.endKind);
+  if (endKind === 'finish') params.set('endKind', endKind);
   if (typeof options.endMs === 'number' && Number.isFinite(options.endMs)) params.set('end', String(Math.round(options.endMs)));
   if (options.endLabel) params.set('endLabel', options.endLabel);
   if (typeof options.remainingSeconds === 'number' && Number.isFinite(options.remainingSeconds)) {

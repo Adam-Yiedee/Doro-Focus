@@ -1,5 +1,5 @@
 const FALLBACK_SITE_URL = 'https://dorofocus.netlify.app';
-const OG_IMAGE_VERSION = '4';
+const OG_IMAGE_VERSION = '5';
 
 const escapeHtml = (value) => String(value || '')
   .replace(/&/g, '&amp;')
@@ -39,6 +39,11 @@ const sanitizePreviewText = (value, maxLength = 80) => String(value || '')
   .trim()
   .slice(0, maxLength);
 
+const normalizeEndLabel = (value) => sanitizePreviewText(value, 40)
+  .replace(/^(focus|break bank)\s*(time\s*)?ends?\s*(at)?\s*[:\-]?\s*/i, '')
+  .replace(/^time\s*finished\s*[:\-]?\s*/i, '')
+  .trim();
+
 const isPlaceholderEndLabel = (value) => {
   const normalized = String(value || '').trim().toLowerCase();
   return !normalized || normalized === 'live timer' || normalized === 'not running' || normalized === 'no end time';
@@ -77,10 +82,10 @@ export default async (request) => {
   }
 
   const mode = url.searchParams.get('mode') === 'break' ? 'break' : 'work';
-  const endKind = url.searchParams.get('endKind') === 'finish' ? 'finish' : 'phase';
+  const endKind = 'finish';
   const end = url.searchParams.get('end') || '';
   const timezoneOffset = parseTimezoneOffset(url.searchParams.get('tzOffset'));
-  const requestedEndLabel = sanitizePreviewText(url.searchParams.get('endLabel'), 40);
+  const requestedEndLabel = normalizeEndLabel(url.searchParams.get('endLabel'));
   const fallbackEndLabel = formatEndFromTimestamp(end, timezoneOffset);
   const endLabel = isPlaceholderEndLabel(requestedEndLabel) ? fallbackEndLabel : requestedEndLabel;
   const remaining = url.searchParams.get('remaining') || '';

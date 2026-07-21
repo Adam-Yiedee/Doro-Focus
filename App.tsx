@@ -15,8 +15,6 @@ const getSpectatorRoute = () => {
   const rawEnd = Number(url.searchParams.get('end'));
   const rawRemaining = Number(url.searchParams.get('remaining'));
   const modeParam = url.searchParams.get('mode');
-  const endKindParam = url.searchParams.get('endKind');
-  const previewEndKind = (endKindParam === 'finish' ? 'finish' : 'phase') as 'finish' | 'phase';
 
   return {
     sessionId: normalizedSessionId,
@@ -24,7 +22,7 @@ const getSpectatorRoute = () => {
     previewRemainingSeconds: Number.isFinite(rawRemaining) && rawRemaining >= 0 ? rawRemaining : null,
     previewEndLabel: url.searchParams.get('endLabel'),
     previewMode: (modeParam === 'break' ? 'break' : 'work') as TimerMode,
-    previewEndKind,
+    previewEndKind: 'finish' as const,
   };
 };
 
