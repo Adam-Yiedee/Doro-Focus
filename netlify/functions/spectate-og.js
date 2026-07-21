@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const WIDTH = 1200;
 const HEIGHT = 630;
 const FONT_PATH = fileURLToPath(new URL('./assets/Manrope-ExtraBoldStatic.ttf', import.meta.url));
-const LABEL = 'TIME FINISHED';
+const LABEL = 'Time Finished';
 const PLACEHOLDER_TIME = '--';
 
 let fontLoadPromise = null;
@@ -135,39 +135,12 @@ const encodePng = async (image) => {
   return Buffer.concat(chunks);
 };
 
-const drawCenteredLetterSpacedText = (ctx, text, centerX, y, spacing) => {
-  const chars = text.split('');
-  const width = chars.reduce((sum, char, index) => {
-    const measured = ctx.measureText(char).width;
-    return sum + measured + (index === chars.length - 1 ? 0 : spacing);
-  }, 0);
-
-  let x = centerX - (width / 2);
-  for (const char of chars) {
-    ctx.fillText(char, x, y);
-    x += ctx.measureText(char).width + spacing;
-  }
-};
-
 const fitFontSize = (ctx, text, maxWidth, preferredSize, minSize) => {
   for (let size = preferredSize; size >= minSize; size -= 2) {
     ctx.font = `${size}px Manrope`;
     if (ctx.measureText(text).width <= maxWidth) return size;
   }
   return minSize;
-};
-
-const drawSoftText = (ctx, text, x, y, options = {}) => {
-  const {
-    color = '#ffffff',
-    shadowColor = '#bf8797',
-    shadowOffset = 8,
-  } = options;
-
-  ctx.fillStyle = shadowColor;
-  ctx.fillText(text, x, y + shadowOffset);
-  ctx.fillStyle = color;
-  ctx.fillText(text, x, y);
 };
 
 const drawPreview = async (endLabel) => {
@@ -179,17 +152,14 @@ const drawPreview = async (endLabel) => {
   const ctx = image.getContext('2d');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  ctx.font = '30px Manrope';
-  ctx.fillStyle = '#fff0f4';
-  drawCenteredLetterSpacedText(ctx, LABEL, WIDTH / 2, 228, 6);
+  ctx.font = '36px Manrope';
+  ctx.fillStyle = '#fff5f8';
+  ctx.fillText(LABEL, WIDTH / 2, 220);
 
   const fontSize = fitFontSize(ctx, endLabel, 920, 150, 82);
   ctx.font = `${fontSize}px Manrope`;
-  drawSoftText(ctx, endLabel, WIDTH / 2, 382, {
-    color: '#ffffff',
-    shadowColor: '#c78fa0',
-    shadowOffset: 10,
-  });
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(endLabel, WIDTH / 2, 382);
 
   return encodePng(image);
 };

@@ -2,7 +2,7 @@ import { TimerMode, TimerRuntimeSnapshot, TimerSettings, TimerSpectatorState } f
 import { deriveRuntimeValues } from './timerRuntime';
 
 export const TIMER_SHARE_BASE_URL = (import.meta.env.VITE_PUBLIC_SITE_URL || 'https://dorofocus.netlify.app').replace(/\/+$/, '');
-export const TIMER_SHARE_PREVIEW_VERSION = '5';
+export const TIMER_SHARE_PREVIEW_VERSION = '6';
 
 export interface TimerShareEstimateInput {
   activeMode: TimerMode;

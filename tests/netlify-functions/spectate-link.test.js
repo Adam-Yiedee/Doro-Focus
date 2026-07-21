@@ -23,8 +23,8 @@ describe('spectate-link function', () => {
     expect(html).toContain('<meta property="og:image:alt" content="Time Finished: 1:38 PM">');
     expect(html).toContain('endLabel=1%3A38+PM');
     expect(html).toContain('endKind=finish');
-    expect(html).toContain('v=5');
-    expect(html).toContain('preview=5');
+    expect(html).toContain('v=6');
+    expect(html).toContain('preview=6');
     expect(html).not.toContain('Focus until');
   });
 

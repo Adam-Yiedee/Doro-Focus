@@ -1,5 +1,5 @@
 const FALLBACK_SITE_URL = 'https://dorofocus.netlify.app';
-const OG_IMAGE_VERSION = '5';
+const OG_IMAGE_VERSION = '6';
 
 const escapeHtml = (value) => String(value || '')
   .replace(/&/g, '&amp;')
