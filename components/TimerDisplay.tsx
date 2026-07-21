@@ -41,16 +41,17 @@ const usePrefersReducedMotion = () => {
 const getTimerTiltShadow = (isActive: boolean, isHovered: boolean, tilt: TimerTiltState) => {
   if (!isActive && !isHovered) return 'none';
 
-  const activeWeight = isActive ? 1 : 0.72;
-  const shadowX = Math.round(-tilt.x * 4 * activeWeight);
-  const shadowY = Math.round((isActive ? 32 : 24) + (tilt.intensity * 2));
-  const shadowBlur = Math.round((isActive ? 68 : 52) + (tilt.intensity * 3));
+  const activeWeight = isActive ? 1 : 0.78;
+  const hoverLift = isHovered ? 4 : 0;
+  const shadowX = Math.round(-tilt.x * 5.8 * activeWeight);
+  const shadowY = Math.round((isActive ? 34 : 27) + hoverLift + (tilt.intensity * 4.8));
+  const shadowBlur = Math.round((isActive ? 76 : 60) + hoverLift + (tilt.intensity * 6));
   const liftShadow = isActive
-    ? '0 16px 34px -24px rgba(0,0,0,0.45)'
-    : '0 12px 26px -22px rgba(0,0,0,0.36)';
+    ? '0 22px 42px -25px rgba(0,0,0,0.5)'
+    : '0 18px 34px -24px rgba(0,0,0,0.42)';
 
   return [
-    `${shadowX}px ${shadowY}px ${shadowBlur}px -24px rgba(0,0,0,${isActive ? 0.42 : 0.3})`,
+    `${shadowX}px ${shadowY}px ${shadowBlur}px -24px rgba(0,0,0,${isActive ? 0.48 : 0.36})`,
     liftShadow,
     'inset 0 1px 0 rgba(255,255,255,0.12)',
     'inset 0 -24px 46px rgba(0,0,0,0.08)',
@@ -295,14 +296,14 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
 
   const effectiveTilt = prefersReducedMotion ? TIMER_TILT_REST : tilt;
   const baseScale = isActive ? 1 : isHovered ? 1.02 : 0.9;
-  const baseTranslateY = !isActive && isHovered ? -8 : 0;
-  const hoverDepth = isHovered ? 3 : 0;
-  const tiltBoost = isHovered ? 1 + (effectiveTilt.intensity * 0.0008) : 1;
-  const rotateX = -effectiveTilt.y * 1.05;
-  const rotateY = effectiveTilt.x * 1.2;
+  const baseTranslateY = !isActive && isHovered ? -9 : 0;
+  const hoverDepth = isHovered ? 4 : 0;
+  const tiltBoost = isHovered ? 1 + (effectiveTilt.intensity * 0.001) : 1;
+  const rotateX = -effectiveTilt.y * 1.5;
+  const rotateY = effectiveTilt.x * 1.68;
   const timerSquareStyle: React.CSSProperties = {
     boxShadow: getTimerTiltShadow(isActive, isHovered, effectiveTilt),
-    transform: `perspective(900px) translate3d(0, ${baseTranslateY}px, ${hoverDepth}px) scale(${baseScale * tiltBoost}) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
+    transform: `perspective(860px) translate3d(0, ${baseTranslateY}px, ${hoverDepth}px) scale(${baseScale * tiltBoost}) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
     transformOrigin: 'center',
     transformStyle: 'preserve-3d',
     transition: prefersReducedMotion

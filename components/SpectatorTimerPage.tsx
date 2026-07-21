@@ -369,7 +369,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
 
   return (
     <div
-      className="min-h-screen w-full overflow-hidden px-3 py-4 text-white transition-colors duration-700 md:px-8 md:py-8"
+      className="min-h-screen w-full overflow-x-hidden overflow-y-auto px-3 py-4 text-white transition-colors duration-700 md:px-8 md:py-8"
       style={{ background: surfaceColor }}
     >
       <style>{`
@@ -419,20 +419,20 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
       `}</style>
 
       <main className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col items-center justify-center gap-4 md:min-h-[calc(100vh-4rem)]">
-        <section className="doro-spectator-shell relative w-full overflow-hidden rounded-[2rem] border border-white/10 bg-white/5 px-4 py-5 shadow-[0_30px_70px_-48px_rgba(0,0,0,0.78)] backdrop-blur-xl md:rounded-[2.6rem] md:px-7 md:py-7">
-          <div className="pointer-events-none absolute inset-0 rounded-[inherit] border border-white/[0.08]" />
+        <section className="doro-spectator-shell relative w-full overflow-hidden rounded-[1.7rem] border border-white/[0.13] bg-white/[0.072] px-4 py-5 shadow-[0_34px_78px_-48px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.065)] backdrop-blur-xl md:px-7 md:py-7">
+          <div className="pointer-events-none absolute inset-0 rounded-[inherit] border border-white/[0.08] shadow-[inset_0_-34px_70px_rgba(0,0,0,0.08)]" />
 
           <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0 text-center md:text-left">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.055] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white/64">
+              <div className="inline-flex items-center gap-2 rounded-lg border border-white/[0.12] bg-white/[0.07] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/68 shadow-[0_18px_36px_-32px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.06)]">
                 <span className={`h-1.5 w-1.5 rounded-full ${isLive ? 'doro-spectator-dot bg-emerald-200' : 'bg-white/42'}`} />
-                {isLive ? 'Live Timer' : status === 'connecting' ? 'Connecting' : 'Timer Viewer'}
+                {isLive ? 'Live Timer' : status === 'connecting' ? 'Connecting' : 'Shared Timer'}
               </div>
               <div className="mt-2 truncate text-sm font-semibold text-white/72">
                 {hostLabel}
               </div>
             </div>
-            <div className="mx-auto rounded-[1rem] border border-white/8 bg-white/[0.045] px-3.5 py-2 text-center md:mx-0 md:text-right">
+            <div className="mx-auto rounded-lg border border-white/[0.12] bg-white/[0.055] px-3.5 py-2 text-center shadow-[0_18px_36px_-32px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.055)] md:mx-0 md:text-right">
               <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/38">
                 Session
               </div>
@@ -450,7 +450,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
               {endLabel}
             </div>
             <div className="mt-3 text-[10px] font-bold uppercase tracking-[0.16em] text-white/46">
-              {modeLabel} · {remainingLabel} remaining
+              {modeLabel} - {remainingLabel} remaining
             </div>
           </div>
 
@@ -472,7 +472,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
             />
           </div>
 
-          <div className="relative mt-6 rounded-[1.2rem] border border-white/8 bg-black/10 px-4 py-3 text-center text-xs font-semibold text-white/56">
+          <div className="relative mt-6 rounded-lg border border-white/[0.12] bg-white/[0.045] px-4 py-3 text-center text-xs font-semibold text-white/58 shadow-[0_18px_38px_-32px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.05)]">
             {message}
           </div>
         </section>

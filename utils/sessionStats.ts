@@ -42,12 +42,14 @@ export const isPauseCreditedWorkLog = (entry: Pick<LogEntry, 'type' | 'reason'>)
 
 export const getEndSessionPendingActivityWindow = ({
   isIdle,
+  timerStarted,
   activityStartMs,
   effectiveEndMs,
   allPauseActive,
   allPauseStartTime,
 }: {
   isIdle: boolean;
+  timerStarted?: boolean;
   activityStartMs?: number | null;
   effectiveEndMs: number;
   allPauseActive: boolean;
@@ -56,6 +58,7 @@ export const getEndSessionPendingActivityWindow = ({
   const safeStartMs = getFiniteNumber(activityStartMs);
   const safeEndMs = getFiniteNumber(effectiveEndMs);
   if (isIdle || safeStartMs === null || safeEndMs === null) return null;
+  if (!timerStarted && !allPauseActive) return null;
 
   const safePauseStartMs = getFiniteNumber(allPauseStartTime);
   const cappedEndMs = allPauseActive && safePauseStartMs !== null

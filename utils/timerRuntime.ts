@@ -488,6 +488,10 @@ const getSafePositiveSeconds = (value: number, fallback = 0) => (
   Number.isFinite(value) ? Math.max(0, value) : fallback
 );
 
+const getSafeSignedSeconds = (value: number, fallback = 0) => (
+  Number.isFinite(value) ? value : fallback
+);
+
 export const computeWorkCompletion = (
   pomodoroCount: number,
   breakTime: number,
@@ -532,19 +536,7 @@ export const getProjectedTaskFinishSeconds = ({
   };
   let projectedSeconds = 0;
   let virtualPomoCount = Number.isFinite(pomodoroCount) ? Math.max(0, Math.floor(pomodoroCount)) : 0;
-  let breakBank = getSafePositiveSeconds(breakTime);
-
-  const shouldUseCurrentBreakFirst = (
-    breakBank > 0
-    && (
-      graceContext === 'afterWork'
-      || (!graceOpen && !isIdle && activeMode === 'break')
-    )
-  );
-  if (shouldUseCurrentBreakFirst) {
-    projectedSeconds += breakBank;
-    breakBank = 0;
-  }
+  let futureBreakBank = Math.max(0, getSafeSignedSeconds(breakTime));
 
   const shouldUseCurrentWorkFirst = (
     !isIdle
@@ -557,18 +549,12 @@ export const getProjectedTaskFinishSeconds = ({
       ? getSafePositiveSeconds(workTime, safeSettings.workDuration)
       : safeSettings.workDuration;
 
-    const completion = computeWorkCompletion(virtualPomoCount, breakBank, safeSettings);
+    const completion = computeWorkCompletion(virtualPomoCount, 0, safeSettings);
     virtualPomoCount = completion.nextPomoCount;
-    breakBank = getSafePositiveSeconds(completion.nextBreakTime);
-
-    const hasMoreWork = i < remaining - 1;
-    if (hasMoreWork && !shouldAutoStartTwoInARowFocus(virtualPomoCount, safeSettings)) {
-      projectedSeconds += breakBank;
-      breakBank = 0;
-    }
+    futureBreakBank += completion.reward;
   }
 
-  return projectedSeconds;
+  return projectedSeconds + futureBreakBank;
 };
 
 export const getBreakBankBaseForWorkCompletion = ({

@@ -23,6 +23,7 @@ describe('getEndSessionPendingActivityWindow', () => {
   it('caps active time at the pause start when a paused session is ended', () => {
     const window = getEndSessionPendingActivityWindow({
       isIdle: false,
+      timerStarted: false,
       activityStartMs: Date.parse('2026-07-18T09:30:00.000Z'),
       effectiveEndMs: Date.parse('2026-07-18T10:10:00.000Z'),
       allPauseActive: true,
@@ -39,6 +40,7 @@ describe('getEndSessionPendingActivityWindow', () => {
   it('uses the effective end while the timer is actively running', () => {
     const window = getEndSessionPendingActivityWindow({
       isIdle: false,
+      timerStarted: true,
       activityStartMs: Date.parse('2026-07-18T09:30:00.000Z'),
       effectiveEndMs: Date.parse('2026-07-18T09:45:00.000Z'),
       allPauseActive: false,
@@ -46,6 +48,19 @@ describe('getEndSessionPendingActivityWindow', () => {
     });
 
     expect(window?.durationSeconds).toBe(15 * 60);
+  });
+
+  it('does not count time after a timer has been stopped outside all-pause', () => {
+    const window = getEndSessionPendingActivityWindow({
+      isIdle: false,
+      timerStarted: false,
+      activityStartMs: Date.parse('2026-07-18T09:30:00.000Z'),
+      effectiveEndMs: Date.parse('2026-07-18T09:45:00.000Z'),
+      allPauseActive: false,
+      allPauseStartTime: null,
+    });
+
+    expect(window).toBeNull();
   });
 });
 
@@ -127,5 +142,40 @@ describe('buildEndSessionStats', () => {
 
     expect(stats.pomosCompleted).toBe(1.5);
     expect(stats.miniPomosCompleted).toBe(3);
+  });
+
+  it('keeps work logged before a pause when resumed work is pending', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:12:00.000Z',
+          duration: 12 * 60,
+          reason: 'Timer Paused',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'allpause',
+          start: '2026-07-18T09:12:00.000Z',
+          end: '2026-07-18T09:20:00.000Z',
+          duration: 8 * 60,
+          reason: 'Paused',
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      categories,
+      pendingActivity: {
+        mode: 'work',
+        durationSeconds: 9 * 60,
+        categoryId: 1,
+      },
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(21);
+    expect(stats.totalBreakMinutes).toBe(0);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 21 });
   });
 });

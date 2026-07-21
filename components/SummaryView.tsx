@@ -3,10 +3,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart3, CalendarDays, CheckCircle2, Clock3, Coffee, ListChecks, RotateCcw, TrendingUp, Trophy, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
-import { formatPomodoroCount, getAccountStatsSessionPomodoroEquivalent, getSessionPomoDisplay } from '../utils/pomodoroAccounting';
+import { getSessionPomoDisplay } from '../utils/pomodoroAccounting';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, PASTEL_SWATCHES, getMutedSurfaceColor } from '../utils/palette';
 import { playCelebrationTrumpet, playSummaryCountSound, playSummaryDistributionSound, playSummaryStatPop } from '../utils/sound';
-import { SessionRecord } from '../types';
+import {
+  formatSummaryDeltaValue,
+  getSummaryPomoComparison,
+} from '../utils/summaryComparisons';
 
 type SummaryConfettiPiece = {
   id: number;
@@ -53,8 +56,6 @@ const SUMMARY_STAT_COLORS = [
   PASTEL_SWATCHES[6], // Weekly-average comparison: gold
 ];
 const SUMMARY_OTHER_CATEGORY_COLOR = '#94A3B8';
-const SUMMARY_DAY_MS = 24 * 60 * 60 * 1000;
-const SUMMARY_WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const SUMMARY_FIRST_STAT_DELAY_MS = 320;
 const SUMMARY_STAT_RAISE_MS = 300;
 const SUMMARY_STAT_SEQUENCE_GAP_MS = 150;
@@ -113,49 +114,6 @@ const formatSummaryDistributionMinutes = (minutes: number) => {
 };
 
 const formatSummaryDistributionPercent = (share: number) => `${Math.round(Math.max(0, share) * 100)}%`;
-
-const getSummaryDateKey = (date: Date) => {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const getSummaryDateKeyFromIso = (iso: string) => {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return null;
-  return getSummaryDateKey(date);
-};
-
-const getSummaryDateFromKey = (dateKey: string) => new Date(`${dateKey}T12:00:00`);
-
-const getSummaryDayStartMs = (dateKey: string) => new Date(`${dateKey}T00:00:00`).getTime();
-
-const getSummaryLastFocusLabel = (lastFocusDateKey: string, todayDateKey: string) => {
-  const todayStartMs = getSummaryDayStartMs(todayDateKey);
-  const lastFocusStartMs = getSummaryDayStartMs(lastFocusDateKey);
-  const diffDays = Math.round((todayStartMs - lastFocusStartMs) / SUMMARY_DAY_MS);
-
-  if (diffDays === 1) return 'yesterday';
-  if (diffDays > 1 && diffDays <= 7) {
-    return SUMMARY_WEEKDAY_LABELS[getSummaryDateFromKey(lastFocusDateKey).getDay()];
-  }
-  return 'last focus';
-};
-
-const formatSummaryDeltaValue = (value: number) => {
-  const safeValue = Math.abs(value);
-  if (safeValue < 0.05) return '0';
-  return formatPomodoroCount(safeValue);
-};
-
-const formatSummaryComparisonTargetLabel = (value: string) => (
-  value
-    .split(' ')
-    .filter(Boolean)
-    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`)
-    .join(' ')
-);
 
 const shouldPlaySummaryStatSound = (key: string) => {
   if (typeof window === 'undefined') return false;
@@ -343,45 +301,13 @@ const SummaryView: React.FC = () => {
     return `${Math.max(1, Math.round(minutes))}`;
   };
   const pomoDisplay = getSessionPomoDisplay(sessionStats);
-  const todayDateKey = getSummaryDateKey(new Date());
-  const todayStartMs = getSummaryDayStartMs(todayDateKey);
-  const dailyPomoTotals = new Map<string, number>();
-
-  pastSessions.forEach((session: SessionRecord) => {
-    const dateKey = getSummaryDateKeyFromIso(session.startTime) || getSummaryDateKeyFromIso(session.endTime);
-    if (!dateKey) return;
-
-    const pomos = getAccountStatsSessionPomodoroEquivalent(session);
-    if (!Number.isFinite(pomos) || pomos <= 0) return;
-    dailyPomoTotals.set(dateKey, (dailyPomoTotals.get(dateKey) || 0) + pomos);
-  });
-
-  const currentSummaryPomos = Math.max(
-    0,
-    Number(sessionStats.totalWorkMinutes || 0) / 25,
-    Number(sessionStats.pomosCompleted || 0),
-  );
-  const todayPomos = Math.max(dailyPomoTotals.get(todayDateKey) || 0, currentSummaryPomos);
-  if (todayPomos > 0) dailyPomoTotals.set(todayDateKey, todayPomos);
-
-  const previousFocusDays = Array.from(dailyPomoTotals.entries())
-    .filter(([dateKey, pomos]) => dateKey < todayDateKey && pomos > 0)
-    .sort(([leftDateKey], [rightDateKey]) => rightDateKey.localeCompare(leftDateKey));
-  const lastFocusDay = previousFocusDays[0] || null;
-  const lastFocusDelta = lastFocusDay ? todayPomos - lastFocusDay[1] : 0;
-  const lastFocusLabel = lastFocusDay ? getSummaryLastFocusLabel(lastFocusDay[0], todayDateKey) : 'last focus';
-  const lastFocusTargetLabel = formatSummaryComparisonTargetLabel(lastFocusLabel);
-
-  const weeklyFocusDays = Array.from(dailyPomoTotals.entries())
-    .filter(([dateKey, pomos]) => {
-      if (dateKey >= todayDateKey || pomos <= 0) return false;
-      const dayStartMs = getSummaryDayStartMs(dateKey);
-      return dayStartMs >= todayStartMs - (7 * SUMMARY_DAY_MS) && dayStartMs < todayStartMs;
-    });
-  const weeklyAveragePomos = weeklyFocusDays.length > 0
-    ? weeklyFocusDays.reduce((total, [, pomos]) => total + pomos, 0) / weeklyFocusDays.length
-    : 0;
-  const weeklyAverageDelta = todayPomos - weeklyAveragePomos;
+  const {
+    lastFocusDay,
+    lastFocusDelta,
+    lastFocusTargetLabel,
+    weeklyFocusDays,
+    weeklyAverageDelta,
+  } = getSummaryPomoComparison({ pastSessions, sessionStats });
 
   const statCards: SummaryStatCard[] = [
     { label: 'Focus Minutes', value: formatSummaryMinutes(sessionStats.totalWorkMinutes), accent: SUMMARY_STAT_COLORS[0], icon: Clock3 },

@@ -72,6 +72,8 @@ const SESSION_CLOCK_AXIS_MARKS = [
   { minutes: 1440, label: '12a' },
 ] as const;
 const HEATMAP_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+const HEATMAP_FULL_COLOR_MINUTES = 360;
+const HEATMAP_SCALE_CAP_MINUTES = 720;
 const OTHER_CATEGORY_COLOR = '#94A3B8';
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
@@ -520,9 +522,10 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const sessionClockWeekIndex = Math.max(0, sessionClockWeekStarts.indexOf(activeSessionWeekStartMs));
   const canGoToPreviousSessionWeek = sessionClockWeekIndex > 0;
   const canGoToNextSessionWeek = sessionClockWeekIndex < sessionClockWeekStarts.length - 1;
+  const rollingSessionClockStartMs = startOfLocalDay(Date.now()) - (6 * DAY_MS);
   const displayedSessionLanes = useMemo(() => (
     Array.from({ length: 7 }, (_, index) => {
-      const dateMs = activeSessionWeekStartMs + (index * DAY_MS);
+      const dateMs = rollingSessionClockStartMs + (index * DAY_MS);
       const dateKey = getLocalDateKey(dateMs);
       return {
         dateKey,
@@ -532,7 +535,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         sessions: sessionClockSessionsByDateKey.get(dateKey) || [],
       };
     })
-  ), [activeSessionWeekStartMs, focusMinutesByDateKey, sessionClockSessionsByDateKey]);
+  ), [focusMinutesByDateKey, rollingSessionClockStartMs, sessionClockSessionsByDateKey]);
 
   useEffect(() => {
     setActiveCategoryName((current) => (
@@ -561,7 +564,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   useEffect(() => {
     const laneExists = hoveredSessionLaneKey && displayedSessionLanes.some((lane) => lane.dateKey === hoveredSessionLaneKey);
     if (!laneExists) {
-      setHoveredSessionLaneKey(displayedSessionLanes.find((lane) => lane.sessions.length > 0)?.dateKey ?? displayedSessionLanes[displayedSessionLanes.length - 1]?.dateKey ?? null);
+      setHoveredSessionLaneKey([...displayedSessionLanes].reverse().find((lane) => lane.sessions.length > 0)?.dateKey ?? displayedSessionLanes[displayedSessionLanes.length - 1]?.dateKey ?? null);
     }
   }, [displayedSessionLanes, hoveredSessionLaneKey]);
 
@@ -729,9 +732,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       .map((day) => day.totalMinutes)
       .filter((minutes) => minutes > 0)
       .sort((left, right) => left - right);
-    if (positiveMinutes.length === 0) return 1;
+    if (positiveMinutes.length === 0) return HEATMAP_FULL_COLOR_MINUTES;
     const percentileIndex = Math.max(0, Math.ceil(positiveMinutes.length * 0.9) - 1);
-    return Math.max(1, positiveMinutes[Math.min(positiveMinutes.length - 1, percentileIndex)]);
+    const percentileMinutes = positiveMinutes[Math.min(positiveMinutes.length - 1, percentileIndex)] || 0;
+    return Math.max(
+      HEATMAP_FULL_COLOR_MINUTES,
+      Math.min(HEATMAP_SCALE_CAP_MINUTES, percentileMinutes * 1.35),
+    );
   }, [heatmapDailyBuckets]);
   const defaultHeatmapDay = [...heatmapDailyBuckets].reverse().find((day) => day.totalMinutes > 0)
     || heatmapDailyBuckets[heatmapDailyBuckets.length - 1]
@@ -739,6 +746,11 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const activeHeatmapDay = heatmapDailyBuckets.find((day) => day.dateKey === hoveredHeatmapDateKey)
     || heatmapDailyBuckets.find((day) => day.dateKey === selectedHeatmapDateKey)
     || defaultHeatmapDay;
+  const activeHeatmapDetail = activeHeatmapDay
+    ? activeHeatmapDay.totalMinutes > 0
+      ? `${activeHeatmapDay.topCategoryName || 'Uncategorized'} - ${formatMinutesPrecise(activeHeatmapDay.totalMinutes)} focused`
+      : 'No saved focus for this day'
+    : 'Hover a day to inspect focus';
   const heatmapCellClass = heatmapRange === 'year'
     ? 'h-3.5 w-3.5 rounded-[4px]'
     : heatmapRange === 'month'
@@ -782,9 +794,11 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const rangeSummaryLabel = `${ANALYTICS_RANGE_LABELS[analyticsRange]} view`;
   const categoryLegendTotal = Math.max(1, categoryTrendLegend.reduce((sum, category) => sum + category.minutes, 0));
   const sessionWeekFocusTotal = displayedSessionLanes.reduce((sum, lane) => sum + lane.totalFocusMinutes, 0);
+  const sessionClockActiveDayCount = displayedSessionLanes.filter((lane) => lane.totalFocusMinutes > 0).length;
+  const sessionClockRangeLabel = formatWeekRangeLabel(rollingSessionClockStartMs);
 
   const activeSessionLane = displayedSessionLanes.find((lane) => lane.dateKey === hoveredSessionLaneKey)
-    || displayedSessionLanes.find((lane) => lane.sessions.length > 0)
+    || [...displayedSessionLanes].reverse().find((lane) => lane.sessions.length > 0)
     || displayedSessionLanes[displayedSessionLanes.length - 1];
   const activeSession = hoveredSessionId
     ? displayedSessionLanes.flatMap((lane) => lane.sessions.map((session) => ({ lane, session }))).find((entry) => entry.session.id === hoveredSessionId)
@@ -1056,12 +1070,17 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={(event) => {
-                const scrollParent = findScrollableParent(event.currentTarget);
+                const target = event.currentTarget;
+                const scrollParent = findScrollableParent(target);
+                const previousTop = target.getBoundingClientRect().top;
                 const scrollTop = scrollParent?.scrollTop ?? null;
                 onRangeChange(range);
                 if (scrollParent && scrollTop !== null) {
                   window.requestAnimationFrame(() => {
-                    scrollParent.scrollTop = scrollTop;
+                    const nextTop = target.getBoundingClientRect().top;
+                    scrollParent.scrollTop = Number.isFinite(nextTop)
+                      ? scrollParent.scrollTop + (nextTop - previousTop)
+                      : scrollTop;
                   });
                 }
               }}
@@ -1176,70 +1195,33 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       <div
         className="rounded-[1.25rem] border px-4 py-4 md:px-5 md:py-5"
         style={getInsightInsetStyle(PRESET_COLORS[5])}
-        onTouchStart={handleSessionClockTouchStart}
-        onTouchEnd={handleSessionClockTouchEnd}
-        onTouchCancel={() => {
-          sessionClockTouchStartRef.current = null;
-        }}
       >
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/6 pb-4">
           <div className="min-w-0">
-            <div className="text-[1.1rem] font-semibold tracking-tight text-white">{formatWeekRangeLabel(activeSessionWeekStartMs)}</div>
+            <div className="text-[1.1rem] font-semibold tracking-tight text-white">{sessionClockRangeLabel}</div>
             <div className="mt-1.5 text-sm text-white/54">
               {selectedSessionEntry
-                ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} · ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)}`
+                ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} - ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)}`
                 : sessionWeekFocusTotal > 0
-                  ? `${formatMinutesPrecise(sessionWeekFocusTotal)} focus this week`
-                  : 'No focus logged this week'}
+                  ? `${formatMinutesPrecise(sessionWeekFocusTotal)} focus in the last 7 days`
+                  : 'No focus logged in the last 7 days'}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div className="flex items-center gap-1.5 rounded-[1rem] border border-white/8 bg-white/[0.025] p-1">
-              <button
-                type="button"
-                onClick={() => moveSessionClockWeek(-1)}
-                disabled={!canGoToPreviousSessionWeek}
-                className={`flex h-8 w-8 items-center justify-center rounded-[0.9rem] border transition-[background-color,border-color,color,transform] duration-200 ${
-                  canGoToPreviousSessionWeek
-                    ? 'border-white/10 bg-white/[0.035] text-white/68 hover:-translate-y-[1px] hover:bg-white/[0.07] hover:text-white'
-                    : 'border-white/8 bg-white/[0.02] text-white/24 cursor-not-allowed'
-                }`}
-                aria-label="Show previous week in Session Clock"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="m15 18-6-6 6-6" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedSessionWeekStartMs(latestSessionClockWeekStartMs)}
-                className="rounded-[0.9rem] border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[11px] font-semibold text-white/72 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-white/[0.07] hover:text-white"
-                aria-label="Jump to current week in Session Clock"
-              >
-                This week
-              </button>
-              <button
-                type="button"
-                onClick={() => moveSessionClockWeek(1)}
-                disabled={!canGoToNextSessionWeek}
-                className={`flex h-8 w-8 items-center justify-center rounded-[0.9rem] border transition-[background-color,border-color,color,transform] duration-200 ${
-                  canGoToNextSessionWeek
-                    ? 'border-white/10 bg-white/[0.035] text-white/68 hover:-translate-y-[1px] hover:bg-white/[0.07] hover:text-white'
-                    : 'border-white/8 bg-white/[0.02] text-white/24 cursor-not-allowed'
-                }`}
-                aria-label="Show next week in Session Clock"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="m9 18 6-6-6-6" />
-                </svg>
-              </button>
+          <div className="grid grid-cols-2 gap-2 text-right sm:flex sm:flex-wrap sm:justify-end">
+            <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
+              <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Focus</div>
+              <div className="mt-0.5 text-sm font-semibold text-white">{formatMinutesCompact(sessionWeekFocusTotal)}</div>
+            </div>
+            <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
+              <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Active Days</div>
+              <div className="mt-0.5 text-sm font-semibold text-white">{sessionClockActiveDayCount}/7</div>
             </div>
           </div>
         </div>
 
-        <div className="mt-4 overflow-x-auto pb-1" style={{ touchAction: 'pan-y' }}>
-          <div className="min-w-[42rem]">
-            <div className="grid grid-cols-[3.75rem_minmax(0,1fr)] gap-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/32">
+        <div className="mt-4">
+          <div className="w-full">
+            <div className="grid grid-cols-[3.2rem_minmax(0,1fr)] gap-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-white/32 sm:grid-cols-[4rem_minmax(0,1fr)] sm:gap-3 sm:text-[10px]">
               <div />
               <div className="relative h-5">
                 {SESSION_CLOCK_AXIS_MARKS.map((mark) => {
@@ -1252,7 +1234,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                   return (
                     <div
                       key={`session-axis-${mark.minutes}`}
-                      className="absolute top-0"
+                      className={`absolute top-0 ${mark.minutes === 360 || mark.minutes === 1080 ? 'hidden sm:block' : ''}`}
                       style={{ left: `${pct}%`, transform }}
                     >
                       {mark.label}
@@ -1266,22 +1248,27 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               {displayedSessionLanes.map((lane) => {
                 const activeLane = lane.dateKey === activeSessionLane?.dateKey;
                 return (
-                  <div key={lane.dateKey} className="grid grid-cols-[3.75rem_minmax(0,1fr)] gap-3 items-center">
+                  <div key={lane.dateKey} className="grid grid-cols-[3.2rem_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[4rem_minmax(0,1fr)] sm:gap-3">
                     <button
                       type="button"
                       onMouseEnter={() => setHoveredSessionLaneKey(lane.dateKey)}
                       onMouseLeave={() => setHoveredSessionLaneKey(null)}
                       onFocus={() => setHoveredSessionLaneKey(lane.dateKey)}
                       onBlur={() => setHoveredSessionLaneKey(null)}
-                      className={`flex items-center justify-between rounded-[0.95rem] border px-2.5 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.1em] transition-[background-color,border-color,color] duration-200 ${activeLane ? 'border-white/12 bg-white/[0.08] text-white' : 'border-white/8 bg-white/[0.02] text-white/48 hover:bg-white/[0.045] hover:text-white/72'}`}
+                      className={`flex min-h-11 flex-col justify-center rounded-[0.95rem] border px-2 py-2 text-left text-[9px] font-semibold uppercase tracking-[0.08em] transition-[background-color,border-color,color] duration-200 sm:min-h-12 sm:flex-row sm:items-center sm:justify-between sm:px-2.5 sm:text-[10px] ${activeLane ? 'border-white/12 bg-white/[0.08] text-white' : 'border-white/8 bg-white/[0.02] text-white/48 hover:bg-white/[0.045] hover:text-white/72'}`}
                     >
                       <span>{WEEKDAY_SHORT_LABELS[lane.weekday]}</span>
                       <span className="text-white/38">{new Date(lane.dateMs).getDate()}</span>
                     </button>
-                    <div className={`relative h-12 overflow-hidden rounded-[1rem] border transition-[border-color,background-color] duration-200 ${activeLane ? 'border-white/14 bg-white/[0.06]' : 'border-white/8 bg-white/[0.024]'}`}>
+                    <div className={`relative h-11 overflow-hidden rounded-[1rem] border transition-[border-color,background-color] duration-200 sm:h-12 ${activeLane ? 'border-white/14 bg-white/[0.06]' : 'border-white/8 bg-white/[0.024]'}`}>
                       {SESSION_CLOCK_AXIS_MARKS.slice(1, -1).map((mark) => (
                         <div key={mark.minutes} className="absolute top-0 bottom-0 w-px bg-white/6" style={{ left: `${(mark.minutes / 1440) * 100}%` }} />
                       ))}
+                      {lane.sessions.length === 0 && (
+                        <div className="absolute inset-0 flex items-center px-3 text-[10px] font-medium text-white/22 sm:text-[11px]">
+                          No focus
+                        </div>
+                      )}
                       {lane.sessions.map((session) => {
                         const active = hoveredSessionId === session.id || (!hoveredSessionId && selectedSessionEntry?.session.id === session.id);
                         return renderSessionClockBar(lane, session, active);
@@ -1345,8 +1332,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
 
   return (
     <div className="space-y-4">
-      {categoryShareCard}
-
       {showTodayStats && (
         <Card title="Today's Stats" subtitle="Today so far." accent={accentColor} isLightTheme={isLightTheme}>
           <div className="grid gap-3 md:grid-cols-2">
@@ -1386,7 +1371,8 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </Card>
       )}
 
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
+        <div className="order-1">
         <Card title="Focus Over Time" isLightTheme={isLightTheme}>
           <div className="rounded-[1.2rem] border border-white/8 bg-black/10 px-4 py-4 md:px-5">
             <div>
@@ -1559,9 +1545,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             </div>
           </div>
         </Card>
+        </div>
 
-        {sessionClockCard}
+        <div className="order-4">
+          {sessionClockCard}
+        </div>
 
+        <div className="order-5">
         <Card title={rangeSummaryLabel} isLightTheme={isLightTheme}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -1638,12 +1628,23 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             </div>
           )}
         </Card>
+        </div>
 
+        <div className="order-2">
         <Card title="Focus Heatmap" isLightTheme={isLightTheme}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="text-base font-semibold tracking-tight text-white">
                 {activeHeatmapDay ? formatDateKeyFullStamp(activeHeatmapDay.dateKey) : 'Daily focus'}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-semibold text-white/52">
+                {activeHeatmapDay?.topCategoryColor && activeHeatmapDay.totalMinutes > 0 && (
+                  <span
+                    className="h-2 w-2 rounded-full shadow-[0_0_0_3px_rgba(255,255,255,0.06)]"
+                    style={{ backgroundColor: activeHeatmapDay.topCategoryColor }}
+                  />
+                )}
+                <span>{activeHeatmapDetail}</span>
               </div>
             </div>
             {renderAnalyticsRangeToggle(heatmapRange, setHeatmapRange)}
@@ -1699,12 +1700,12 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                         const active = day.dateKey === activeHeatmapDay?.dateKey;
                         const hasFocus = day.totalMinutes > 0;
                         const rawIntensity = hasFocus
-                          ? Math.min(1, Math.log1p(day.totalMinutes) / Math.log1p(heatmapScaleMaxMinutes))
+                          ? clamp01(day.totalMinutes / heatmapScaleMaxMinutes)
                           : 0;
-                        const intensity = hasFocus ? Math.pow(rawIntensity, 0.92) : 0;
+                        const intensity = hasFocus ? Math.pow(rawIntensity, 1.16) : 0;
                         const heatmapColor = day.topCategoryColor || accentColor;
                         const fillAlpha = hasFocus
-                          ? (isLightTheme ? 0.18 + (intensity * 0.7) : 0.16 + (intensity * 0.72))
+                          ? (isLightTheme ? 0.12 + (intensity * 0.68) : 0.11 + (intensity * 0.7))
                           : 0;
 
                         return (
@@ -1732,7 +1733,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                               transform: active ? 'scale(1.08)' : 'scale(1)',
                             }}
                             aria-pressed={day.dateKey === selectedHeatmapDateKey}
-                            aria-label={`${formatDateKeyFullStamp(day.dateKey)} ${formatMinutesPrecise(day.totalMinutes)}`}
+                            aria-label={`${formatDateKeyFullStamp(day.dateKey)} ${formatMinutesPrecise(day.totalMinutes)}${day.topCategoryName ? ` top category ${day.topCategoryName}` : ''}`}
                           />
                         );
                       })}
@@ -1743,6 +1744,11 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             </div>
           </div>
         </Card>
+        </div>
+
+        <div className="order-3">
+          {categoryShareCard}
+        </div>
 
         {false && (
         <Card title="Session Clock" subtitle="Swipe or step through each week." isLightTheme={isLightTheme}>

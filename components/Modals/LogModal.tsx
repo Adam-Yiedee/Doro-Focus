@@ -23,7 +23,6 @@ import { playAlarm, startFocusSoundPreview, stopFocusSoundPreview } from '../../
 import { TIMER_PRESETS, getMatchingTimerPreset } from '../../utils/timerRuntime';
 import {
   buildTimerSpectatorUrl,
-  formatTimerShareDuration,
   formatTimerShareEndLabel,
   getTimerShareEstimate,
   getTimerShareModeLabel,
@@ -101,6 +100,8 @@ const FOCUS_SOUND_OPTIONS: Array<{ label: string; value: FocusSound }> = [
 ];
 
 const FOCUS_SOUND_PREVIEW_MS = 2600;
+const DAY_MS = 86_400_000;
+const ROLLING_WEEK_DAYS = 7;
 
 const TIMER_PRESET_OPTIONS: Array<{ label: string; value: Exclude<TimerPreset, 'custom'>; detail: string }> = [
   { label: 'Classic', value: 'classic', detail: '25 / 5 / 15' },
@@ -396,6 +397,33 @@ const getDateKeyFromIso = (iso: string) => {
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return '';
   return getDateKey(dt);
+};
+
+const getStartOfLocalDayMs = (value: number | string | Date) => {
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const getInclusiveLocalDayCount = (startIso: string, endMs = Date.now()) => {
+  const startMs = getStartOfLocalDayMs(startIso);
+  const endDayMs = getStartOfLocalDayMs(endMs);
+  if (startMs === null || endDayMs === null || endDayMs < startMs) return 1;
+  return Math.max(1, Math.floor((endDayMs - startMs) / DAY_MS) + 1);
+};
+
+const getRollingWeekBounds = () => {
+  const todayStartMs = getStartOfLocalDayMs(Date.now()) ?? Date.now();
+  return {
+    startMs: todayStartMs - ((ROLLING_WEEK_DAYS - 1) * DAY_MS),
+    endMs: todayStartMs + DAY_MS,
+  };
+};
+
+const isIsoWithinMsRange = (iso: string, startMs: number, endMs: number) => {
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) && ms >= startMs && ms < endMs;
 };
 
 const parseDateKey = (key: string) => {
@@ -882,6 +910,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       lifetimeStats: calculateLifetimeStatsFromData(safePastSessions, safeLogs, safeCategories),
     });
   }, [safeCategories, safeLogs, safePastSessions, safeUser]);
+  const safeWeeklyStats = useMemo(() => {
+    const { startMs, endMs } = getRollingWeekBounds();
+    const weeklyLogs = safeLogs.filter((entry) => isIsoWithinMsRange(entry.start, startMs, endMs));
+    const weeklySessions = safePastSessions.filter((session) => isIsoWithinMsRange(session.startTime, startMs, endMs));
+    return getSafeLifetimeStats({
+      username: 'weekly',
+      joinedAt: new Date(startMs).toISOString(),
+      lifetimeStats: calculateLifetimeStatsFromData(weeklySessions, weeklyLogs, safeCategories),
+    });
+  }, [safeCategories, safeLogs, safePastSessions]);
   const safeLastAccountSyncAt = useMemo(() => getSafeTimestamp(lastAccountSyncAt), [lastAccountSyncAt]);
   const safeHostSyncConfig = useMemo(() => getSafeSyncConfig(hostSyncConfig), [hostSyncConfig]);
   const safeClientSyncConfig = useMemo(() => getSafeSyncConfig(clientSyncConfig), [clientSyncConfig]);
@@ -2186,6 +2224,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (!safeUser) return renderAccountSignedOut();
 
     const stats = safeLifetimeStats;
+    const weekStats = safeWeeklyStats;
     const insights = computeAccountInsights({
       logs: safeLogs,
       categories: safeCategories,
@@ -2193,7 +2232,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     });
     const joinedAt = formatDateTime(safeUser.joinedAt, 'Unknown');
     const activeDays = Math.max(0, Math.floor(stats.activeDays || 0));
+    const weekActiveDays = Math.max(0, Math.floor(weekStats.activeDays || 0));
+    const lifetimeCalendarDays = getInclusiveLocalDayCount(safeUser.joinedAt);
     const dailyAvgHours = activeDays > 0 ? stats.totalFocusHours / activeDays : 0;
+    const overallDailyAvgHours = stats.totalFocusHours / lifetimeCalendarDays;
+    const weekActiveDayAvgHours = weekActiveDays > 0 ? weekStats.totalFocusHours / weekActiveDays : 0;
+    const weekOverallDailyAvgHours = weekStats.totalFocusHours / ROLLING_WEEK_DAYS;
     const focusHoursLabel = formatCompactHours(stats.totalFocusHours);
     const manualFocusHoursLabel = formatCompactHours(stats.manualFocusHours || 0);
     const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
@@ -2209,6 +2253,31 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const todayTopCategoryColor = insights.today.topCategoryName
       ? (categoryColorsByName.get(insights.today.topCategoryName) || PRESET_COLORS[3])
       : PRESET_COLORS[3];
+    const weeklyStatCards: Array<{
+      label: string;
+      value: string;
+      color: string;
+      valueClassName?: string;
+    }> = [
+      { label: 'Focus Time', value: formatCompactHours(weekStats.totalFocusHours), color: accountPrimaryColor },
+      { label: 'Pomodoros', value: formatPomodoroCount(weekStats.totalPomos), color: PRESET_COLORS[2] },
+      { label: 'Sessions', value: `${weekStats.totalSessions}`, color: PRESET_COLORS[1] },
+      {
+        label: 'Current Streak',
+        value: `${weekStats.currentStreak}`,
+        color: PRESET_COLORS[3],
+      },
+      {
+        label: 'Active-Day Average',
+        value: formatCompactHours(weekActiveDayAvgHours),
+        color: PRESET_COLORS[6],
+      },
+      {
+        label: 'Overall Average',
+        value: formatCompactHours(weekOverallDailyAvgHours),
+        color: PRESET_COLORS[0],
+      },
+    ];
     const statCards: Array<{
       label: string;
       value: string;
@@ -2233,6 +2302,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         label: 'Active-Day Average',
         value: formatCompactHours(dailyAvgHours),
         color: PRESET_COLORS[6],
+      },
+      {
+        label: 'Overall Average',
+        value: formatCompactHours(overallDailyAvgHours),
+        color: PRESET_COLORS[0],
       },
     ];
     const todayStatCards: Array<{
@@ -2266,6 +2340,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       backgroundColor: isLightTheme ? 'rgba(248, 250, 252, 0.92)' : 'rgba(255, 255, 255, 0.03)',
       color: isLightTheme ? 'rgba(51, 65, 85, 0.84)' : 'rgba(255, 255, 255, 0.66)',
     };
+    const accountOverviewGridClassName = 'grid grid-cols-2 gap-3 xl:grid-cols-4';
     const getAccountOverviewCardStyle = (color: string): React.CSSProperties => ({
       borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.16)' : 'rgba(255, 255, 255, 0.08)',
       backgroundColor: isLightTheme ? colorToRgba(color, 0.065) : 'rgba(255, 255, 255, 0.028)',
@@ -2353,8 +2428,28 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <div className={accountOverviewGridClassName}>
               {todayStatCards.map((card, index) => renderAccountOverviewCard(card, index))}
+            </div>
+          </div>
+        </div>
+
+        <div
+          className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
+          style={accountOverviewSectionStyle}
+        >
+          <div className="relative space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className={`${overviewHeadingClassName} mt-0`}>Week's Snapshot</div>
+              </div>
+              <div className="rounded-full border px-3 py-1.5 text-[11px] font-medium" style={accountOverviewChipStyle}>
+                Rolling 7 days
+              </div>
+            </div>
+
+            <div className={accountOverviewGridClassName}>
+              {weeklyStatCards.map((card, index) => renderAccountOverviewCard(card, index))}
             </div>
           </div>
         </div>
@@ -2370,7 +2465,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className={accountOverviewGridClassName}>
               {statCards.map((card, index) => renderAccountOverviewCard(card, index))}
             </div>
           </div>
@@ -2590,75 +2685,53 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const clientControls = safeClientSyncConfig;
     const timerShareModeLabel = getTimerShareModeLabel(activeMode);
     const timerShareTaskLabel = activeMode === 'work' && activeTask?.name ? activeTask.name : timerShareModeLabel;
-    const timerShareRemainingLabel = timerShareEstimate.status === 'overdue'
-      ? `${formatTimerShareDuration(timerShareEstimate.remainingSeconds)} overdue`
-      : formatTimerShareDuration(timerShareEstimate.remainingSeconds);
-    const timerSharePrimaryLabel = safeGroupSessionId ? 'Copy Spectator Link' : 'Start & Copy Link';
-    const timerShareCard = (
-      <div className="rounded-[1.75rem] border border-emerald-300/16 bg-emerald-400/[0.055] p-5 md:p-6 space-y-4">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/18 bg-emerald-400/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-100/85">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-200" />
-              Read-Only Timer Link
-            </div>
-            <h4 className="mt-3 text-xl font-semibold tracking-tight text-white">Share Timer View</h4>
-            <p className="mt-2 text-sm leading-relaxed text-white/44">
-              Friends can watch your focus and break bank timers with the estimated end time. They cannot control or change anything.
-            </p>
-          </div>
-
-          <div className="rounded-[1.15rem] border border-white/10 bg-black/18 px-4 py-3 md:min-w-[11rem] md:text-right">
-            <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/36">
-              {timerShareTaskLabel}
-            </div>
-            <div className="mt-1 text-2xl font-semibold tracking-tight text-white">
-              {timerShareEndLabel}
-            </div>
-            <div className="mt-1 font-mono text-[11px] font-bold uppercase tracking-[0.12em] text-white/42">
-              {timerShareRemainingLabel}
+    const timerSharePrimaryLabel = safeGroupSessionId ? 'Share Timer' : 'Share Timer';
+    const groupActionButtonClass = 'group relative overflow-hidden rounded-lg border border-white/[0.13] bg-white/[0.072] px-4 py-4 text-left shadow-[0_26px_54px_-34px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.065)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.12] hover:shadow-[0_34px_68px_-34px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.085)] active:translate-y-0 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45';
+    const groupActionLabelClass = 'text-[11px] font-bold uppercase tracking-[0.14em] text-white/86 transition-colors group-hover:text-white';
+    const groupActionDetailClass = 'mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/42 transition-colors group-hover:text-white/56';
+    const timerShareButton = (
+      <button
+        type="button"
+        onClick={handleCopyTimerShareLink}
+        disabled={timerShareBusy}
+        className={groupActionButtonClass}
+      >
+        <div className="relative z-10 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className={groupActionLabelClass}>{timerShareBusy ? 'Preparing...' : timerSharePrimaryLabel}</div>
+            <div className={groupActionDetailClass}>
+              {timerShareTaskLabel} - {timerShareEndLabel}
             </div>
           </div>
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.055] text-white/66 transition-[transform,background-color,color] duration-300 group-hover:-translate-y-0.5 group-hover:bg-white/[0.1] group-hover:text-white">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+              <path d="M16 6l-4-4-4 4" />
+              <path d="M12 2v13" />
+            </svg>
+          </span>
         </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={handleCopyTimerShareLink}
-            disabled={timerShareBusy}
-            className="rounded-[0.95rem] border border-emerald-300/22 bg-emerald-400/[0.11] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-100 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-emerald-400/[0.17] disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            {timerShareBusy ? 'Preparing...' : timerSharePrimaryLabel}
-          </button>
-          {safeGroupSessionId && timerShareUrl && (
-            <button
-              type="button"
-              onClick={() => setShowTimerShareQr(prev => !prev)}
-              className="rounded-[0.95rem] border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/72 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-white/[0.08] hover:text-white"
-            >
-              {showTimerShareQr ? 'Hide QR' : 'Show QR'}
-            </button>
-          )}
-        </div>
-
+      </button>
+    );
+    const timerShareStatusPanel = (timerShareMessage || (showTimerShareQr && safeGroupSessionId && timerShareUrl)) ? (
+      <div className="space-y-3 rounded-lg border border-white/[0.12] bg-white/[0.045] p-3 shadow-[0_18px_38px_-30px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.055)]">
         {timerShareMessage && (
-          <div className="rounded-[0.9rem] border border-white/8 bg-black/14 px-3 py-2 text-[11px] leading-relaxed text-white/58">
+          <div className="text-center text-[11px] font-semibold leading-relaxed text-white/62">
             {timerShareMessage}
           </div>
         )}
-
         {showTimerShareQr && safeGroupSessionId && timerShareUrl && (
-          <div className="space-y-3 rounded-[1.2rem] border border-white/8 bg-white/[0.025] px-4 py-4">
-            <div className="flex justify-center rounded-[1rem] bg-white p-4">
-              <QRCodeSVG value={timerShareUrl} size={180} />
+          <div className="mx-auto max-w-[14rem] space-y-3">
+            <div className="flex justify-center rounded-lg bg-white p-4">
+              <QRCodeSVG value={timerShareUrl} size={170} />
             </div>
-            <div className="text-center text-[11px] leading-relaxed text-white/46">
-              This opens the spectator timer view only.
+            <div className="text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-white/40">
+              Spectator View
             </div>
           </div>
         )}
       </div>
-    );
+    ) : null;
 
     if (groupBusy) {
       return (
@@ -2719,6 +2792,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   >
                     {showGroupQr ? 'Hide QR' : 'Show QR'}
                   </button>
+                  {safeGroupSessionId && timerShareUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setShowTimerShareQr(prev => !prev)}
+                      className="rounded-[0.95rem] border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/72 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-white/[0.08] hover:text-white"
+                    >
+                      {showTimerShareQr ? 'Hide Timer QR' : 'Timer QR'}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -2760,7 +2842,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
             </div>
 
-            {timerShareCard}
+            <div className="space-y-3">
+              {timerShareButton}
+              {timerShareStatusPanel}
+            </div>
 
             {isHost ? (
               <div className="rounded-[1.75rem] border border-white/8 bg-white/[0.03] p-5 md:p-6 space-y-3">
@@ -2826,8 +2911,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </p>
           </div>
 
-          {timerShareCard}
-
           {groupError && (
             <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
               {groupError}
@@ -2861,27 +2944,30 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
 
           {groupFlow === 'menu' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <button
                 type="button"
                 disabled={!groupName.trim()}
                 onClick={() => setGroupFlow('host')}
-                className="p-5 rounded-2xl bg-white/10 border border-white/10 hover:bg-white/20 text-white transition-all disabled:opacity-55 disabled:cursor-not-allowed"
+                className={groupActionButtonClass}
               >
-                <div className="text-sm font-bold uppercase tracking-[0.12em]">Host Session</div>
-                <div className="text-[10px] text-white/45 mt-2">Create a room and share ID/QR.</div>
+                <div className={groupActionLabelClass}>Host Session</div>
+                <div className={groupActionDetailClass}>Create a room</div>
               </button>
               <button
                 type="button"
                 disabled={!groupName.trim()}
                 onClick={() => setGroupFlow('join')}
-                className="p-5 rounded-2xl bg-white/10 border border-white/10 hover:bg-white/20 text-white transition-all disabled:opacity-55 disabled:cursor-not-allowed"
+                className={groupActionButtonClass}
               >
-                <div className="text-sm font-bold uppercase tracking-[0.12em]">Join Session</div>
-                <div className="text-[10px] text-white/45 mt-2">Connect with a session ID.</div>
+                <div className={groupActionLabelClass}>Join Session</div>
+                <div className={groupActionDetailClass}>Enter a code</div>
               </button>
+              {timerShareButton}
             </div>
           )}
+
+          {groupFlow === 'menu' && timerShareStatusPanel}
 
           {groupFlow === 'host' && (
             <div className="space-y-4 bg-white/5 border border-white/10 rounded-2xl p-4">

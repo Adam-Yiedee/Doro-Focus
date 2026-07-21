@@ -533,7 +533,7 @@ describe('behavior-locked transition math', () => {
     expect(result.nextBreakTime).toBe(540);
   });
 
-  it('projects classic task finish time with short breaks between remaining pomodoros', () => {
+  it('projects classic task finish time with every earned break banked into the finish', () => {
     expect(getProjectedTaskFinishSeconds({
       remainingPomodoros: 4,
       pomodoroCount: 0,
@@ -544,10 +544,10 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
-    })).toBe((4 * 25 + 3 * 5) * 60);
+    })).toBe((4 * 25 + 5 + 5 + 5 + 15) * 60);
   });
 
-  it('projects classic long breaks when the next completion crosses the long-break boundary', () => {
+  it('projects classic long and short rewards when the next completion crosses the long-break boundary', () => {
     expect(getProjectedTaskFinishSeconds({
       remainingPomodoros: 2,
       pomodoroCount: 3,
@@ -558,10 +558,10 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
-    })).toBe((25 + 15 + 25) * 60);
+    })).toBe((25 + 15 + 25 + 5) * 60);
   });
 
-  it('projects compact mini-pomos with compact short and long breaks', () => {
+  it('projects compact mini-pomos with all compact short and long rewards', () => {
     expect(getProjectedTaskFinishSeconds({
       remainingPomodoros: 5,
       pomodoroCount: 0,
@@ -572,7 +572,7 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.compact, timerPreset: 'compact', twoInARowMode: false },
-    })).toBe((5 * 15 + 3 + 3 + 3 + 9) * 60);
+    })).toBe((5 * 15 + 3 + 3 + 3 + 9 + 3) * 60);
   });
 
   it('uses the current partial work timer for the first remaining classic pomodoro', () => {
@@ -586,10 +586,10 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
-    })).toBe((10 + 5 + 25) * 60);
+    })).toBe((10 + 5 + 25 + 5) * 60);
   });
 
-  it('starts with the current break bank when the timer is already in break mode', () => {
+  it('includes the current positive break bank when the timer is already in break mode', () => {
     expect(getProjectedTaskFinishSeconds({
       remainingPomodoros: 2,
       pomodoroCount: 1,
@@ -600,10 +600,10 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
-    })).toBe((4 + 25 + 5 + 25) * 60);
+    })).toBe((4 + 25 + 5 + 25 + 5) * 60);
   });
 
-  it('projects compact two-in-a-row by banking skipped breaks until the pair break point', () => {
+  it('projects compact two-in-a-row with all banked pair rewards included', () => {
     expect(getProjectedTaskFinishSeconds({
       remainingPomodoros: 4,
       pomodoroCount: 0,
@@ -614,10 +614,10 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.compact, timerPreset: 'compact', twoInARowMode: true },
-    })).toBe((15 + 15 + 6 + 15 + 15) * 60);
+    })).toBe((4 * 15 + 3 + 3 + 3 + 9) * 60);
   });
 
-  it('keeps already banked compact two-in-a-row break time for the next pair break', () => {
+  it('keeps already banked compact two-in-a-row break time in the finish estimate', () => {
     expect(getProjectedTaskFinishSeconds({
       remainingPomodoros: 2,
       pomodoroCount: 1,
@@ -628,7 +628,60 @@ describe('behavior-locked transition math', () => {
       graceOpen: false,
       graceContext: null,
       settings: { ...TIMER_PRESETS.compact, timerPreset: 'compact', twoInARowMode: true },
-    })).toBe((10 + 6 + 15) * 60);
+    })).toBe((10 + 3 + 15 + 3 + 3) * 60);
+  });
+
+  it('keeps the finish stable as normal positive break bank is spent', () => {
+    const beforeBreakSeconds = getProjectedTaskFinishSeconds({
+      remainingPomodoros: 3,
+      pomodoroCount: 1,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: 5 * 60,
+      activeMode: 'break',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    });
+    const twoMinutesIntoBreakSeconds = getProjectedTaskFinishSeconds({
+      remainingPomodoros: 3,
+      pomodoroCount: 1,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: 3 * 60,
+      activeMode: 'break',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    });
+    const afterBreakSeconds = getProjectedTaskFinishSeconds({
+      remainingPomodoros: 3,
+      pomodoroCount: 1,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: 0,
+      activeMode: 'work',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    });
+
+    expect(beforeBreakSeconds - twoMinutesIntoBreakSeconds).toBe(2 * 60);
+    expect(beforeBreakSeconds - afterBreakSeconds).toBe(5 * 60);
+  });
+
+  it('lets negative break debt move the finish later instead of offsetting future rewards', () => {
+    expect(getProjectedTaskFinishSeconds({
+      remainingPomodoros: 3,
+      pomodoroCount: 1,
+      workTime: TIMER_PRESETS.classic.workDuration,
+      breakTime: -2 * 60,
+      activeMode: 'break',
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      settings: { ...TIMER_PRESETS.classic, timerPreset: 'classic', twoInARowMode: false },
+    })).toBe((3 * 25 + 5 + 5 + 15) * 60);
   });
 
   it('uses the running-work runtime break bank when completing an auto-started compact pair', () => {

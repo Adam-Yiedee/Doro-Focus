@@ -91,6 +91,8 @@ export interface ScheduleBreak {
 }
 
 export interface SessionStats {
+  sessionStartTime?: string | null;
+  sessionEndTime?: string | null;
   totalWorkMinutes: number;
   totalBreakMinutes: number;
   tasksCompleted: number;
@@ -1020,6 +1022,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const groupLifecycleRef = useRef(0);
   const clientReadyForBroadcastRef = useRef(true);
   const currentGroupStateRef = useRef<any>(null);
+  const logsRef = useRef<LogEntry[]>([]);
 
   const lastTickRef = useRef<number | null>(null);
   const shadowTickRef = useRef<number | null>(null);
@@ -1067,6 +1070,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   groupSessionIdRef.current = groupSessionId;
   userNameRef.current = userName;
   isHostRef.current = isHost;
+  logsRef.current = logs;
   currentGroupStateRef.current = {
     settings,
     tasks,
@@ -3381,6 +3385,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const activeTask = activeContext.task;
   const activeColor = activeContext.color;
 
+  const prependLogEntry = useCallback((entry: LogEntry) => {
+    setLogs(prev => {
+      const nextLogs = [entry, ...prev];
+      logsRef.current = nextLogs;
+      return nextLogs;
+    });
+  }, []);
+
   const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
@@ -3392,8 +3404,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       categoryId: selectedTask ? selectedTask.categoryId : null,
       ...categorySnapshot,
     };
-    setLogs(prev => [entry, ...prev]);
-  }, [categories, tasks]);
+    prependLogEntry(entry);
+  }, [categories, prependLogEntry, tasks]);
 
   const addManualFocusLog = useCallback((minutes: number, note: string = '', categoryId: number | null = null) => {
     const safeMinutes = Math.max(0, Math.round(Number(minutes)));
@@ -3419,7 +3431,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       categoryId: resolvedCategoryId,
       ...categorySnapshot,
     };
-    const nextLogs = [entry, ...logs];
+    const nextLogs = [entry, ...logsRef.current];
+    logsRef.current = nextLogs;
     setLogs(nextLogs);
     if (user) {
       setUser(prev => (
@@ -3431,7 +3444,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           : prev
       ));
     }
-  }, [categories, logs, pastSessions, user]);
+  }, [categories, pastSessions, user]);
 
   const sendNotification = useCallback((title: string, body: string) => {
     if ("Notification" in window) {
@@ -4190,8 +4203,31 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const startAllPause = () => {};
   const confirmAllPause = (reason: string) => {
     if (blockGuestTimerControl()) return;
-    stopTimer({ silentGroupEvent: true });
     const pauseStart = Date.now();
+    const activeStart = currentActivityStartRef.current;
+    if (timerStarted && !isIdle && activeStart) {
+      const activeDuration = (pauseStart - activeStart.getTime()) / 1000;
+      if (Number.isFinite(activeDuration) && activeDuration > 0.5) {
+        const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+        const activeCategoryId = activeTask?.categoryId ?? null;
+        const activeCategorySnapshot = buildCategorySnapshot(categories, activeCategoryId);
+        const pauseEntry: LogEntry = {
+          type: activeMode,
+          start: activeStart.toISOString(),
+          end: new Date(pauseStart).toISOString(),
+          duration: activeDuration,
+          reason: 'Timer Paused',
+          source: 'timer',
+          task: selectedTask,
+          color: activeColor,
+          categoryId: activeCategoryId,
+          ...activeCategorySnapshot,
+        };
+        prependLogEntry(pauseEntry);
+      }
+    }
+    stopTimer({ silentGroupEvent: true });
+    currentActivityStartRef.current = null;
     setAllPauseReason(reason);
     setAllPauseStartTime(pauseStart);
     setAllPauseTime(0);
@@ -4334,6 +4370,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let pendingActivity: EndSessionPendingActivity | null = null;
     const pendingWindow = getEndSessionPendingActivityWindow({
       isIdle,
+      timerStarted,
       activityStartMs: currentActivityStartRef.current?.getTime() ?? null,
       effectiveEndMs,
       allPauseActive,
@@ -4366,12 +4403,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ...pendingActiveCategorySnapshot,
       };
       sessionEndEntry = nextSessionEndEntry;
-      setLogs(prev => [nextSessionEndEntry, ...prev]);
     }
 
     const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
+    const baseLogs = logsRef.current;
     const sessionSummary = buildEndSessionStats({
-      logs,
+      logs: baseLogs,
       sessionStartTime,
       categories,
       pendingActivity,
@@ -4379,7 +4416,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       settings: { timerPreset: settings.timerPreset },
       tasksCompleted: completedTasksCount,
     });
-    const logsIncludingSessionEnd = sessionEndEntry ? [sessionEndEntry, ...logs] : logs;
+    const logsIncludingSessionEnd = sessionEndEntry
+      ? [sessionEndEntry, ...baseLogs]
+      : baseLogs;
+    if (sessionEndEntry) {
+      logsRef.current = logsIncludingSessionEnd;
+      setLogs(logsIncludingSessionEnd);
+    }
 
     // Archive Session
     if (sessionStartTime) {
@@ -4416,6 +4459,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     setSessionStats({
+        sessionStartTime,
+        sessionEndTime: effectiveEndIso,
         totalWorkMinutes: sessionSummary.totalWorkMinutes,
         totalBreakMinutes: sessionSummary.totalBreakMinutes,
         tasksCompleted: sessionSummary.tasksCompleted,
@@ -4493,6 +4538,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     settings.timerPreset,
     settings.workDuration,
     tasks,
+    timerStarted,
     user,
   ]);
 
