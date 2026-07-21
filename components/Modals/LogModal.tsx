@@ -2341,12 +2341,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       color: isLightTheme ? 'rgba(51, 65, 85, 0.84)' : 'rgba(255, 255, 255, 0.66)',
     };
     const accountOverviewGridClassName = 'grid grid-cols-2 gap-3 xl:grid-cols-4';
-    const getAccountOverviewCardStyle = (color: string): React.CSSProperties => ({
+    const getAccountOverviewCardStyle = (color: string): React.CSSProperties & {
+      '--doro-account-stat-rest-shadow': string;
+      '--doro-account-stat-hover-shadow': string;
+    } => ({
       borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.16)' : 'rgba(255, 255, 255, 0.08)',
       backgroundColor: isLightTheme ? colorToRgba(color, 0.065) : 'rgba(255, 255, 255, 0.028)',
-      boxShadow: isLightTheme
+      '--doro-account-stat-rest-shadow': isLightTheme
         ? '0 16px 30px -28px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.74)'
         : '0 18px 34px -30px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255, 255, 255, 0.04)',
+      '--doro-account-stat-hover-shadow': isLightTheme
+        ? '0 22px 34px -30px rgba(15, 23, 42, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.78)'
+        : '0 22px 34px -28px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.055)',
     });
     const overviewKickerClassName = isLightTheme
       ? 'text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500'
@@ -2366,10 +2372,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     ) => (
       <div
         key={card.label}
-        className={`doro-account-stat-card group relative overflow-hidden rounded-[1.2rem] border px-4 py-4 md:px-5 md:py-5 transform-gpu transition-[transform,border-color,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform hover:-translate-y-[3px] hover:scale-[1.012] ${
-          isLightTheme
-            ? 'hover:border-slate-300/70 hover:shadow-[0_22px_34px_-30px_rgba(15,23,42,0.22)]'
-            : 'hover:border-white/14 hover:shadow-[0_22px_34px_-28px_rgba(0,0,0,0.72)]'
+        className={`doro-account-stat-card group relative overflow-hidden rounded-[1.2rem] border px-4 py-4 md:px-5 md:py-5 transform-gpu transition-[transform,border-color,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform hover:-translate-y-[2px] hover:scale-[1.01] ${
+          isLightTheme ? 'hover:border-slate-300/70' : 'hover:border-white/14'
         }`}
         style={{
           ...getAccountOverviewCardStyle(card.color),
@@ -3725,7 +3729,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-account-stat-card {
           animation: doro-account-stat-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          box-shadow: var(--doro-account-stat-rest-shadow);
           will-change: transform, opacity;
+        }
+        .doro-account-stat-card:hover {
+          box-shadow: var(--doro-account-stat-hover-shadow);
         }
         .doro-account-stat-rail {
           animation: doro-account-stat-rail 720ms cubic-bezier(0.22, 1, 0.36, 1) both;

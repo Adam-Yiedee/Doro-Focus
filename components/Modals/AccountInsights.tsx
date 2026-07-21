@@ -583,13 +583,21 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   }, [hoveredCategoryTrendDateKey, rangeDailyBuckets]);
 
   useEffect(() => {
-    const selectedDayExists = selectedHeatmapDateKey && heatmapDailyBuckets.some((day) => day.dateKey === selectedHeatmapDateKey);
-    if (!selectedDayExists) {
-      const fallbackDay = [...heatmapDailyBuckets].reverse().find((day) => day.totalMinutes > 0) || heatmapDailyBuckets[heatmapDailyBuckets.length - 1];
-      setSelectedHeatmapDateKey(fallbackDay?.dateKey ?? null);
-    }
-    setHoveredHeatmapDateKey(null);
-  }, [heatmapDailyBuckets, heatmapRange, selectedHeatmapDateKey]);
+    const fallbackDay = [...heatmapDailyBuckets].reverse().find((day) => day.totalMinutes > 0)
+      || heatmapDailyBuckets[heatmapDailyBuckets.length - 1]
+      || null;
+
+    setSelectedHeatmapDateKey((current) => (
+      current && heatmapDailyBuckets.some((day) => day.dateKey === current)
+        ? current
+        : fallbackDay?.dateKey ?? null
+    ));
+    setHoveredHeatmapDateKey((current) => (
+      current && heatmapDailyBuckets.some((day) => day.dateKey === current)
+        ? current
+        : null
+    ));
+  }, [heatmapDailyBuckets, heatmapRange]);
 
   const activeCategory = categorySlices.find((slice) => slice.name === activeCategoryName) || categorySlices[0] || null;
   const dominantDayPartsLabel = insights.dominantDayParts.length > 0
@@ -1640,7 +1648,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-semibold text-white/52">
                 {activeHeatmapDay?.topCategoryColor && activeHeatmapDay.totalMinutes > 0 && (
                   <span
-                    className="h-2 w-2 rounded-full shadow-[0_0_0_3px_rgba(255,255,255,0.06)]"
+                    className="h-2 w-2 shrink-0 rounded-full"
                     style={{ backgroundColor: activeHeatmapDay.topCategoryColor }}
                   />
                 )}
@@ -1713,9 +1721,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                             key={day.dateKey}
                             type="button"
                             onMouseEnter={() => setHoveredHeatmapDateKey(day.dateKey)}
-                            onMouseLeave={() => setHoveredHeatmapDateKey(null)}
                             onFocus={() => setHoveredHeatmapDateKey(day.dateKey)}
-                            onBlur={() => setHoveredHeatmapDateKey(null)}
                             onClick={() => setSelectedHeatmapDateKey(day.dateKey)}
                             className={`${heatmapCellClass} border transition-[background-color,border-color,box-shadow,transform] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40`}
                             style={{
