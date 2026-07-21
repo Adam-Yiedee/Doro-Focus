@@ -3,11 +3,9 @@ import Peer, { DataConnection } from 'peerjs';
 import { TimerMode, TimerSpectatorState } from '../types';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import {
-  formatTimerShareDuration,
   formatTimerShareEndLabel,
   getSpectatorSettingsFallback,
   getTimerShareEstimateFromSpectatorState,
-  getTimerShareModeLabel,
   getTimerShareStatusLabel,
 } from '../utils/timerShare';
 import { deriveRuntimeValues } from '../utils/timerRuntime';
@@ -111,7 +109,7 @@ const SpectatorLiquidWave = ({
   };
 
   return (
-    <div className={`doro-spectator-liquid-mask absolute inset-0 z-0 overflow-hidden rounded-[3rem] transition-opacity duration-1000 pointer-events-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
+    <div className={`doro-spectator-liquid-mask absolute inset-0 z-0 overflow-hidden rounded-[inherit] transition-opacity duration-1000 pointer-events-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}>
       <div
         className={`absolute left-[-100%] w-[300%] aspect-square ${waveBase} ${backOpacity} rounded-[45%] doro-spectator-wave-slow`}
         style={{ ...waveLevelStyle, bottom: `${bottomVal}%` }}
@@ -166,9 +164,9 @@ const SpectatorTimerTile: React.FC<SpectatorTimerTileProps> = ({
   return (
     <div
       className={`
-        doro-spectator-liquid-shell relative flex w-full aspect-square max-w-[18.5rem] shrink-0 transform-gpu flex-col items-center justify-center gap-2 overflow-hidden rounded-[3rem] border
+        doro-spectator-liquid-shell relative flex aspect-square w-[42vw] max-w-[12rem] shrink-0 transform-gpu flex-col items-center justify-center gap-1.5 overflow-hidden rounded-[1.75rem] border
         transition-all duration-700 ease-[cubic-bezier(0.2,0.8,0.2,1)]
-        sm:max-w-[20rem] md:max-w-[20rem] lg:max-w-[23rem]
+        sm:w-[12.5rem] sm:max-w-[12.5rem] md:w-[14rem] md:max-w-[14rem] md:rounded-[2.1rem] lg:w-[15rem] lg:max-w-[15rem]
         ${containerClasses}
       `}
     >
@@ -183,15 +181,15 @@ const SpectatorTimerTile: React.FC<SpectatorTimerTileProps> = ({
         <>
           <div className="pointer-events-none absolute inset-0 z-10 bg-gradient-to-tr from-white/10 via-white/0 to-transparent" />
           <div className="pointer-events-none absolute -left-1/2 -top-1/2 z-10 h-[200%] w-[200%] rounded-full bg-gradient-to-b from-white/10 to-transparent blur-[80px] mix-blend-overlay" />
-          <div className="pointer-events-none absolute inset-0 z-20 rounded-[3rem] shadow-[inset_0_0_60px_rgba(255,255,255,0.1)]" />
+          <div className="pointer-events-none absolute inset-0 z-20 rounded-[inherit] shadow-[inset_0_0_46px_rgba(255,255,255,0.1)]" />
         </>
       )}
 
-      <div className={`z-20 max-w-[80%] truncate text-center text-xs font-bold uppercase tracking-[0.2em] transition-all duration-500 md:text-sm ${labelClasses}`}>
+      <div className={`z-20 max-w-[82%] truncate text-center text-[10px] font-bold uppercase tracking-[0.18em] transition-all duration-500 md:text-xs ${labelClasses}`}>
         <span className="relative z-10 drop-shadow-md">{label || (isWork ? 'Focus' : 'Break Bank')}</span>
       </div>
 
-      <div className={`z-20 font-sans text-[4.15rem] font-bold leading-none tracking-tighter tabular-nums transition-all duration-500 sm:text-[4.75rem] md:text-8xl lg:text-9xl ${textClasses} ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}`}>
+      <div className={`z-20 font-sans text-[2.6rem] font-bold leading-none tracking-tighter tabular-nums transition-all duration-500 sm:text-[3.35rem] md:text-[4.45rem] lg:text-[4.9rem] ${textClasses} ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}`}>
         <span className="drop-shadow-lg filter">{formatTimerSquareTime(time)}</span>
       </div>
     </div>
@@ -272,7 +270,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         connection.on('open', () => {
           if (disposed) return;
           setStatus('live');
-          setMessage('Live timer connected.');
+          setMessage('');
           connection.send({ type: 'SPECTATOR_REQUEST' });
         });
 
@@ -281,7 +279,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           if (data.type === 'SPECTATOR_STATE' && isTimerSpectatorState(data.state)) {
             setRemoteState(data.state);
             setStatus('live');
-            setMessage('Live timer connected.');
+            setMessage('');
           }
         });
 
@@ -347,16 +345,11 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
       : getPreviewEstimate(previewEndMs, previewRemainingSeconds, nowMs)
   ), [nowMs, previewEndMs, previewRemainingSeconds, remoteState]);
 
-  const modeLabel = getTimerShareModeLabel(timerValues.activeMode);
   const workTileLabel = remoteState?.activeTaskName || 'Focus';
   const endLabel = estimate.endMs
     ? formatTimerShareEndLabel(estimate.endMs)
     : (previewEndLabel || formatTimerShareEndLabel(null));
   const statusLabel = remoteState ? getTimerShareStatusLabel(estimate, timerValues.activeMode) : 'Estimated end';
-  const remainingLabel = estimate.status === 'overdue'
-    ? `${formatTimerShareDuration(estimate.remainingSeconds)} overdue`
-    : formatTimerShareDuration(estimate.remainingSeconds);
-  const isLive = status === 'live' && Boolean(remoteState);
   const spectatorSettings = remoteState?.settings || getSpectatorSettingsFallback();
   const hasKnownTimerState = remoteState
     ? (!remoteState.isIdle || estimate.status !== 'idle')
@@ -381,15 +374,8 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           0% { opacity: 0; transform: translateY(18px) scale(0.985); filter: blur(8px); }
           100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
         }
-        @keyframes doroSpectatorPulse {
-          0%, 100% { opacity: 0.56; transform: scale(0.86); }
-          50% { opacity: 1; transform: scale(1); }
-        }
         .doro-spectator-shell {
           animation: doroSpectatorIn 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
-        }
-        .doro-spectator-dot {
-          animation: doroSpectatorPulse 1.8s ease-in-out infinite;
         }
         .doro-spectator-wave-slow { animation: doroSpectatorWaveRotate 40s linear infinite; }
         .doro-spectator-wave-med { animation: doroSpectatorWaveRotate 32s linear infinite reverse; }
@@ -409,7 +395,6 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         }
         @media (prefers-reduced-motion: reduce) {
           .doro-spectator-shell,
-          .doro-spectator-dot,
           .doro-spectator-wave-slow,
           .doro-spectator-wave-med,
           .doro-spectator-wave-fast {
@@ -424,11 +409,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
 
           <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0 text-center md:text-left">
-              <div className="inline-flex items-center gap-2 rounded-lg border border-white/[0.12] bg-white/[0.07] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/68 shadow-[0_18px_36px_-32px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.06)]">
-                <span className={`h-1.5 w-1.5 rounded-full ${isLive ? 'doro-spectator-dot bg-emerald-200' : 'bg-white/42'}`} />
-                {isLive ? 'Live Timer' : status === 'connecting' ? 'Connecting' : 'Shared Timer'}
-              </div>
-              <div className="mt-2 truncate text-sm font-semibold text-white/72">
+              <div className="truncate text-sm font-semibold text-white/72">
                 {hostLabel}
               </div>
             </div>
@@ -449,12 +430,9 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
             <div className="mx-auto mt-2 max-w-full break-words font-sans text-[3.5rem] font-bold leading-none tracking-tighter text-white drop-shadow-2xl sm:text-[5.25rem] md:text-[6.8rem] lg:text-[7.5rem]">
               {endLabel}
             </div>
-            <div className="mt-3 text-[10px] font-bold uppercase tracking-[0.16em] text-white/46">
-              {modeLabel} - {remainingLabel} remaining
-            </div>
           </div>
 
-          <div className="relative mt-6 flex w-full flex-col items-center justify-center gap-6 md:mt-8 md:flex-row md:gap-10 lg:gap-20">
+          <div className="relative mx-auto mt-5 flex w-full max-w-[26rem] flex-row items-center justify-center gap-3 sm:max-w-[28rem] sm:gap-4 md:mt-7 md:max-w-[32rem] md:gap-6 lg:max-w-[34rem]">
             <SpectatorTimerTile
               type="work"
               time={timerValues.focusTime}
@@ -472,9 +450,11 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
             />
           </div>
 
-          <div className="relative mt-6 rounded-lg border border-white/[0.12] bg-white/[0.045] px-4 py-3 text-center text-xs font-semibold text-white/58 shadow-[0_18px_38px_-32px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.05)]">
-            {message}
-          </div>
+          {status !== 'live' && (
+            <div className="relative mt-6 rounded-lg border border-white/[0.12] bg-white/[0.045] px-4 py-3 text-center text-xs font-semibold text-white/58 shadow-[0_18px_38px_-32px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.05)]">
+              {message}
+            </div>
+          )}
         </section>
       </main>
     </div>

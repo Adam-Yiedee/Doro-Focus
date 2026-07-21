@@ -211,6 +211,31 @@ const formatEndFromTimestamp = (value) => {
   });
 };
 
+const isPlaceholderEndLabel = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return !normalized || normalized === 'live timer' || normalized === 'not running' || normalized === 'no end time';
+};
+
+const parseTimezoneOffset = (value) => {
+  const offset = Number(value);
+  return Number.isFinite(offset) && Math.abs(offset) <= 14 * 60 ? offset : null;
+};
+
+const formatLocalEndFromTimestamp = (value, timezoneOffset) => {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+
+  if (timezoneOffset !== null) {
+    return new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'UTC',
+    }).format(new Date(timestamp - (timezoneOffset * 60 * 1000)));
+  }
+
+  return formatEndFromTimestamp(value);
+};
+
 const formatRemaining = (value) => {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds < 0) return '';
@@ -225,8 +250,12 @@ const formatRemaining = (value) => {
 
 export default async (request) => {
   const url = new URL(request.url);
-  const mode = url.searchParams.get('mode') === 'break' ? 'BREAK BANK' : 'FOCUS';
-  const endLabel = sanitizeText(url.searchParams.get('endLabel') || formatEndFromTimestamp(url.searchParams.get('end')), 'LIVE TIMER');
+  const mode = url.searchParams.get('mode') === 'break' ? 'BREAK' : 'FOCUS';
+  const timezoneOffset = parseTimezoneOffset(url.searchParams.get('tzOffset'));
+  const requestedEndLabel = url.searchParams.get('endLabel') || '';
+  const fallbackEndLabel = formatLocalEndFromTimestamp(url.searchParams.get('end'), timezoneOffset);
+  const resolvedEndLabel = isPlaceholderEndLabel(requestedEndLabel) ? fallbackEndLabel : requestedEndLabel;
+  const endLabel = sanitizeText(resolvedEndLabel, 'LIVE TIMER');
   const remainingLabel = sanitizeText(formatRemaining(url.searchParams.get('remaining')), 'SPECTATOR TIMER');
   const sessionLabel = sanitizeText(url.searchParams.get('session'), 'DORO');
 
@@ -237,7 +266,7 @@ export default async (request) => {
   fillRect(raw, 186, 414, 828, 2, [255, 255, 255, 58]);
 
   drawCenteredText(raw, 'DORO LIVE TIMER', WIDTH / 2, 144, 760, 9, 6, [255, 255, 255, 150]);
-  drawCenteredText(raw, `${mode} UNTIL`, WIDTH / 2, 204, 820, 10, 7, [255, 255, 255, 170]);
+  drawCenteredText(raw, `${mode} ENDS AT`, WIDTH / 2, 204, 820, 10, 7, [255, 255, 255, 170]);
   drawCenteredText(raw, endLabel, WIDTH / 2, 262, 900, 26, 12, [255, 255, 255, 246]);
   drawCenteredText(raw, remainingLabel, WIDTH / 2, 444, 820, 10, 7, [255, 255, 255, 164]);
   drawCenteredText(raw, `SESSION ${sessionLabel}`, WIDTH / 2, 500, 760, 7, 5, [255, 255, 255, 112]);

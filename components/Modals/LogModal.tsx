@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Copy, Link as LinkIcon, LogIn, Plus, QrCode, Share2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
@@ -25,7 +26,6 @@ import {
   buildTimerSpectatorUrl,
   formatTimerShareEndLabel,
   getTimerShareEstimate,
-  getTimerShareModeLabel,
 } from '../../utils/timerShare';
 
 interface LogModalProps {
@@ -834,7 +834,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [inviteSessionId, setInviteSessionId] = useState('');
   const [timerShareBusy, setTimerShareBusy] = useState(false);
   const [timerShareMessage, setTimerShareMessage] = useState<string | null>(null);
-  const [showTimerShareQr, setShowTimerShareQr] = useState(false);
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -1154,28 +1153,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const groupInviteUrl = useMemo(() => (
     safeGroupSessionId ? buildGroupInviteUrl(safeGroupSessionId) : ''
   ), [safeGroupSessionId]);
-  const timerShareEstimate = useMemo(() => getTimerShareEstimate({
-    activeMode,
-    timerStarted,
-    isIdle,
-    workTime,
-    breakTime,
-    allPauseActive,
-    graceOpen,
-  }), [activeMode, allPauseActive, breakTime, graceOpen, isIdle, timerStarted, workTime]);
-  const timerShareEndLabel = useMemo(() => (
-    formatTimerShareEndLabel(timerShareEstimate.endMs, timerShareEstimate.status === 'idle' ? 'Not running' : 'No end time')
-  ), [timerShareEstimate.endMs, timerShareEstimate.status]);
-  const timerShareUrl = useMemo(() => (
-    safeGroupSessionId
-      ? buildTimerSpectatorUrl(safeGroupSessionId, {
-          activeMode,
-          endMs: timerShareEstimate.endMs,
-          endLabel: timerShareEndLabel,
-          remainingSeconds: timerShareEstimate.remainingSeconds,
-        })
-      : ''
-  ), [activeMode, safeGroupSessionId, timerShareEndLabel, timerShareEstimate.endMs, timerShareEstimate.remainingSeconds]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1764,6 +1741,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       endMs: latestEstimate.endMs,
       endLabel: latestEndLabel,
       remainingSeconds: latestEstimate.remainingSeconds,
+      timezoneOffset: new Date().getTimezoneOffset(),
     });
   };
 
@@ -1784,8 +1762,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
       const link = buildCurrentTimerShareUrl(sessionId);
       const copied = await copyToClipboard(link);
-      setTimerShareMessage(copied ? 'Spectator link copied.' : 'Could not copy link. Try again from this browser.');
-      if (copied) setShowTimerShareQr(false);
+      setTimerShareMessage(copied ? 'copied' : 'Could not copy link. Try again from this browser.');
     } catch (error) {
       setTimerShareMessage(error instanceof Error ? error.message : 'Failed to prepare spectator link.');
     } finally {
@@ -2447,9 +2424,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               <div>
                 <div className={`${overviewHeadingClassName} mt-0`}>Week's Snapshot</div>
               </div>
-              <div className="rounded-full border px-3 py-1.5 text-[11px] font-medium" style={accountOverviewChipStyle}>
-                Rolling 7 days
-              </div>
             </div>
 
             <div className={accountOverviewGridClassName}>
@@ -2687,53 +2661,54 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const groupError = groupLocalError || peerError;
     const hostControls = safeHostSyncConfig;
     const clientControls = safeClientSyncConfig;
-    const timerShareModeLabel = getTimerShareModeLabel(activeMode);
-    const timerShareTaskLabel = activeMode === 'work' && activeTask?.name ? activeTask.name : timerShareModeLabel;
-    const timerSharePrimaryLabel = safeGroupSessionId ? 'Share Timer' : 'Share Timer';
-    const groupActionButtonClass = 'group relative overflow-hidden rounded-lg border border-white/[0.13] bg-white/[0.072] px-4 py-4 text-left shadow-[0_26px_54px_-34px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.065)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.12] hover:shadow-[0_34px_68px_-34px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.085)] active:translate-y-0 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45';
-    const groupActionLabelClass = 'text-[11px] font-bold uppercase tracking-[0.14em] text-white/86 transition-colors group-hover:text-white';
-    const groupActionDetailClass = 'mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/42 transition-colors group-hover:text-white/56';
-    const timerShareButton = (
+    const timerSharePrimaryLabel = timerShareMessage === 'copied' ? 'Link Copied' : 'Share Timer';
+    const groupShellClass = 'rounded-[1.45rem] border border-white/[0.08] bg-white/[0.035] p-4 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.045)] md:p-5';
+    const groupInsetClass = 'rounded-lg border border-white/[0.09] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]';
+    const groupSectionLabelClass = 'text-[10px] font-bold uppercase tracking-[0.15em] text-white/36';
+    const groupActionButtonClass = 'group relative flex min-h-[4.65rem] w-full items-center overflow-hidden rounded-lg border border-white/[0.11] bg-white/[0.045] px-3.5 py-3 text-left shadow-[0_20px_42px_-34px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.045)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.075] hover:shadow-[0_28px_52px_-36px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.055)] active:translate-y-0 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0 disabled:hover:scale-100';
+    const groupActionLabelClass = 'text-[10px] font-bold uppercase leading-none tracking-[0.14em] text-white/82 transition-colors group-hover:text-white';
+    const groupActionDetailClass = 'mt-1.5 text-[10px] font-semibold leading-snug text-white/40 transition-colors group-hover:text-white/54';
+    const groupActionIconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.09] bg-white/[0.045] text-white/58 transition-[transform,background-color,color] duration-300 group-hover:-translate-y-0.5 group-hover:bg-white/[0.08] group-hover:text-white/86';
+    const renderGroupActionButton = ({
+      label,
+      detail,
+      onClick,
+      disabled = false,
+      icon,
+    }: {
+      label: string;
+      detail?: string;
+      onClick: () => void;
+      disabled?: boolean;
+      icon: React.ReactNode;
+    }) => (
       <button
         type="button"
-        onClick={handleCopyTimerShareLink}
-        disabled={timerShareBusy}
+        onClick={onClick}
+        disabled={disabled}
         className={groupActionButtonClass}
       >
-        <div className="relative z-10 flex items-start justify-between gap-3">
+        <div className="relative z-10 flex h-full w-full items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className={groupActionLabelClass}>{timerShareBusy ? 'Preparing...' : timerSharePrimaryLabel}</div>
-            <div className={groupActionDetailClass}>
-              {timerShareTaskLabel} - {timerShareEndLabel}
-            </div>
+            <div className={groupActionLabelClass}>{label}</div>
+            {detail && <div className={groupActionDetailClass}>{detail}</div>}
           </div>
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.055] text-white/66 transition-[transform,background-color,color] duration-300 group-hover:-translate-y-0.5 group-hover:bg-white/[0.1] group-hover:text-white">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
-              <path d="M16 6l-4-4-4 4" />
-              <path d="M12 2v13" />
-            </svg>
-          </span>
+          <span className={groupActionIconClass}>{icon}</span>
         </div>
       </button>
     );
-    const timerShareStatusPanel = (timerShareMessage || (showTimerShareQr && safeGroupSessionId && timerShareUrl)) ? (
-      <div className="space-y-3 rounded-lg border border-white/[0.12] bg-white/[0.045] p-3 shadow-[0_18px_38px_-30px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.055)]">
-        {timerShareMessage && (
-          <div className="text-center text-[11px] font-semibold leading-relaxed text-white/62">
-            {timerShareMessage}
-          </div>
-        )}
-        {showTimerShareQr && safeGroupSessionId && timerShareUrl && (
-          <div className="mx-auto max-w-[14rem] space-y-3">
-            <div className="flex justify-center rounded-lg bg-white p-4">
-              <QRCodeSVG value={timerShareUrl} size={170} />
-            </div>
-            <div className="text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-white/40">
-              Spectator View
-            </div>
-          </div>
-        )}
+    const timerShareButton = renderGroupActionButton({
+      label: timerShareBusy ? 'Preparing...' : timerSharePrimaryLabel,
+      onClick: handleCopyTimerShareLink,
+      disabled: timerShareBusy,
+      icon: <Share2 size={15} strokeWidth={2.1} aria-hidden="true" />,
+    });
+    const groupUtilityButtonClass = 'inline-flex min-h-[3.35rem] w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-[0.12em] transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0';
+    const groupUtilityPrimaryClass = `${groupUtilityButtonClass} border-blue-400/18 bg-blue-500/[0.09] text-blue-200 hover:bg-blue-500/[0.14] hover:text-blue-100`;
+    const groupUtilityNeutralClass = `${groupUtilityButtonClass} border-white/10 bg-white/[0.04] text-white/72 hover:bg-white/[0.08] hover:text-white`;
+    const timerShareErrorPanel = timerShareMessage && timerShareMessage !== 'copied' ? (
+      <div className={`px-3 py-2 text-center text-[11px] font-semibold leading-relaxed text-red-100/82 ${groupInsetClass}`}>
+        {timerShareMessage}
       </div>
     ) : null;
 
@@ -2749,79 +2724,74 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (safeGroupSessionId) {
       return (
         <div className="p-4 md:p-8 min-h-[520px]">
-          <div className="max-w-xl mx-auto space-y-5">
-            <div className="text-center space-y-3">
-              <div className="inline-flex items-center gap-2 rounded-full border border-blue-400/18 bg-blue-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-200/85">
+          <div className="max-w-xl mx-auto space-y-4">
+            <div className="space-y-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-blue-400/16 bg-blue-500/[0.07] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-100/82">
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-300" />
                 Live Session
               </div>
-              <h3 className="text-[2rem] font-semibold text-white tracking-tight">Group Study Active</h3>
+              <h3 className="text-2xl font-semibold tracking-tight text-white">Group Study</h3>
               <p className="text-sm text-white/42">
-                {safeMembers.length} member{safeMembers.length === 1 ? '' : 's'} connected {isHost ? '· You are hosting' : '· Connected to host'}
+                {safeMembers.length} member{safeMembers.length === 1 ? '' : 's'} connected - {isHost ? 'hosting' : 'joined'}
               </p>
             </div>
 
-            <div className="rounded-[1.75rem] border border-white/8 bg-white/[0.03] p-5 md:p-6 space-y-5">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div className="min-w-0 flex-1">
-                  <label className="text-[10px] font-bold text-white/32 uppercase tracking-[0.16em]">Session Code</label>
-                  <div className="mt-3 rounded-[1.2rem] border border-white/8 bg-black/20 px-4 py-4 md:px-5">
-                    <div className="text-[1.9rem] md:text-[2.2rem] font-mono font-bold tracking-[0.18em] text-center text-white">
-                      {safeGroupSessionId}
-                    </div>
-                    <div className="mt-2 text-center text-[11px] leading-relaxed text-white/40">
-                      Share the code, link, or QR to bring someone into the room.
-                    </div>
+            <div className={`${groupShellClass} space-y-4`}>
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_15rem] sm:items-stretch md:grid-cols-[minmax(0,1fr)_16rem]">
+                <div className={`flex min-h-[7.15rem] min-w-0 flex-col justify-center gap-3 px-4 py-4 text-center md:px-5 ${groupInsetClass}`}>
+                  <label className={groupSectionLabelClass}>Session Code</label>
+                  <div className="font-mono text-[1.8rem] font-bold leading-none tracking-[0.18em] text-white sm:text-[1.95rem] md:text-[2.1rem]">
+                    {safeGroupSessionId}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 md:max-w-[15rem] md:justify-end">
+                <div className="grid w-full grid-cols-2 gap-2 sm:h-full sm:auto-rows-fr">
                   <button
                     type="button"
                     onClick={async () => { await copyToClipboard(safeGroupSessionId); }}
-                    className="rounded-[0.95rem] border border-blue-400/18 bg-blue-500/[0.09] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-blue-200 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-blue-500/[0.14] hover:text-blue-100"
+                    className={groupUtilityPrimaryClass}
                   >
+                    <Copy size={13} strokeWidth={2.2} aria-hidden="true" />
                     Copy Code
                   </button>
                   <button
                     type="button"
                     onClick={async () => { await copyToClipboard(groupInviteUrl); }}
-                    className="rounded-[0.95rem] border border-blue-400/18 bg-blue-500/[0.09] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-blue-200 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-blue-500/[0.14] hover:text-blue-100"
+                    className={groupUtilityPrimaryClass}
                   >
+                    <LinkIcon size={13} strokeWidth={2.2} aria-hidden="true" />
                     Copy Link
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowGroupQr(prev => !prev)}
-                    className="rounded-[0.95rem] border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/72 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-white/[0.08] hover:text-white"
+                    className={groupUtilityNeutralClass}
                   >
+                    <QrCode size={13} strokeWidth={2.2} aria-hidden="true" />
                     {showGroupQr ? 'Hide QR' : 'Show QR'}
                   </button>
-                  {safeGroupSessionId && timerShareUrl && (
-                    <button
-                      type="button"
-                      onClick={() => setShowTimerShareQr(prev => !prev)}
-                      className="rounded-[0.95rem] border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/72 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:bg-white/[0.08] hover:text-white"
-                    >
-                      {showTimerShareQr ? 'Hide Timer QR' : 'Timer QR'}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleCopyTimerShareLink}
+                    disabled={timerShareBusy}
+                    className={groupUtilityNeutralClass}
+                  >
+                    <Share2 size={13} strokeWidth={2.2} aria-hidden="true" />
+                    {timerShareBusy ? 'Preparing' : timerSharePrimaryLabel}
+                  </button>
                 </div>
               </div>
 
               {showGroupQr && (
-                <div className="space-y-3 rounded-[1.2rem] border border-white/8 bg-white/[0.025] px-4 py-4">
-                  <div className="flex justify-center rounded-[1rem] bg-white p-4">
+                <div className={`space-y-3 px-4 py-4 ${groupInsetClass}`}>
+                  <div className="flex justify-center rounded-lg bg-white p-4">
                     <QRCodeSVG value={groupInviteUrl} size={180} />
-                  </div>
-                  <div className="text-center text-[11px] leading-relaxed text-white/46">
-                    Scan to open the site and jump into this group invite.
                   </div>
                 </div>
               )}
 
-              <div className="border-t border-white/6 pt-4">
+              <div>
                 <div className="flex items-center justify-between gap-3">
-                  <label className="block text-[10px] font-bold text-white/32 uppercase tracking-[0.16em]">
+                  <label className={groupSectionLabelClass}>
                     Members
                   </label>
                   <div className="text-[11px] text-white/40">
@@ -2832,10 +2802,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   {safeMembers.map(member => (
                     <div
                       key={member.id}
-                      className={`flex items-center gap-2 rounded-full border px-3 py-2 text-sm ${
+                      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
                         member.isHost
-                          ? 'border-blue-400/22 bg-blue-500/[0.13] text-blue-100'
-                          : 'border-white/8 bg-white/[0.04] text-white/84'
+                          ? 'border-blue-400/18 bg-blue-500/[0.09] text-blue-100/90'
+                          : 'border-white/[0.08] bg-white/[0.035] text-white/80'
                       }`}
                     >
                       <div className={`h-2 w-2 rounded-full ${member.isHost ? 'bg-blue-300' : 'bg-white/45'}`} />
@@ -2846,36 +2816,29 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
             </div>
 
-            <div className="space-y-3">
-              {timerShareButton}
-              {timerShareStatusPanel}
-            </div>
+            {timerShareErrorPanel}
 
             {isHost ? (
-              <div className="rounded-[1.75rem] border border-white/8 bg-white/[0.03] p-5 md:p-6 space-y-3">
+              <div className={`${groupShellClass} space-y-3`}>
                 <div>
-                  <div className="text-[10px] font-bold text-white/32 uppercase tracking-[0.16em]">Host Sync Controls</div>
-                  <div className="mt-1 text-sm text-white/44">Choose what the room follows in real time.</div>
+                  <div className={groupSectionLabelClass}>Sync Controls</div>
                 </div>
-                <ToggleRow label="Sync Timers" checked={hostControls.syncTimers} onToggle={() => toggleLiveHostSync('syncTimers')} />
-                <ToggleRow label="Sync Tasks" checked={hostControls.syncTasks} onToggle={() => toggleLiveHostSync('syncTasks')} />
-                <ToggleRow label="Sync Schedule" checked={hostControls.syncSchedule} onToggle={() => toggleLiveHostSync('syncSchedule')} />
-                <ToggleRow label="Sync History" checked={hostControls.syncHistory} onToggle={() => toggleLiveHostSync('syncHistory')} />
-                <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} />
+                <ToggleRow label="Sync Timers" checked={hostControls.syncTimers} onToggle={() => toggleLiveHostSync('syncTimers')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Sync Tasks" checked={hostControls.syncTasks} onToggle={() => toggleLiveHostSync('syncTasks')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Sync Schedule" checked={hostControls.syncSchedule} onToggle={() => toggleLiveHostSync('syncSchedule')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Sync History" checked={hostControls.syncHistory} onToggle={() => toggleLiveHostSync('syncHistory')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} tone="quiet" switchTone="neutral" />
               </div>
             ) : (
-              <div className="rounded-[1.75rem] border border-white/8 bg-white/[0.03] p-5 md:p-6 space-y-3">
+              <div className={`${groupShellClass} space-y-3`}>
                 <div>
-                  <div className="text-[10px] font-bold text-white/32 uppercase tracking-[0.16em]">Accepted Sync Types</div>
-                  <div className="mt-1 text-sm leading-relaxed text-white/44">
-                    Turn off any sync you want to manage locally without affecting the host.
-                  </div>
+                  <div className={groupSectionLabelClass}>Accepted Sync</div>
                 </div>
-                <ToggleRow label="Accept Timer Sync" checked={clientControls.syncTimers} onToggle={() => toggleLiveClientSync('syncTimers')} />
-                <ToggleRow label="Accept Task Sync" checked={clientControls.syncTasks} onToggle={() => toggleLiveClientSync('syncTasks')} />
-                <ToggleRow label="Accept Schedule Sync" checked={clientControls.syncSchedule} onToggle={() => toggleLiveClientSync('syncSchedule')} />
-                <ToggleRow label="Accept History Sync" checked={clientControls.syncHistory} onToggle={() => toggleLiveClientSync('syncHistory')} />
-                <ToggleRow label="Accept Settings Sync" checked={clientControls.syncSettings} onToggle={() => toggleLiveClientSync('syncSettings')} />
+                <ToggleRow label="Timer Sync" checked={clientControls.syncTimers} onToggle={() => toggleLiveClientSync('syncTimers')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Task Sync" checked={clientControls.syncTasks} onToggle={() => toggleLiveClientSync('syncTasks')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Schedule Sync" checked={clientControls.syncSchedule} onToggle={() => toggleLiveClientSync('syncSchedule')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="History Sync" checked={clientControls.syncHistory} onToggle={() => toggleLiveClientSync('syncHistory')} tone="quiet" switchTone="neutral" />
+                <ToggleRow label="Settings Sync" checked={clientControls.syncSettings} onToggle={() => toggleLiveClientSync('syncSettings')} tone="quiet" switchTone="neutral" />
               </div>
             )}
 
@@ -2890,13 +2853,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               onClick={() => {
                 leaveGroupSession();
                 setShowGroupQr(false);
-                setShowTimerShareQr(false);
                 setTimerShareMessage(null);
                 inviteAutoJoinKeyRef.current = null;
                 setInviteSessionId('');
                 setGroupFlow('menu');
               }}
-              className="w-full rounded-[1rem] border border-red-500/24 bg-red-500/[0.06] py-3 text-xs font-semibold uppercase tracking-[0.16em] text-red-200 transition-[background-color,border-color,color] duration-200 hover:border-red-400/28 hover:bg-red-500/[0.12] hover:text-red-100"
+              className="w-full rounded-lg border border-red-400/20 bg-red-500/[0.055] py-3 text-xs font-semibold uppercase tracking-[0.16em] text-red-100/80 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:border-red-300/24 hover:bg-red-500/[0.1] hover:text-red-100"
             >
               Leave Session
             </button>
@@ -2907,22 +2869,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
     return (
       <div className="p-4 md:p-8 min-h-[520px]">
-        <div className="max-w-md mx-auto space-y-6">
-          <div className="text-center space-y-2">
-            <h3 className="text-3xl font-bold text-white tracking-tight">Group Study</h3>
-            <p className="text-white/45 text-xs uppercase tracking-[0.14em]">
-              Sync timers and study with friends.
-            </p>
+        <div className="max-w-lg mx-auto space-y-5">
+          <div className="space-y-2">
+            <h3 className="text-2xl font-semibold tracking-tight text-white">Group Study</h3>
           </div>
 
           {groupError && (
-            <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-200 text-xs text-center font-bold">
+            <div className="rounded-lg border border-red-500/26 bg-red-500/10 px-4 py-3 text-xs font-semibold text-red-100/86">
               {groupError}
             </div>
           )}
 
-          <div>
-            <label className="block text-[10px] font-bold text-white/35 uppercase tracking-[0.14em] mb-2">Your Name</label>
+          <div className={groupShellClass}>
+            <label className={`${groupSectionLabelClass} mb-2 block`}>Your Name</label>
             <input
               ref={groupNameInputRef}
               type="text"
@@ -2935,7 +2894,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 }
               }}
               placeholder="Enter your name"
-              className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-white/30 text-center font-bold"
+              className="w-full rounded-lg border border-white/[0.09] bg-white/[0.045] px-4 py-3 text-center font-semibold text-white outline-none transition-[border-color,background-color] duration-200 placeholder:text-white/26 focus:border-white/[0.18] focus:bg-white/[0.065]"
             />
             {inviteSessionId && groupFlow === 'join' && (
               <div className="mt-2 text-center text-[11px] text-emerald-100/75">
@@ -2948,35 +2907,35 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
 
           {groupFlow === 'menu' && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <button
-                type="button"
-                disabled={!groupName.trim()}
-                onClick={() => setGroupFlow('host')}
-                className={groupActionButtonClass}
-              >
-                <div className={groupActionLabelClass}>Host Session</div>
-                <div className={groupActionDetailClass}>Create a room</div>
-              </button>
-              <button
-                type="button"
-                disabled={!groupName.trim()}
-                onClick={() => setGroupFlow('join')}
-                className={groupActionButtonClass}
-              >
-                <div className={groupActionLabelClass}>Join Session</div>
-                <div className={groupActionDetailClass}>Enter a code</div>
-              </button>
-              {timerShareButton}
+            <div className={groupShellClass}>
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                {renderGroupActionButton({
+                  label: 'Host Session',
+                  detail: 'Create a room',
+                  onClick: () => setGroupFlow('host'),
+                  disabled: !groupName.trim(),
+                  icon: <Plus size={15} strokeWidth={2.1} aria-hidden="true" />,
+                })}
+                {renderGroupActionButton({
+                  label: 'Join Session',
+                  detail: 'Enter a code',
+                  onClick: () => setGroupFlow('join'),
+                  disabled: !groupName.trim(),
+                  icon: <LogIn size={15} strokeWidth={2.1} aria-hidden="true" />,
+                })}
+                <div className="sm:col-span-2">
+                  {timerShareButton}
+                </div>
+              </div>
             </div>
           )}
 
-          {groupFlow === 'menu' && timerShareStatusPanel}
+          {groupFlow === 'menu' && timerShareErrorPanel}
 
           {groupFlow === 'host' && (
-            <div className="space-y-4 bg-white/5 border border-white/10 rounded-2xl p-4">
+            <div className={`${groupShellClass} space-y-3`}>
               <div className="flex items-center justify-between">
-                <div className="text-xs font-bold uppercase tracking-[0.14em] text-white/70">Host Sync Options</div>
+                <div className={groupSectionLabelClass}>Host Sync</div>
                 <button
                   type="button"
                   onClick={() => {
@@ -2984,20 +2943,20 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     setInviteSessionId('');
                     setGroupFlow('menu');
                   }}
-                  className="text-[10px] text-white/45 hover:text-white uppercase tracking-[0.14em] font-bold"
+                  className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/42 transition-colors hover:text-white"
                 >
                   Back
                 </button>
               </div>
-              <ToggleRow label="Sync Timers" checked={hostDraftConfig.syncTimers} onToggle={() => toggleHostDraftSync('syncTimers')} />
-              <ToggleRow label="Sync Tasks" checked={hostDraftConfig.syncTasks} onToggle={() => toggleHostDraftSync('syncTasks')} />
-              <ToggleRow label="Sync Schedule" checked={hostDraftConfig.syncSchedule} onToggle={() => toggleHostDraftSync('syncSchedule')} />
-              <ToggleRow label="Sync History" checked={hostDraftConfig.syncHistory} onToggle={() => toggleHostDraftSync('syncHistory')} />
-              <ToggleRow label="Sync Settings" checked={hostDraftConfig.syncSettings} onToggle={() => toggleHostDraftSync('syncSettings')} />
+              <ToggleRow label="Sync Timers" checked={hostDraftConfig.syncTimers} onToggle={() => toggleHostDraftSync('syncTimers')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Sync Tasks" checked={hostDraftConfig.syncTasks} onToggle={() => toggleHostDraftSync('syncTasks')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Sync Schedule" checked={hostDraftConfig.syncSchedule} onToggle={() => toggleHostDraftSync('syncSchedule')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Sync History" checked={hostDraftConfig.syncHistory} onToggle={() => toggleHostDraftSync('syncHistory')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Sync Settings" checked={hostDraftConfig.syncSettings} onToggle={() => toggleHostDraftSync('syncSettings')} tone="quiet" switchTone="neutral" />
               <button
                 type="button"
                 onClick={handleCreateGroup}
-                className="w-full py-3 bg-blue-500/20 border border-blue-500/35 text-blue-100 rounded-xl text-xs font-bold uppercase tracking-[0.14em] hover:bg-blue-500/28 transition-colors"
+                className="w-full rounded-lg border border-white/[0.12] bg-white/[0.08] py-3 text-xs font-bold uppercase tracking-[0.14em] text-white/86 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:border-white/[0.18] hover:bg-white/[0.12] hover:text-white"
               >
                 Start Session
               </button>
@@ -3005,9 +2964,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           )}
 
           {groupFlow === 'join' && (
-            <div className="space-y-4 bg-white/5 border border-white/10 rounded-2xl p-4">
+            <div className={`${groupShellClass} space-y-3`}>
               <div className="flex items-center justify-between">
-                <div className="text-xs font-bold uppercase tracking-[0.14em] text-white/70">Join Session</div>
+                <div className={groupSectionLabelClass}>Join Session</div>
                 <button
                   type="button"
                   onClick={() => {
@@ -3015,14 +2974,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     setInviteSessionId('');
                     setGroupFlow('menu');
                   }}
-                  className="text-[10px] text-white/45 hover:text-white uppercase tracking-[0.14em] font-bold"
+                  className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/42 transition-colors hover:text-white"
                 >
                   Back
                 </button>
               </div>
 
               {inviteSessionId && inviteSessionId === groupSessionInput && (
-                <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-100/90">
+                <div className="rounded-lg border border-emerald-400/18 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-100/86">
                   Invite loaded from QR link. Enter your name and join.
                 </div>
               )}
@@ -3038,19 +2997,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   }
                 }}
                 placeholder="Session ID"
-                className="w-full p-4 bg-black/25 border border-white/10 rounded-xl text-center text-white font-mono tracking-[0.2em] outline-none focus:border-white/30"
+                className="w-full rounded-lg border border-white/[0.09] bg-white/[0.045] px-4 py-3 text-center font-mono font-semibold tracking-[0.2em] text-white outline-none transition-[border-color,background-color] duration-200 placeholder:text-white/26 focus:border-white/[0.18] focus:bg-white/[0.065]"
               />
 
-              <ToggleRow label="Accept Timer Sync" checked={joinDraftConfig.syncTimers} onToggle={() => toggleJoinDraftSync('syncTimers')} />
-              <ToggleRow label="Accept Task Sync" checked={joinDraftConfig.syncTasks} onToggle={() => toggleJoinDraftSync('syncTasks')} />
-              <ToggleRow label="Accept Schedule Sync" checked={joinDraftConfig.syncSchedule} onToggle={() => toggleJoinDraftSync('syncSchedule')} />
-              <ToggleRow label="Accept History Sync" checked={joinDraftConfig.syncHistory} onToggle={() => toggleJoinDraftSync('syncHistory')} />
-              <ToggleRow label="Accept Settings Sync" checked={joinDraftConfig.syncSettings} onToggle={() => toggleJoinDraftSync('syncSettings')} />
+              <ToggleRow label="Timer Sync" checked={joinDraftConfig.syncTimers} onToggle={() => toggleJoinDraftSync('syncTimers')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Task Sync" checked={joinDraftConfig.syncTasks} onToggle={() => toggleJoinDraftSync('syncTasks')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Schedule Sync" checked={joinDraftConfig.syncSchedule} onToggle={() => toggleJoinDraftSync('syncSchedule')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="History Sync" checked={joinDraftConfig.syncHistory} onToggle={() => toggleJoinDraftSync('syncHistory')} tone="quiet" switchTone="neutral" />
+              <ToggleRow label="Settings Sync" checked={joinDraftConfig.syncSettings} onToggle={() => toggleJoinDraftSync('syncSettings')} tone="quiet" switchTone="neutral" />
 
               <button
                 type="button"
                 onClick={handleJoinGroup}
-                className="w-full py-3 bg-purple-500/20 border border-purple-500/35 text-purple-100 rounded-xl text-xs font-bold uppercase tracking-[0.14em] hover:bg-purple-500/30 transition-colors"
+                className="w-full rounded-lg border border-white/[0.12] bg-white/[0.08] py-3 text-xs font-bold uppercase tracking-[0.14em] text-white/86 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:border-white/[0.18] hover:bg-white/[0.12] hover:text-white"
               >
                 {inviteSessionId && inviteSessionId === groupSessionInput ? 'Join Invite' : 'Connect'}
               </button>
@@ -3728,7 +3687,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           }
         }
         .doro-account-stat-card {
-          animation: doro-account-stat-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation: doro-account-stat-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
           box-shadow: var(--doro-account-stat-rest-shadow);
           will-change: transform, opacity;
         }

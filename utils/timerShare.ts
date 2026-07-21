@@ -118,6 +118,7 @@ export const buildTimerSpectatorUrl = (
     endMs?: number | null;
     endLabel?: string;
     remainingSeconds?: number | null;
+    timezoneOffset?: number | null;
   } = {},
 ) => {
   const normalizedSession = sessionId.trim().toUpperCase();
@@ -128,6 +129,9 @@ export const buildTimerSpectatorUrl = (
   if (options.endLabel) params.set('endLabel', options.endLabel);
   if (typeof options.remainingSeconds === 'number' && Number.isFinite(options.remainingSeconds)) {
     params.set('remaining', String(Math.max(0, Math.round(options.remainingSeconds))));
+  }
+  if (typeof options.timezoneOffset === 'number' && Number.isFinite(options.timezoneOffset)) {
+    params.set('tzOffset', String(Math.round(options.timezoneOffset)));
   }
 
   const query = params.toString();
@@ -141,6 +145,7 @@ export const buildTimerSpectatorAppUrl = (
     endMs?: number | null;
     endLabel?: string;
     remainingSeconds?: number | null;
+    timezoneOffset?: number | null;
   } = {},
 ) => {
   const normalizedSession = sessionId.trim().toUpperCase();
@@ -151,6 +156,9 @@ export const buildTimerSpectatorAppUrl = (
   if (options.endLabel) params.set('endLabel', options.endLabel);
   if (typeof options.remainingSeconds === 'number' && Number.isFinite(options.remainingSeconds)) {
     params.set('remaining', String(Math.max(0, Math.round(options.remainingSeconds))));
+  }
+  if (typeof options.timezoneOffset === 'number' && Number.isFinite(options.timezoneOffset)) {
+    params.set('tzOffset', String(Math.round(options.timezoneOffset)));
   }
 
   return `${TIMER_SHARE_BASE_URL}/?${params.toString()}`;

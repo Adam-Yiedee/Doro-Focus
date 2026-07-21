@@ -33,6 +33,39 @@ const appendOptionalParam = (params, key, value) => {
   params.set(key, String(value));
 };
 
+const sanitizePreviewText = (value, maxLength = 80) => String(value || '')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, maxLength);
+
+const isPlaceholderEndLabel = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return !normalized || normalized === 'live timer' || normalized === 'not running' || normalized === 'no end time';
+};
+
+const parseTimezoneOffset = (value) => {
+  const offset = Number(value);
+  return Number.isFinite(offset) && Math.abs(offset) <= 14 * 60 ? offset : null;
+};
+
+const formatEndFromTimestamp = (value, timezoneOffset) => {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+
+  if (timezoneOffset !== null) {
+    return new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'UTC',
+    }).format(new Date(timestamp - (timezoneOffset * 60 * 1000)));
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(timestamp));
+};
+
 export default async (request) => {
   const url = new URL(request.url);
   const siteUrl = getSiteUrl(request.url);
@@ -44,24 +77,36 @@ export default async (request) => {
 
   const mode = url.searchParams.get('mode') === 'break' ? 'break' : 'work';
   const end = url.searchParams.get('end') || '';
-  const endLabel = (url.searchParams.get('endLabel') || '').slice(0, 40);
+  const timezoneOffset = parseTimezoneOffset(url.searchParams.get('tzOffset'));
+  const requestedEndLabel = sanitizePreviewText(url.searchParams.get('endLabel'), 40);
+  const fallbackEndLabel = formatEndFromTimestamp(end, timezoneOffset);
+  const endLabel = isPlaceholderEndLabel(requestedEndLabel) ? fallbackEndLabel : requestedEndLabel;
   const remaining = url.searchParams.get('remaining') || '';
   const appParams = new URLSearchParams({ spectate: sessionId, mode });
   const imageParams = new URLSearchParams({ session: sessionId, mode });
+  const shareParams = new URLSearchParams({ mode });
 
   appendOptionalParam(appParams, 'end', end);
   appendOptionalParam(appParams, 'endLabel', endLabel);
   appendOptionalParam(appParams, 'remaining', remaining);
+  appendOptionalParam(appParams, 'tzOffset', timezoneOffset);
   appendOptionalParam(imageParams, 'end', end);
   appendOptionalParam(imageParams, 'endLabel', endLabel);
   appendOptionalParam(imageParams, 'remaining', remaining);
+  appendOptionalParam(imageParams, 'tzOffset', timezoneOffset);
+  appendOptionalParam(shareParams, 'end', end);
+  appendOptionalParam(shareParams, 'endLabel', endLabel);
+  appendOptionalParam(shareParams, 'remaining', remaining);
+  appendOptionalParam(shareParams, 'tzOffset', timezoneOffset);
 
   const appUrl = `${siteUrl}/?${appParams.toString()}`;
   const imageUrl = `${siteUrl}/.netlify/functions/spectate-og?${imageParams.toString()}`;
-  const titleEnd = endLabel || 'Live timer';
-  const modeLabel = mode === 'break' ? 'Break Bank' : 'Focus';
-  const title = `${modeLabel} until ${titleEnd}`;
-  const description = 'Live Doro timer view with remaining time and estimated end time.';
+  const shareUrl = `${siteUrl}/share/${encodeURIComponent(sessionId)}?${shareParams.toString()}`;
+  const modeLabel = mode === 'break' ? 'Break' : 'Focus';
+  const title = endLabel ? `${modeLabel} Ends At ${endLabel}` : 'Doro Shared Timer';
+  const description = endLabel
+    ? `Open the Doro spectator timer. Estimated end: ${endLabel}.`
+    : 'Open the Doro spectator timer.';
 
   const html = `<!doctype html>
 <html lang="en">
@@ -70,13 +115,15 @@ export default async (request) => {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}">
+    <link rel="canonical" href="${escapeHtml(shareUrl)}">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Doro">
     <meta property="og:title" content="${escapeHtml(title)}">
     <meta property="og:description" content="${escapeHtml(description)}">
-    <meta property="og:url" content="${escapeHtml(url.href)}">
+    <meta property="og:url" content="${escapeHtml(shareUrl)}">
     <meta property="og:image" content="${escapeHtml(imageUrl)}">
     <meta property="og:image:secure_url" content="${escapeHtml(imageUrl)}">
+    <meta property="og:image:alt" content="${escapeHtml(title)}">
     <meta property="og:image:type" content="image/png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -84,6 +131,7 @@ export default async (request) => {
     <meta name="twitter:title" content="${escapeHtml(title)}">
     <meta name="twitter:description" content="${escapeHtml(description)}">
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}">
+    <meta name="twitter:image:alt" content="${escapeHtml(title)}">
     <meta http-equiv="refresh" content="0; url=${escapeHtml(appUrl)}">
   </head>
   <body style="margin:0;background:#9f7d87;color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
