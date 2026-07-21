@@ -22,13 +22,136 @@ type ConnectionStatus = 'connecting' | 'live' | 'disconnected' | 'error';
 
 const normalizeSessionId = (value: string) => value.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 64);
 
+const SpectatorLoadingScreen: React.FC<{ surfaceColor: string }> = ({ surfaceColor }) => (
+  <div
+    className="flex min-h-screen w-full items-center justify-center px-6 text-white"
+    style={{ background: surfaceColor }}
+    role="status"
+    aria-label="Loading Workspace"
+  >
+    <style>{`
+      @keyframes doroSpectatorBootSweep {
+        0% { transform: translateX(-110%); }
+        100% { transform: translateX(240%); }
+      }
+      @keyframes doroSpectatorBootDotPulse {
+        0%, 80%, 100% {
+          transform: translateY(0) scale(0.7);
+          opacity: 0.28;
+        }
+        40% {
+          transform: translateY(-3px) scale(1);
+          opacity: 1;
+        }
+      }
+      .doro-spectator-boot-shell {
+        width: min(92vw, 540px);
+        border-radius: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.06)),
+          linear-gradient(145deg, rgba(255, 255, 255, 0.16), rgba(15, 23, 42, 0.18));
+        backdrop-filter: blur(24px) saturate(160%);
+        -webkit-backdrop-filter: blur(24px) saturate(160%);
+        box-shadow: 0 40px 80px -54px rgba(15, 23, 42, 0.72);
+        padding: 28px 28px 24px;
+        text-align: center;
+      }
+      .doro-spectator-boot-kicker {
+        font-family: "Outfit", "Manrope", ui-sans-serif, sans-serif;
+        font-size: clamp(18px, 3vw, 24px);
+        font-weight: 500;
+        letter-spacing: -0.04em;
+        color: rgba(255, 255, 255, 0.74);
+      }
+      .doro-spectator-boot-logo {
+        font-family: "Outfit", "Manrope", ui-sans-serif, sans-serif;
+        font-size: clamp(56px, 10vw, 90px);
+        font-weight: 700;
+        letter-spacing: -0.07em;
+        line-height: 0.88;
+        color: rgba(255, 255, 255, 0.94);
+        text-transform: lowercase;
+        user-select: none;
+      }
+      .doro-spectator-boot-copy {
+        margin-top: 18px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.56);
+      }
+      .doro-spectator-boot-dots {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .doro-spectator-boot-dots span {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.78);
+        animation: doroSpectatorBootDotPulse 1.1s ease-in-out infinite;
+      }
+      .doro-spectator-boot-dots span:nth-child(2) { animation-delay: 0.14s; }
+      .doro-spectator-boot-dots span:nth-child(3) { animation-delay: 0.28s; }
+      .doro-spectator-boot-bar {
+        margin-top: 22px;
+        position: relative;
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .doro-spectator-boot-bar::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 45%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.18));
+        animation: doroSpectatorBootSweep 1.15s ease-in-out infinite;
+        transform-origin: left center;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .doro-spectator-boot-dots span,
+        .doro-spectator-boot-bar::after {
+          animation: none !important;
+        }
+      }
+    `}</style>
+    <div className="doro-spectator-boot-shell">
+      <div className="flex flex-col items-center justify-center gap-1.5">
+        <div className="doro-spectator-boot-kicker">Pomo with</div>
+        <div className="doro-spectator-boot-logo">doro</div>
+      </div>
+      <div className="doro-spectator-boot-copy">
+        <span>Loading Workspace</span>
+        <span className="doro-spectator-boot-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+      </div>
+      <div className="doro-spectator-boot-bar" />
+    </div>
+  </div>
+);
+
 const isTimerSpectatorState = (value: unknown): value is TimerSpectatorState => {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<TimerSpectatorState>;
   return candidate.version === 1
     && (candidate.activeMode === 'work' || candidate.activeMode === 'break')
     && typeof candidate.workTime === 'number'
-    && typeof candidate.breakTime === 'number';
+    && typeof candidate.breakTime === 'number'
+    && (candidate.activeCategoryName === undefined || typeof candidate.activeCategoryName === 'string')
+    && (candidate.activeCategoryColor === undefined || typeof candidate.activeCategoryColor === 'string');
 };
 
 const formatTimerSquareTime = (seconds: number) => {
@@ -354,6 +477,8 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
     ? getSafeTimestampMs(remoteState.projectedFinishEndMs)
     : (previewEndKind === 'finish' ? getSafeTimestampMs(previewEndMs) : null);
   const headlineEndMs = projectedFinishEndMs;
+  const activeCategoryName = remoteState?.activeCategoryName?.trim() || '';
+  const activeCategoryColor = remoteState?.activeCategoryColor?.trim() || remoteState?.activeColor || DEFAULT_WORK_SURFACE;
   const workTileLabel = remoteState?.activeTaskName || 'Focus';
   const endLabel = headlineEndMs
     ? formatTimerShareEndLabel(headlineEndMs)
@@ -368,6 +493,10 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
     timerValues.activeMode === 'break' ? DEFAULT_BREAK_SURFACE : (remoteState?.activeColor || DEFAULT_WORK_SURFACE),
     timerValues.activeMode === 'break' ? DEFAULT_BREAK_SURFACE : DEFAULT_WORK_SURFACE,
   );
+
+  if (status === 'connecting' && !remoteState) {
+    return <SpectatorLoadingScreen surfaceColor={surfaceColor} />;
+  }
 
   return (
     <div
@@ -450,6 +579,22 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
               isLiveish={hasKnownTimerState}
             />
           </div>
+
+          {activeCategoryName && (
+            <div className="relative mx-auto mt-4 flex max-w-full items-center justify-center gap-2 rounded-full border border-white/[0.13] bg-white/[0.065] px-3.5 py-2 text-center shadow-[0_18px_38px_-32px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl sm:max-w-[28rem]">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full shadow-[0_0_14px_rgba(255,255,255,0.18)]"
+                style={{ backgroundColor: activeCategoryColor }}
+                aria-hidden="true"
+              />
+              <span className="shrink-0 text-[10px] font-bold uppercase tracking-[0.14em] text-white/48 sm:text-[11px]">
+                Currently Working On:
+              </span>
+              <span className="min-w-0 truncate text-xs font-bold text-white/88 sm:text-sm">
+                {activeCategoryName}
+              </span>
+            </div>
+          )}
 
           {status !== 'live' && (
             <div className="relative mt-6 rounded-lg border border-white/[0.12] bg-white/[0.045] px-4 py-3 text-center text-xs font-semibold text-white/58 shadow-[0_18px_38px_-32px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.05)]">

@@ -55,6 +55,13 @@ const TASK_EDIT_CLOSE_DURATION_MS = 300;
 const TASK_EDIT_SETTLE_DURATION_MS = 160;
 const CATEGORY_RAIL_DRAG_THRESHOLD_PX = 6;
 
+const preserveMobileTaskComposerFocus = (event: React.PointerEvent<HTMLButtonElement>) => {
+  if (event.pointerType === 'mouse') return;
+  if (typeof window === 'undefined') return;
+  if (!window.matchMedia('(max-width: 767px)').matches) return;
+  event.preventDefault();
+};
+
 const getCategoryTrayClass = (hasSelection: boolean, extraClassName = '') => (
   `min-w-0 flex-1 overflow-x-auto rounded-xl border p-1.5 scrollbar-hide transition-[background-color,border-color,box-shadow] duration-300 ease-out ${
     hasSelection
@@ -1757,6 +1764,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                       <div className="doro-task-estimate-stepper flex items-center rounded-lg border border-white/20 bg-black/20 overflow-hidden">
                           <button
                               type="button"
+                              onPointerDown={preserveMobileTaskComposerFocus}
                               onClick={() => setNewEst(prev => clampPomoEstimate(prev - 1))}
                               className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                               aria-label="Decrease new task estimate"
@@ -1775,6 +1783,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                           />
                           <button
                               type="button"
+                              onPointerDown={preserveMobileTaskComposerFocus}
                               onClick={() => setNewEst(prev => clampPomoEstimate(prev + 1))}
                               className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                               aria-label="Increase new task estimate"

@@ -4337,14 +4337,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           }
           .settings-tablist {
             display: flex !important;
-            min-width: max-content !important;
+            min-width: 100% !important;
             width: max-content;
             gap: 0.16rem;
             padding-left: 0 !important;
             padding-right: 0 !important;
           }
           .settings-tab-btn {
-            flex: 0 0 auto !important;
+            flex: 1 0 auto !important;
             min-width: max-content;
             width: auto;
             padding: 0.78rem 0.72rem !important;

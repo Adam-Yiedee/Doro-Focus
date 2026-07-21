@@ -168,6 +168,8 @@ export interface TimerSpectatorState {
   graceOpen: boolean;
   graceContext: 'afterWork' | 'afterBreak' | null;
   activeTaskName: string | null;
+  activeCategoryName?: string;
+  activeCategoryColor?: string;
   activeColor?: string;
   projectedFinishEndMs?: number | null;
   settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval' | 'timerPreset' | 'twoInARowMode'>;

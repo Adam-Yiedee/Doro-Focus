@@ -570,18 +570,21 @@ const getMaxTaskId = (tasks: Task[]): number => {
   return maxId;
 };
 
-const findActiveContext = (tasks: Task[], parentColor?: string): { task: Task | null, color?: string } => {
+const findActiveContext = (tasks: Task[], parentColor?: string, parentCategoryId: number | null = null): { task: Task | null, color?: string, categoryId: number | null } => {
   for (const task of tasks) {
     const currentColor = task.color || parentColor;
+    const currentCategoryId = typeof task.categoryId === 'number' && Number.isFinite(task.categoryId)
+      ? task.categoryId
+      : parentCategoryId;
     if (task.selected) {
-      return { task: task, color: currentColor };
+      return { task: task, color: currentColor, categoryId: currentCategoryId };
     }
     if (task.subtasks.length > 0) {
-      const found = findActiveContext(task.subtasks, currentColor);
+      const found = findActiveContext(task.subtasks, currentColor, currentCategoryId);
       if (found.task) return found;
     }
   }
-  return { task: null, color: undefined };
+  return { task: null, color: undefined, categoryId: null };
 };
 
 const incrementCompletedInTree = (tasks: Task[], id: number): Task[] => {
@@ -2607,7 +2610,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const nowMs = Date.now();
     const activeContext = Array.isArray(state?.tasks)
       ? findActiveContext(state.tasks)
-      : { task: null, color: undefined };
+      : { task: null, color: undefined, categoryId: null };
+    const activeCategoryId = typeof activeContext.categoryId === 'number' && Number.isFinite(activeContext.categoryId)
+      ? activeContext.categoryId
+      : null;
+    const activeCategory = activeCategoryId !== null && Array.isArray(state?.categories)
+      ? (state.categories as Category[]).find(category => category.id === activeCategoryId)
+      : null;
+    const activeCategoryName = typeof activeCategory?.name === 'string' && activeCategory.name.trim()
+      ? activeCategory.name.trim().slice(0, 60)
+      : null;
+    const activeCategoryColor = activeCategoryName && typeof activeCategory?.color === 'string' && activeCategory.color.trim()
+      ? activeCategory.color.trim()
+      : undefined;
     const runtime = isRuntimeSnapshot(state?.runtime) ? state.runtime : runtimeRef.current;
     const settings = pickTimerSpectatorSettings(state?.settings);
     const activeMode = state?.activeMode === 'break' ? 'break' : 'work';
@@ -2656,6 +2671,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeTaskName: typeof activeContext.task?.name === 'string' && activeContext.task.name.trim()
         ? activeContext.task.name.trim().slice(0, 80)
         : null,
+      activeCategoryName: activeCategoryName || undefined,
+      activeCategoryColor,
       activeColor: typeof activeContext.color === 'string' && activeContext.color.trim() ? activeContext.color : undefined,
       projectedFinishEndMs: projectedFinishSeconds > 0 ? nowMs + (projectedFinishSeconds * 1000) : null,
       settings,
