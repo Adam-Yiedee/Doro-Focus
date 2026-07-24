@@ -278,7 +278,7 @@ export interface GroupNotice {
   id: string;
   actorId: string;
   actorName: string;
-  kind: 'join' | 'action';
+  kind: 'join' | 'action' | 'encouragement';
   message: string;
   createdAt: number;
 }

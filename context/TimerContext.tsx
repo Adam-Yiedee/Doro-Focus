@@ -361,12 +361,22 @@ const GROUP_EVENT_TYPES: GroupEventType[] = [
   'grace-resolved',
 ];
 
+const SPECTATOR_ENCOURAGEMENT_MAX_LENGTH = 180;
+const SPECTATOR_ENCOURAGEMENT_MIN_INTERVAL_MS = 1200;
+
 const isSpectatorConnection = (connection: Pick<DataConnection, 'metadata'> | null | undefined) => (
   Boolean(connection && (connection.metadata as any)?.spectator === true)
 );
 
 const isGroupEventType = (value: unknown): value is GroupEventType => {
   return typeof value === 'string' && GROUP_EVENT_TYPES.includes(value as GroupEventType);
+};
+
+const normalizeSpectatorEncouragementMessage = (value: unknown) => {
+  const normalized = typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim()
+    : '';
+  return normalized.slice(0, SPECTATOR_ENCOURAGEMENT_MAX_LENGTH);
 };
 
 const getDateKey = (date: Date) => {
@@ -1122,6 +1132,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const memberNamesRef = useRef<Record<string, string>>({});
   const announcedPeerIdsRef = useRef<Set<string>>(new Set());
   const seenGroupEventIdsRef = useRef<Set<string>>(new Set());
+  const spectatorEncouragementLastAtRef = useRef<Record<string, number>>({});
   const groupLifecycleRef = useRef(0);
   const clientReadyForBroadcastRef = useRef(true);
   const currentGroupStateRef = useRef<any>(null);
@@ -1772,28 +1783,34 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
     if (shouldNotify) {
-      normalized.inbox.forEach((action) => {
-        if (!action.readAt) seenFocusFriendActionIdsRef.current.add(action.id);
-      });
-      normalized.incomingRequests.forEach((request) => {
-        seenFocusFriendRequestIdsRef.current.add(request.id);
-      });
-
+      const newestJoinInvite = [...newUnreadActions].reverse().find(action => action.type === 'join-invite');
+      const newestJoinRequest = [...newUnreadActions].reverse().find(action => action.type === 'join-request');
       const newestUnread = newUnreadActions[newUnreadActions.length - 1];
       const newestRequest = newIncomingRequests[newIncomingRequests.length - 1];
       const newestUnreadAt = newestUnread ? Date.parse(newestUnread.createdAt) || 0 : -1;
       const newestRequestAt = newestRequest ? Date.parse(newestRequest.createdAt) || 0 : -1;
-      if (newestRequest && newestRequestAt > newestUnreadAt) {
+      const prioritizedAction = newestJoinInvite || newestJoinRequest || newestUnread;
+
+      if (prioritizedAction?.type === 'join-invite' || prioritizedAction?.type === 'join-request') {
+        seenFocusFriendActionIdsRef.current.add(prioritizedAction.id);
+        setFocusFriendNotice({
+          id: `${prioritizedAction.id}_${Date.now()}`,
+          type: 'action',
+          action: prioritizedAction,
+        });
+      } else if (newestRequest && newestRequestAt > newestUnreadAt) {
+        seenFocusFriendRequestIdsRef.current.add(newestRequest.id);
         setFocusFriendNotice({
           id: `${newestRequest.id}_${Date.now()}`,
           type: 'request',
           request: newestRequest,
         });
-      } else if (newestUnread) {
+      } else if (prioritizedAction) {
+        seenFocusFriendActionIdsRef.current.add(prioritizedAction.id);
         setFocusFriendNotice({
-          id: `${newestUnread.id}_${Date.now()}`,
+          id: `${prioritizedAction.id}_${Date.now()}`,
           type: 'action',
-          action: newestUnread,
+          action: prioritizedAction,
         });
       }
     }
@@ -2766,6 +2783,54 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, [formatGroupEventMessage]);
 
+  const postSpectatorEncouragementNotice = useCallback((raw: any, conn: DataConnection) => {
+    const message = normalizeSpectatorEncouragementMessage(raw?.message);
+    const eventId = typeof raw?.id === 'string' && raw.id.trim()
+      ? raw.id.trim().slice(0, 96)
+      : `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+    const sendResult = (ok: boolean, error?: string) => {
+      if (!conn.open) return;
+      conn.send({
+        type: ok ? 'SPECTATOR_ENCOURAGEMENT_ACK' : 'SPECTATOR_ENCOURAGEMENT_ERROR',
+        id: eventId,
+        error,
+      });
+    };
+
+    if (!message) {
+      sendResult(false, 'Choose an encouragement first.');
+      return;
+    }
+
+    if (seenGroupEventIdsRef.current.has(eventId)) {
+      sendResult(true);
+      return;
+    }
+
+    const nowMs = Date.now();
+    const viewerKey = conn.peer || 'spectator';
+    const lastAt = spectatorEncouragementLastAtRef.current[viewerKey] || 0;
+    if (nowMs - lastAt < SPECTATOR_ENCOURAGEMENT_MIN_INTERVAL_MS) {
+      sendResult(false, 'Give the encouragement a second.');
+      return;
+    }
+
+    spectatorEncouragementLastAtRef.current[viewerKey] = nowMs;
+    seenGroupEventIdsRef.current.add(eventId);
+    const actorName = sanitizeGroupMemberName(raw?.actorName ?? (conn.metadata as any)?.name, 'Timer Viewer');
+
+    setGroupNotice({
+      id: `${eventId}_${nowMs}`,
+      actorId: `spectator:${viewerKey}`,
+      actorName,
+      kind: 'encouragement',
+      message,
+      createdAt: nowMs,
+    });
+    sendResult(true);
+  }, []);
+
   const sendGroupEvent = useCallback((event: GroupEventPayload, excludeConnId?: string) => {
     if (!groupSessionIdRef.current) return;
     const openConnections = pruneConnections();
@@ -3245,6 +3310,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       memberNamesRef.current = {};
       announcedPeerIdsRef.current = new Set();
       seenGroupEventIdsRef.current = new Set();
+      spectatorEncouragementLastAtRef.current = {};
 
       return new Promise((resolve, reject) => {
           let settled = false;
@@ -3394,6 +3460,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     if (isStale()) return;
                     if (!data || typeof data !== 'object') return;
                     if (spectatorConnection) {
+                        if (data.type === 'SPECTATOR_ENCOURAGEMENT') {
+                          postSpectatorEncouragementNotice(data, conn);
+                          return;
+                        }
                         if (data.type === 'SPECTATOR_REQUEST' || data.type === 'STATE_REQUEST' || data.type === 'TIMER_STATE') {
                           sendSpectatorUpdate();
                         }
@@ -3502,6 +3572,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       memberNamesRef.current = {};
       announcedPeerIdsRef.current = new Set();
       seenGroupEventIdsRef.current = new Set();
+      spectatorEncouragementLastAtRef.current = {};
 
       return new Promise((resolve, reject) => {
           let settled = false;
@@ -3750,6 +3821,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       memberNamesRef.current = {};
       announcedPeerIdsRef.current = new Set();
       seenGroupEventIdsRef.current = new Set();
+      spectatorEncouragementLastAtRef.current = {};
       clientReadyForBroadcastRef.current = true;
       setGroupNotice(null);
       setGuestTimerLockNotice(null);

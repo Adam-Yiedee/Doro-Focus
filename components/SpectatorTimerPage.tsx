@@ -1,7 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Peer, { DataConnection } from 'peerjs';
+import { Check, Heart, X } from 'lucide-react';
 import { TimerMode, TimerSpectatorState } from '../types';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
+import {
+  buildEncouragementOptions,
+  normalizeEncouragementSubject,
+  type EncouragementPrompt,
+  type EncouragementPromptContext,
+} from '../utils/encouragementPrompts';
+import { formatPomodoroCount, getStandardPomodoroCountForTimer } from '../utils/pomodoroAccounting';
 import {
   formatTimerShareEndLabel,
   getSpectatorSettingsFallback,
@@ -19,8 +27,16 @@ interface SpectatorTimerPageProps {
 }
 
 type ConnectionStatus = 'connecting' | 'live' | 'disconnected' | 'error';
+type SpectatorEncouragementFeedback = {
+  id: string;
+  phase: 'sending' | 'sent' | 'error';
+  message: string;
+};
 
 const normalizeSessionId = (value: string) => value.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 64);
+const SPECTATOR_VIEWER_NAME = 'Timer Viewer';
+const SPECTATOR_ENCOURAGEMENT_FEEDBACK_MS = 2600;
+const SPECTATOR_ENCOURAGEMENT_ACK_TIMEOUT_MS = 7000;
 
 const SpectatorLoadingScreen: React.FC<{ surfaceColor: string }> = ({ surfaceColor }) => (
   <div
@@ -352,6 +368,40 @@ const getPreviewEstimate = (
   };
 };
 
+const getSpectatorPomoPromptMeta = (state: TimerSpectatorState | null) => {
+  if (!state) {
+    return {
+      currentPomoNumber: null,
+      completedPomoCount: null,
+      pomoLabel: 'first pomo',
+    };
+  }
+
+  const completedPomoCount = Number.isFinite(Number(state.todayPomodoroCount))
+    ? Math.max(0, Number(state.todayPomodoroCount))
+    : getStandardPomodoroCountForTimer(Number(state.pomodoroCount) || 0, state.settings);
+  const unitLabel = completedPomoCount === 1 ? 'pomo' : 'pomos';
+
+  return {
+    currentPomoNumber: state.isIdle ? null : completedPomoCount,
+    completedPomoCount,
+    pomoLabel: completedPomoCount > 0 ? `${formatPomodoroCount(completedPomoCount)} ${unitLabel}` : 'first pomo',
+  };
+};
+
+const getSpectatorEncouragementContext = (
+  state: TimerSpectatorState | null,
+  activeMode: TimerMode,
+): EncouragementPromptContext => {
+  const pomoMeta = getSpectatorPomoPromptMeta(state);
+  return {
+    ...pomoMeta,
+    taskName: normalizeEncouragementSubject(state?.activeTaskName, ['No selected task']),
+    categoryName: normalizeEncouragementSubject(state?.activeCategoryName, ['Uncategorized']),
+    isBreak: activeMode === 'break',
+  };
+};
+
 const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
   sessionId,
   previewEndMs = null,
@@ -365,12 +415,50 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
   const [remoteState, setRemoteState] = useState<TimerSpectatorState | null>(null);
   const [message, setMessage] = useState(normalizedSessionId ? 'Connecting to live timer...' : 'Missing timer link.');
   const [nowMs, setNowMs] = useState(Date.now());
+  const [encouragementMenuOpen, setEncouragementMenuOpen] = useState(false);
+  const [encouragementOptions, setEncouragementOptions] = useState<EncouragementPrompt[]>([]);
+  const [encouragementFeedback, setEncouragementFeedback] = useState<SpectatorEncouragementFeedback | null>(null);
   const connectionRef = useRef<DataConnection | null>(null);
+  const encouragementMenuRef = useRef<HTMLDivElement | null>(null);
+  const pendingEncouragementIdRef = useRef<string | null>(null);
+  const encouragementFeedbackTimeoutRef = useRef<number | null>(null);
+  const encouragementAckTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     const tick = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(tick);
   }, []);
+
+  const clearEncouragementFeedbackTimer = useCallback(() => {
+    if (encouragementFeedbackTimeoutRef.current !== null) {
+      window.clearTimeout(encouragementFeedbackTimeoutRef.current);
+      encouragementFeedbackTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearEncouragementAckTimer = useCallback(() => {
+    if (encouragementAckTimeoutRef.current !== null) {
+      window.clearTimeout(encouragementAckTimeoutRef.current);
+      encouragementAckTimeoutRef.current = null;
+    }
+  }, []);
+
+  const showEncouragementFeedback = useCallback((
+    feedback: SpectatorEncouragementFeedback,
+    visibleMs: number = SPECTATOR_ENCOURAGEMENT_FEEDBACK_MS,
+  ) => {
+    clearEncouragementFeedbackTimer();
+    setEncouragementFeedback(feedback);
+    encouragementFeedbackTimeoutRef.current = window.setTimeout(() => {
+      encouragementFeedbackTimeoutRef.current = null;
+      setEncouragementFeedback(current => current?.id === feedback.id ? null : current);
+    }, visibleMs);
+  }, [clearEncouragementFeedbackTimer]);
+
+  useEffect(() => () => {
+    clearEncouragementFeedbackTimer();
+    clearEncouragementAckTimer();
+  }, [clearEncouragementAckTimer, clearEncouragementFeedbackTimer]);
 
   useEffect(() => {
     if (!normalizedSessionId) return undefined;
@@ -408,6 +496,28 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
             setRemoteState(data.state);
             setStatus('live');
             setMessage('');
+            return;
+          }
+          if (data.type === 'SPECTATOR_ENCOURAGEMENT_ACK') {
+            if (typeof data.id !== 'string' || data.id !== pendingEncouragementIdRef.current) return;
+            pendingEncouragementIdRef.current = null;
+            clearEncouragementAckTimer();
+            showEncouragementFeedback({
+              id: data.id,
+              phase: 'sent',
+              message: 'Sent',
+            });
+            return;
+          }
+          if (data.type === 'SPECTATOR_ENCOURAGEMENT_ERROR') {
+            if (typeof data.id !== 'string' || data.id !== pendingEncouragementIdRef.current) return;
+            pendingEncouragementIdRef.current = null;
+            clearEncouragementAckTimer();
+            showEncouragementFeedback({
+              id: data.id,
+              phase: 'error',
+              message: typeof data.error === 'string' && data.error.trim() ? data.error.trim().slice(0, 80) : 'Could not send',
+            });
           }
         });
 
@@ -415,12 +525,32 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           if (disposed) return;
           setStatus('disconnected');
           setMessage('The live timer is not broadcasting right now.');
+          if (pendingEncouragementIdRef.current) {
+            const id = pendingEncouragementIdRef.current;
+            pendingEncouragementIdRef.current = null;
+            clearEncouragementAckTimer();
+            showEncouragementFeedback({
+              id,
+              phase: 'error',
+              message: 'Viewer disconnected',
+            });
+          }
         });
 
         connection.on('error', () => {
           if (disposed) return;
           setStatus('error');
           setMessage('Unable to connect to this live timer.');
+          if (pendingEncouragementIdRef.current) {
+            const id = pendingEncouragementIdRef.current;
+            pendingEncouragementIdRef.current = null;
+            clearEncouragementAckTimer();
+            showEncouragementFeedback({
+              id,
+              phase: 'error',
+              message: 'Could not send',
+            });
+          }
         });
       });
 
@@ -437,9 +567,11 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
     return () => {
       disposed = true;
       cleanupConnection();
+      pendingEncouragementIdRef.current = null;
+      clearEncouragementAckTimer();
       try { peer?.destroy(); } catch {}
     };
-  }, [normalizedSessionId]);
+  }, [clearEncouragementAckTimer, normalizedSessionId, showEncouragementFeedback]);
 
   const timerValues = useMemo(() => {
     if (!remoteState) {
@@ -466,6 +598,98 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
       breakTime: derived.breakTime,
     };
   }, [nowMs, previewMode, previewRemainingSeconds, remoteState]);
+
+  const canSendEncouragement = status === 'live' && Boolean(connectionRef.current?.open);
+  const isEncouragementSending = encouragementFeedback?.phase === 'sending';
+
+  const openEncouragementMenu = () => {
+    if (!canSendEncouragement || isEncouragementSending) return;
+    setEncouragementOptions(buildEncouragementOptions(getSpectatorEncouragementContext(remoteState, timerValues.activeMode)));
+    setEncouragementMenuOpen(true);
+  };
+
+  const toggleEncouragementMenu = () => {
+    if (encouragementMenuOpen) {
+      setEncouragementMenuOpen(false);
+      return;
+    }
+    openEncouragementMenu();
+  };
+
+  const sendSpectatorEncouragement = (prompt: EncouragementPrompt) => {
+    const connection = connectionRef.current;
+    const messageText = prompt.message.trim();
+    if (!messageText) return;
+    if (!connection?.open) {
+      showEncouragementFeedback({
+        id: `spectator-error-${Date.now()}`,
+        phase: 'error',
+        message: 'Viewer disconnected',
+      });
+      setEncouragementMenuOpen(false);
+      return;
+    }
+
+    const id = `spectator-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    pendingEncouragementIdRef.current = id;
+    clearEncouragementAckTimer();
+    setEncouragementMenuOpen(false);
+    setEncouragementFeedback({
+      id,
+      phase: 'sending',
+      message: 'Sending',
+    });
+    encouragementAckTimeoutRef.current = window.setTimeout(() => {
+      if (pendingEncouragementIdRef.current !== id) return;
+      pendingEncouragementIdRef.current = null;
+      encouragementAckTimeoutRef.current = null;
+      showEncouragementFeedback({
+        id,
+        phase: 'error',
+        message: 'No response',
+      });
+    }, SPECTATOR_ENCOURAGEMENT_ACK_TIMEOUT_MS);
+
+    try {
+      connection.send({
+        type: 'SPECTATOR_ENCOURAGEMENT',
+        id,
+        actorName: SPECTATOR_VIEWER_NAME,
+        message: messageText,
+      });
+    } catch {
+      pendingEncouragementIdRef.current = null;
+      clearEncouragementAckTimer();
+      showEncouragementFeedback({
+        id,
+        phase: 'error',
+        message: 'Could not send',
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!encouragementMenuOpen) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (encouragementMenuRef.current?.contains(event.target as Node)) return;
+      setEncouragementMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setEncouragementMenuOpen(false);
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [encouragementMenuOpen]);
+
+  useEffect(() => {
+    if (!canSendEncouragement) setEncouragementMenuOpen(false);
+  }, [canSendEncouragement]);
 
   const estimate = useMemo(() => (
     remoteState
@@ -512,12 +736,51 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           0% { opacity: 0; transform: translateY(18px) scale(0.985); filter: blur(8px); }
           100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
         }
+        @keyframes doroSpectatorMenuIn {
+          0% { opacity: 0; transform: translate3d(-50%, -6px, 0) scale(0.97); filter: blur(6px); }
+          100% { opacity: 1; transform: translate3d(-50%, 0, 0) scale(1); filter: blur(0); }
+        }
+        @keyframes doroSpectatorFeedbackIn {
+          0% { opacity: 0; transform: translateY(5px) scale(0.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
         .doro-spectator-shell {
           animation: doroSpectatorIn 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
         }
         .doro-spectator-wave-slow { animation: doroSpectatorWaveRotate 40s linear infinite; }
         .doro-spectator-wave-med { animation: doroSpectatorWaveRotate 32s linear infinite reverse; }
         .doro-spectator-wave-fast { animation: doroSpectatorWaveRotate 25s linear infinite; }
+        .doro-spectator-encouragement-button {
+          box-shadow: 0 18px 42px -32px rgba(0, 0, 0, 0.86), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+        .doro-spectator-encouragement-button:not(:disabled):hover {
+          transform: translateY(-1px);
+          border-color: rgba(255, 255, 255, 0.24);
+          background: rgba(255, 255, 255, 0.105);
+        }
+        .doro-spectator-encouragement-button:not(:disabled):active {
+          transform: translateY(0);
+        }
+        .doro-spectator-encouragement-menu {
+          animation: doroSpectatorMenuIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          box-shadow: 0 28px 58px -38px rgba(0, 0, 0, 0.94), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+        }
+        .doro-spectator-encouragement-option:hover,
+        .doro-spectator-encouragement-option:focus-visible {
+          background: rgba(255, 255, 255, 0.11);
+          color: rgba(255, 255, 255, 0.96);
+        }
+        .doro-spectator-encouragement-feedback {
+          animation: doroSpectatorFeedbackIn 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-spectator-encouragement-spinner {
+          height: 0.82rem;
+          width: 0.82rem;
+          border-radius: 999px;
+          border: 2px solid currentColor;
+          border-top-color: transparent;
+          animation: doroSpectatorWaveRotate 760ms linear infinite;
+        }
         @media (max-width: 767px) {
           .doro-spectator-liquid-shell,
           .doro-spectator-liquid-mask {
@@ -530,19 +793,25 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           .doro-spectator-liquid-mask > div {
             transform: translateZ(0);
           }
+          .doro-spectator-encouragement-menu {
+            width: min(92vw, 25rem);
+          }
         }
         @media (prefers-reduced-motion: reduce) {
           .doro-spectator-shell,
           .doro-spectator-wave-slow,
           .doro-spectator-wave-med,
-          .doro-spectator-wave-fast {
+          .doro-spectator-wave-fast,
+          .doro-spectator-encouragement-menu,
+          .doro-spectator-encouragement-feedback,
+          .doro-spectator-encouragement-spinner {
             animation: none !important;
           }
         }
       `}</style>
 
       <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center gap-4">
-        <section className="doro-spectator-shell relative w-full overflow-hidden rounded-[1.7rem] border border-white/[0.13] bg-white/[0.072] px-4 py-5 shadow-[0_34px_78px_-48px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.065)] backdrop-blur-xl md:px-7 md:py-7">
+        <section className="doro-spectator-shell relative w-full overflow-visible rounded-[1.7rem] border border-white/[0.13] bg-white/[0.072] px-4 py-5 shadow-[0_34px_78px_-48px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.065)] backdrop-blur-xl md:px-7 md:py-7">
           <div className="pointer-events-none absolute inset-0 rounded-[inherit] border border-white/[0.08] shadow-[inset_0_-34px_70px_rgba(0,0,0,0.08)]" />
 
           <div className="relative flex flex-col items-center gap-3">
@@ -595,6 +864,66 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
               </span>
             </div>
           )}
+
+          <div className="relative z-30 mx-auto mt-4 flex flex-col items-center gap-2">
+            <div ref={encouragementMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={toggleEncouragementMenu}
+                disabled={!canSendEncouragement || isEncouragementSending}
+                aria-haspopup="menu"
+                aria-expanded={encouragementMenuOpen}
+                className={`doro-spectator-encouragement-button inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/[0.14] bg-white/[0.07] px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 outline-none transition-[background-color,border-color,color,transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-white/35 ${
+                  canSendEncouragement && !isEncouragementSending ? '' : 'cursor-not-allowed opacity-45'
+                }`}
+              >
+                <Heart size={16} strokeWidth={2.35} aria-hidden="true" />
+                Encourage
+              </button>
+
+              {encouragementMenuOpen && (
+                <div
+                  role="menu"
+                  className="doro-spectator-encouragement-menu absolute left-1/2 top-[calc(100%+0.6rem)] z-50 grid w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 gap-1 rounded-2xl border border-white/[0.14] bg-slate-950/92 p-1.5 text-left backdrop-blur-2xl"
+                >
+                  {encouragementOptions.map(prompt => (
+                    <button
+                      key={`${prompt.kind}-${prompt.message}`}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => sendSpectatorEncouragement(prompt)}
+                      className="doro-spectator-encouragement-option rounded-xl px-3.5 py-2.5 text-left text-sm font-semibold leading-snug text-white/72 outline-none transition-[background-color,color] duration-150"
+                    >
+                      {prompt.message}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {encouragementFeedback && (
+              <div
+                className={`doro-spectator-encouragement-feedback inline-flex min-h-8 max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] shadow-[0_16px_32px_-28px_rgba(0,0,0,0.9)] ${
+                  encouragementFeedback.phase === 'sent'
+                    ? 'border-rose-100/24 bg-rose-500/24 text-rose-50'
+                    : encouragementFeedback.phase === 'error'
+                      ? 'border-red-100/22 bg-red-950/42 text-red-100'
+                      : 'border-white/[0.14] bg-white/[0.075] text-white/70'
+                }`}
+                role="status"
+                aria-live="polite"
+              >
+                {encouragementFeedback.phase === 'sent' ? (
+                  <Check size={14} strokeWidth={2.45} aria-hidden="true" />
+                ) : encouragementFeedback.phase === 'error' ? (
+                  <X size={14} strokeWidth={2.45} aria-hidden="true" />
+                ) : (
+                  <span className="doro-spectator-encouragement-spinner" aria-hidden="true" />
+                )}
+                <span className="truncate">{encouragementFeedback.message}</span>
+              </div>
+            )}
+          </div>
 
           {status !== 'live' && (
             <div className="relative mt-6 rounded-lg border border-white/[0.12] bg-white/[0.045] px-4 py-3 text-center text-xs font-semibold text-white/58 shadow-[0_18px_38px_-32px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.05)]">
