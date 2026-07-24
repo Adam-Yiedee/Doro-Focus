@@ -411,6 +411,7 @@ describe('focus-friends function', () => {
         workTime: 1470,
         breakTime: 300,
         pomodoroCount: 2,
+        todayPomodoroCount: 5.5,
         allPauseActive: false,
         allPauseTime: 0,
         graceOpen: false,
@@ -418,6 +419,7 @@ describe('focus-friends function', () => {
         activeTaskName: 'Live timer check',
         activeCategoryName: 'Presence',
         activeCategoryColor: '#4FAE9B',
+        activeCategoryIcon: 'target',
         activeColor: '#4FAE9B',
         projectedFinishEndMs: null,
         settings: {
@@ -456,7 +458,9 @@ describe('focus-friends function', () => {
           timer: {
             activeTaskName: 'Live timer check',
             activeCategoryName: 'Presence',
+            activeCategoryIcon: 'target',
             pomodoroCount: 2,
+            todayPomodoroCount: 5.5,
             runtime: {
               phase: 'running-work',
               phaseStartWorkTime: 1470,
@@ -479,6 +483,7 @@ describe('focus-friends function', () => {
         workTime: 1470,
         breakTime: 240,
         pomodoroCount: 2,
+        todayPomodoroCount: 5.5,
         allPauseActive: false,
         allPauseTime: 0,
         graceOpen: false,
@@ -486,6 +491,7 @@ describe('focus-friends function', () => {
         activeTaskName: 'Live timer check',
         activeCategoryName: 'Presence',
         activeCategoryColor: '#4FAE9B',
+        activeCategoryIcon: 'target',
         activeColor: '#4FAE9B',
         projectedFinishEndMs: null,
         settings: {

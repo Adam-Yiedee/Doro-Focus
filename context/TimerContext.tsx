@@ -89,7 +89,7 @@ import {
 } from '../utils/groupStudy';
 import { buildCategorySnapshot } from '../utils/categoryTracking';
 import { isActiveCategory } from '../utils/categoryVisibility';
-import { getCompletionReasonForSettings } from '../utils/pomodoroAccounting';
+import { getAccountStatsPomodoroEquivalent, getCompletionReasonForSettings } from '../utils/pomodoroAccounting';
 import { selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from '../utils/accountSync';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
@@ -374,6 +374,34 @@ const getDateKey = (date: Date) => {
   const m = `${date.getMonth() + 1}`.padStart(2, '0');
   const d = `${date.getDate()}`.padStart(2, '0');
   return `${y}-${m}-${d}`;
+};
+
+const getStartOfLocalDayMs = (ms: number) => {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const getLogEndMs = (entry: Pick<LogEntry, 'start' | 'end' | 'duration'>) => {
+  const startMs = Date.parse(entry.start);
+  let endMs = Date.parse(entry.end);
+  if (Number.isFinite(endMs)) return endMs;
+  if (!Number.isFinite(startMs) || !Number.isFinite(entry.duration) || entry.duration <= 0) return null;
+  endMs = startMs + (entry.duration * 1000);
+  return Number.isFinite(endMs) ? endMs : null;
+};
+
+const getTodayPomodoroCountFromLogs = (entries: LogEntry[], nowMs: number) => {
+  if (!Array.isArray(entries) || entries.length === 0) return 0;
+  const todayStartMs = getStartOfLocalDayMs(nowMs);
+  const tomorrowStartMs = todayStartMs + (24 * 60 * 60 * 1000);
+
+  return entries.reduce((total, entry) => {
+    if (!entry || entry.type !== 'work') return total;
+    const endMs = getLogEndMs(entry);
+    if (endMs === null || endMs < todayStartMs || endMs >= tomorrowStartMs) return total;
+    return total + getAccountStatsPomodoroEquivalent(entry);
+  }, 0);
 };
 
 const isPreviewAuthToken = (value: string | null | undefined) => value === PREVIEW_AUTH_TOKEN;
@@ -2908,6 +2936,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const activeCategoryColor = activeCategoryName && typeof activeCategory?.color === 'string' && activeCategory.color.trim()
       ? activeCategory.color.trim()
       : undefined;
+    const activeCategoryIcon = activeCategoryName && typeof activeCategory?.icon === 'string' && activeCategory.icon.trim()
+      ? activeCategory.icon.trim()
+      : undefined;
     const runtime = isRuntimeSnapshot(state?.runtime) ? state.runtime : runtimeRef.current;
     const settings = pickTimerSpectatorSettings(state?.settings);
     const activeMode = state?.activeMode === 'break' ? 'break' : 'work';
@@ -2949,6 +2980,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       workTime: typeof state?.workTime === 'number' && Number.isFinite(state.workTime) ? state.workTime : DEFAULT_SETTINGS.workDuration,
       breakTime: typeof state?.breakTime === 'number' && Number.isFinite(state.breakTime) ? state.breakTime : 0,
       pomodoroCount: typeof state?.pomodoroCount === 'number' && Number.isFinite(state.pomodoroCount) ? state.pomodoroCount : 0,
+      todayPomodoroCount: getTodayPomodoroCountFromLogs(
+        Array.isArray(state?.logs) ? state.logs : [],
+        nowMs,
+      ),
       allPauseActive: Boolean(state?.allPauseActive),
       allPauseTime: typeof state?.allPauseTime === 'number' && Number.isFinite(state.allPauseTime) ? state.allPauseTime : 0,
       graceOpen: Boolean(state?.graceOpen),
@@ -2958,6 +2993,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         : null,
       activeCategoryName: activeCategoryName || undefined,
       activeCategoryColor,
+      activeCategoryIcon,
       activeColor: typeof activeContext.color === 'string' && activeContext.color.trim() ? activeContext.color : undefined,
       projectedFinishEndMs: projectedFinishSeconds > 0 ? nowMs + (projectedFinishSeconds * 1000) : null,
       settings,

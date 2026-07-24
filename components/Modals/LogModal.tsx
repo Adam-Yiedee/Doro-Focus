@@ -4,7 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
-import { CATEGORY_ICON_OPTIONS, getIcon } from '../../utils/icons';
+import { CATEGORY_ICON_OPTIONS, CATEGORY_ICONS, getIcon } from '../../utils/icons';
 import { computeAccountInsights } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { getActiveCategories } from '../../utils/categoryVisibility';
@@ -16,9 +16,9 @@ import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import {
   formatPomodoroCount,
   getPomodoroEquivalentWeightForReason,
-  getTimerPomoUnitLabel,
   MINI_POMODORO_COMPLETE_REASON,
   POMODORO_COMPLETE_REASON,
+  getStandardPomodoroCountForTimer,
 } from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 import { playAlarm, startFocusSoundPreview, stopFocusSoundPreview } from '../../utils/sound';
@@ -222,30 +222,26 @@ const getRandomGeneralEncouragements = (count: number, blockedMessages: Set<stri
 
 const getFocusFriendPomoMeta = (friend: FocusFriend) => {
   const timer = friend.presence.timer;
-  const isBreak = timer?.activeMode === 'break' || friend.presence.status === 'break';
   const isActiveTimerState = Boolean(timer) && friend.presence.status !== 'idle' && friend.presence.status !== 'offline';
-  const completedPomoCount = Number.isFinite(Number(timer?.pomodoroCount))
-    ? Math.max(0, Math.floor(Number(timer?.pomodoroCount)))
-    : null;
-  const safeCompletedPomoCount = completedPomoCount || 0;
-  const currentPomoNumber = timer && isActiveTimerState
-    ? isBreak
-      ? Math.max(1, safeCompletedPomoCount)
-      : safeCompletedPomoCount + 1
-    : null;
-  const singularUnitLabel = timer ? getTimerPomoUnitLabel(timer.settings, false) : 'Pomo';
-  const pluralUnitLabel = timer ? getTimerPomoUnitLabel(timer.settings, true) : 'Pomos';
-  const promptUnitLabel = currentPomoNumber === 1 ? singularUnitLabel.toLowerCase() : pluralUnitLabel.toLowerCase();
+  const hasDailyPomoCount = Number.isFinite(Number(timer?.todayPomodoroCount));
+  const completedPomoCount = hasDailyPomoCount
+    ? Math.max(0, Number(timer?.todayPomodoroCount))
+    : Number.isFinite(Number(timer?.pomodoroCount)) && timer
+      ? getStandardPomodoroCountForTimer(Number(timer.pomodoroCount), timer.settings)
+      : null;
+  const safeCompletedPomoCount = completedPomoCount ?? 0;
+  const displayedPomoCount = timer && isActiveTimerState ? safeCompletedPomoCount : null;
+  const displayValue = displayedPomoCount !== null ? formatPomodoroCount(displayedPomoCount) : null;
+  const promptUnitLabel = safeCompletedPomoCount === 1 ? 'pomo' : 'pomos';
+  const displayUnitLabel = displayedPomoCount === 1 ? 'Pomo' : 'Pomos';
 
   return {
-    currentPomoNumber,
+    currentPomoNumber: displayedPomoCount,
     completedPomoCount,
-    displayLabel: currentPomoNumber !== null
-      ? isBreak
-        ? `${singularUnitLabel} ${currentPomoNumber} done`
-        : `${singularUnitLabel} ${currentPomoNumber}`
+    displayLabel: displayedPomoCount !== null
+      ? `${displayValue} ${displayUnitLabel}`
       : null,
-    promptLabel: currentPomoNumber !== null ? `${currentPomoNumber} ${promptUnitLabel}` : `first ${singularUnitLabel.toLowerCase()}`,
+    promptLabel: safeCompletedPomoCount > 0 ? `${formatPomodoroCount(safeCompletedPomoCount)} ${promptUnitLabel}` : 'first pomo',
   };
 };
 
@@ -981,6 +977,13 @@ const getTaskPaletteColor = (preferred: string | undefined, seed: string) => {
     hash = ((hash * 31) + source.charCodeAt(index)) >>> 0;
   }
   return PRESET_COLORS[hash % PRESET_COLORS.length];
+};
+
+const getFocusFriendAvatarIconKey = (value: unknown) => {
+  if (typeof value !== 'string') return null;
+  const key = value.trim().toLowerCase();
+  if (!key) return null;
+  return Object.prototype.hasOwnProperty.call(CATEGORY_ICONS, key) ? key : null;
 };
 
 const copyToClipboard = async (value: string) => {
@@ -3190,6 +3193,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         taskLabel: isBreak ? '' : timer?.activeTaskName || 'No selected task',
         categoryLabel: isBreak ? 'Break' : timer?.activeCategoryName || 'Uncategorized',
         categoryColor: isBreak ? PRESET_COLORS[1] : timer?.activeColor || timer?.activeCategoryColor || accountPrimaryColor,
+        categoryIcon: isBreak ? undefined : timer?.activeCategoryIcon,
         pomoLabel: pomoMeta.displayLabel,
         isBreak,
         status: estimate.status,
@@ -3415,6 +3419,17 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       const encouragementMenuOpen = focusFriendEncouragementMenuUsername === friend.username;
       const encouragementConfirmationVisible = focusFriendEncouragementConfirmation?.username === friend.username;
       const displayInitial = activityMeta.displayName.trim().slice(0, 1) || friend.username.slice(0, 1) || '?';
+      const avatarIconKey = friend.presence.status === 'focusing'
+        ? getFocusFriendAvatarIconKey(timerMeta.categoryIcon)
+        : null;
+      const avatarIcon = avatarIconKey
+        ? getIcon(avatarIconKey, {
+            size: 18,
+            strokeWidth: 2.25,
+            className: 'shrink-0',
+            'aria-hidden': true,
+          })
+        : null;
       const friendAccentColor = getTaskPaletteColor(
         timerMeta.categoryColor || accountPrimaryColor,
         `${friend.username}:${timerMeta.categoryLabel}:${timerMeta.taskLabel}`,
@@ -3456,7 +3471,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   borderColor: friendAccentLine,
                 }}
               >
-                {displayInitial}
+                {avatarIcon || displayInitial}
               </div>
             </div>
 
@@ -3473,11 +3488,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 {canRequestJoin ? (
                   <>
                     <span
-                      className="inline-flex h-5 shrink-0 items-center gap-1 rounded-[0.38rem] border px-1.5 text-[10px] font-black uppercase leading-none"
+                      className="inline-flex h-5 shrink-0 items-center gap-1 text-[10px] font-black uppercase leading-none"
                       style={{
                         color: friendChipTextColor,
-                        borderColor: friendAccentLine,
-                        backgroundColor: colorToRgba(friendAccentColor, isLightTheme ? 0.09 : 0.12),
                       }}
                     >
                       <TimerIcon size={11} style={{ color: friendAccentColor }} />
@@ -3485,11 +3498,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     </span>
                     {timerMeta.pomoLabel ? (
                       <span
-                        className="inline-flex h-5 shrink-0 items-center rounded-[0.38rem] border px-1.5 text-[10px] font-black uppercase leading-none"
+                        className="inline-flex h-5 shrink-0 items-center text-[10px] font-black uppercase leading-none"
                         style={{
                           color: friendChipTextColor,
-                          borderColor: colorToRgba(friendAccentColor, isLightTheme ? 0.32 : 0.26),
-                          backgroundColor: colorToRgba(friendAccentColor, isLightTheme ? 0.12 : 0.16),
                         }}
                       >
                         {timerMeta.pomoLabel}

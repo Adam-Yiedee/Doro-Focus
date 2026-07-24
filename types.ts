@@ -164,6 +164,7 @@ export interface TimerSpectatorState {
   workTime: number;
   breakTime: number;
   pomodoroCount: number;
+  todayPomodoroCount?: number;
   allPauseActive: boolean;
   allPauseTime: number;
   graceOpen: boolean;
@@ -171,6 +172,7 @@ export interface TimerSpectatorState {
   activeTaskName: string | null;
   activeCategoryName?: string;
   activeCategoryColor?: string;
+  activeCategoryIcon?: string;
   activeColor?: string;
   projectedFinishEndMs?: number | null;
   settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval' | 'timerPreset' | 'twoInARowMode'>;

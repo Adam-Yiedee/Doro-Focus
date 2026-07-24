@@ -33,6 +33,7 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     displayName: 'Master',
     categoryName: 'Debug Build',
     categoryColor: '#60A5FA',
+    categoryIcon: 'target',
     taskName: 'Review Focus Friends',
     workTime: 1420,
     pomodoroCount: 1,
@@ -44,6 +45,7 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     displayName: 'Master 2',
     categoryName: 'Friend Testing',
     categoryColor: '#34D399',
+    categoryIcon: 'heart',
     taskName: 'Test friend activity',
     workTime: 1180,
     pomodoroCount: 4,
@@ -55,6 +57,7 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     displayName: 'Master 3',
     categoryName: 'Deep Work',
     categoryColor: '#FBBF24',
+    categoryIcon: 'brain',
     taskName: 'Review request flow',
     workTime: 960,
     pomodoroCount: 2,
@@ -66,6 +69,7 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     displayName: 'Master 4',
     categoryName: 'Pair Focus',
     categoryColor: '#A78BFA',
+    categoryIcon: 'user',
     taskName: 'Check session invites',
     workTime: 720,
     pomodoroCount: 0,
@@ -77,6 +81,7 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     displayName: 'Master 5',
     categoryName: 'Encouragement',
     categoryColor: '#FB7185',
+    categoryIcon: 'sparkles',
     taskName: 'Send friend nudges',
     workTime: 540,
     pomodoroCount: 0,
@@ -193,6 +198,34 @@ const getPomodoroEquivalentWeight = (entry) => {
   if (reason === POMODORO_COMPLETE_REASON) return 1;
   if (reason === MINI_POMODORO_COMPLETE_REASON) return 0.5;
   return 0;
+};
+
+const getStartOfLocalDayMs = (ms) => {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const getLogEndMs = (entry) => {
+  const startMs = Date.parse(entry?.start);
+  let endMs = Date.parse(entry?.end);
+  if (Number.isFinite(endMs)) return endMs;
+  if (!Number.isFinite(startMs) || !Number.isFinite(entry?.duration) || entry.duration <= 0) return null;
+  endMs = startMs + (entry.duration * 1000);
+  return Number.isFinite(endMs) ? endMs : null;
+};
+
+const getTodayPomodoroCountFromLogs = (logs, nowMs = Date.now()) => {
+  if (!Array.isArray(logs) || logs.length === 0) return 0;
+  const todayStartMs = getStartOfLocalDayMs(nowMs);
+  const tomorrowStartMs = todayStartMs + (24 * 60 * 60 * 1000);
+
+  return logs.reduce((total, entry) => {
+    if (!entry || entry.type !== 'work' || isPauseCreditedWorkLog(entry)) return total;
+    const endMs = getLogEndMs(entry);
+    if (endMs === null || endMs < todayStartMs || endMs >= tomorrowStartMs) return total;
+    return total + getPomodoroEquivalentWeight(entry);
+  }, 0);
 };
 
 const getSessionWorkMinutes = (session) => {
@@ -801,6 +834,9 @@ const normalizeTimerSpectatorState = (value, fallbackHostName) => {
     workTime: clampNumber(value.workTime, DEFAULT_SETTINGS.workDuration),
     breakTime: clampNumber(value.breakTime, 0),
     pomodoroCount: clampNumber(value.pomodoroCount, 0),
+    todayPomodoroCount: Number.isFinite(Number(value.todayPomodoroCount))
+      ? Math.max(0, Number(value.todayPomodoroCount))
+      : undefined,
     allPauseActive: Boolean(value.allPauseActive),
     allPauseTime: clampNumber(value.allPauseTime, 0),
     graceOpen: Boolean(value.graceOpen),
@@ -813,6 +849,9 @@ const normalizeTimerSpectatorState = (value, fallbackHostName) => {
       : undefined,
     activeCategoryColor: typeof value.activeCategoryColor === 'string' && value.activeCategoryColor.trim()
       ? value.activeCategoryColor.trim().slice(0, 40)
+      : undefined,
+    activeCategoryIcon: typeof value.activeCategoryIcon === 'string' && value.activeCategoryIcon.trim()
+      ? value.activeCategoryIcon.trim().slice(0, 40)
       : undefined,
     activeColor: typeof value.activeColor === 'string' && value.activeColor.trim()
       ? value.activeColor.trim().slice(0, 40)
@@ -1020,6 +1059,9 @@ const buildFocusFriendPresence = (userRecord, accountData) => {
   const activeCategoryColor = activeCategoryName && typeof activeCategory?.color === 'string' && activeCategory.color.trim()
     ? activeCategory.color.trim()
     : undefined;
+  const activeCategoryIcon = activeCategoryName && typeof activeCategory?.icon === 'string' && activeCategory.icon.trim()
+    ? activeCategory.icon.trim()
+    : undefined;
 
   return {
     status,
@@ -1033,6 +1075,7 @@ const buildFocusFriendPresence = (userRecord, accountData) => {
       workTime: Number.isFinite(Number(accountData.workTime)) ? Number(accountData.workTime) : DEFAULT_SETTINGS.workDuration,
       breakTime: Number.isFinite(Number(accountData.breakTime)) ? Number(accountData.breakTime) : 0,
       pomodoroCount: Number.isFinite(Number(accountData.pomodoroCount)) ? Number(accountData.pomodoroCount) : 0,
+      todayPomodoroCount: getTodayPomodoroCountFromLogs(accountData.logs, Date.now()),
       allPauseActive: Boolean(accountData.allPauseActive),
       allPauseTime: Number.isFinite(Number(accountData.allPauseTime)) ? Number(accountData.allPauseTime) : 0,
       graceOpen: Boolean(accountData.graceOpen),
@@ -1042,6 +1085,7 @@ const buildFocusFriendPresence = (userRecord, accountData) => {
         : null,
       activeCategoryName,
       activeCategoryColor,
+      activeCategoryIcon,
       activeColor: typeof activeContext.color === 'string' && activeContext.color.trim() ? activeContext.color.trim() : undefined,
       projectedFinishEndMs: null,
       settings: pickTimerSpectatorSettings(accountData.settings),
@@ -1129,6 +1173,23 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
   const updatedAtMs = isOffline ? nowMs - FOCUS_FRIEND_OFFLINE_AFTER_MS - 60_000 : nowMs;
   const nowIso = new Date(updatedAtMs).toISOString();
   const publicUser = makeUserPublic(userRecord);
+  const completedPomos = Number.isFinite(Number(debugAccount.pomodoroCount))
+    ? Math.max(0, Number(debugAccount.pomodoroCount))
+    : 0;
+  const debugLogs = completedPomos > 0
+    ? [{
+        type: 'work',
+        start: new Date(updatedAtMs - (completedPomos * ACCOUNT_STATS_POMODORO_SECONDS * 1000)).toISOString(),
+        end: nowIso,
+        duration: completedPomos * ACCOUNT_STATS_POMODORO_SECONDS,
+        reason: 'Pomodoro Complete',
+        task: { id: 9301, name: debugAccount.taskName },
+        categoryId: 9201,
+        categoryName: debugAccount.categoryName,
+        categoryColor: debugAccount.categoryColor,
+        categoryIcon: debugAccount.categoryIcon || 'target',
+      }]
+    : [];
   return sanitizeAccountPayload({
     ...buildDefaultAccountData(publicUser),
     userName: debugAccount.displayName,
@@ -1137,7 +1198,7 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
         id: 9201,
         name: debugAccount.categoryName,
         color: debugAccount.categoryColor,
-        icon: 'target',
+        icon: debugAccount.categoryIcon || 'target',
       },
     ],
     tasks: [
@@ -1152,6 +1213,7 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
         subtasks: [],
       },
     ],
+    logs: debugLogs,
     activeMode: 'work',
     timerStarted: isActive,
     isIdle: !isActive,
