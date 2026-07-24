@@ -18,6 +18,8 @@ import {
   TimerRuntimePhase,
   TimerRuntimeSnapshot,
   TimerSpectatorState,
+  FocusFriendNotice,
+  FocusFriendsState,
 } from '../types';
 import { playAlarm, playSwitch, resumeAudioContext, startFocusSound, stopFocusSound } from '../utils/sound';
 import Peer, { DataConnection } from 'peerjs';
@@ -45,12 +47,21 @@ import {
 } from '../utils/timerRuntime';
 import {
   fetchAccountData,
+  fetchFocusFriends,
   isConflictError,
   isUnauthorizedError,
   loginAccount,
   logoutAccount,
+  acceptFocusFriendRequest as apiAcceptFocusFriendRequest,
+  declineFocusFriendRequest as apiDeclineFocusFriendRequest,
+  markFocusFriendActionRead as apiMarkFocusFriendActionRead,
+  removeFocusFriend as apiRemoveFocusFriend,
+  requestFocusFriendJoin as apiRequestFocusFriendJoin,
   registerAccount,
   saveAccountData,
+  sendFocusFriendEncouragement as apiSendFocusFriendEncouragement,
+  sendFocusFriendJoinInvite as apiSendFocusFriendJoinInvite,
+  sendFocusFriendRequest as apiSendFocusFriendRequest,
 } from '../utils/accountApi';
 import {
   buildHostMemberList,
@@ -83,6 +94,7 @@ import {
   buildEndSessionStats,
   type EndSessionPendingActivity,
   getEndSessionPendingActivityWindow,
+  getSessionTaskCompletionIdsFromLogs,
 } from '../utils/sessionStats';
 
 export interface ScheduleBreak {
@@ -106,6 +118,20 @@ export interface SessionStats {
 type PendingMenuAction = 'new-category';
 
 const ACCOUNT_SYNC_SAVE_DEBOUNCE_MS = 2500;
+const FOCUS_FRIENDS_REFRESH_MS = 15000;
+
+const isBrowserTabVisible = () => {
+  if (typeof document === 'undefined') return true;
+  if (document.visibilityState !== 'visible') return false;
+  return typeof document.hasFocus !== 'function' || document.hasFocus();
+};
+
+const EMPTY_FOCUS_FRIENDS_STATE: FocusFriendsState = {
+  friends: [],
+  incomingRequests: [],
+  outgoingRequests: [],
+  inbox: [],
+};
 
 interface AuthResult {
   ok: boolean;
@@ -164,6 +190,10 @@ interface TimerContextType {
   accountSyncError: string | null;
   lastAccountSyncAt: number | null;
   isPreviewAccount: boolean;
+  focusFriends: FocusFriendsState;
+  focusFriendsLoading: boolean;
+  focusFriendsError: string | null;
+  focusFriendNotice: FocusFriendNotice | null;
 
   // Actions
   login: (username: string, password?: string) => Promise<AuthResult>;
@@ -171,6 +201,15 @@ interface TimerContextType {
   logout: () => void;
   syncAccountNow: () => Promise<boolean>;
   refreshAccountFromCloud: (options?: { force?: boolean }) => Promise<boolean>;
+  refreshFocusFriends: (options?: { silent?: boolean }) => Promise<boolean>;
+  sendFocusFriendRequest: (username: string) => Promise<AuthResult>;
+  acceptFocusFriendRequest: (requestId: string) => Promise<AuthResult>;
+  declineFocusFriendRequest: (requestId: string) => Promise<AuthResult>;
+  removeFocusFriend: (username: string) => Promise<AuthResult>;
+  sendFocusFriendEncouragement: (username: string, message: string) => Promise<AuthResult>;
+  requestFocusFriendJoin: (username: string, message?: string) => Promise<AuthResult>;
+  sendFocusFriendJoinInvite: (username: string, sessionId: string, message?: string) => Promise<AuthResult>;
+  markFocusFriendActionRead: (actionId: string) => Promise<AuthResult>;
   
   startTimer: () => void;
   stopTimer: () => void;
@@ -293,9 +332,13 @@ const DATA_SCHEMA_VERSION = 2;
 const LEGACY_RUNTIME_FLAG = 'doro_use_legacy_tick';
 const CROSS_TAB_CHANNEL = 'doro_timer_sync';
 const AUTH_TOKEN_KEY = 'doro_auth_token';
-const PREVIEW_ACCOUNT_USERNAME = 'master';
+const PREVIEW_ACCOUNT_USERNAME = 'preview';
 const PREVIEW_ACCOUNT_PASSWORD = 'master';
 const PREVIEW_AUTH_TOKEN = 'doro_preview_master_token';
+const DEBUG_FOCUS_FRIEND_CREDENTIALS: Record<string, string> = {
+  master: 'master',
+  master2: 'master2',
+};
 
 const GROUP_EVENT_TYPES: GroupEventType[] = [
   'joined',
@@ -327,6 +370,11 @@ const isPreviewAuthToken = (value: string | null | undefined) => value === PREVI
 
 const isPreviewAccountCredentials = (username: string, password?: string) => {
   return username.trim().toLowerCase() === PREVIEW_ACCOUNT_USERNAME && password === PREVIEW_ACCOUNT_PASSWORD;
+};
+
+const isDebugFocusFriendCredentials = (username: string, password?: string) => {
+  const normalized = username.trim().toLowerCase();
+  return typeof password === 'string' && DEBUG_FOCUS_FRIEND_CREDENTIALS[normalized] === password;
 };
 
 const getScheduleStartLabel = (date: Date) => {
@@ -556,6 +604,14 @@ const flattenTasks = (tasks: Task[]): Task[] => {
     });
     return flat;
 };
+
+const getCheckedTaskIdSet = (tasks: Task[]) => (
+  new Set(
+    flattenTasks(tasks)
+      .filter(task => task.checked && typeof task.id === 'number' && Number.isFinite(task.id))
+      .map(task => task.id),
+  )
+);
 
 const getMaxTaskId = (tasks: Task[]): number => {
   let maxId = 0;
@@ -960,6 +1016,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [accountSyncError, setAccountSyncError] = useState<string | null>(null);
   const [lastAccountSyncAt, setLastAccountSyncAt] = useState<number | null>(null);
   const [accountTimerSyncNonce, bumpAccountTimerSyncNonce] = useReducer((value: number) => value + 1, 0);
+  const [focusFriends, setFocusFriends] = useState<FocusFriendsState>(EMPTY_FOCUS_FRIENDS_STATE);
+  const [focusFriendsLoading, setFocusFriendsLoading] = useState(false);
+  const [focusFriendsError, setFocusFriendsError] = useState<string | null>(null);
+  const [focusFriendNotice, setFocusFriendNotice] = useState<FocusFriendNotice | null>(null);
   
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [workTime, setWorkTime] = useState(1500);
@@ -1028,6 +1088,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const clientReadyForBroadcastRef = useRef(true);
   const currentGroupStateRef = useRef<any>(null);
   const logsRef = useRef<LogEntry[]>([]);
+  const sessionTaskBaselineRef = useRef<{ sessionStartTime: string; checkedTaskIds: Set<number> } | null>(null);
+  const taskCompletionWatcherRef = useRef<{ sessionStartTime: string | null; checkedTaskIds: Set<number> }>({
+    sessionStartTime: null,
+    checkedTaskIds: new Set(),
+  });
 
   const lastTickRef = useRef<number | null>(null);
   const shadowTickRef = useRef<number | null>(null);
@@ -1047,6 +1112,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const syncAccountNowRef = useRef<(() => Promise<boolean>) | null>(null);
   const accountRevisionRef = useRef(0);
   const hasHydratedCloudForUserRef = useRef<string | null>(null);
+  const seenFocusFriendActionIdsRef = useRef<Set<string>>(new Set());
+  const seenFocusFriendRequestIdsRef = useRef<Set<string>>(new Set());
+  const focusFriendsSnapshotKeyRef = useRef('');
+  const focusFriendsRefreshInFlightRef = useRef(false);
+  const focusFriendsMutationVersionRef = useRef(0);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
     sourceTabId: tabIdRef.current,
@@ -1623,8 +1693,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setLastAccountSyncAt(null);
     accountRevisionRef.current = 0;
     hasHydratedCloudForUserRef.current = null;
+    seenFocusFriendActionIdsRef.current.clear();
+    seenFocusFriendRequestIdsRef.current.clear();
+    focusFriendsSnapshotKeyRef.current = '';
+    focusFriendsRefreshInFlightRef.current = false;
+    focusFriendsMutationVersionRef.current += 1;
     setUser(null);
     setUserName('');
+    setFocusFriends(EMPTY_FOCUS_FRIENDS_STATE);
+    setFocusFriendsLoading(false);
+    setFocusFriendsError(null);
+    setFocusFriendNotice(null);
     if (reason) {
       setAccountSyncState('error');
       setAccountSyncError(reason);
@@ -1634,6 +1713,152 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     loadData();
   }, [loadData]);
+
+  const normalizeFocusFriendsState = (value: Partial<FocusFriendsState> | null | undefined): FocusFriendsState => ({
+    friends: Array.isArray(value?.friends) ? value.friends : [],
+    incomingRequests: Array.isArray(value?.incomingRequests) ? value.incomingRequests : [],
+    outgoingRequests: Array.isArray(value?.outgoingRequests) ? value.outgoingRequests : [],
+    inbox: Array.isArray(value?.inbox) ? value.inbox : [],
+  });
+
+  const applyFocusFriendsSnapshot = useCallback((snapshot: Partial<FocusFriendsState> | null | undefined) => {
+    const normalized = normalizeFocusFriendsState(snapshot);
+    const snapshotKey = JSON.stringify(normalized);
+    const shouldNotify = isBrowserTabVisible();
+    const newUnreadActions = normalized.inbox
+      .filter((action) => !action.readAt && !seenFocusFriendActionIdsRef.current.has(action.id))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const newIncomingRequests = normalized.incomingRequests
+      .filter((request) => !seenFocusFriendRequestIdsRef.current.has(request.id))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+    if (shouldNotify) {
+      normalized.inbox.forEach((action) => {
+        if (!action.readAt) seenFocusFriendActionIdsRef.current.add(action.id);
+      });
+      normalized.incomingRequests.forEach((request) => {
+        seenFocusFriendRequestIdsRef.current.add(request.id);
+      });
+
+      const newestUnread = newUnreadActions[newUnreadActions.length - 1];
+      const newestRequest = newIncomingRequests[newIncomingRequests.length - 1];
+      const newestUnreadAt = newestUnread ? Date.parse(newestUnread.createdAt) || 0 : -1;
+      const newestRequestAt = newestRequest ? Date.parse(newestRequest.createdAt) || 0 : -1;
+      if (newestRequest && newestRequestAt > newestUnreadAt) {
+        setFocusFriendNotice({
+          id: `${newestRequest.id}_${Date.now()}`,
+          type: 'request',
+          request: newestRequest,
+        });
+      } else if (newestUnread) {
+        setFocusFriendNotice({
+          id: `${newestUnread.id}_${Date.now()}`,
+          type: 'action',
+          action: newestUnread,
+        });
+      }
+    }
+
+    if (snapshotKey !== focusFriendsSnapshotKeyRef.current) {
+      focusFriendsSnapshotKeyRef.current = snapshotKey;
+      setFocusFriends(normalized);
+    }
+  }, []);
+
+  const refreshFocusFriends = useCallback(async (options?: { silent?: boolean }): Promise<boolean> => {
+    if (!user || !authToken || isPreviewAuthToken(authToken)) {
+      seenFocusFriendActionIdsRef.current.clear();
+      seenFocusFriendRequestIdsRef.current.clear();
+      focusFriendsSnapshotKeyRef.current = '';
+      setFocusFriends(EMPTY_FOCUS_FRIENDS_STATE);
+      setFocusFriendsLoading(false);
+      setFocusFriendsError(null);
+      return false;
+    }
+    if (focusFriendsRefreshInFlightRef.current) return false;
+    const mutationVersionAtStart = focusFriendsMutationVersionRef.current;
+
+    try {
+      focusFriendsRefreshInFlightRef.current = true;
+      if (!options?.silent) setFocusFriendsLoading(true);
+      const snapshot = await fetchFocusFriends(authToken);
+      if (mutationVersionAtStart !== focusFriendsMutationVersionRef.current) return false;
+      applyFocusFriendsSnapshot(snapshot);
+      setFocusFriendsError(null);
+      return true;
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        resetAccountSession('Session expired. Sign in again.');
+        return false;
+      }
+      if (!options?.silent) {
+        setFocusFriendsError(error instanceof Error ? error.message : 'Focus Friends could not refresh.');
+      }
+      return false;
+    } finally {
+      focusFriendsRefreshInFlightRef.current = false;
+      if (!options?.silent) setFocusFriendsLoading(false);
+    }
+  }, [applyFocusFriendsSnapshot, authToken, resetAccountSession, user?.username]);
+
+  const runFocusFriendMutation = useCallback(async (
+    action: (token: string) => Promise<FocusFriendsState>,
+  ): Promise<AuthResult> => {
+    if (!user || !authToken || isPreviewAuthToken(authToken)) {
+      return { ok: false, error: 'Sign in with a syncing account to use Focus Friends.' };
+    }
+
+    try {
+      focusFriendsMutationVersionRef.current += 1;
+      setFocusFriendsLoading(true);
+      const snapshot = await action(authToken);
+      applyFocusFriendsSnapshot(snapshot);
+      setFocusFriendsError(null);
+      return { ok: true, error: null };
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        resetAccountSession('Session expired. Sign in again.');
+        return { ok: false, error: 'Session expired. Sign in again.' };
+      }
+      const message = error instanceof Error ? error.message : 'Focus Friends action failed.';
+      setFocusFriendsError(message);
+      return { ok: false, error: message };
+    } finally {
+      setFocusFriendsLoading(false);
+    }
+  }, [applyFocusFriendsSnapshot, authToken, resetAccountSession, user]);
+
+  const sendFocusFriendRequest = useCallback((username: string) => (
+    runFocusFriendMutation((token) => apiSendFocusFriendRequest(token, username))
+  ), [runFocusFriendMutation]);
+
+  const acceptFocusFriendRequest = useCallback((requestId: string) => (
+    runFocusFriendMutation((token) => apiAcceptFocusFriendRequest(token, requestId))
+  ), [runFocusFriendMutation]);
+
+  const declineFocusFriendRequest = useCallback((requestId: string) => (
+    runFocusFriendMutation((token) => apiDeclineFocusFriendRequest(token, requestId))
+  ), [runFocusFriendMutation]);
+
+  const removeFocusFriend = useCallback((username: string) => (
+    runFocusFriendMutation((token) => apiRemoveFocusFriend(token, username))
+  ), [runFocusFriendMutation]);
+
+  const sendFocusFriendEncouragement = useCallback((username: string, message: string) => (
+    runFocusFriendMutation((token) => apiSendFocusFriendEncouragement(token, username, message))
+  ), [runFocusFriendMutation]);
+
+  const requestFocusFriendJoin = useCallback((username: string, message?: string) => (
+    runFocusFriendMutation((token) => apiRequestFocusFriendJoin(token, username, message, null))
+  ), [runFocusFriendMutation]);
+
+  const sendFocusFriendJoinInvite = useCallback((username: string, sessionId: string, message?: string) => (
+    runFocusFriendMutation((token) => apiSendFocusFriendJoinInvite(token, username, sessionId, message))
+  ), [runFocusFriendMutation]);
+
+  const markFocusFriendActionRead = useCallback((actionId: string) => (
+    runFocusFriendMutation((token) => apiMarkFocusFriendActionRead(token, actionId))
+  ), [runFocusFriendMutation]);
 
   const getPayloadUpdatedAtMs = (payload?: TimerPersistencePayload | null) => {
     if (typeof payload?.updatedAt !== 'string') return 0;
@@ -2224,6 +2449,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!password) {
           return { ok: false, error: 'Password is required.' };
       }
+      const isDebugFocusFriendLogin = isDebugFocusFriendCredentials(username, password);
       if (isPreviewAccountCredentials(username, password)) {
           const previewPayload = buildPreviewAccountPayload(tabIdRef.current);
           localStorage.setItem(AUTH_TOKEN_KEY, PREVIEW_AUTH_TOKEN);
@@ -2251,40 +2477,43 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               updatedAt: typeof response.accountData?.updatedAt === 'string' ? response.accountData.updatedAt : undefined,
             },
           );
-          const guestPayload = normalizeAccountPayload(
-            guestData,
-            response.user,
-            {
-              fallbackUserName: normalizeStoredUserName(guestData.userName, remotePayload.userName || accountUsername),
-              revision: getPayloadRevision(guestData),
-              updatedAt: typeof guestData.updatedAt === 'string' ? guestData.updatedAt : undefined,
-            },
-          );
-          const mergedGuestPayload = normalizeAccountPayload(
-            mergeSeedDataIntoAccount(guestPayload, remotePayload),
-            response.user,
-            {
-              fallbackUserName: guestPayload.userName || remotePayload.userName || accountUsername,
-              revision: getPayloadRevision(remotePayload),
-              updatedAt: typeof remotePayload.updatedAt === 'string' ? remotePayload.updatedAt : undefined,
-            },
-          );
-          const shouldPersistGuestImport = JSON.stringify(mergedGuestPayload) !== JSON.stringify(remotePayload);
-          const finalPayload = shouldPersistGuestImport
-            ? await persistAccountPayload(
-                response.token,
-                normalizeAccountPayload(
-                  mergedGuestPayload,
+          let finalPayload = remotePayload;
+          if (!isDebugFocusFriendLogin) {
+            const guestPayload = normalizeAccountPayload(
+              guestData,
+              response.user,
+              {
+                fallbackUserName: normalizeStoredUserName(guestData.userName, remotePayload.userName || accountUsername),
+                revision: getPayloadRevision(guestData),
+                updatedAt: typeof guestData.updatedAt === 'string' ? guestData.updatedAt : undefined,
+              },
+            );
+            const mergedGuestPayload = normalizeAccountPayload(
+              mergeSeedDataIntoAccount(guestPayload, remotePayload),
+              response.user,
+              {
+                fallbackUserName: guestPayload.userName || remotePayload.userName || accountUsername,
+                revision: getPayloadRevision(remotePayload),
+                updatedAt: typeof remotePayload.updatedAt === 'string' ? remotePayload.updatedAt : undefined,
+              },
+            );
+            const shouldPersistGuestImport = JSON.stringify(mergedGuestPayload) !== JSON.stringify(remotePayload);
+            finalPayload = shouldPersistGuestImport
+              ? await persistAccountPayload(
+                  response.token,
+                  normalizeAccountPayload(
+                    mergedGuestPayload,
+                    response.user,
+                    {
+                      fallbackUserName: mergedGuestPayload.userName || accountUsername,
+                      revision: getPayloadRevision(remotePayload),
+                      updatedAt: new Date().toISOString(),
+                    },
+                  ),
                   response.user,
-                  {
-                    fallbackUserName: mergedGuestPayload.userName || accountUsername,
-                    revision: getPayloadRevision(remotePayload),
-                    updatedAt: new Date().toISOString(),
-                  },
-                ),
-                response.user,
-              )
-            : remotePayload;
+                )
+              : remotePayload;
+          }
 
           applyAccountSnapshot(accountUsername, finalPayload);
           hasHydratedCloudForUserRef.current = accountUsername;
@@ -2325,6 +2554,39 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const interval = setInterval(() => { void refreshAccountFromCloud({ force: false }); }, 12000);
       return () => clearInterval(interval);
   }, [authToken, refreshAccountFromCloud, user]);
+
+  useEffect(() => {
+      if (!user || !authToken || isPreviewAuthToken(authToken)) {
+          seenFocusFriendActionIdsRef.current.clear();
+          seenFocusFriendRequestIdsRef.current.clear();
+          focusFriendsSnapshotKeyRef.current = '';
+          setFocusFriends(EMPTY_FOCUS_FRIENDS_STATE);
+          setFocusFriendsLoading(false);
+          setFocusFriendsError(null);
+          return;
+      }
+      const refreshVisibleFocusFriends = () => {
+          if (!isBrowserTabVisible()) return;
+          void refreshFocusFriends({ silent: true });
+      };
+      refreshVisibleFocusFriends();
+      const interval = setInterval(refreshVisibleFocusFriends, FOCUS_FRIENDS_REFRESH_MS);
+      if (typeof document !== 'undefined') {
+          document.addEventListener('visibilitychange', refreshVisibleFocusFriends);
+      }
+      if (typeof window !== 'undefined') {
+          window.addEventListener('focus', refreshVisibleFocusFriends);
+      }
+      return () => {
+          clearInterval(interval);
+          if (typeof document !== 'undefined') {
+              document.removeEventListener('visibilitychange', refreshVisibleFocusFriends);
+          }
+          if (typeof window !== 'undefined') {
+              window.removeEventListener('focus', refreshVisibleFocusFriends);
+          }
+      };
+  }, [authToken, refreshFocusFriends, user?.username]);
 
   useEffect(() => {
       if (!user || !authToken || isPreviewAuthToken(authToken)) return;
@@ -3458,6 +3720,73 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     prependLogEntry(entry);
   }, [categories, prependLogEntry, tasks]);
 
+  useEffect(() => {
+    const checkedTaskIds = getCheckedTaskIdSet(tasks);
+
+    if (!sessionStartTime) {
+      sessionTaskBaselineRef.current = null;
+      taskCompletionWatcherRef.current = { sessionStartTime: null, checkedTaskIds };
+      return;
+    }
+
+    if (sessionTaskBaselineRef.current?.sessionStartTime !== sessionStartTime) {
+      sessionTaskBaselineRef.current = {
+        sessionStartTime,
+        checkedTaskIds: new Set(checkedTaskIds),
+      };
+      taskCompletionWatcherRef.current = { sessionStartTime, checkedTaskIds };
+      return;
+    }
+
+    const previous = taskCompletionWatcherRef.current;
+    const completedTasks = previous.sessionStartTime === sessionStartTime
+      ? flattenTasks(tasks).filter(task => (
+        task.checked
+        && typeof task.id === 'number'
+        && Number.isFinite(task.id)
+        && !previous.checkedTaskIds.has(task.id)
+      ))
+      : [];
+
+    taskCompletionWatcherRef.current = { sessionStartTime, checkedTaskIds };
+    if (completedTasks.length === 0) return;
+
+    const alreadyLoggedTaskIds = getSessionTaskCompletionIdsFromLogs(logsRef.current, sessionStartTime);
+    const completionEntries = completedTasks
+      .filter(task => !alreadyLoggedTaskIds.has(task.id))
+      .map((task, index): LogEntry => {
+        const completedAt = new Date(Date.now() + index);
+        const categorySnapshot = buildCategorySnapshot(categories, task.categoryId ?? null);
+        return {
+          type: 'task-complete',
+          start: completedAt.toISOString(),
+          end: completedAt.toISOString(),
+          duration: 0,
+          reason: 'Task Complete',
+          source: 'timer',
+          task: { id: task.id, name: task.name },
+          color: task.color || categorySnapshot.categoryColor,
+          categoryId: task.categoryId ?? null,
+          ...categorySnapshot,
+        };
+      });
+
+    if (completionEntries.length === 0) return;
+
+    setLogs(prev => {
+      const latestLoggedTaskIds = getSessionTaskCompletionIdsFromLogs(prev, sessionStartTime);
+      const nextEntries = completionEntries.filter(entry => {
+        const taskId = entry.task?.id;
+        return typeof taskId === 'number' && Number.isFinite(taskId) && !latestLoggedTaskIds.has(taskId);
+      });
+
+      if (nextEntries.length === 0) return prev;
+      const nextLogs = [...nextEntries, ...prev];
+      logsRef.current = nextLogs;
+      return nextLogs;
+    });
+  }, [categories, sessionStartTime, tasks]);
+
   const addManualFocusLog = useCallback((minutes: number, note: string = '', categoryId: number | null = null) => {
     const safeMinutes = Math.max(0, Math.round(Number(minutes)));
     if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
@@ -4062,6 +4391,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const now = new Date();
         nextSessionStartTime = now.toISOString();
         setSessionStartTime(nextSessionStartTime);
+        const checkedTaskIds = getCheckedTaskIdSet(tasks);
+        sessionTaskBaselineRef.current = {
+          sessionStartTime: nextSessionStartTime,
+          checkedTaskIds: new Set(checkedTaskIds),
+        };
+        taskCompletionWatcherRef.current = {
+          sessionStartTime: nextSessionStartTime,
+          checkedTaskIds,
+        };
         const h = now.getHours().toString().padStart(2, '0');
         const m = now.getMinutes().toString().padStart(2, '0');
         nextScheduleStartTime = `${h}:${m}`;
@@ -4456,11 +4794,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       sessionEndEntry = nextSessionEndEntry;
     }
 
-    const completedTasksCount = flattenTasks(tasks).filter(t => t.checked).length;
     const baseLogs = logsRef.current;
+    const checkedTaskIds = getCheckedTaskIdSet(tasks);
+    const baselineCheckedTaskIds = (
+      sessionTaskBaselineRef.current?.sessionStartTime === sessionStartTime
+        ? sessionTaskBaselineRef.current.checkedTaskIds
+        : checkedTaskIds
+    );
+    const completedTaskIds = getSessionTaskCompletionIdsFromLogs(baseLogs, sessionStartTime, effectiveEndIso);
+    if (sessionStartTime) {
+      checkedTaskIds.forEach((taskId) => {
+        if (!baselineCheckedTaskIds.has(taskId)) completedTaskIds.add(taskId);
+      });
+    }
+    const completedTasksCount = Array.from(completedTaskIds)
+      .filter(taskId => checkedTaskIds.has(taskId))
+      .length;
     const sessionSummary = buildEndSessionStats({
       logs: baseLogs,
       sessionStartTime,
+      sessionEndTime: effectiveEndIso,
       categories,
       pendingActivity,
       pomodoroCount,
@@ -4537,6 +4890,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceContext(null);
     setGraceTotal(0);
     setSessionStartTime(null);
+    sessionTaskBaselineRef.current = null;
+    taskCompletionWatcherRef.current = {
+      sessionStartTime: null,
+      checkedTaskIds: getCheckedTaskIdSet(removeCompletedTasks(tasks)),
+    };
     currentActivityStartRef.current = null;
     lastTickRef.current = null;
     shadowTickRef.current = null;
@@ -4623,6 +4981,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setSessionStats(null);
       setShowSummary(false);
       leaveGroupSession();
+      sessionTaskBaselineRef.current = null;
+      taskCompletionWatcherRef.current = {
+        sessionStartTime: null,
+        checkedTaskIds: new Set(),
+      };
       const now = new Date();
       const h = now.getHours().toString().padStart(2, '0');
       const m = now.getMinutes().toString().padStart(2, '0');
@@ -4912,8 +5275,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, showCompletedTasks, setShowCompletedTasks,
       activeTask, activeColor, showSummary, sessionStats,
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
-      accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount,
+      accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount, focusFriends, focusFriendsLoading, focusFriendsError, focusFriendNotice,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
+      refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, markFocusFriendActionRead,
       startTimer, stopTimer, toggleTimer, toggleTimerLock, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,

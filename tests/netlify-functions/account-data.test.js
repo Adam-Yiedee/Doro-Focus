@@ -112,6 +112,7 @@ describe('account-data function', () => {
     });
     expect(payload.user.lifetimeStats).toMatchObject({
       totalFocusHours: 25 / 60,
+      totalSessionHours: 30 / 60,
       totalSessions: 1,
       totalPomos: 1,
     });
@@ -122,6 +123,7 @@ describe('account-data function', () => {
     const storedUser = await getUserByUsername('alice');
     expect(storedUser.lifetimeStats).toMatchObject({
       totalFocusHours: 25 / 60,
+      totalSessionHours: 30 / 60,
       totalSessions: 1,
       totalPomos: 1,
     });
@@ -192,6 +194,7 @@ describe('account-data function', () => {
     const payload = await response.json();
     expect(payload.user.lifetimeStats).toMatchObject({
       totalFocusHours: 25 / 60,
+      totalSessionHours: 25 / 60,
       totalSessions: 0,
       totalPomos: 1,
     });

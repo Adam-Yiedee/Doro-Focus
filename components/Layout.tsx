@@ -10,12 +10,19 @@ import GraceModal from './Modals/GraceModal';
 import TaskViewModal from './Modals/TaskViewModal';
 import WeeklySchedulePanel from './Modals/WeeklySchedulePanel';
 import SummaryView from './SummaryView';
-import { GroupNotice, Task } from '../types';
+import { Task } from '../types';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { getDailyWelcomeMessage } from '../utils/dailyWelcomeMessages';
 import { playCelebrationTrumpet } from '../utils/sound';
 
-type GroupBannerItem = GroupNotice & { exiting: boolean };
+type NotificationBannerItem = {
+  id: string;
+  actorName: string;
+  message: string;
+  title: string;
+  tone: 'join' | 'group' | 'friend';
+  exiting: boolean;
+};
 type DailyWelcomeBanner = { id: string; message: string; exiting: boolean };
 type CelebrationConfettiPiece = {
   id: string;
@@ -244,10 +251,10 @@ const areNotificationTimersActive = () => (
 );
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, tasks, pendingJoinId, pendingMenuAction, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
+  const { activeMode, activeColor, settings, tasks, pendingJoinId, pendingMenuAction, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, focusFriendNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
-  const [groupBanners, setGroupBanners] = useState<GroupBannerItem[]>([]);
+  const [groupBanners, setGroupBanners] = useState<NotificationBannerItem[]>([]);
   const [dailyWelcomeBanner, setDailyWelcomeBanner] = useState<DailyWelcomeBanner | null>(null);
   const [allTasksCelebration, setAllTasksCelebration] = useState<AllTasksCelebration | null>(null);
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
@@ -466,7 +473,17 @@ const Layout: React.FC = () => {
     const id = groupNotice.id;
     clearBannerTimer(id);
     setGroupBanners(prev => {
-      const next = [...prev.filter(item => item.id !== id), { ...groupNotice, exiting: false }];
+      const next = [
+        ...prev.filter(item => item.id !== id),
+        {
+          id,
+          actorName: groupNotice.actorName,
+          message: groupNotice.message,
+          title: groupNotice.kind === 'join' ? 'Member Joined' : 'Group Action',
+          tone: groupNotice.kind === 'join' ? 'join' as const : 'group' as const,
+          exiting: false,
+        },
+      ];
       const trimmed = next.slice(-3);
       const visibleBannerIds = new Set(trimmed.map(item => item.id));
       Object.keys(bannerTimersRef.current).forEach(timerId => {
@@ -483,6 +500,60 @@ const Layout: React.FC = () => {
     };
     scheduleBannerTimer(id);
   }, [groupNotice]);
+
+  useEffect(() => {
+    if (!focusFriendNotice) return;
+    const id = focusFriendNotice.id;
+    const banner = focusFriendNotice.type === 'request'
+      ? {
+          actorName: focusFriendNotice.request.fromDisplayName || focusFriendNotice.request.fromUsername,
+          message: 'sent you a Focus Friend request.',
+          title: 'Friend Request',
+        }
+      : {
+          actorName: focusFriendNotice.action.fromDisplayName || focusFriendNotice.action.fromUsername,
+          message: focusFriendNotice.action.message || (
+            focusFriendNotice.action.type === 'join-request'
+              ? 'wants to join your focus session.'
+              : focusFriendNotice.action.type === 'join-invite'
+                ? 'sent you a focus session invite.'
+                : 'sent encouragement.'
+          ),
+          title: focusFriendNotice.action.type === 'join-request'
+            ? 'Join Request'
+            : focusFriendNotice.action.type === 'join-invite'
+              ? 'Session Invite'
+              : 'Encouragement',
+        };
+    clearBannerTimer(id);
+    setGroupBanners(prev => {
+      const next = [
+        ...prev.filter(item => item.id !== id),
+        {
+          id,
+          actorName: banner.actorName,
+          message: banner.message,
+          title: banner.title,
+          tone: 'friend' as const,
+          exiting: false,
+        },
+      ];
+      const trimmed = next.slice(-3);
+      const visibleBannerIds = new Set(trimmed.map(item => item.id));
+      Object.keys(bannerTimersRef.current).forEach(timerId => {
+        if (!visibleBannerIds.has(timerId)) {
+          clearBannerTimer(timerId);
+        }
+      });
+      return trimmed;
+    });
+
+    bannerTimersRef.current[id] = {
+      exit: createPausableTimeout(GROUP_BANNER_VISIBLE_MS),
+      remove: createPausableTimeout(GROUP_BANNER_TOTAL_MS),
+    };
+    scheduleBannerTimer(id);
+  }, [focusFriendNotice]);
 
   useEffect(() => {
     return () => {
@@ -943,8 +1014,10 @@ const Layout: React.FC = () => {
           <div
             key={notice.id}
             className={`doro-group-banner relative overflow-hidden rounded-2xl border px-4 py-3 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 ${
-              notice.kind === 'join'
+              notice.tone === 'join'
                 ? 'border-emerald-200/40 bg-emerald-300/12'
+                : notice.tone === 'friend'
+                  ? 'border-sky-200/35 bg-sky-300/12'
                 : 'border-white/25 bg-white/10'
             } ${settings.disableBlur ? '' : 'backdrop-blur-2xl'} ${
               notice.exiting ? 'opacity-0 -translate-y-2 scale-[0.985]' : 'opacity-100 translate-y-0 scale-100'
@@ -954,7 +1027,7 @@ const Layout: React.FC = () => {
             <div className="absolute inset-0 opacity-60 bg-[radial-gradient(circle_at_12%_-12%,rgba(255,255,255,0.34),transparent_50%)]" />
             <div className="relative min-w-0 text-center">
               <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
-                {notice.kind === 'join' ? 'Member Joined' : 'Group Action'}
+                {notice.title}
               </div>
               <div className="mt-1 text-sm leading-snug text-white/95">
                 <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
@@ -962,7 +1035,7 @@ const Layout: React.FC = () => {
             </div>
             <div
               className={`doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full ${
-                notice.kind === 'join' ? 'bg-emerald-100/55' : 'bg-white/45'
+                notice.tone === 'join' ? 'bg-emerald-100/55' : notice.tone === 'friend' ? 'bg-sky-100/55' : 'bg-white/45'
               }`}
               style={{ animationPlayState: notificationTimersActive ? 'running' : 'paused' }}
             />

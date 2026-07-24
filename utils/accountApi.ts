@@ -1,4 +1,4 @@
-import { User } from '../types';
+import { FocusFriendsState, User } from '../types';
 
 const ACCOUNT_API_BASE = import.meta.env.VITE_ACCOUNT_API_BASE || '/.netlify/functions';
 const ACCOUNT_API_TIMEOUT_MS = 12_000;
@@ -99,6 +99,86 @@ export const saveAccountData = async (token: string, accountData: any): Promise<
     body: JSON.stringify({ accountData }),
   });
   return payload as { accountData: any; user: User; savedAt: string };
+};
+
+export const fetchFocusFriends = async (token: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return payload as FocusFriendsState;
+};
+
+export const sendFocusFriendRequest = async (token: string, username: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'send-request', username }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const acceptFocusFriendRequest = async (token: string, requestId: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'accept-request', requestId }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const declineFocusFriendRequest = async (token: string, requestId: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'decline-request', requestId }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const removeFocusFriend = async (token: string, username: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'remove-friend', username }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const sendFocusFriendEncouragement = async (token: string, username: string, message: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'send-encouragement', username, message }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const requestFocusFriendJoin = async (token: string, username: string, message?: string, sessionId?: string | null): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'request-join', username, message, sessionId }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const sendFocusFriendJoinInvite = async (token: string, username: string, sessionId: string, message?: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'send-join-invite', username, sessionId, message }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const markFocusFriendActionRead = async (token: string, actionId: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'mark-action-read', actionId }),
+  });
+  return payload as FocusFriendsState;
 };
 
 export const isUnauthorizedError = (error: unknown): boolean => {

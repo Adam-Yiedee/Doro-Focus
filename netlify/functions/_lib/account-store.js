@@ -4,11 +4,13 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 const USERS_STORE_NAME = 'doro_accounts_users_v1';
 const DATA_STORE_NAME = 'doro_accounts_data_v1';
 const SESSIONS_STORE_NAME = 'doro_accounts_sessions_v1';
+const FOCUS_FRIENDS_STORE_NAME = 'doro_focus_friends_v1';
 
 const USER_KEY_PREFIX = 'user_name:';
 const USER_ID_KEY_PREFIX = 'user_id:';
 const ACCOUNT_KEY_PREFIX = 'account:';
 const SESSION_KEY_PREFIX = 'session:';
+const FOCUS_FRIENDS_KEY_PREFIX = 'focus_friends:';
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const MAX_ACCOUNT_BYTES = 2_000_000;
@@ -17,6 +19,32 @@ const DISPLAY_NAME_MAX_LENGTH = 48;
 const USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 256;
+const FRIEND_MESSAGE_MAX_LENGTH = 160;
+const FOCUS_FRIENDS_LIMIT = 200;
+const FOCUS_FRIEND_REQUEST_LIMIT = 100;
+const FOCUS_FRIEND_INBOX_LIMIT = 50;
+const FOCUS_FRIEND_OFFLINE_AFTER_MS = 1000 * 60 * 60 * 12;
+
+const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
+  {
+    username: 'master',
+    password: 'master',
+    displayName: 'Master',
+    categoryName: 'Debug Build',
+    categoryColor: '#60A5FA',
+    taskName: 'Review Focus Friends',
+    workTime: 1420,
+  },
+  {
+    username: 'master2',
+    password: 'master2',
+    displayName: 'Master 2',
+    categoryName: 'Friend Testing',
+    categoryColor: '#34D399',
+    taskName: 'Test friend activity',
+    workTime: 1180,
+  },
+];
 
 const DEFAULT_SETTINGS = {
   timerPreset: 'classic',
@@ -39,6 +67,7 @@ const ACCOUNT_STATS_POMODORO_SECONDS = 25 * 60;
 
 const defaultLifetimeStats = () => ({
   totalFocusHours: 0,
+  totalSessionHours: 0,
   manualFocusHours: 0,
   totalSessions: 0,
   totalPomos: 0,
@@ -110,23 +139,35 @@ const isManualFocusLog = (entry) => {
   return entry?.type === 'work' && entry.source === 'manual';
 };
 
+const isTimerSessionDurationLog = (entry) => {
+  if (!entry || entry.source === 'manual') return false;
+  if (entry.type === 'break') return true;
+  return entry.type === 'work' && !isPauseCreditedWorkLog(entry);
+};
+
 const getPomodoroEquivalentWeight = (entry) => {
   if (!entry || entry.type !== 'work') return 0;
-  if (isManualFocusLog(entry)) {
-    return clampNumber(entry.duration, 0) / ACCOUNT_STATS_POMODORO_SECONDS;
-  }
+
+  const durationSeconds = clampNumber(entry.duration, 0);
+  if (durationSeconds > 0) return durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS;
+
   const reason = cleanString(entry.reason).trim().toLowerCase();
   if (reason === POMODORO_COMPLETE_REASON) return 1;
-  if (reason === MINI_POMODORO_COMPLETE_REASON) {
-    const durationSeconds = clampNumber(entry.duration, 0);
-    return durationSeconds > 0 ? durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS : 0.5;
-  }
+  if (reason === MINI_POMODORO_COMPLETE_REASON) return 0.5;
   return 0;
 };
 
 const getSessionWorkMinutes = (session) => {
   const mins = Number(session?.stats?.totalWorkMinutes || 0);
   return Number.isFinite(mins) && mins > 0 ? mins : 0;
+};
+
+const getSessionTotalMinutes = (session) => {
+  const workMinutes = Number(session?.stats?.totalWorkMinutes || 0);
+  const breakMinutes = Number(session?.stats?.totalBreakMinutes || 0);
+  const totalMinutes = Math.max(0, Number.isFinite(workMinutes) ? workMinutes : 0)
+    + Math.max(0, Number.isFinite(breakMinutes) ? breakMinutes : 0);
+  return totalMinutes > 0 ? totalMinutes : 0;
 };
 
 const getSessionPomodoros = (session) => {
@@ -168,17 +209,35 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   const manualWorkSecondsFromLogs = productiveLogs.reduce((acc, entry) => (
     acc + (isManualFocusLog(entry) ? Math.max(0, entry.duration) : 0)
   ), 0);
+  const timerSessionDurationLogs = safeLogs.filter((entry) => {
+    if (!entry || !Number.isFinite(entry.duration) || entry.duration <= 0) return false;
+    return isTimerSessionDurationLog(entry);
+  });
+  const sessionSecondsFromLogs = timerSessionDurationLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
   const productiveLogDateKeys = new Set();
   productiveLogs.forEach((entry) => {
     if (isManualFocusLog(entry)) return;
     const key = getLocalDateKeyFromIso(entry.start);
     if (key) productiveLogDateKeys.add(key);
   });
+  const timerSessionLogDateKeys = new Set();
+  timerSessionDurationLogs.forEach((entry) => {
+    const key = getLocalDateKeyFromIso(entry.start);
+    if (key) timerSessionLogDateKeys.add(key);
+  });
   const fallbackSessions = safeSessions.filter((session) => {
     const sessionDateKey = getLocalDateKeyFromIso(session?.startTime);
     return !sessionDateKey || !productiveLogDateKeys.has(sessionDateKey);
   });
+  const totalTimeFallbackSessions = safeSessions.filter((session) => {
+    const sessionDateKey = getLocalDateKeyFromIso(session?.startTime);
+    return !sessionDateKey || !timerSessionLogDateKeys.has(sessionDateKey);
+  });
   const workMinutesFromFallbackSessions = fallbackSessions.reduce((acc, session) => acc + getSessionWorkMinutes(session), 0);
+  const totalSessionMinutesFromFallbackSessions = totalTimeFallbackSessions.reduce(
+    (acc, session) => acc + getSessionTotalMinutes(session),
+    0,
+  );
 
   const categoryMap = new Map();
   safeCategories.forEach((category) => {
@@ -258,6 +317,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   return {
     ...defaultLifetimeStats(),
     totalFocusHours: (workSecondsFromLogs / 3600) + (workMinutesFromFallbackSessions / 60),
+    totalSessionHours: (sessionSecondsFromLogs / 3600) + (totalSessionMinutesFromFallbackSessions / 60),
     manualFocusHours: manualWorkSecondsFromLogs / 3600,
     totalSessions: safeSessions.length,
     totalPomos: completedPomodoroWeightFromLogs + fallbackSessions.reduce((acc, session) => acc + getSessionPomodoros(session), 0),
@@ -307,6 +367,7 @@ const getStores = () => ({
   usersStore: getStore(USERS_STORE_NAME),
   dataStore: getStore(DATA_STORE_NAME),
   sessionsStore: getStore(SESSIONS_STORE_NAME),
+  focusFriendsStore: getStore(FOCUS_FRIENDS_STORE_NAME),
 });
 
 const getBlobJSON = async (store, key) => {
@@ -549,6 +610,722 @@ export const getAccountData = async (userId) => {
 export const saveAccountData = async (userId, data) => {
   const { dataStore } = getStores();
   await setBlobJSON(dataStore, `${ACCOUNT_KEY_PREFIX}${userId}`, data);
+};
+
+const makeFocusFriendId = (prefix) => `${prefix}_${randomBytes(12).toString('hex')}`;
+
+const defaultFocusFriendsData = (userId) => ({
+  version: 1,
+  userId,
+  friends: [],
+  incomingRequests: [],
+  outgoingRequests: [],
+  inbox: [],
+  updatedAt: new Date().toISOString(),
+});
+
+const normalizeFriendRelation = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  if (!value.userId || !value.username) return null;
+  return {
+    userId: cleanString(value.userId),
+    username: normalizeUsername(value.username),
+    friendsSince: cleanString(value.friendsSince, new Date().toISOString()),
+  };
+};
+
+const normalizeFocusFriendRequestRecord = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  if (!value.id || !value.fromUserId || !value.toUserId || !value.fromUsername || !value.toUsername) return null;
+  return {
+    id: cleanString(value.id),
+    fromUserId: cleanString(value.fromUserId),
+    fromUsername: normalizeUsername(value.fromUsername),
+    fromDisplayName: cleanDisplayName(value.fromDisplayName, value.fromUsername),
+    toUserId: cleanString(value.toUserId),
+    toUsername: normalizeUsername(value.toUsername),
+    toDisplayName: cleanDisplayName(value.toDisplayName, value.toUsername),
+    createdAt: cleanString(value.createdAt, new Date().toISOString()),
+  };
+};
+
+const normalizeFocusFriendActionRecord = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  if (!value.id || !value.fromUserId || !value.toUserId || !value.fromUsername || !value.toUsername) return null;
+  const type = value.type === 'join-request'
+    ? 'join-request'
+    : value.type === 'join-invite'
+      ? 'join-invite'
+      : value.type === 'encouragement'
+        ? 'encouragement'
+        : null;
+  if (!type) return null;
+  const readAt = typeof value.readAt === 'string' && value.readAt ? value.readAt : null;
+  return {
+    id: cleanString(value.id),
+    type,
+    fromUserId: cleanString(value.fromUserId),
+    fromUsername: normalizeUsername(value.fromUsername),
+    fromDisplayName: cleanDisplayName(value.fromDisplayName, value.fromUsername),
+    toUserId: cleanString(value.toUserId),
+    toUsername: normalizeUsername(value.toUsername),
+    message: cleanString(value.message).trim().slice(0, FRIEND_MESSAGE_MAX_LENGTH),
+    sessionId: typeof value.sessionId === 'string' && value.sessionId.trim()
+      ? value.sessionId.trim().toUpperCase().slice(0, 64)
+      : null,
+    createdAt: cleanString(value.createdAt, new Date().toISOString()),
+    readAt,
+  };
+};
+
+const normalizeFocusFriendsData = (raw, userId) => {
+  const source = raw && typeof raw === 'object' ? raw : defaultFocusFriendsData(userId);
+  const dedupeById = (items) => {
+    const seen = new Set();
+    return items.filter((item) => {
+      if (!item?.id || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  };
+  const friendMap = new Map();
+  (Array.isArray(source.friends) ? source.friends : [])
+    .map(normalizeFriendRelation)
+    .filter(Boolean)
+    .forEach((friend) => {
+      if (friend.userId !== userId) friendMap.set(friend.userId, friend);
+    });
+
+  return {
+    version: 1,
+    userId,
+    friends: Array.from(friendMap.values()).slice(0, FOCUS_FRIENDS_LIMIT),
+    incomingRequests: dedupeById((Array.isArray(source.incomingRequests) ? source.incomingRequests : [])
+      .map(normalizeFocusFriendRequestRecord)
+      .filter(Boolean))
+      .slice(0, FOCUS_FRIEND_REQUEST_LIMIT),
+    outgoingRequests: dedupeById((Array.isArray(source.outgoingRequests) ? source.outgoingRequests : [])
+      .map(normalizeFocusFriendRequestRecord)
+      .filter(Boolean))
+      .slice(0, FOCUS_FRIEND_REQUEST_LIMIT),
+    inbox: dedupeById((Array.isArray(source.inbox) ? source.inbox : [])
+      .map(normalizeFocusFriendActionRecord)
+      .filter(Boolean))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, FOCUS_FRIEND_INBOX_LIMIT),
+    updatedAt: cleanString(source.updatedAt, new Date().toISOString()),
+  };
+};
+
+export const getFocusFriendsData = async (userId) => {
+  const { focusFriendsStore } = getStores();
+  const raw = await getBlobJSON(focusFriendsStore, `${FOCUS_FRIENDS_KEY_PREFIX}${userId}`);
+  return normalizeFocusFriendsData(raw, userId);
+};
+
+export const saveFocusFriendsData = async (userId, data) => {
+  const { focusFriendsStore } = getStores();
+  const normalized = normalizeFocusFriendsData(data, userId);
+  normalized.updatedAt = new Date().toISOString();
+  await setBlobJSON(focusFriendsStore, `${FOCUS_FRIENDS_KEY_PREFIX}${userId}`, normalized);
+  return normalized;
+};
+
+const getCurrentAccountDisplayName = async (userRecord) => {
+  const accountData = await getAccountData(userRecord.id);
+  return cleanDisplayName(accountData?.userName, userRecord.username);
+};
+
+const toPublicFocusFriendRequest = (request) => ({
+  id: request.id,
+  fromUsername: request.fromUsername,
+  fromDisplayName: request.fromDisplayName,
+  toUsername: request.toUsername,
+  toDisplayName: request.toDisplayName,
+  createdAt: request.createdAt,
+});
+
+const toPublicFocusFriendAction = (action) => ({
+  id: action.id,
+  type: action.type,
+  fromUsername: action.fromUsername,
+  fromDisplayName: action.fromDisplayName,
+  toUsername: action.toUsername,
+  message: action.message,
+  sessionId: action.sessionId || null,
+  createdAt: action.createdAt,
+  readAt: action.readAt || null,
+});
+
+const findActiveTaskContext = (tasks, parentColor, parentCategoryId = null) => {
+  if (!Array.isArray(tasks)) return { task: null, color: parentColor, categoryId: parentCategoryId };
+  for (const task of tasks) {
+    if (!task || typeof task !== 'object') continue;
+    const currentColor = typeof task.color === 'string' && task.color.trim() ? task.color.trim() : parentColor;
+    const currentCategoryId = typeof task.categoryId === 'number' && Number.isFinite(task.categoryId)
+      ? task.categoryId
+      : parentCategoryId;
+    if (task.selected) {
+      return { task, color: currentColor, categoryId: currentCategoryId };
+    }
+    const nested = findActiveTaskContext(task.subtasks, currentColor, currentCategoryId);
+    if (nested.task) return nested;
+  }
+  return { task: null, color: parentColor, categoryId: parentCategoryId };
+};
+
+const isRuntimeSnapshot = (value) => (
+  !!value
+  && typeof value === 'object'
+  && value.version === 2
+  && typeof value.updatedAtMs === 'number'
+  && typeof value.phase === 'string'
+);
+
+const pickTimerSpectatorSettings = (settings) => ({
+  workDuration: Number.isFinite(Number(settings?.workDuration)) ? Number(settings.workDuration) : 25 * 60,
+  shortBreakDuration: Number.isFinite(Number(settings?.shortBreakDuration)) ? Number(settings.shortBreakDuration) : 5 * 60,
+  longBreakDuration: Number.isFinite(Number(settings?.longBreakDuration)) ? Number(settings.longBreakDuration) : 15 * 60,
+  longBreakInterval: Number.isFinite(Number(settings?.longBreakInterval)) ? Number(settings.longBreakInterval) : 4,
+  timerPreset: settings?.timerPreset === 'compact' || settings?.timerPreset === 'custom' ? settings.timerPreset : 'classic',
+  twoInARowMode: Boolean(settings?.twoInARowMode),
+});
+
+const getAccountUpdatedAtMs = (accountData) => {
+  const runtimeUpdatedAt = isRuntimeSnapshot(accountData?.runtime) ? accountData.runtime.updatedAtMs : 0;
+  const payloadUpdatedAt = typeof accountData?.updatedAt === 'string' ? Date.parse(accountData.updatedAt) : 0;
+  return Math.max(
+    Number.isFinite(runtimeUpdatedAt) ? runtimeUpdatedAt : 0,
+    Number.isFinite(payloadUpdatedAt) ? payloadUpdatedAt : 0,
+  );
+};
+
+const getPresenceStatus = (accountData, updatedAtMs) => {
+  if (!updatedAtMs || Date.now() - updatedAtMs > FOCUS_FRIEND_OFFLINE_AFTER_MS) return 'offline';
+  const runtime = isRuntimeSnapshot(accountData?.runtime) ? accountData.runtime : null;
+  if (runtime?.phase === 'running-work') return 'focusing';
+  if (runtime?.phase === 'running-break') return 'break';
+  if (runtime?.phase === 'all-pause') return 'paused';
+  if (runtime?.phase === 'grace') return 'grace';
+  if (accountData?.allPauseActive) return 'paused';
+  if (accountData?.graceOpen) return 'grace';
+  if (accountData?.timerStarted && !accountData?.isIdle) {
+    return accountData?.activeMode === 'break' ? 'break' : 'focusing';
+  }
+  return 'idle';
+};
+
+const buildFocusFriendPresence = (userRecord, accountData) => {
+  const updatedAtMs = getAccountUpdatedAtMs(accountData);
+  const status = getPresenceStatus(accountData, updatedAtMs);
+  if (!accountData || status === 'offline') {
+    return { status, updatedAtMs: updatedAtMs || null, timer: null };
+  }
+
+  const activeContext = findActiveTaskContext(accountData.tasks);
+  const activeCategory = typeof activeContext.categoryId === 'number' && Array.isArray(accountData.categories)
+    ? accountData.categories.find((category) => category?.id === activeContext.categoryId)
+    : null;
+  const activeCategoryName = typeof activeCategory?.name === 'string' && activeCategory.name.trim()
+    ? activeCategory.name.trim().slice(0, 60)
+    : undefined;
+  const activeCategoryColor = activeCategoryName && typeof activeCategory?.color === 'string' && activeCategory.color.trim()
+    ? activeCategory.color.trim()
+    : undefined;
+
+  return {
+    status,
+    updatedAtMs: updatedAtMs || null,
+    timer: {
+      version: 1,
+      hostName: cleanDisplayName(accountData.userName, userRecord.username),
+      activeMode: accountData.activeMode === 'break' ? 'break' : 'work',
+      timerStarted: Boolean(accountData.timerStarted),
+      isIdle: typeof accountData.isIdle === 'boolean' ? accountData.isIdle : true,
+      workTime: Number.isFinite(Number(accountData.workTime)) ? Number(accountData.workTime) : DEFAULT_SETTINGS.workDuration,
+      breakTime: Number.isFinite(Number(accountData.breakTime)) ? Number(accountData.breakTime) : 0,
+      pomodoroCount: Number.isFinite(Number(accountData.pomodoroCount)) ? Number(accountData.pomodoroCount) : 0,
+      allPauseActive: Boolean(accountData.allPauseActive),
+      allPauseTime: Number.isFinite(Number(accountData.allPauseTime)) ? Number(accountData.allPauseTime) : 0,
+      graceOpen: Boolean(accountData.graceOpen),
+      graceContext: accountData.graceContext === 'afterWork' || accountData.graceContext === 'afterBreak' ? accountData.graceContext : null,
+      activeTaskName: typeof activeContext.task?.name === 'string' && activeContext.task.name.trim()
+        ? activeContext.task.name.trim().slice(0, 80)
+        : null,
+      activeCategoryName,
+      activeCategoryColor,
+      activeColor: typeof activeContext.color === 'string' && activeContext.color.trim() ? activeContext.color.trim() : undefined,
+      projectedFinishEndMs: null,
+      settings: pickTimerSpectatorSettings(accountData.settings),
+      runtime: isRuntimeSnapshot(accountData.runtime) ? accountData.runtime : null,
+      updatedAtMs: updatedAtMs || Date.now(),
+    },
+  };
+};
+
+const addFriendRelation = (data, userRecord, friendRecord, friendsSince) => {
+  const existing = data.friends.some((friend) => friend.userId === friendRecord.id);
+  if (existing) return data;
+  return {
+    ...data,
+    friends: [
+      ...data.friends,
+      {
+        userId: friendRecord.id,
+        username: friendRecord.username,
+        friendsSince,
+      },
+    ],
+  };
+};
+
+const removeFriendRelation = (data, friendUserId) => ({
+  ...data,
+  friends: data.friends.filter((friend) => friend.userId !== friendUserId),
+});
+
+const areFocusFriends = (data, friendUserId) => data.friends.some((friend) => friend.userId === friendUserId);
+
+export const isDebugFocusFriendCredentials = (username, password) => {
+  const normalized = normalizeUsername(username);
+  return DEBUG_FOCUS_FRIEND_ACCOUNTS.some((account) => (
+    account.username === normalized && account.password === password
+  ));
+};
+
+export const isDebugFocusFriendUsername = (username) => {
+  const normalized = normalizeUsername(username);
+  return DEBUG_FOCUS_FRIEND_ACCOUNTS.some((account) => account.username === normalized);
+};
+
+const upsertDebugFocusFriendUser = async (debugAccount) => {
+  const { usersStore } = getStores();
+  const existing = await getUserByUsername(debugAccount.username);
+  if (!existing) {
+    return await createUser(debugAccount.username, debugAccount.password)
+      || await getUserByUsername(debugAccount.username);
+  }
+
+  if (verifyPassword(existing, debugAccount.password)) {
+    return existing;
+  }
+
+  const salt = randomBytes(16).toString('hex');
+  const patched = {
+    ...existing,
+    username: debugAccount.username,
+    normalizedUsername: debugAccount.username,
+    passwordSalt: salt,
+    passwordHash: hashPassword(debugAccount.password, salt),
+    updatedAt: new Date().toISOString(),
+  };
+  await Promise.all([
+    setBlobJSON(usersStore, `${USER_KEY_PREFIX}${debugAccount.username}`, patched),
+    setBlobJSON(usersStore, `${USER_ID_KEY_PREFIX}${patched.id}`, patched),
+  ]);
+  return patched;
+};
+
+const buildDebugAccountData = (userRecord, debugAccount) => {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const publicUser = makeUserPublic(userRecord);
+  return sanitizeAccountPayload({
+    ...buildDefaultAccountData(publicUser),
+    userName: debugAccount.displayName,
+    categories: [
+      {
+        id: 9201,
+        name: debugAccount.categoryName,
+        color: debugAccount.categoryColor,
+        icon: 'target',
+      },
+    ],
+    tasks: [
+      {
+        id: 9301,
+        name: debugAccount.taskName,
+        estimated: 2,
+        completed: 0,
+        checked: false,
+        selected: true,
+        categoryId: 9201,
+        subtasks: [],
+      },
+    ],
+    activeMode: 'work',
+    timerStarted: true,
+    isIdle: false,
+    workTime: debugAccount.workTime,
+    breakTime: 0,
+    runtime: {
+      version: 2,
+      updatedAtMs: nowMs,
+      sourceTabId: `debug-${debugAccount.username}`,
+      phase: 'running-work',
+      phaseStartedAtMs: nowMs,
+      phaseStartWorkTime: debugAccount.workTime,
+      phaseStartBreakTime: 0,
+      phaseStartAllPauseTime: 0,
+      phaseStartGraceTotal: 0,
+      activityStartIso: nowIso,
+    },
+    updatedAt: nowIso,
+  }, publicUser, { revision: 1, updatedAt: nowIso });
+};
+
+const ensureDebugAccountData = async (userRecord, debugAccount) => {
+  const existing = await getAccountData(userRecord.id);
+  if (existing) return existing;
+
+  const accountData = buildDebugAccountData(userRecord, debugAccount);
+  await Promise.all([
+    saveAccountData(userRecord.id, accountData),
+    persistUser({
+      ...userRecord,
+      lifetimeStats: accountData.user.lifetimeStats,
+    }),
+  ]);
+  return accountData;
+};
+
+const removePendingFocusFriendRequestsBetween = (data, otherUserId) => ({
+  ...data,
+  incomingRequests: data.incomingRequests.filter((request) => request.fromUserId !== otherUserId && request.toUserId !== otherUserId),
+  outgoingRequests: data.outgoingRequests.filter((request) => request.fromUserId !== otherUserId && request.toUserId !== otherUserId),
+});
+
+const ensureDebugFocusFriendRelation = async (leftRecord, rightRecord) => {
+  const [leftDataRaw, rightDataRaw] = await Promise.all([
+    getFocusFriendsData(leftRecord.id),
+    getFocusFriendsData(rightRecord.id),
+  ]);
+  const friendsSince = new Date().toISOString();
+  const leftData = addFriendRelation(
+    removePendingFocusFriendRequestsBetween(leftDataRaw, rightRecord.id),
+    leftRecord,
+    rightRecord,
+    friendsSince,
+  );
+  const rightData = addFriendRelation(
+    removePendingFocusFriendRequestsBetween(rightDataRaw, leftRecord.id),
+    rightRecord,
+    leftRecord,
+    friendsSince,
+  );
+
+  await Promise.all([
+    saveFocusFriendsData(leftRecord.id, leftData),
+    saveFocusFriendsData(rightRecord.id, rightData),
+  ]);
+};
+
+export const ensureDebugFocusFriendAccounts = async () => {
+  const records = await Promise.all(DEBUG_FOCUS_FRIEND_ACCOUNTS.map(upsertDebugFocusFriendUser));
+  if (records.some((record) => !record)) {
+    const error = new Error('Could not prepare Focus Friends debug accounts.');
+    error.status = 500;
+    throw error;
+  }
+  await Promise.all(records.map((record, index) => ensureDebugAccountData(record, DEBUG_FOCUS_FRIEND_ACCOUNTS[index])));
+  await ensureDebugFocusFriendRelation(records[0], records[1]);
+  return records;
+};
+
+export const listFocusFriendsForUser = async (userRecord) => {
+  const data = await getFocusFriendsData(userRecord.id);
+  const friends = await Promise.all(data.friends.map(async (relation) => {
+    const friendRecord = await getUserById(relation.userId);
+    if (!friendRecord) return null;
+    const publicUser = makeUserPublic(friendRecord);
+    const accountData = await getAccountData(friendRecord.id);
+    const displayName = cleanDisplayName(accountData?.userName, friendRecord.username);
+    return {
+      username: friendRecord.username,
+      displayName,
+      joinedAt: friendRecord.joinedAt,
+      friendsSince: relation.friendsSince,
+      lifetimeStats: accountData?.user?.lifetimeStats || publicUser.lifetimeStats || defaultLifetimeStats(),
+      presence: buildFocusFriendPresence(friendRecord, accountData),
+    };
+  }));
+
+  const statusRank = {
+    focusing: 0,
+    break: 1,
+    grace: 2,
+    paused: 3,
+    idle: 4,
+    offline: 5,
+  };
+
+  return {
+    friends: friends
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftRank = statusRank[left.presence.status] ?? 9;
+        const rightRank = statusRank[right.presence.status] ?? 9;
+        if (leftRank !== rightRank) return leftRank - rightRank;
+        return left.displayName.localeCompare(right.displayName);
+      }),
+    incomingRequests: data.incomingRequests
+      .map(toPublicFocusFriendRequest)
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
+    outgoingRequests: data.outgoingRequests
+      .map(toPublicFocusFriendRequest)
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
+    inbox: data.inbox
+      .map(toPublicFocusFriendAction)
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
+  };
+};
+
+export const createFocusFriendRequest = async (fromUserRecord, targetUsername) => {
+  const normalizedTarget = normalizeUsername(targetUsername);
+  const targetUserRecord = await getUserByUsername(normalizedTarget);
+  if (!targetUserRecord) {
+    const error = new Error('No account found with that username.');
+    error.status = 404;
+    throw error;
+  }
+  if (targetUserRecord.id === fromUserRecord.id) {
+    const error = new Error('You cannot add yourself as a Focus Friend.');
+    error.status = 400;
+    throw error;
+  }
+
+  let fromData = await getFocusFriendsData(fromUserRecord.id);
+  let targetData = await getFocusFriendsData(targetUserRecord.id);
+  if (areFocusFriends(fromData, targetUserRecord.id)) {
+    const error = new Error('You are already Focus Friends.');
+    error.status = 409;
+    throw error;
+  }
+  if (fromData.friends.length >= FOCUS_FRIENDS_LIMIT || targetData.friends.length >= FOCUS_FRIENDS_LIMIT) {
+    const error = new Error('Focus Friend limit reached.');
+    error.status = 409;
+    throw error;
+  }
+
+  const reverseRequest = fromData.incomingRequests.find((request) => request.fromUserId === targetUserRecord.id);
+  if (reverseRequest) {
+    return acceptFocusFriendRequest(fromUserRecord, reverseRequest.id);
+  }
+
+  const duplicate = fromData.outgoingRequests.some((request) => request.toUserId === targetUserRecord.id)
+    || targetData.incomingRequests.some((request) => request.fromUserId === fromUserRecord.id);
+  if (duplicate) {
+    const error = new Error('Focus Friend request already sent.');
+    error.status = 409;
+    throw error;
+  }
+  if (fromData.outgoingRequests.length >= FOCUS_FRIEND_REQUEST_LIMIT || targetData.incomingRequests.length >= FOCUS_FRIEND_REQUEST_LIMIT) {
+    const error = new Error('Too many pending Focus Friend requests.');
+    error.status = 409;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const [fromDisplayName, toDisplayName] = await Promise.all([
+    getCurrentAccountDisplayName(fromUserRecord),
+    getCurrentAccountDisplayName(targetUserRecord),
+  ]);
+  const request = {
+    id: makeFocusFriendId('friend_req'),
+    fromUserId: fromUserRecord.id,
+    fromUsername: fromUserRecord.username,
+    fromDisplayName,
+    toUserId: targetUserRecord.id,
+    toUsername: targetUserRecord.username,
+    toDisplayName,
+    createdAt: now,
+  };
+
+  fromData = {
+    ...fromData,
+    outgoingRequests: [...fromData.outgoingRequests, request],
+  };
+  targetData = {
+    ...targetData,
+    incomingRequests: [...targetData.incomingRequests, request],
+  };
+  await Promise.all([
+    saveFocusFriendsData(fromUserRecord.id, fromData),
+    saveFocusFriendsData(targetUserRecord.id, targetData),
+  ]);
+};
+
+export const acceptFocusFriendRequest = async (currentUserRecord, requestId) => {
+  let currentData = await getFocusFriendsData(currentUserRecord.id);
+  const request = currentData.incomingRequests.find((item) => item.id === requestId);
+  if (!request) {
+    const error = new Error('Focus Friend request not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  const requesterRecord = await getUserById(request.fromUserId);
+  if (!requesterRecord) {
+    currentData = {
+      ...currentData,
+      incomingRequests: currentData.incomingRequests.filter((item) => item.id !== requestId),
+    };
+    await saveFocusFriendsData(currentUserRecord.id, currentData);
+    const error = new Error('Requesting account no longer exists.');
+    error.status = 404;
+    throw error;
+  }
+
+  let requesterData = await getFocusFriendsData(requesterRecord.id);
+  if (
+    !areFocusFriends(currentData, requesterRecord.id)
+    && (currentData.friends.length >= FOCUS_FRIENDS_LIMIT || requesterData.friends.length >= FOCUS_FRIENDS_LIMIT)
+  ) {
+    const error = new Error('Focus Friend limit reached.');
+    error.status = 409;
+    throw error;
+  }
+  const now = new Date().toISOString();
+  currentData = addFriendRelation({
+    ...currentData,
+    incomingRequests: currentData.incomingRequests.filter((item) => item.id !== requestId),
+    outgoingRequests: currentData.outgoingRequests.filter((item) => item.toUserId !== requesterRecord.id),
+  }, currentUserRecord, requesterRecord, now);
+  requesterData = addFriendRelation({
+    ...requesterData,
+    outgoingRequests: requesterData.outgoingRequests.filter((item) => item.id !== requestId),
+    incomingRequests: requesterData.incomingRequests.filter((item) => item.fromUserId !== currentUserRecord.id),
+  }, requesterRecord, currentUserRecord, now);
+
+  await Promise.all([
+    saveFocusFriendsData(currentUserRecord.id, currentData),
+    saveFocusFriendsData(requesterRecord.id, requesterData),
+  ]);
+};
+
+export const declineFocusFriendRequest = async (currentUserRecord, requestId) => {
+  let currentData = await getFocusFriendsData(currentUserRecord.id);
+  const request = currentData.incomingRequests.find((item) => item.id === requestId);
+  if (!request) {
+    const error = new Error('Focus Friend request not found.');
+    error.status = 404;
+    throw error;
+  }
+  const requesterRecord = await getUserById(request.fromUserId);
+  const requesterData = requesterRecord ? await getFocusFriendsData(requesterRecord.id) : null;
+  currentData = {
+    ...currentData,
+    incomingRequests: currentData.incomingRequests.filter((item) => item.id !== requestId),
+  };
+
+  const writes = [saveFocusFriendsData(currentUserRecord.id, currentData)];
+  if (requesterRecord && requesterData) {
+    writes.push(saveFocusFriendsData(requesterRecord.id, {
+      ...requesterData,
+      outgoingRequests: requesterData.outgoingRequests.filter((item) => item.id !== requestId),
+    }));
+  }
+  await Promise.all(writes);
+};
+
+export const removeFocusFriend = async (currentUserRecord, targetUsername) => {
+  const targetUserRecord = await getUserByUsername(normalizeUsername(targetUsername));
+  if (!targetUserRecord) {
+    const error = new Error('Focus Friend not found.');
+    error.status = 404;
+    throw error;
+  }
+  const [currentData, targetData] = await Promise.all([
+    getFocusFriendsData(currentUserRecord.id),
+    getFocusFriendsData(targetUserRecord.id),
+  ]);
+  await Promise.all([
+    saveFocusFriendsData(currentUserRecord.id, removeFriendRelation(currentData, targetUserRecord.id)),
+    saveFocusFriendsData(targetUserRecord.id, removeFriendRelation(targetData, currentUserRecord.id)),
+  ]);
+};
+
+export const createFocusFriendAction = async (fromUserRecord, targetUsername, type, rawMessage, sessionId = null) => {
+  const targetUserRecord = await getUserByUsername(normalizeUsername(targetUsername));
+  if (!targetUserRecord) {
+    const error = new Error('Focus Friend not found.');
+    error.status = 404;
+    throw error;
+  }
+  if (targetUserRecord.id === fromUserRecord.id) {
+    const error = new Error('Pick a Focus Friend first.');
+    error.status = 400;
+    throw error;
+  }
+  const [fromData, targetData, fromDisplayName] = await Promise.all([
+    getFocusFriendsData(fromUserRecord.id),
+    getFocusFriendsData(targetUserRecord.id),
+    getCurrentAccountDisplayName(fromUserRecord),
+  ]);
+  if (!areFocusFriends(fromData, targetUserRecord.id)) {
+    const error = new Error('You can only message Focus Friends.');
+    error.status = 403;
+    throw error;
+  }
+
+  const actionType = type === 'join-request'
+    ? 'join-request'
+    : type === 'join-invite'
+      ? 'join-invite'
+      : 'encouragement';
+  const normalizedSessionId = typeof sessionId === 'string' && sessionId.trim()
+    ? sessionId.trim().toUpperCase().slice(0, 64)
+    : null;
+  if (actionType === 'join-invite' && !normalizedSessionId) {
+    const error = new Error('Missing session invite.');
+    error.status = 400;
+    throw error;
+  }
+  const fallbackMessage = actionType === 'join-request'
+    ? 'wants to join your focus session.'
+    : actionType === 'join-invite'
+      ? 'sent you a focus session invite.'
+      : 'sent you encouragement.';
+  const message = cleanString(rawMessage, fallbackMessage).trim().slice(0, FRIEND_MESSAGE_MAX_LENGTH) || fallbackMessage;
+  const action = {
+    id: makeFocusFriendId(actionType === 'join-request'
+      ? 'join_req'
+      : actionType === 'join-invite'
+        ? 'join_invite'
+        : 'encourage'),
+    type: actionType,
+    fromUserId: fromUserRecord.id,
+    fromUsername: fromUserRecord.username,
+    fromDisplayName,
+    toUserId: targetUserRecord.id,
+    toUsername: targetUserRecord.username,
+    message,
+    sessionId: normalizedSessionId,
+    createdAt: new Date().toISOString(),
+    readAt: null,
+  };
+
+  await saveFocusFriendsData(targetUserRecord.id, {
+    ...targetData,
+    inbox: [action, ...targetData.inbox].slice(0, FOCUS_FRIEND_INBOX_LIMIT),
+  });
+};
+
+export const markFocusFriendActionRead = async (currentUserRecord, actionId) => {
+  const currentData = await getFocusFriendsData(currentUserRecord.id);
+  if (!currentData.inbox.some((action) => action.id === actionId)) {
+    const error = new Error('Friend activity not found.');
+    error.status = 404;
+    throw error;
+  }
+  const now = new Date().toISOString();
+  const nextInbox = currentData.inbox.map((action) => (
+    action.id === actionId ? { ...action, readAt: action.readAt || now } : action
+  ));
+  await saveFocusFriendsData(currentUserRecord.id, {
+    ...currentData,
+    inbox: nextInbox,
+  });
 };
 
 export const attachPublicUserToData = (accountData, publicUser) => {

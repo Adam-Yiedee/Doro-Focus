@@ -7,6 +7,7 @@ import {
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
+  totalSessionHours: 0,
   manualFocusHours: 0,
   totalSessions: 0,
   totalPomos: 0,
@@ -34,9 +35,23 @@ const isManualFocusLog = (entry: LogEntry): boolean => (
   entry.type === 'work' && entry.source === 'manual'
 );
 
+const isTimerSessionDurationLog = (entry: LogEntry): boolean => {
+  if (entry.source === 'manual') return false;
+  if (entry.type === 'break') return true;
+  return entry.type === 'work' && !isPauseCreditedWorkLog(entry);
+};
+
 const getSessionWorkMinutes = (session: SessionRecord): number => {
   const minutes = Number(session.stats?.totalWorkMinutes || 0);
   return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
+};
+
+const getSessionTotalMinutes = (session: SessionRecord): number => {
+  const workMinutes = Number(session.stats?.totalWorkMinutes || 0);
+  const breakMinutes = Number(session.stats?.totalBreakMinutes || 0);
+  const totalMinutes = Math.max(0, Number.isFinite(workMinutes) ? workMinutes : 0)
+    + Math.max(0, Number.isFinite(breakMinutes) ? breakMinutes : 0);
+  return totalMinutes > 0 ? totalMinutes : 0;
 };
 
 const getLocalDateKeyFromIso = (iso: string): string | null => {
@@ -82,6 +97,14 @@ export const calculateLifetimeStatsFromData = (
     (acc, entry) => acc + (isManualFocusLog(entry) ? Math.max(0, entry.duration) : 0),
     0,
   );
+  const timerSessionDurationLogs = safeLogs.filter((entry) => {
+    if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
+    return isTimerSessionDurationLog(entry);
+  });
+  const sessionSecondsFromLogs = timerSessionDurationLogs.reduce(
+    (acc, entry) => acc + Math.max(0, entry.duration),
+    0,
+  );
   const workHoursFromLogs = workSecondsFromLogs / 3600;
   const productiveLogDateKeys = new Set<string>();
   productiveLogs.forEach((entry) => {
@@ -89,10 +112,19 @@ export const calculateLifetimeStatsFromData = (
     const key = getLocalDateKeyFromIso(entry.start);
     if (key) productiveLogDateKeys.add(key);
   });
+  const timerSessionLogDateKeys = new Set<string>();
+  timerSessionDurationLogs.forEach((entry) => {
+    const key = getLocalDateKeyFromIso(entry.start);
+    if (key) timerSessionLogDateKeys.add(key);
+  });
 
   const fallbackSessions = safeSessions.filter((session) => {
     const sessionDateKey = getLocalDateKeyFromIso(session.startTime);
     return !sessionDateKey || !productiveLogDateKeys.has(sessionDateKey);
+  });
+  const totalTimeFallbackSessions = safeSessions.filter((session) => {
+    const sessionDateKey = getLocalDateKeyFromIso(session.startTime);
+    return !sessionDateKey || !timerSessionLogDateKeys.has(sessionDateKey);
   });
 
   const workMinutesFromFallbackSessions = fallbackSessions.reduce(
@@ -100,6 +132,11 @@ export const calculateLifetimeStatsFromData = (
     0,
   );
   const totalFocusHours = workHoursFromLogs + (workMinutesFromFallbackSessions / 60);
+  const totalSessionMinutesFromFallbackSessions = totalTimeFallbackSessions.reduce(
+    (acc, session) => acc + getSessionTotalMinutes(session),
+    0,
+  );
+  const totalSessionHours = (sessionSecondsFromLogs / 3600) + (totalSessionMinutesFromFallbackSessions / 60);
 
   const totalPomosFromFallbackSessions = fallbackSessions.reduce(
     (acc, session) => acc + getAccountStatsSessionPomodoroEquivalent(session),
@@ -182,6 +219,7 @@ export const calculateLifetimeStatsFromData = (
   return {
     ...EMPTY_LIFETIME_STATS,
     totalFocusHours,
+    totalSessionHours,
     manualFocusHours: manualWorkSecondsFromLogs / 3600,
     totalSessions: safeSessions.length,
     totalPomos: completedPomodoroWeightFromLogs + totalPomosFromFallbackSessions,

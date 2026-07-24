@@ -3,8 +3,10 @@ import {
   buildPublicUserFromAccountData,
   buildDefaultAccountData,
   createSession,
+  ensureDebugFocusFriendAccounts,
   getAccountData,
   getUserByUsername,
+  isDebugFocusFriendCredentials,
   json,
   normalizeUsername,
   parseBody,
@@ -33,8 +35,13 @@ export default async (request) => {
   const usernameError = validateUsername(username);
   if (usernameError) return json(400, { error: usernameError });
 
-  const passwordError = validatePassword(password);
+  const isDebugLogin = isDebugFocusFriendCredentials(username, password);
+  const passwordError = isDebugLogin ? null : validatePassword(password);
   if (passwordError) return json(400, { error: passwordError });
+
+  if (isDebugLogin) {
+    await ensureDebugFocusFriendAccounts();
+  }
 
   const userRecord = await getUserByUsername(normalizeUsername(username));
   if (!userRecord || !verifyPassword(userRecord, password)) {

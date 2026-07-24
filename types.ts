@@ -114,6 +114,7 @@ export interface User {
     joinedAt: string;
     lifetimeStats: {
         totalFocusHours: number;
+        totalSessionHours: number;
         manualFocusHours: number;
         totalSessions: number;
         totalPomos: number;
@@ -176,6 +177,65 @@ export interface TimerSpectatorState {
   runtime: TimerRuntimeSnapshot | null;
   updatedAtMs: number;
 }
+
+export type FocusFriendPresenceStatus = 'idle' | 'focusing' | 'break' | 'paused' | 'grace' | 'offline';
+
+export interface FocusFriendPresence {
+  status: FocusFriendPresenceStatus;
+  updatedAtMs: number | null;
+  timer: TimerSpectatorState | null;
+}
+
+export interface FocusFriendRequest {
+  id: string;
+  fromUsername: string;
+  fromDisplayName: string;
+  toUsername: string;
+  toDisplayName: string;
+  createdAt: string;
+}
+
+export type FocusFriendActionType = 'encouragement' | 'join-request' | 'join-invite';
+
+export interface FocusFriendAction {
+  id: string;
+  type: FocusFriendActionType;
+  fromUsername: string;
+  fromDisplayName: string;
+  toUsername: string;
+  message: string;
+  sessionId?: string | null;
+  createdAt: string;
+  readAt?: string | null;
+}
+
+export interface FocusFriend {
+  username: string;
+  displayName: string;
+  joinedAt: string;
+  friendsSince: string;
+  lifetimeStats: User['lifetimeStats'];
+  presence: FocusFriendPresence;
+}
+
+export interface FocusFriendsState {
+  friends: FocusFriend[];
+  incomingRequests: FocusFriendRequest[];
+  outgoingRequests: FocusFriendRequest[];
+  inbox: FocusFriendAction[];
+}
+
+export type FocusFriendNotice =
+  | {
+      id: string;
+      type: 'action';
+      action: FocusFriendAction;
+    }
+  | {
+      id: string;
+      type: 'request';
+      request: FocusFriendRequest;
+    };
 
 // Group Study Types
 export interface GroupSyncConfig {

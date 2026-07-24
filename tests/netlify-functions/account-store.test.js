@@ -143,6 +143,7 @@ describe('account store blob compatibility', () => {
     });
     expect(hydrated.user.lifetimeStats).toMatchObject({
       totalFocusHours: 25 / 60,
+      totalSessionHours: 30 / 60,
       totalSessions: 1,
       totalPomos: 1,
     });
@@ -164,9 +165,51 @@ describe('account store blob compatibility', () => {
 
     expect(stats).toMatchObject({
       totalFocusHours: 25 / 60,
+      totalSessionHours: 25 / 60,
       totalSessions: 0,
       totalPomos: 1,
       activeDays: 1,
+    });
+  });
+
+  it('separates focus time from whole session time and rebuilds pomos from session-end work logs', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:35:00.000Z',
+        duration: 2100,
+        reason: 'Session End',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'break',
+        start: '2026-03-12T09:35:00.000Z',
+        end: '2026-03-12T09:45:00.000Z',
+        duration: 600,
+        reason: 'Session End',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'allpause',
+        start: '2026-03-12T09:45:00.000Z',
+        end: '2026-03-12T10:00:00.000Z',
+        duration: 900,
+        reason: 'Paused',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+    ], []);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 35 / 60,
+      totalSessionHours: 45 / 60,
+      totalPomos: 1.4,
     });
   });
 
@@ -189,6 +232,7 @@ describe('account store blob compatibility', () => {
 
     expect(stats).toMatchObject({
       totalFocusHours: 2,
+      totalSessionHours: 0,
       manualFocusHours: 2,
       totalPomos: 4.8,
       activeDays: 1,

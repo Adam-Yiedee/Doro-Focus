@@ -81,6 +81,12 @@ const getSessionStartMs = (sessionStartTime: string | null | undefined) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const getSessionEndMs = (sessionEndTime: string | null | undefined) => {
+  if (!sessionEndTime) return null;
+  const parsed = Date.parse(sessionEndTime);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const isTimerLog = (entry: Pick<LogEntry, 'source'>) => entry.source !== 'manual';
 
 const getPositiveSeconds = (value: unknown) => {
@@ -88,14 +94,38 @@ const getPositiveSeconds = (value: unknown) => {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 };
 
-const getLogsForSession = (logs: LogEntry[], sessionStartTime: string | null | undefined) => {
+const getLogsForSession = (
+  logs: LogEntry[],
+  sessionStartTime: string | null | undefined,
+  sessionEndTime?: string | null,
+) => {
   const sessionStartMs = getSessionStartMs(sessionStartTime);
   if (sessionStartMs === null) return [];
+  const sessionEndMs = getSessionEndMs(sessionEndTime);
 
   return logs.filter((entry) => {
     const entryStartMs = Date.parse(entry.start);
-    return Number.isFinite(entryStartMs) && entryStartMs >= sessionStartMs && isTimerLog(entry);
+    if (!Number.isFinite(entryStartMs)) return false;
+    if (entryStartMs < sessionStartMs) return false;
+    if (sessionEndMs !== null && entryStartMs > sessionEndMs) return false;
+    return isTimerLog(entry);
   });
+};
+
+export const getSessionTaskCompletionIdsFromLogs = (
+  logs: LogEntry[],
+  sessionStartTime: string | null | undefined,
+  sessionEndTime?: string | null,
+) => {
+  const completionIds = new Set<number>();
+  getLogsForSession(logs, sessionStartTime, sessionEndTime).forEach((entry) => {
+    if (entry.type !== 'task-complete') return;
+    const taskId = entry.task?.id;
+    if (typeof taskId === 'number' && Number.isFinite(taskId)) {
+      completionIds.add(taskId);
+    }
+  });
+  return completionIds;
 };
 
 const getCategoryKey = (
@@ -110,6 +140,7 @@ const getCategoryKey = (
 export const buildEndSessionStats = ({
   logs,
   sessionStartTime,
+  sessionEndTime,
   categories,
   pendingActivity,
   pomodoroCount,
@@ -118,13 +149,14 @@ export const buildEndSessionStats = ({
 }: {
   logs: LogEntry[];
   sessionStartTime: string | null | undefined;
+  sessionEndTime?: string | null;
   categories: Category[];
   pendingActivity?: EndSessionPendingActivity | null;
   pomodoroCount: number;
   settings: Pick<TimerSettings, 'timerPreset'>;
   tasksCompleted: number;
 }): EndSessionStatsResult => {
-  const sessionLogs = getLogsForSession(logs, sessionStartTime);
+  const sessionLogs = getLogsForSession(logs, sessionStartTime, sessionEndTime);
   const workLogs = sessionLogs.filter((entry) => (
     entry.type === 'work' && !isPauseCreditedWorkLog(entry)
   ));

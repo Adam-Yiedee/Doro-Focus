@@ -459,7 +459,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       const sessionEndMs = session.endMs;
       const dayStartMs = startOfLocalDay(session.startMs);
       const dayEndMs = dayStartMs + DAY_MS;
-      const visualEndMs = sessionEndMs ?? Math.min(dayEndMs, session.startMs + Math.max(1, session.activeDurationMinutes) * 60_000);
+      const visualEndMs = sessionEndMs ?? Math.min(dayEndMs, session.startMs + Math.max(1, session.totalDurationMinutes) * 60_000);
       const clippedStartMs = Math.max(session.startMs, dayStartMs);
       const clippedEndMs = Math.min(Math.max(visualEndMs, clippedStartMs + 60_000), dayEndMs);
       const startMinutes = getMinutesOfDay(clippedStartMs);
@@ -493,7 +493,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         closed: session.closed,
         startMinutes,
         endMinutes: Math.max(startMinutes + 1, endMinutes),
-        durationMinutes: Math.max(1, session.activeDurationMinutes),
+        durationMinutes: Math.max(1, session.totalDurationMinutes),
         segments,
         primaryColor,
       });
@@ -802,6 +802,10 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const rangeSummaryLabel = `${ANALYTICS_RANGE_LABELS[analyticsRange]} view`;
   const categoryLegendTotal = Math.max(1, categoryTrendLegend.reduce((sum, category) => sum + category.minutes, 0));
   const sessionWeekFocusTotal = displayedSessionLanes.reduce((sum, lane) => sum + lane.totalFocusMinutes, 0);
+  const sessionWeekTotalMinutes = displayedSessionLanes.reduce(
+    (sum, lane) => sum + lane.sessions.reduce((laneSum, session) => laneSum + session.durationMinutes, 0),
+    0,
+  );
   const sessionClockActiveDayCount = displayedSessionLanes.filter((lane) => lane.totalFocusMinutes > 0).length;
   const sessionClockRangeLabel = formatWeekRangeLabel(rollingSessionClockStartMs);
 
@@ -1161,7 +1165,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           transform: active ? 'translateY(-1px) scaleY(1.04)' : 'translateY(0) scaleY(1)',
           opacity: active ? 1 : 0.9,
         }}
-        aria-label={`${formatDateKeyStamp(lane.dateKey)} ${formatSessionRange(session.startMs, session.endMs)} ${formatMinutesPrecise(session.durationMinutes)}`}
+        aria-label={`${formatDateKeyStamp(lane.dateKey)} ${formatSessionRange(session.startMs, session.endMs)} ${formatMinutesPrecise(session.durationMinutes)} total session time`}
       >
         <span
           aria-hidden="true"
@@ -1209,7 +1213,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             <div className="text-[1.1rem] font-semibold tracking-tight text-white">{sessionClockRangeLabel}</div>
             <div className="mt-1.5 text-sm text-white/54">
               {selectedSessionEntry
-                ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} - ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)}`
+                ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} - ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)} total`
                 : sessionWeekFocusTotal > 0
                   ? `${formatMinutesPrecise(sessionWeekFocusTotal)} focus in the last 7 days`
                   : 'No focus logged in the last 7 days'}
@@ -1219,6 +1223,10 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
               <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Focus</div>
               <div className="mt-0.5 text-sm font-semibold text-white">{formatMinutesCompact(sessionWeekFocusTotal)}</div>
+            </div>
+            <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
+              <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Total</div>
+              <div className="mt-0.5 text-sm font-semibold text-white">{formatMinutesCompact(sessionWeekTotalMinutes)}</div>
             </div>
             <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
               <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Active Days</div>
@@ -1772,7 +1780,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                 <div className="text-base font-semibold tracking-tight text-white">{formatWeekRangeLabel(activeSessionWeekStartMs)}</div>
                 <div className="mt-1 text-sm text-white/56">
                   {selectedSessionEntry
-                    ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} · ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)}`
+                    ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} - ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)} total`
                     : 'No saved sessions in this week yet.'}
                 </div>
               </div>

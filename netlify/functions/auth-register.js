@@ -4,6 +4,7 @@ import {
   buildDefaultAccountData,
   createSession,
   createUser,
+  isDebugFocusFriendUsername,
   json,
   parseBody,
   persistUser,
@@ -27,6 +28,9 @@ export default async (request) => {
 
   const usernameError = validateUsername(username);
   if (usernameError) return json(400, { error: usernameError });
+  if (isDebugFocusFriendUsername(username)) {
+    return json(409, { error: 'Username is reserved for Focus Friends debugging.' });
+  }
 
   const passwordError = validatePassword(password);
   if (passwordError) return json(400, { error: passwordError });

@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Link as LinkIcon, LogIn, Plus, QrCode, Share2 } from 'lucide-react';
+import { Bell, Check, ChevronDown, Heart, Link as LinkIcon, LogIn, Plus, QrCode, RefreshCw, Send, Share2, Timer as TimerIcon, UserMinus, UserPlus, Users, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, Category, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
+import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
 import { CATEGORY_ICON_OPTIONS, getIcon } from '../../utils/icons';
 import { computeAccountInsights } from '../../utils/accountInsights';
@@ -29,7 +29,9 @@ import {
 } from '../../utils/timerRuntime';
 import {
   buildTimerSpectatorUrl,
+  formatTimerShareDuration,
   formatTimerShareEndLabel,
+  getTimerShareEstimateFromSpectatorState,
 } from '../../utils/timerShare';
 
 interface LogModalProps {
@@ -42,6 +44,7 @@ type TabButton = ModalTab | 'schedule';
 type GroupFlow = 'menu' | 'host' | 'join';
 type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
+type FocusFriendBusyAction = 'refresh' | 'send-request' | `accept:${string}` | `decline:${string}` | `remove:${string}` | `encourage:${string}` | `join:${string}` | `invite:${string}` | `open-invite:${string}` | `read:${string}` | null;
 type SettingsPanelTransitionPhase = 'idle' | 'leaving' | 'entering';
 type SettingsPanelTransitionDirection = 'forward' | 'backward';
 type DragInsertPosition = 'before' | 'after';
@@ -192,8 +195,12 @@ const formatClockMinutes = (minutes: number | null) => {
 const ACCOUNT_USERNAME_REGEX = /^[A-Za-z0-9_.-]{3,32}$/;
 const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
 const ACCOUNT_PASSWORD_MAX_LENGTH = 256;
-const PREVIEW_ACCOUNT_USERNAME = 'master';
+const PREVIEW_ACCOUNT_USERNAME = 'preview';
 const PREVIEW_ACCOUNT_PASSWORD = 'master';
+const DEBUG_FOCUS_FRIEND_CREDENTIALS: Record<string, string> = {
+  master: 'master',
+  master2: 'master2',
+};
 const CATEGORY_EDITOR_CLOSE_DURATION_MS = 220;
 const SETTINGS_PANEL_TRANSITION_MS = 240;
 const AUTO_START_SOUND_PANEL_EXIT_MS = 300;
@@ -207,6 +214,7 @@ const CATEGORY_FLIP_MAX_ITEMS = 24;
 const LOG_ENTRY_TYPES = new Set<LogEntry['type']>(['work', 'break', 'allpause', 'task-complete', 'grace']);
 const EMPTY_ACCOUNT_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
+  totalSessionHours: 0,
   manualFocusHours: 0,
   totalSessions: 0,
   totalPomos: 0,
@@ -228,8 +236,16 @@ const isPreviewAccountCredentials = (username: string, password: string) => {
   return username.trim().toLowerCase() === PREVIEW_ACCOUNT_USERNAME && password === PREVIEW_ACCOUNT_PASSWORD;
 };
 
+const isDebugFocusFriendCredentials = (username: string, password: string) => {
+  const normalized = username.trim().toLowerCase();
+  return DEBUG_FOCUS_FRIEND_CREDENTIALS[normalized] === password;
+};
+
 const validateAccountPasswordInput = (value: string, username = '') => {
   if (isPreviewAccountCredentials(username, value)) {
+    return null;
+  }
+  if (isDebugFocusFriendCredentials(username, value)) {
     return null;
   }
   if (value.length < ACCOUNT_PASSWORD_MIN_LENGTH) {
@@ -312,6 +328,40 @@ const isRenderableGroupMember = (value: unknown): value is GroupMember => {
     && typeof member.isHost === 'boolean';
 };
 
+const isRenderableFocusFriend = (value: unknown): value is FocusFriend => {
+  if (!value || typeof value !== 'object') return false;
+  const friend = value as Partial<FocusFriend>;
+  return typeof friend.username === 'string'
+    && typeof friend.displayName === 'string'
+    && typeof friend.joinedAt === 'string'
+    && typeof friend.friendsSince === 'string'
+    && Boolean(friend.presence)
+    && typeof friend.presence === 'object';
+};
+
+const isRenderableFocusFriendRequest = (value: unknown): value is FocusFriendRequest => {
+  if (!value || typeof value !== 'object') return false;
+  const request = value as Partial<FocusFriendRequest>;
+  return typeof request.id === 'string'
+    && typeof request.fromUsername === 'string'
+    && typeof request.fromDisplayName === 'string'
+    && typeof request.toUsername === 'string'
+    && typeof request.toDisplayName === 'string'
+    && typeof request.createdAt === 'string';
+};
+
+const isRenderableFocusFriendAction = (value: unknown): value is FocusFriendAction => {
+  if (!value || typeof value !== 'object') return false;
+  const action = value as Partial<FocusFriendAction>;
+  return typeof action.id === 'string'
+    && (action.type === 'encouragement' || action.type === 'join-request' || action.type === 'join-invite')
+    && typeof action.fromUsername === 'string'
+    && typeof action.fromDisplayName === 'string'
+    && typeof action.toUsername === 'string'
+    && typeof action.message === 'string'
+    && typeof action.createdAt === 'string';
+};
+
 const getSafeSyncConfig = (value: unknown): GroupSyncConfig => {
   const candidate = value && typeof value === 'object' ? value as Partial<GroupSyncConfig> : {};
   return {
@@ -353,6 +403,7 @@ const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
   const rawStats = user?.lifetimeStats;
   const rawBreakdown = rawStats?.categoryBreakdown;
   const safeTotalFocusHours = Number(rawStats?.totalFocusHours);
+  const safeTotalSessionHours = Number(rawStats?.totalSessionHours);
   const safeManualFocusHours = Number(rawStats?.manualFocusHours);
   const safeCategoryBreakdown = rawBreakdown && typeof rawBreakdown === 'object' && !Array.isArray(rawBreakdown)
     ? Object.fromEntries(
@@ -366,6 +417,7 @@ const getSafeLifetimeStats = (user: User | null): User['lifetimeStats'] => {
     ...EMPTY_ACCOUNT_STATS,
     ...(rawStats || {}),
     totalFocusHours: Number.isFinite(safeTotalFocusHours) && safeTotalFocusHours > 0 ? safeTotalFocusHours : 0,
+    totalSessionHours: Number.isFinite(safeTotalSessionHours) && safeTotalSessionHours > 0 ? safeTotalSessionHours : 0,
     manualFocusHours: Number.isFinite(safeManualFocusHours) && safeManualFocusHours > 0 ? safeManualFocusHours : 0,
     totalSessions: Math.max(0, Math.floor(Number(rawStats?.totalSessions || 0))),
     totalPomos: Math.max(0, Number.isFinite(Number(rawStats?.totalPomos || 0)) ? Number(rawStats?.totalPomos || 0) : 0),
@@ -798,6 +850,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     accountSyncError,
     lastAccountSyncAt,
     isPreviewAccount,
+    focusFriends,
+    focusFriendsLoading,
+    focusFriendsError,
+    refreshFocusFriends,
+    sendFocusFriendRequest,
+    acceptFocusFriendRequest,
+    declineFocusFriendRequest,
+    removeFocusFriend,
+    sendFocusFriendEncouragement,
+    requestFocusFriendJoin,
+    sendFocusFriendJoinInvite,
+    markFocusFriendActionRead,
     groupSessionId,
     userName,
     isHost,
@@ -821,6 +885,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [displayedTab, setDisplayedTab] = useState<ModalTab>('settings');
   const [settingsPanelTransitionPhase, setSettingsPanelTransitionPhase] = useState<SettingsPanelTransitionPhase>('idle');
   const [settingsPanelTransitionDirection, setSettingsPanelTransitionDirection] = useState<SettingsPanelTransitionDirection>('forward');
+  const [focusFriendsNowMs, setFocusFriendsNowMs] = useState(Date.now());
 
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [usernameInput, setUsernameInput] = useState('');
@@ -829,6 +894,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [authLocalError, setAuthLocalError] = useState<string | null>(null);
   const [accountActionBusy, setAccountActionBusy] = useState<AccountAction>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
+  const [focusFriendUsernameInput, setFocusFriendUsernameInput] = useState('');
+  const [focusFriendBusyAction, setFocusFriendBusyAction] = useState<FocusFriendBusyAction>(null);
+  const [focusFriendDrafts, setFocusFriendDrafts] = useState<Record<string, string>>({});
 
   const [groupFlow, setGroupFlow] = useState<GroupFlow>('menu');
   const [groupName, setGroupName] = useState('');
@@ -910,6 +978,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeMembers = useMemo(() => (
     Array.isArray(members) ? members.filter(isRenderableGroupMember) : []
   ), [members]);
+  const safeFocusFriends = useMemo(() => (
+    Array.isArray(focusFriends.friends) ? focusFriends.friends.filter(isRenderableFocusFriend) : []
+  ), [focusFriends.friends]);
+  const safeIncomingFocusFriendRequests = useMemo(() => (
+    Array.isArray(focusFriends.incomingRequests) ? focusFriends.incomingRequests.filter(isRenderableFocusFriendRequest) : []
+  ), [focusFriends.incomingRequests]);
+  const safeOutgoingFocusFriendRequests = useMemo(() => (
+    Array.isArray(focusFriends.outgoingRequests) ? focusFriends.outgoingRequests.filter(isRenderableFocusFriendRequest) : []
+  ), [focusFriends.outgoingRequests]);
+  const safeFocusFriendInbox = useMemo(() => (
+    Array.isArray(focusFriends.inbox) ? focusFriends.inbox.filter(isRenderableFocusFriendAction) : []
+  ), [focusFriends.inbox]);
   const safeLifetimeStats = useMemo(() => {
     if (!safeUser) return getSafeLifetimeStats(null);
     return getSafeLifetimeStats({
@@ -1059,7 +1139,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setIsFocusSoundPreviewing(true);
   }, [isFocusSoundPreviewing, settings.focusSound, stopSettingsFocusSoundPreview]);
 
-  const accountError = authLocalError || accountSyncError || null;
+  const accountError = authLocalError || accountSyncError || focusFriendsError || null;
   const lastSyncRelative = useMemo(() => formatRelativeTimeFromMs(safeLastAccountSyncAt), [safeLastAccountSyncAt]);
 
   const syncStateMeta = useMemo(() => {
@@ -1122,6 +1202,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   }, [accountError, accountSyncState, isPreviewAccount, lastSyncRelative, safeLastAccountSyncAt]);
 
   const normalizedUsernameInput = usernameInput.trim().toLowerCase();
+  const normalizedFocusFriendUsernameInput = focusFriendUsernameInput.trim().toLowerCase();
+  const focusFriendUsernameValidationMessage = normalizedFocusFriendUsernameInput
+    ? validateAccountUsernameInput(normalizedFocusFriendUsernameInput)
+    : null;
   const isPreviewAccountAuth = isPreviewAccountCredentials(normalizedUsernameInput, passwordInput);
   const usernameValidationMessage = normalizedUsernameInput
     ? validateAccountUsernameInput(normalizedUsernameInput)
@@ -1129,6 +1213,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const passwordValidationMessage = passwordInput
     ? validateAccountPasswordInput(passwordInput, normalizedUsernameInput)
     : null;
+  const isDebugFocusFriendAuth = isDebugFocusFriendCredentials(normalizedUsernameInput, passwordInput);
+  const allowsShortAuthPassword = isPreviewAccountAuth || isDebugFocusFriendAuth;
   const canSubmitAuth = Boolean(
     normalizedUsernameInput
       && passwordInput
@@ -1170,6 +1256,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setFocusFriendsNowMs(Date.now());
+    const interval = window.setInterval(() => setFocusFriendsNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || displayedTab !== 'account' || !safeUser || isPreviewAccount) return;
+    void refreshFocusFriends();
+  }, [displayedTab, isOpen, isPreviewAccount, refreshFocusFriends, safeUser?.username]);
 
   const clearSettingsPanelTransitionTimeout = useCallback(() => {
     if (settingsPanelTransitionTimeoutRef.current) {
@@ -1626,6 +1724,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (authBusy) return;
     const username = normalizedUsernameInput;
     const isPreviewLogin = isPreviewAccountCredentials(username, passwordInput);
+    const isDebugFocusFriendLogin = isDebugFocusFriendCredentials(username, passwordInput);
     if (!username || !passwordInput) {
       setAuthLocalError('Username and password are required.');
       return;
@@ -1645,7 +1744,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setAuthLocalError(null);
     setAccountMessage(null);
 
-    const authResult = authMode === 'register'
+    const authResult = authMode === 'register' && !isDebugFocusFriendLogin
       ? await register(username, passwordInput)
       : await login(username, passwordInput);
 
@@ -1661,6 +1760,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setAccountMessage(
       isPreviewLogin
         ? 'Preview account loaded.'
+        : isDebugFocusFriendLogin
+          ? 'Focus Friends debug account loaded.'
         : authMode === 'register'
           ? 'Account created and synced.'
           : 'Signed in and synced.',
@@ -1693,6 +1794,172 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (ok) setAccountMessage('Pulled latest cloud data.');
     else if (!accountSyncError) setAccountMessage('Could not pull cloud data.');
     setAccountActionBusy(null);
+  };
+
+  const runFocusFriendAction = async (
+    busyAction: FocusFriendBusyAction,
+    action: () => Promise<{ ok: boolean; error: string | null }>,
+    successMessage: string,
+  ) => {
+    if (focusFriendBusyAction) return;
+    setFocusFriendBusyAction(busyAction);
+    setAuthLocalError(null);
+    setAccountMessage(null);
+    try {
+      const result = await action();
+      if (result.ok) {
+        setAccountMessage(successMessage);
+      } else {
+        setAuthLocalError(result.error || 'Focus Friends action failed.');
+      }
+    } catch (error) {
+      setAuthLocalError(error instanceof Error ? error.message : 'Focus Friends action failed.');
+    } finally {
+      setFocusFriendBusyAction(null);
+    }
+  };
+
+  const handleRefreshFocusFriends = async () => {
+    if (focusFriendBusyAction) return;
+    setFocusFriendBusyAction('refresh');
+    setAuthLocalError(null);
+    setAccountMessage(null);
+    const ok = await refreshFocusFriends();
+    if (ok) setAccountMessage('Focus Friends refreshed.');
+    else if (!focusFriendsError) setAccountMessage('Focus Friends could not refresh.');
+    setFocusFriendBusyAction(null);
+  };
+
+  const handleSendFocusFriendRequest = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const username = normalizedFocusFriendUsernameInput;
+    if (!username) {
+      setAuthLocalError('Enter a username to add a Focus Friend.');
+      return;
+    }
+    const validationMessage = validateAccountUsernameInput(username);
+    if (validationMessage) {
+      setAuthLocalError(validationMessage);
+      return;
+    }
+
+    await runFocusFriendAction(
+      'send-request',
+      () => sendFocusFriendRequest(username),
+      `Focus Friend request sent to ${username}.`,
+    );
+    setFocusFriendUsernameInput('');
+  };
+
+  const handleAcceptFocusFriendRequest = (request: FocusFriendRequest) => {
+    void runFocusFriendAction(
+      `accept:${request.id}`,
+      () => acceptFocusFriendRequest(request.id),
+      `${request.fromDisplayName || request.fromUsername} is now a Focus Friend.`,
+    );
+  };
+
+  const handleDeclineFocusFriendRequest = (request: FocusFriendRequest) => {
+    void runFocusFriendAction(
+      `decline:${request.id}`,
+      () => declineFocusFriendRequest(request.id),
+      'Focus Friend request declined.',
+    );
+  };
+
+  const handleRemoveFocusFriend = (friend: FocusFriend) => {
+    void runFocusFriendAction(
+      `remove:${friend.username}`,
+      () => removeFocusFriend(friend.username),
+      `${friend.displayName || friend.username} removed from Focus Friends.`,
+    );
+  };
+
+  const handleSendFocusFriendEncouragement = (friend: FocusFriend) => {
+    const draft = focusFriendDrafts[friend.username]?.trim();
+    const message = draft || 'You are doing great. Keep going.';
+    void runFocusFriendAction(
+      `encourage:${friend.username}`,
+      () => sendFocusFriendEncouragement(friend.username, message),
+      `Encouragement sent to ${friend.displayName || friend.username}.`,
+    );
+    setFocusFriendDrafts(prev => ({ ...prev, [friend.username]: '' }));
+  };
+
+  const handleRequestFocusFriendJoin = (friend: FocusFriend) => {
+    void runFocusFriendAction(
+      `join:${friend.username}`,
+      () => requestFocusFriendJoin(friend.username, 'Can I join your focus session?'),
+      `Join request sent to ${friend.displayName || friend.username}.`,
+    );
+  };
+
+  const handleSendFocusFriendJoinInvite = (action: FocusFriendAction) => {
+    const targetUsername = action.fromUsername.trim();
+    if (action.type !== 'join-request' || !targetUsername) {
+      setAuthLocalError('Choose a valid Focus Friend request first.');
+      return;
+    }
+
+    void runFocusFriendAction(
+      `invite:${action.id}`,
+      async () => {
+        try {
+          let sessionId = safeGroupSessionId;
+          if (!sessionId) {
+            const shareName = groupName.trim() || safeUser?.username || safeUserName || 'Host';
+            setGroupName(shareName);
+            setHostDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
+            sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG);
+          }
+
+          const result = await sendFocusFriendJoinInvite(targetUsername, sessionId, 'Join my focus session.');
+          if (!result.ok) return result;
+          if (!action.readAt) {
+            const readResult = await markFocusFriendActionRead(action.id);
+            if (!readResult.ok) return readResult;
+          }
+          return result;
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Could not prepare a focus session invite.',
+          };
+        }
+      },
+      `Invite sent to ${action.fromDisplayName || action.fromUsername}.`,
+    );
+  };
+
+  const handleOpenFocusFriendJoinInvite = (action: FocusFriendAction) => {
+    const sessionId = getSafeSessionId(action.sessionId);
+    if (action.type !== 'join-invite' || !sessionId) {
+      setAuthLocalError('This Focus Friend invite is missing a session code.');
+      return;
+    }
+
+    void runFocusFriendAction(
+      `open-invite:${action.id}`,
+      async () => {
+        setGroupSessionInput(sessionId);
+        setInviteSessionId(sessionId);
+        setGroupFlow('join');
+        setGroupLocalError(null);
+        syncDisplayedTabImmediately('group');
+        setPendingJoinId(sessionId);
+        if (action.readAt) return { ok: true, error: null };
+        return markFocusFriendActionRead(action.id);
+      },
+      'Opening Focus Friend invite.',
+    );
+  };
+
+  const handleMarkFocusFriendActionRead = (action: FocusFriendAction) => {
+    void runFocusFriendAction(
+      `read:${action.id}`,
+      () => markFocusFriendActionRead(action.id),
+      'Friend activity marked read.',
+    );
   };
 
   const toggleHostDraftSync = (key: SyncKey) => {
@@ -2234,6 +2501,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const weekActiveDayAvgHours = weekActiveDays > 0 ? weekStats.totalFocusHours / weekActiveDays : 0;
     const weekOverallDailyAvgHours = weekStats.totalFocusHours / ROLLING_WEEK_DAYS;
     const focusHoursLabel = formatCompactHours(stats.totalFocusHours);
+    const totalTimeLabel = formatCompactHours(stats.totalSessionHours || 0);
     const manualFocusHoursLabel = formatCompactHours(stats.manualFocusHours || 0);
     const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
     const profileName = safeUserName.trim();
@@ -2255,6 +2523,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       valueClassName?: string;
     }> = [
       { label: 'Focus Time', value: formatCompactHours(weekStats.totalFocusHours), color: accountPrimaryColor },
+      { label: 'Total Time', value: formatCompactHours(weekStats.totalSessionHours || 0), color: PRESET_COLORS[5] },
       { label: 'Pomodoros', value: formatPomodoroCount(weekStats.totalPomos), color: PRESET_COLORS[2] },
       { label: 'Sessions', value: `${weekStats.totalSessions}`, color: PRESET_COLORS[1] },
       {
@@ -2280,6 +2549,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       valueClassName?: string;
     }> = [
       { label: 'Focus Time', value: focusHoursLabel, color: accountPrimaryColor },
+      { label: 'Total Time', value: totalTimeLabel, color: PRESET_COLORS[0] },
       { label: 'Manual Focus', value: manualFocusHoursLabel, color: PRESET_COLORS[5] },
       { label: 'Pomodoros', value: formatPomodoroCount(stats.totalPomos), color: PRESET_COLORS[2] },
       { label: 'Sessions', value: `${stats.totalSessions}`, color: PRESET_COLORS[1] },
@@ -2394,6 +2664,365 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       </div>
     );
 
+    const getFriendStatusMeta = (friend: FocusFriend) => {
+      switch (friend.presence.status) {
+        case 'focusing':
+          return {
+            label: 'Focusing',
+            className: isLightTheme
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              : 'border-emerald-400/25 bg-emerald-400/12 text-emerald-100',
+          };
+        case 'break':
+          return {
+            label: 'On Break',
+            className: isLightTheme
+              ? 'border-sky-200 bg-sky-50 text-sky-700'
+              : 'border-sky-400/25 bg-sky-400/12 text-sky-100',
+          };
+        case 'paused':
+          return {
+            label: 'Paused',
+            className: isLightTheme
+              ? 'border-amber-200 bg-amber-50 text-amber-700'
+              : 'border-amber-300/25 bg-amber-300/12 text-amber-100',
+          };
+        case 'grace':
+          return {
+            label: 'Grace',
+            className: isLightTheme
+              ? 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700'
+              : 'border-fuchsia-300/25 bg-fuchsia-300/12 text-fuchsia-100',
+          };
+        case 'offline':
+          return {
+            label: 'Offline',
+            className: isLightTheme
+              ? 'border-slate-200 bg-slate-50 text-slate-500'
+              : 'border-white/10 bg-white/[0.03] text-white/45',
+          };
+        case 'idle':
+        default:
+          return {
+            label: 'Idle',
+            className: isLightTheme
+              ? 'border-slate-200 bg-white text-slate-600'
+              : 'border-white/10 bg-white/[0.04] text-white/58',
+          };
+      }
+    };
+
+    const getFriendTimerMeta = (friend: FocusFriend) => {
+      const timer = friend.presence.timer;
+      const estimate = getTimerShareEstimateFromSpectatorState(timer, focusFriendsNowMs);
+      const activeLabel = timer?.activeMode === 'break' ? 'Break timer' : 'Focus timer';
+      return {
+        activeLabel,
+        remainingLabel: formatTimerShareDuration(estimate.remainingSeconds),
+        endLabel: formatTimerShareEndLabel(estimate.endMs, estimate.status === 'idle' ? 'Not running' : 'No end time'),
+        taskLabel: timer?.activeTaskName || 'No selected task',
+        categoryLabel: timer?.activeCategoryName || 'Uncategorized',
+        categoryColor: timer?.activeCategoryColor || timer?.activeColor || accountPrimaryColor,
+        status: estimate.status,
+      };
+    };
+
+    const focusFriendPanelClassName = `rounded-[1.2rem] border px-4 py-4 shadow-[0_18px_34px_-30px_rgba(0,0,0,0.34)] ${
+      isLightTheme
+        ? 'border-slate-200/80 bg-white/[0.82]'
+        : 'border-white/[0.08] bg-white/[0.035]'
+    }`;
+    const focusFriendInsetClassName = `rounded-lg border ${
+      isLightTheme ? 'border-slate-200/80 bg-slate-50/80' : 'border-white/[0.09] bg-white/[0.04]'
+    }`;
+    const focusFriendMutedTextClassName = isLightTheme ? 'text-slate-500' : 'text-white/45';
+    const focusFriendBodyTextClassName = isLightTheme ? 'text-slate-700' : 'text-white/66';
+    const focusFriendStrongTextClassName = isLightTheme ? 'text-slate-950' : 'text-white';
+    const focusFriendInputClassName = `min-h-[2.75rem] w-full rounded-lg border px-3.5 py-2 text-sm outline-none transition-[background-color,border-color,color] duration-200 ${
+      isLightTheme
+        ? 'border-slate-200 bg-white text-slate-950 placeholder-slate-400 focus:border-slate-400'
+        : 'border-white/[0.09] bg-white/[0.045] text-white placeholder-white/25 focus:border-white/[0.18] focus:bg-white/[0.065]'
+    }`;
+    const focusFriendButtonBaseClassName = 'doro-focus-friend-button inline-flex min-h-[2.75rem] items-center justify-center gap-2 rounded-lg border px-3.5 py-2 text-center text-[10px] font-bold uppercase tracking-[0.14em] transition-[background-color,border-color,color,transform,box-shadow] duration-200 hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0';
+    const focusFriendPrimaryButtonClassName = `${focusFriendButtonBaseClassName} ${
+      isLightTheme
+        ? 'border-slate-900 bg-slate-950 text-white hover:bg-slate-800'
+        : 'border-white/[0.16] bg-white text-slate-950 hover:bg-white/88'
+    }`;
+    const focusFriendNeutralButtonClassName = `${focusFriendButtonBaseClassName} ${
+      isLightTheme
+        ? 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:text-slate-950'
+        : 'border-white/10 bg-white/[0.04] text-white/72 hover:border-white/16 hover:bg-white/[0.08] hover:text-white'
+    }`;
+    const focusFriendDangerButtonClassName = `${focusFriendButtonBaseClassName} ${
+      isLightTheme
+        ? 'border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100/70'
+        : 'border-red-400/20 bg-red-500/[0.055] text-red-100/80 hover:border-red-300/24 hover:bg-red-500/[0.1] hover:text-red-100'
+    }`;
+    const focusFriendChipClassName = `doro-focus-friend-chip rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.15em] ${
+      isLightTheme
+        ? 'border-slate-200 bg-white text-slate-600'
+        : 'border-white/10 bg-white/[0.04] text-white/62'
+    }`;
+    const focusFriendTagClassName = `rounded-full border px-3 py-1.5 text-xs font-semibold ${
+      isLightTheme
+        ? 'border-slate-200 bg-white text-slate-600'
+        : 'border-white/10 bg-white/[0.04] text-white/62'
+    }`;
+    const focusFriendIconButtonClassName = `inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0 ${
+      isLightTheme
+        ? 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-950'
+        : 'border-white/10 bg-white/[0.04] text-white/65 hover:border-white/16 hover:bg-white/[0.08] hover:text-white'
+    }`;
+
+    const renderFocusFriendRequest = (request: FocusFriendRequest, index = 0) => (
+      <div
+        key={request.id}
+        className={`doro-focus-friend-row ${focusFriendPanelClassName} flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`}
+        style={{ animationDelay: `${70 + (index * 55)}ms` }}
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${
+            isLightTheme ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-white/[0.09] bg-white/[0.045] text-white/58'
+          }`}>
+            <UserPlus size={16} strokeWidth={2.2} />
+          </div>
+          <div className="min-w-0">
+            <div className={`truncate text-sm font-bold ${focusFriendStrongTextClassName}`}>
+              {request.fromDisplayName || request.fromUsername}
+            </div>
+            <div className={`mt-1 text-xs ${focusFriendMutedTextClassName}`}>
+              @{request.fromUsername} sent a request {formatRelativeTimeFromMs(Date.parse(request.createdAt))}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+          <button
+            type="button"
+            onClick={() => handleAcceptFocusFriendRequest(request)}
+            disabled={focusFriendBusyAction !== null}
+            className={focusFriendPrimaryButtonClassName}
+            aria-label={`Accept Focus Friend request from ${request.fromUsername}`}
+          >
+            <Check size={14} strokeWidth={2.4} />
+            Accept
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDeclineFocusFriendRequest(request)}
+            disabled={focusFriendBusyAction !== null}
+            className={focusFriendDangerButtonClassName}
+            aria-label={`Decline Focus Friend request from ${request.fromUsername}`}
+          >
+            <X size={14} strokeWidth={2.4} />
+            Decline
+          </button>
+        </div>
+      </div>
+    );
+
+    const renderFocusFriendActivity = (action: FocusFriendAction, index = 0) => {
+      const isJoinRequest = action.type === 'join-request';
+      const isJoinInvite = action.type === 'join-invite';
+      const inviteSessionId = getSafeSessionId(action.sessionId);
+      const actionLabel = isJoinRequest ? 'Join request' : isJoinInvite ? 'Session invite' : 'Encouragement';
+      const iconToneClassName = isJoinRequest
+        ? isLightTheme ? 'border-sky-200 bg-sky-50 text-sky-700' : 'border-sky-300/20 bg-sky-400/12 text-sky-100'
+        : isJoinInvite
+          ? isLightTheme ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-emerald-300/20 bg-emerald-400/12 text-emerald-100'
+          : isLightTheme ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-rose-300/20 bg-rose-400/12 text-rose-100';
+      const actionIcon = isJoinRequest
+        ? <Users size={15} />
+        : isJoinInvite
+          ? <LinkIcon size={15} />
+          : <Heart size={15} />;
+
+      return (
+        <div
+          key={action.id}
+          className={`doro-focus-friend-row doro-focus-friend-activity ${focusFriendPanelClassName} flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between`}
+          style={{ animationDelay: `${95 + (index * 50)}ms` }}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border ${iconToneClassName}`}>
+                {actionIcon}
+              </div>
+              <div>
+                <div className={`text-sm font-bold leading-tight ${focusFriendStrongTextClassName}`}>
+                  {action.fromDisplayName || action.fromUsername}
+                </div>
+                <div className={`text-[11px] ${focusFriendMutedTextClassName}`}>
+                  {actionLabel} - {formatRelativeTimeFromMs(Date.parse(action.createdAt))}
+                </div>
+              </div>
+            </div>
+            <div className={`mt-3 text-sm leading-relaxed ${focusFriendBodyTextClassName}`}>
+              {action.message}
+            </div>
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end">
+            {isJoinRequest && (
+              <button
+                type="button"
+                onClick={() => handleSendFocusFriendJoinInvite(action)}
+                disabled={focusFriendBusyAction !== null}
+                className={focusFriendNeutralButtonClassName}
+                aria-label={`Send a focus session invite to ${action.fromUsername}`}
+              >
+                <Share2 size={14} strokeWidth={2.4} />
+                Invite
+              </button>
+            )}
+            {isJoinInvite && (
+              <button
+                type="button"
+                onClick={() => handleOpenFocusFriendJoinInvite(action)}
+                disabled={focusFriendBusyAction !== null || !inviteSessionId}
+                className={focusFriendPrimaryButtonClassName}
+                aria-label={`Join ${action.fromUsername}'s focus session`}
+                title={inviteSessionId ? 'Join session' : 'Invite missing session code'}
+              >
+                <LogIn size={14} strokeWidth={2.4} />
+                Join
+              </button>
+            )}
+            {!action.readAt && (
+              <button
+                type="button"
+                onClick={() => handleMarkFocusFriendActionRead(action)}
+                disabled={focusFriendBusyAction !== null}
+                className={focusFriendNeutralButtonClassName}
+                aria-label="Mark friend activity read"
+              >
+                <Check size={14} strokeWidth={2.4} />
+                Read
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const renderFocusFriendCard = (friend: FocusFriend, index = 0) => {
+      const statusMeta = getFriendStatusMeta(friend);
+      const timerMeta = getFriendTimerMeta(friend);
+      const draft = focusFriendDrafts[friend.username] || '';
+      const canRequestJoin = friend.presence.status !== 'idle' && friend.presence.status !== 'offline';
+      const friendBusy = focusFriendBusyAction?.endsWith(`:${friend.username}`) || focusFriendBusyAction === 'refresh';
+
+      return (
+        <div
+          key={friend.username}
+          className={`doro-focus-friend-card ${canRequestJoin ? 'doro-focus-friend-card-active' : ''} ${focusFriendPanelClassName} space-y-4 transition-[border-color,background-color,box-shadow,transform] duration-300 hover:-translate-y-[2px] ${isLightTheme ? 'hover:border-slate-300/70' : 'hover:border-white/14'}`}
+          style={{
+            animationDelay: `${120 + (index * 70)}ms`,
+            ['--doro-focus-friend-accent' as string]: timerMeta.categoryColor,
+          } as React.CSSProperties}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div
+                className={`doro-focus-friend-avatar flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-sm font-bold uppercase ${
+                  isLightTheme ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-white/[0.09] bg-white/[0.045] text-white/68'
+                }`}
+              >
+                {(friend.displayName || friend.username).slice(0, 1)}
+              </div>
+              <div className="min-w-0">
+                <div className={`truncate text-base font-bold leading-tight ${focusFriendStrongTextClassName}`}>
+                  {friend.displayName || friend.username}
+                </div>
+                <div className={`mt-1 truncate text-xs ${focusFriendMutedTextClassName}`}>
+                  @{friend.username} - friends since {formatDateTime(friend.friendsSince, 'recently')}
+                </div>
+              </div>
+            </div>
+            <div className={`doro-focus-friend-status ${canRequestJoin ? 'doro-focus-friend-status-live' : ''} rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.15em] ${statusMeta.className}`}>
+              {statusMeta.label}
+            </div>
+          </div>
+
+          <div className={`doro-focus-friend-timer grid gap-3 px-3.5 py-3 ${focusFriendInsetClassName} sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center`}>
+            <div className="min-w-0">
+              <div className={`flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] ${focusFriendMutedTextClassName}`}>
+                <TimerIcon size={14} />
+                {timerMeta.activeLabel}
+              </div>
+              <div className={`mt-2 font-mono text-2xl font-bold leading-none ${focusFriendStrongTextClassName}`}>
+                {timerMeta.remainingLabel}
+              </div>
+              <div className={`mt-2 text-xs ${focusFriendMutedTextClassName}`}>
+                {timerMeta.endLabel}
+              </div>
+            </div>
+            <div className="min-w-0 sm:max-w-[14rem]">
+              <div className={`text-sm font-semibold leading-snug ${focusFriendStrongTextClassName}`}>
+                {timerMeta.taskLabel}
+              </div>
+              <div
+                className="doro-focus-friend-category-pill mt-2 inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold"
+                style={{
+                  borderColor: colorToRgba(timerMeta.categoryColor, 0.26),
+                  backgroundColor: colorToRgba(timerMeta.categoryColor, isLightTheme ? 0.12 : 0.16),
+                  color: isLightTheme ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)',
+                }}
+              >
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: timerMeta.categoryColor }} />
+                <span className="truncate">{timerMeta.categoryLabel}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+            <input
+              type="text"
+              maxLength={160}
+              value={draft}
+              onChange={event => setFocusFriendDrafts(prev => ({ ...prev, [friend.username]: event.target.value }))}
+              placeholder="Send encouragement"
+              className={focusFriendInputClassName}
+            />
+            <button
+              type="button"
+              onClick={() => handleSendFocusFriendEncouragement(friend)}
+              disabled={focusFriendBusyAction !== null}
+              className={focusFriendNeutralButtonClassName}
+              aria-label={`Send encouragement to ${friend.username}`}
+            >
+              <Heart size={14} strokeWidth={2.35} />
+              Encourage
+            </button>
+            <button
+              type="button"
+              onClick={() => handleRequestFocusFriendJoin(friend)}
+              disabled={focusFriendBusyAction !== null || !canRequestJoin}
+              className={focusFriendNeutralButtonClassName}
+              aria-label={`Request to join ${friend.username}'s focus session`}
+              title={canRequestJoin ? 'Request to join' : 'No active session'}
+            >
+              <Send size={14} strokeWidth={2.35} />
+              Join
+            </button>
+            <button
+              type="button"
+              onClick={() => handleRemoveFocusFriend(friend)}
+              disabled={focusFriendBusyAction !== null || Boolean(friendBusy)}
+              className={focusFriendDangerButtonClassName}
+              aria-label={`Remove ${friend.username} from Focus Friends`}
+            >
+              <UserMinus size={14} strokeWidth={2.35} />
+              Remove
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    const unreadFriendActivityCount = safeFocusFriendInbox.filter(action => !action.readAt).length;
+    const activeFocusFriendCount = safeFocusFriends.filter(friend => friend.presence.status !== 'idle' && friend.presence.status !== 'offline').length;
+    const pendingFocusFriendCount = safeIncomingFocusFriendRequests.length + safeOutgoingFocusFriendRequests.length;
+
     return (
       <div className="p-4 md:p-8 space-y-5">
         {(accountError || accountMessage) && (
@@ -2447,6 +3076,146 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             <div className={accountOverviewGridClassName}>
               {weeklyStatCards.map((card, index) => renderAccountOverviewCard(card, index))}
             </div>
+          </div>
+        </div>
+
+        <div
+          className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
+          style={accountOverviewSectionStyle}
+        >
+          <div className="doro-focus-friends-section relative space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className={overviewKickerClassName}>Account</div>
+                <div className={`${overviewHeadingClassName} mt-0 flex items-center gap-2`}>
+                  <Users size={18} />
+                  Focus Friends
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className={focusFriendChipClassName}>
+                  {safeFocusFriends.length} Friends
+                </div>
+                <div className={focusFriendChipClassName}>
+                  {activeFocusFriendCount} Active
+                </div>
+                {pendingFocusFriendCount > 0 && (
+                  <div className={focusFriendChipClassName}>
+                    {pendingFocusFriendCount} Pending
+                  </div>
+                )}
+                {unreadFriendActivityCount > 0 && (
+                  <div className={focusFriendChipClassName}>
+                    {unreadFriendActivityCount} New
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleRefreshFocusFriends}
+                  disabled={isPreviewAccount || focusFriendBusyAction !== null || focusFriendsLoading}
+                  className={focusFriendIconButtonClassName}
+                  aria-label="Refresh Focus Friends"
+                  title="Refresh"
+                >
+                  <RefreshCw size={16} className={focusFriendsLoading ? 'animate-spin' : ''} />
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleSendFocusFriendRequest} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div className={focusFriendInsetClassName}>
+                <input
+                  type="text"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  maxLength={32}
+                  value={focusFriendUsernameInput}
+                  onChange={event => setFocusFriendUsernameInput(event.target.value)}
+                  placeholder="Friend username"
+                  className={`min-h-[2.75rem] w-full border-0 bg-transparent px-3.5 py-2 text-sm outline-none ${
+                    isLightTheme ? 'text-slate-950 placeholder:text-slate-400' : 'text-white placeholder:text-white/25'
+                  }`}
+                  disabled={isPreviewAccount || focusFriendBusyAction !== null}
+                  aria-invalid={Boolean(focusFriendUsernameValidationMessage)}
+                />
+                <div className={`border-t px-3.5 py-2 text-[11px] leading-relaxed ${
+                  isLightTheme ? 'border-slate-200/80 text-slate-500' : 'border-white/[0.08] text-white/45'
+                }`}>
+                  {focusFriendUsernameValidationMessage
+                    ? focusFriendUsernameValidationMessage
+                    : normalizedFocusFriendUsernameInput && normalizedFocusFriendUsernameInput !== focusFriendUsernameInput.trim()
+                      ? `Will request ${normalizedFocusFriendUsernameInput}.`
+                      : 'Requests become mutual friends after they accept.'}
+                </div>
+              </div>
+              <button
+                type="submit"
+                disabled={isPreviewAccount || focusFriendBusyAction !== null || !normalizedFocusFriendUsernameInput || Boolean(focusFriendUsernameValidationMessage)}
+                className={focusFriendPrimaryButtonClassName}
+              >
+                <UserPlus size={16} />
+                Add Friend
+              </button>
+            </form>
+
+            {isPreviewAccount && (
+              <div className={`${focusFriendInsetClassName} px-4 py-3 text-sm leading-relaxed ${focusFriendBodyTextClassName}`}>
+                Focus Friends use cloud accounts, so the preview account keeps this panel local-only.
+              </div>
+            )}
+
+            {safeIncomingFocusFriendRequests.length > 0 && (
+              <div className="space-y-2">
+                <div className={overviewCardLabelClassName}>Friend Requests</div>
+                {safeIncomingFocusFriendRequests.map(renderFocusFriendRequest)}
+              </div>
+            )}
+
+            {safeOutgoingFocusFriendRequests.length > 0 && (
+              <div className={focusFriendPanelClassName}>
+                <div className={overviewCardLabelClassName}>Pending Sent</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {safeOutgoingFocusFriendRequests.map(request => (
+                    <span
+                      key={request.id}
+                      className={focusFriendTagClassName}
+                    >
+                      @{request.toUsername}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-3 xl:grid-cols-2">
+              {safeFocusFriends.length > 0 ? (
+                safeFocusFriends.map(renderFocusFriendCard)
+              ) : (
+                <div className={`${focusFriendPanelClassName} text-sm leading-relaxed ${focusFriendBodyTextClassName}`}>
+                  Add a Focus Friend to see their current task, category, and timer here.
+                </div>
+              )}
+            </div>
+
+            {safeFocusFriendInbox.length > 0 && (
+              <details className={focusFriendPanelClassName} open={unreadFriendActivityCount > 0}>
+                <summary className="list-none cursor-pointer select-none [&::-webkit-details-marker]:hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Bell size={16} className={isLightTheme ? 'text-slate-500' : 'text-white/55'} />
+                      <div className={overviewCardLabelClassName}>Friend Activity</div>
+                    </div>
+                    <div className={`text-xs font-semibold ${focusFriendMutedTextClassName}`}>
+                      {safeFocusFriendInbox.length} total
+                    </div>
+                  </div>
+                </summary>
+                <div className="mt-3 grid gap-2">
+                  {safeFocusFriendInbox.slice(0, 6).map(renderFocusFriendActivity)}
+                </div>
+              </details>
+            )}
           </div>
         </div>
 
@@ -2568,8 +3337,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const renderAccountSignedOut = () => {
     const authTitle = authMode === 'register' ? 'Create Account' : 'Sign In';
     const authDescription = authMode === 'register'
-      ? 'Create an account to track statistics and save across devices.'
-      : 'Sign in to track statistics and save across devices.';
+      ? 'Create an account to track statistics and save across devices. Debug: master/master or master2/master2.'
+      : 'Sign in to track statistics and save across devices. Debug: master/master or master2/master2.';
 
     return (
       <div className="p-4 md:p-8 min-h-[520px]">
@@ -2625,7 +3394,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               <input
                 type="password"
                 autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
-                minLength={isPreviewAccountAuth ? undefined : ACCOUNT_PASSWORD_MIN_LENGTH}
+                minLength={allowsShortAuthPassword ? undefined : ACCOUNT_PASSWORD_MIN_LENGTH}
                 maxLength={ACCOUNT_PASSWORD_MAX_LENGTH}
                 value={passwordInput}
                 onChange={event => setPasswordInput(event.target.value)}
@@ -2635,7 +3404,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 disabled={authBusy}
               />
               <div className="mt-2 min-h-[1.25rem] text-[11px] leading-relaxed text-white/50">
-                {passwordValidationMessage || (isPreviewAccountAuth ? 'Preview account password accepted.' : 'Use at least 8 characters.')}
+                {passwordValidationMessage || (
+                  isPreviewAccountAuth
+                    ? 'Preview account password accepted.'
+                    : isDebugFocusFriendAuth
+                      ? 'Focus Friends debug account password accepted.'
+                      : 'Use at least 8 characters. Debug: master/master or master2/master2.'
+                )}
               </div>
             </div>
 
@@ -3725,9 +4500,153 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           animation: doro-account-stat-rail 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
           will-change: transform, opacity;
         }
+        @keyframes doro-focus-friend-section-in {
+          0% {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        @keyframes doro-focus-friend-card-in {
+          0% {
+            opacity: 0;
+            transform: translateY(16px) scale(0.985);
+            filter: saturate(0.92);
+          }
+          62% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.003);
+            filter: saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        @keyframes doro-focus-friend-live-pulse {
+          0%, 100% {
+            box-shadow: 0 0 0 0 color-mix(in srgb, var(--doro-focus-friend-accent, #60a5fa) 0%, transparent);
+          }
+          45% {
+            box-shadow: 0 0 0 5px color-mix(in srgb, var(--doro-focus-friend-accent, #60a5fa) 15%, transparent);
+          }
+        }
+        @keyframes doro-focus-friend-timer-sheen {
+          0% {
+            transform: translateX(-120%) skewX(-18deg);
+            opacity: 0;
+          }
+          20% {
+            opacity: 0.46;
+          }
+          58%, 100% {
+            transform: translateX(160%) skewX(-18deg);
+            opacity: 0;
+          }
+        }
+        @keyframes doro-focus-friend-chip-in {
+          0% {
+            opacity: 0;
+            transform: translateY(5px) scale(0.96);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-focus-friends-section {
+          animation: doro-focus-friend-section-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-focus-friend-row,
+        .doro-focus-friend-card {
+          animation: doro-focus-friend-card-in 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+          will-change: transform, opacity, filter;
+        }
+        .doro-focus-friend-card {
+          position: relative;
+          isolation: isolate;
+        }
+        .doro-focus-friend-card::before {
+          content: '';
+          pointer-events: none;
+          position: absolute;
+          inset: 0;
+          z-index: 0;
+          border-radius: inherit;
+          background:
+            linear-gradient(
+              135deg,
+              color-mix(in srgb, var(--doro-focus-friend-accent, #60a5fa) 22%, transparent),
+              transparent 32%,
+              transparent 72%,
+              color-mix(in srgb, var(--doro-focus-friend-accent, #60a5fa) 13%, transparent)
+            );
+          opacity: 0;
+          transition: opacity 260ms ease;
+        }
+        .doro-focus-friend-card:hover::before,
+        .doro-focus-friend-card-active::before {
+          opacity: 1;
+        }
+        .doro-focus-friend-card > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-focus-friend-avatar,
+        .doro-focus-friend-category-pill,
+        .doro-focus-friend-button {
+          transform: translateZ(0);
+        }
+        .doro-focus-friend-card:hover .doro-focus-friend-avatar {
+          transform: translateY(-1px) scale(1.035);
+        }
+        .doro-focus-friend-status-live {
+          animation: doro-focus-friend-live-pulse 2.8s ease-in-out infinite;
+        }
+        .doro-focus-friend-timer {
+          position: relative;
+          overflow: hidden;
+        }
+        .doro-focus-friend-timer::after {
+          content: '';
+          pointer-events: none;
+          position: absolute;
+          inset-block: 0;
+          left: 0;
+          z-index: 0;
+          width: 38%;
+          background: linear-gradient(
+            90deg,
+            transparent,
+            color-mix(in srgb, var(--doro-focus-friend-accent, #60a5fa) 16%, white 4%),
+            transparent
+          );
+          animation: doro-focus-friend-timer-sheen 4.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+          animation-delay: 1.2s;
+        }
+        .doro-focus-friend-timer > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-focus-friend-chip {
+          animation: doro-focus-friend-chip-in 340ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+        }
+        .doro-focus-friend-button:hover:not(:disabled) {
+          box-shadow: 0 14px 26px -24px rgba(0, 0, 0, 0.72);
+        }
         @media (prefers-reduced-motion: reduce) {
           .doro-account-stat-card,
           .doro-account-stat-rail,
+          .doro-focus-friends-section,
+          .doro-focus-friend-row,
+          .doro-focus-friend-card,
+          .doro-focus-friend-chip,
+          .doro-focus-friend-status-live,
+          .doro-focus-friend-timer::after,
           .doro-auto-start-sound-panel,
           .doro-auto-start-sound-panel-in,
           .doro-auto-start-sound-panel-out,

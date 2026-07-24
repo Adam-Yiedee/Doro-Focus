@@ -52,7 +52,7 @@ export interface AccountInsightSession {
   startMs: number;
   endMs: number | null;
   closed: boolean;
-  activeDurationMinutes: number;
+  totalDurationMinutes: number;
 }
 
 export interface AccountDailyTrendPoint {
@@ -142,6 +142,11 @@ const isNeutralGraceWindow = (entry: LogEntry) => {
 
 const isSessionEndLog = (entry: LogEntry) => {
   return (entry.reason || '').trim().toLowerCase() === 'session end';
+};
+
+const isTotalSessionDurationLog = (entry: LogEntry) => {
+  if (entry.type === 'break') return true;
+  return entry.type === 'work' && !isPauseCreditedWorkLog(entry);
 };
 
 const startOfLocalDay = (ms: number) => {
@@ -249,7 +254,7 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
   const sessions: AccountInsightSession[] = [];
   let currentStartMs: number | null = null;
   let currentLastEndMs: number | null = null;
-  let currentActiveDurationMs = 0;
+  let currentTotalDurationMs = 0;
   let pendingStartMs: number | null = null;
 
   windows.forEach((window) => {
@@ -259,12 +264,12 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
           startMs: currentStartMs,
           endMs: window.startMs,
           closed: true,
-          activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
+          totalDurationMinutes: Math.max(1, currentTotalDurationMs / 60_000),
         });
       }
       currentStartMs = null;
       currentLastEndMs = null;
-      currentActiveDurationMs = 0;
+      currentTotalDurationMs = 0;
       pendingStartMs = window.endMs;
       return;
     }
@@ -278,18 +283,20 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
     }
     pendingStartMs = null;
     currentLastEndMs = Math.max(currentLastEndMs ?? window.endMs, window.endMs);
-    currentActiveDurationMs += Math.max(0, window.endMs - window.startMs);
+    if (isTotalSessionDurationLog(window.entry)) {
+      currentTotalDurationMs += Math.max(0, window.endMs - window.startMs);
+    }
 
     if (isSessionEndLog(window.entry) && currentStartMs !== null && currentLastEndMs > currentStartMs) {
       sessions.push({
         startMs: currentStartMs,
         endMs: currentLastEndMs,
         closed: true,
-        activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
+        totalDurationMinutes: Math.max(1, currentTotalDurationMs / 60_000),
       });
       currentStartMs = null;
       currentLastEndMs = null;
-      currentActiveDurationMs = 0;
+      currentTotalDurationMs = 0;
     }
   });
 
@@ -298,7 +305,7 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
       startMs: currentStartMs,
       endMs: currentLastEndMs,
       closed: false,
-      activeDurationMinutes: Math.max(1, currentActiveDurationMs / 60_000),
+      totalDurationMinutes: Math.max(1, currentTotalDurationMs / 60_000),
     });
   }
 
@@ -559,7 +566,7 @@ export const computeAccountInsights = ({
       closed: session.closed,
       startMinutes,
       endMinutes: Math.max(startMinutes + 1, endMinutes),
-      durationMinutes: Math.max(1, session.activeDurationMinutes),
+      durationMinutes: Math.max(1, session.totalDurationMinutes),
     });
   });
 

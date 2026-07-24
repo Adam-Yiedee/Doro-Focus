@@ -184,6 +184,32 @@ describe('computeAccountInsights', () => {
     expect(insights.weekComparison.pomoDelta).toBe(-1);
   });
 
+  it('keeps focus minutes separate from total session duration in session insights', () => {
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-14T00:00:00',
+      nowMs: Date.parse('2026-01-14T23:00:00'),
+      categories,
+      logs: [
+        makeLog({
+          start: '2026-01-14T09:00:00',
+          end: '2026-01-14T09:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-01-14T09:25:00',
+          end: '2026-01-14T09:35:00',
+          reason: 'Session End',
+        }),
+      ],
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(25, 5);
+    expect(insights.sessions[0].totalDurationMinutes).toBeCloseTo(35, 5);
+    expect(insights.sessionLanes.find((lane) => lane.dateKey === '2026-01-14')?.sessions[0].durationMinutes).toBeCloseTo(35, 5);
+  });
+
   it('converts mini-pomodoro work minutes to standard pomodoros in today and trend stats', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({

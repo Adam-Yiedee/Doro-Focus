@@ -48,11 +48,46 @@ describe('calculateLifetimeStatsFromData', () => {
     ], categories);
 
     expect(stats.totalFocusHours).toBeCloseTo(25 / 60, 5);
+    expect(stats.totalSessionHours).toBeCloseTo(25 / 60, 5);
     expect(stats.totalPomos).toBe(1);
     expect(stats.totalSessions).toBe(0);
     expect(stats.manualFocusHours).toBe(0);
     expect(stats.activeDays).toBe(1);
     expect(stats.categoryBreakdown).toEqual({ Writing: 25 });
+  });
+
+  it('keeps focus time separate from total session time that includes breaks', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        reason: 'Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        type: 'break',
+        start: '2026-03-12T09:25:00.000Z',
+        end: '2026-03-12T09:35:00.000Z',
+        reason: 'Break Complete',
+      }),
+      makeLog({
+        type: 'allpause',
+        start: '2026-03-12T09:35:00.000Z',
+        end: '2026-03-12T09:50:00.000Z',
+        reason: 'Paused',
+      }),
+      makeLog({
+        start: '2026-03-12T10:00:00.000Z',
+        end: '2026-03-12T10:30:00.000Z',
+        reason: 'Manual Focus',
+        source: 'manual',
+        categoryId: 2,
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(55 / 60, 5);
+    expect(stats.totalSessionHours).toBeCloseTo(35 / 60, 5);
+    expect(stats.manualFocusHours).toBeCloseTo(30 / 60, 5);
   });
 
   it('tracks manually logged focus as focus time, manual focus, and standard pomos', () => {
@@ -204,6 +239,7 @@ describe('calculateLifetimeStatsFromData', () => {
     const stats = calculateLifetimeStatsFromData(sessions, [], categories);
 
     expect(stats.totalFocusHours).toBeCloseTo(75 / 60, 5);
+    expect(stats.totalSessionHours).toBeCloseTo(90 / 60, 5);
     expect(stats.totalPomos).toBe(3);
     expect(stats.totalSessions).toBe(1);
     expect(stats.categoryBreakdown).toEqual({ Study: 75 });

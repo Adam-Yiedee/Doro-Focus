@@ -3,6 +3,7 @@ import { Category, LogEntry } from '../types';
 import {
   buildEndSessionStats,
   getEndSessionPendingActivityWindow,
+  getSessionTaskCompletionIdsFromLogs,
 } from './sessionStats';
 
 const categories: Category[] = [
@@ -177,5 +178,68 @@ describe('buildEndSessionStats', () => {
     expect(stats.totalWorkMinutes).toBe(21);
     expect(stats.totalBreakMinutes).toBe(0);
     expect(stats.categoryStats).toEqual({ 'Deep Work': 21 });
+  });
+
+  it('does not count timer logs after the session end snapshot', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:05:00.000Z',
+          end: '2026-07-18T09:30:00.000Z',
+          duration: 25 * 60,
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T10:05:00.000Z',
+          end: '2026-07-18T10:30:00.000Z',
+          duration: 25 * 60,
+          categoryId: 2,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:45:00.000Z',
+      categories,
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(25);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 25 });
+  });
+
+  it('finds unique task completions inside the session window only', () => {
+    const completionIds = getSessionTaskCompletionIdsFromLogs([
+      makeLog({
+        type: 'task-complete',
+        start: '2026-07-18T09:10:00.000Z',
+        end: '2026-07-18T09:10:00.000Z',
+        duration: 0,
+        task: { id: 17, name: 'Draft' },
+      }),
+      makeLog({
+        type: 'task-complete',
+        start: '2026-07-18T09:12:00.000Z',
+        end: '2026-07-18T09:12:00.000Z',
+        duration: 0,
+        task: { id: 17, name: 'Draft again' },
+      }),
+      makeLog({
+        type: 'task-complete',
+        start: '2026-07-18T10:05:00.000Z',
+        end: '2026-07-18T10:05:00.000Z',
+        duration: 0,
+        task: { id: 18, name: 'Future task' },
+      }),
+      makeLog({
+        type: 'task-complete',
+        start: '2026-07-18T08:55:00.000Z',
+        end: '2026-07-18T08:55:00.000Z',
+        duration: 0,
+        task: { id: 19, name: 'Old task' },
+      }),
+    ], '2026-07-18T09:00:00.000Z', '2026-07-18T09:45:00.000Z');
+
+    expect(Array.from(completionIds)).toEqual([17]);
   });
 });
