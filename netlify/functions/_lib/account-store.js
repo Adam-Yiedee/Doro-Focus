@@ -24,6 +24,7 @@ const FOCUS_FRIENDS_LIMIT = 200;
 const FOCUS_FRIEND_REQUEST_LIMIT = 100;
 const FOCUS_FRIEND_INBOX_LIMIT = 50;
 const FOCUS_FRIEND_OFFLINE_AFTER_MS = 1000 * 60 * 60 * 12;
+const localDevStores = new Map();
 
 const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
   {
@@ -363,11 +364,53 @@ export const validatePassword = (value) => {
   return null;
 };
 
+const createLocalDevStore = (name) => {
+  if (!localDevStores.has(name)) {
+    localDevStores.set(name, new Map());
+  }
+  const state = localDevStores.get(name);
+  return {
+    async get(key, options = {}) {
+      if (!state.has(key)) return null;
+      const value = structuredClone(state.get(key));
+      if (options?.type === 'json') return value;
+      return JSON.stringify(value);
+    },
+    async getJSON(key) {
+      return state.has(key) ? structuredClone(state.get(key)) : null;
+    },
+    async set(key, value) {
+      try {
+        state.set(key, JSON.parse(value));
+      } catch {
+        state.set(key, value);
+      }
+    },
+    async setJSON(key, value) {
+      state.set(key, structuredClone(value));
+    },
+    async delete(key) {
+      state.delete(key);
+    },
+  };
+};
+
+const getConfiguredStore = (name) => {
+  try {
+    return getStore(name);
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      return createLocalDevStore(name);
+    }
+    throw error;
+  }
+};
+
 const getStores = () => ({
-  usersStore: getStore(USERS_STORE_NAME),
-  dataStore: getStore(DATA_STORE_NAME),
-  sessionsStore: getStore(SESSIONS_STORE_NAME),
-  focusFriendsStore: getStore(FOCUS_FRIENDS_STORE_NAME),
+  usersStore: getConfiguredStore(USERS_STORE_NAME),
+  dataStore: getConfiguredStore(DATA_STORE_NAME),
+  sessionsStore: getConfiguredStore(SESSIONS_STORE_NAME),
+  focusFriendsStore: getConfiguredStore(FOCUS_FRIENDS_STORE_NAME),
 });
 
 const getBlobJSON = async (store, key) => {

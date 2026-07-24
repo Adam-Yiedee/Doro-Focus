@@ -48,7 +48,7 @@ type AllTasksCelebration = {
   exiting: boolean;
 };
 type PausableTimeout = {
-  timeout: ReturnType<typeof setTimeout> | null;
+  timeout: number | null;
   remainingMs: number;
   startedAtMs: number | null;
 };
@@ -270,7 +270,7 @@ const Layout: React.FC = () => {
     todayKey: null,
     message: null,
   });
-  const allTasksCelebrationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const allTasksCelebrationTimeoutRef = useRef<number | null>(null);
   const queuedAllTasksCelebrationIdRef = useRef<number | null>(null);
   const previousOpenBoardTaskCountRef = useRef<number | null>(null);
   const previousTaskCheckedMapRef = useRef<Map<number, boolean>>(new Map());
