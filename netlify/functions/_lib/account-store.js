@@ -45,6 +45,33 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     taskName: 'Test friend activity',
     workTime: 1180,
   },
+  {
+    username: 'master3',
+    password: 'master3',
+    displayName: 'Master 3',
+    categoryName: 'Deep Work',
+    categoryColor: '#FBBF24',
+    taskName: 'Review request flow',
+    workTime: 960,
+  },
+  {
+    username: 'master4',
+    password: 'master4',
+    displayName: 'Master 4',
+    categoryName: 'Pair Focus',
+    categoryColor: '#A78BFA',
+    taskName: 'Check session invites',
+    workTime: 720,
+  },
+  {
+    username: 'master5',
+    password: 'master5',
+    displayName: 'Master 5',
+    categoryName: 'Encouragement',
+    categoryColor: '#FB7185',
+    taskName: 'Send friend nudges',
+    workTime: 540,
+  },
 ];
 
 const DEFAULT_SETTINGS = {
@@ -1063,6 +1090,14 @@ const ensureDebugFocusFriendRelation = async (leftRecord, rightRecord) => {
   ]);
 };
 
+const ensureDebugFocusFriendNetwork = async (records) => {
+  for (let leftIndex = 0; leftIndex < records.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < records.length; rightIndex += 1) {
+      await ensureDebugFocusFriendRelation(records[leftIndex], records[rightIndex]);
+    }
+  }
+};
+
 export const ensureDebugFocusFriendAccounts = async () => {
   const records = await Promise.all(DEBUG_FOCUS_FRIEND_ACCOUNTS.map(upsertDebugFocusFriendUser));
   if (records.some((record) => !record)) {
@@ -1071,7 +1106,7 @@ export const ensureDebugFocusFriendAccounts = async () => {
     throw error;
   }
   await Promise.all(records.map((record, index) => ensureDebugAccountData(record, DEBUG_FOCUS_FRIEND_ACCOUNTS[index])));
-  await ensureDebugFocusFriendRelation(records[0], records[1]);
+  await ensureDebugFocusFriendNetwork(records);
   return records;
 };
 

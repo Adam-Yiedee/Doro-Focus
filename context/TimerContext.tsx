@@ -338,6 +338,9 @@ const PREVIEW_AUTH_TOKEN = 'doro_preview_master_token';
 const DEBUG_FOCUS_FRIEND_CREDENTIALS: Record<string, string> = {
   master: 'master',
   master2: 'master2',
+  master3: 'master3',
+  master4: 'master4',
+  master5: 'master5',
 };
 
 const GROUP_EVENT_TYPES: GroupEventType[] = [

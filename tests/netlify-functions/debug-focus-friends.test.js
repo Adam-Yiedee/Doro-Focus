@@ -67,7 +67,7 @@ describe('debug Focus Friends accounts', () => {
     stores.clear();
   });
 
-  it('seeds master and master2 as mutual Focus Friends on login', async () => {
+  it('seeds master debug accounts as mutual Focus Friends on login', async () => {
     const masterResponse = await authLoginHandler(makeLoginRequest('master', 'master'));
     expect(masterResponse.status).toBe(200);
     const masterPayload = await masterResponse.json();
@@ -82,6 +82,18 @@ describe('debug Focus Friends accounts', () => {
     expect(master2Response.status).toBe(200);
     const master2Payload = await master2Response.json();
     expect(master2Payload.user.username).toBe('master2');
+
+    const extraDebugPayloads = await Promise.all(['master3', 'master4', 'master5'].map(async (username) => {
+      const response = await authLoginHandler(makeLoginRequest(username, username));
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      expect(payload.user.username).toBe(username);
+      expect(payload.accountData).toMatchObject({
+        timerStarted: true,
+        isIdle: false,
+      });
+      return payload;
+    }));
 
     const masterFriendsResponse = await focusFriendsHandler(makeAuthedRequest(masterPayload.token));
     expect(masterFriendsResponse.status).toBe(200);
@@ -98,6 +110,39 @@ describe('debug Focus Friends accounts', () => {
           },
         },
       },
+      {
+        username: 'master3',
+        displayName: 'Master 3',
+        presence: {
+          status: 'focusing',
+          timer: {
+            activeTaskName: 'Review request flow',
+            activeCategoryName: 'Deep Work',
+          },
+        },
+      },
+      {
+        username: 'master4',
+        displayName: 'Master 4',
+        presence: {
+          status: 'focusing',
+          timer: {
+            activeTaskName: 'Check session invites',
+            activeCategoryName: 'Pair Focus',
+          },
+        },
+      },
+      {
+        username: 'master5',
+        displayName: 'Master 5',
+        presence: {
+          status: 'focusing',
+          timer: {
+            activeTaskName: 'Send friend nudges',
+            activeCategoryName: 'Encouragement',
+          },
+        },
+      },
     ]);
 
     const master2FriendsResponse = await focusFriendsHandler(makeAuthedRequest(master2Payload.token));
@@ -108,6 +153,28 @@ describe('debug Focus Friends accounts', () => {
         username: 'master',
         displayName: 'Master',
       },
+      {
+        username: 'master3',
+        displayName: 'Master 3',
+      },
+      {
+        username: 'master4',
+        displayName: 'Master 4',
+      },
+      {
+        username: 'master5',
+        displayName: 'Master 5',
+      },
+    ]);
+
+    const master5FriendsResponse = await focusFriendsHandler(makeAuthedRequest(extraDebugPayloads[2].token));
+    expect(master5FriendsResponse.status).toBe(200);
+    const master5Friends = await master5FriendsResponse.json();
+    expect(master5Friends.friends.map((friend) => friend.username)).toEqual([
+      'master',
+      'master2',
+      'master3',
+      'master4',
     ]);
 
     const encouragementResponse = await focusFriendsHandler(makeAuthedRequest(master2Payload.token, 'POST', {
@@ -146,7 +213,7 @@ describe('debug Focus Friends accounts', () => {
   });
 
   it('reserves debug account usernames for the seeded fixtures', async () => {
-    const response = await authRegisterHandler(makeRegisterRequest('master2', 'password123'));
+    const response = await authRegisterHandler(makeRegisterRequest('master5', 'password123'));
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
