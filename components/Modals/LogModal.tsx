@@ -362,6 +362,25 @@ const formatRelativeTimeFromMs = (timestamp: unknown) => {
   return formatTimestampDateTime(safeTimestamp, 'Never');
 };
 
+const formatFocusFriendSentenceRelativeTimeFromMs = (timestamp: unknown) => {
+  const safeTimestamp = getSafeTimestamp(timestamp);
+  if (safeTimestamp === null) return null;
+  const diffMs = Date.now() - safeTimestamp;
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 'just now';
+
+  const diffMinutes = Math.floor(diffMs / 60_000);
+  if (diffMinutes < 1) return 'just now';
+  if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? '' : 's'} ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+
+  return formatTimestampDateTime(safeTimestamp, 'Never');
+};
+
 const formatCompactHours = (hours: number) => {
   const safe = Math.max(0, hours);
   return `${safe.toFixed(1)}h`;
@@ -3130,10 +3149,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       return `Last active ${relative}`;
     };
 
+    const getFocusFriendLastActiveDetail = (friend: FocusFriend) => {
+      const relative = formatFocusFriendSentenceRelativeTimeFromMs(friend.presence.updatedAtMs);
+      if (!relative || relative === 'Never') return 'has no recent activity';
+      return `Last Active ${relative}`;
+    };
+
     const getFriendTimerMeta = (friend: FocusFriend) => {
       const timer = friend.presence.timer;
       const estimate = getTimerShareEstimateFromSpectatorState(timer, focusFriendsNowMs);
-      const isBreak = friend.presence.status === 'break' || timer?.activeMode === 'break';
+      const isBreak = friend.presence.status === 'break' || timer?.runtime?.phase === 'running-break' || timer?.activeMode === 'break';
       const pomoMeta = getFocusFriendPomoMeta(friend);
       const inactiveDetailLabel = friend.presence.status === 'idle' || friend.presence.status === 'offline'
         ? getFocusFriendLastActiveLabel(friend)
@@ -3143,9 +3168,53 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         detailLabel: inactiveDetailLabel || formatTimerShareEndLabel(estimate.endMs, estimate.status === 'idle' ? 'Not running' : 'No end time'),
         taskLabel: isBreak ? '' : timer?.activeTaskName || 'No selected task',
         categoryLabel: isBreak ? 'Break' : timer?.activeCategoryName || 'Uncategorized',
-        categoryColor: isBreak ? PRESET_COLORS[1] : timer?.activeCategoryColor || timer?.activeColor || accountPrimaryColor,
+        categoryColor: isBreak ? PRESET_COLORS[1] : timer?.activeColor || timer?.activeCategoryColor || accountPrimaryColor,
         pomoLabel: pomoMeta.displayLabel,
+        isBreak,
         status: estimate.status,
+      };
+    };
+
+    const getFocusFriendActivityMeta = (friend: FocusFriend, timerMeta: ReturnType<typeof getFriendTimerMeta>) => {
+      const displayName = friend.displayName || friend.username;
+      if (friend.presence.status === 'idle' || friend.presence.status === 'offline') {
+        return {
+          displayName,
+          actionLabel: getFocusFriendLastActiveDetail(friend),
+          targetLabel: '',
+        };
+      }
+      if (friend.presence.status === 'break' || timerMeta.isBreak) {
+        return {
+          displayName,
+          actionLabel: 'is taking a break',
+          targetLabel: '',
+        };
+      }
+      if (friend.presence.status === 'paused') {
+        return {
+          displayName,
+          actionLabel: 'paused their timer',
+          targetLabel: '',
+        };
+      }
+      if (friend.presence.status === 'grace') {
+        return {
+          displayName,
+          actionLabel: 'is wrapping up',
+          targetLabel: '',
+        };
+      }
+
+      const focusTarget = timerMeta.categoryLabel && timerMeta.categoryLabel !== 'Uncategorized'
+        ? timerMeta.categoryLabel
+        : timerMeta.taskLabel && timerMeta.taskLabel !== 'No selected task'
+          ? timerMeta.taskLabel
+          : 'a focus session';
+      return {
+        displayName,
+        actionLabel: 'is working on',
+        targetLabel: focusTarget,
       };
     };
 
@@ -3153,6 +3222,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       isLightTheme
         ? 'border-slate-200/75 bg-white/72 hover:border-slate-300/80 hover:bg-white'
         : 'border-white/[0.075] bg-white/[0.026] hover:border-white/[0.12] hover:bg-white/[0.045]'
+    }`;
+    const focusFriendDiscordRowClassName = `doro-focus-friend-item doro-focus-friend-card doro-focus-friend-discord-row group rounded-lg px-2.5 py-2 transition-[background-color,transform] duration-160 ${
+      isLightTheme ? 'hover:bg-slate-100/78' : 'hover:bg-white/[0.055]'
     }`;
     const focusFriendInsetClassName = `rounded-lg border ${
       isLightTheme ? 'border-slate-200/75 bg-white/72' : 'border-white/[0.075] bg-white/[0.026]'
@@ -3303,67 +3375,98 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const renderFocusFriendCard = (friend: FocusFriend, index = 0) => {
       const timerMeta = getFriendTimerMeta(friend);
       const canRequestJoin = friend.presence.status !== 'idle' && friend.presence.status !== 'offline';
+      const activityMeta = getFocusFriendActivityMeta(friend, timerMeta);
+      const activityLine = `${activityMeta.actionLabel.replace(/^is\s+/, '')}${activityMeta.targetLabel ? ` ${activityMeta.targetLabel}` : ''}`;
       const encouragementOptions = focusFriendEncouragementOptions[friend.username] || [];
       const encouragementMenuOpen = focusFriendEncouragementMenuUsername === friend.username;
       const encouragementConfirmationVisible = focusFriendEncouragementConfirmation?.username === friend.username;
+      const displayInitial = activityMeta.displayName.trim().slice(0, 1) || friend.username.slice(0, 1) || '?';
+      const friendAccentColor = canRequestJoin
+        ? timerMeta.categoryColor
+        : colorToRgba(timerMeta.categoryColor, isLightTheme ? 0.62 : 0.46);
 
       return (
         <div
           key={friend.username}
-          className={`${focusFriendRowClassName} doro-focus-friend-card ${canRequestJoin ? 'doro-focus-friend-card-active' : ''} ${encouragementMenuOpen ? 'doro-focus-friend-card-menu-open' : ''} group outline-none`}
+          className={`${focusFriendDiscordRowClassName} ${canRequestJoin ? 'doro-focus-friend-card-active' : 'doro-focus-friend-card-inactive'} ${encouragementMenuOpen ? 'doro-focus-friend-card-menu-open' : ''} outline-none`}
           tabIndex={0}
           style={{
             animationDelay: `${110 + (index * 45)}ms`,
             ['--doro-focus-friend-accent' as string]: timerMeta.categoryColor,
-            borderLeftColor: colorToRgba(timerMeta.categoryColor, canRequestJoin ? 0.55 : 0.22),
-            borderLeftWidth: '3px',
           } as React.CSSProperties}
         >
-          <div className="grid gap-3 md:grid-cols-[minmax(12rem,0.75fr)_minmax(16rem,1fr)_auto] md:items-center">
-            <div className="flex min-w-0 items-center gap-3">
+          <div className="grid min-w-0 grid-cols-[2.6rem_minmax(0,1fr)_auto] items-center gap-2.5">
+            <div className="relative h-10 w-10 shrink-0">
               <div
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-bold uppercase ${
-                  isLightTheme ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-white/[0.08] bg-white/[0.035] text-white/68'
+                className={`flex h-10 w-10 items-center justify-center rounded-full border text-sm font-black uppercase shadow-[0_14px_28px_-24px_rgba(0,0,0,0.72)] ${
+                  isLightTheme ? 'border-slate-200 bg-slate-100 text-slate-600' : 'border-white/[0.07] bg-white/[0.055] text-white/72'
                 }`}
+                style={{
+                  color: friendAccentColor,
+                  backgroundColor: colorToRgba(timerMeta.categoryColor, canRequestJoin ? (isLightTheme ? 0.12 : 0.14) : (isLightTheme ? 0.065 : 0.075)),
+                  borderColor: colorToRgba(timerMeta.categoryColor, canRequestJoin ? (isLightTheme ? 0.34 : 0.28) : (isLightTheme ? 0.18 : 0.14)),
+                }}
               >
-                {(friend.displayName || friend.username).slice(0, 1)}
-              </div>
-              <div className="min-w-0">
-                <div className={`truncate text-sm font-bold leading-tight ${focusFriendStrongTextClassName}`}>
-                  {friend.displayName || friend.username}
-                </div>
-                <div className={`mt-0.5 truncate text-xs ${focusFriendMutedTextClassName}`}>
-                  @{friend.username}
-                </div>
+                {displayInitial}
               </div>
             </div>
 
             <div className="min-w-0">
-              <div className={`flex min-w-0 items-center gap-2 text-sm ${focusFriendStrongTextClassName}`}>
-                <TimerIcon size={14} className={`shrink-0 ${focusFriendMutedTextClassName}`} />
-                <span className="shrink-0 font-mono font-bold">{timerMeta.remainingLabel}</span>
-                {timerMeta.pomoLabel ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                <span
+                  className={`min-w-0 max-w-full truncate text-[0.95rem] font-bold leading-snug ${
+                    canRequestJoin ? '' : isLightTheme ? 'text-slate-500' : 'text-white/34'
+                  }`}
+                  style={{
+                    color: friendAccentColor,
+                    textShadow: canRequestJoin ? `0 0 16px ${colorToRgba(timerMeta.categoryColor, 0.16)}` : undefined,
+                  }}
+                >
+                  {activityMeta.displayName}
+                </span>
+                {canRequestJoin ? (
                   <>
-                    <span className={`shrink-0 ${focusFriendMutedTextClassName}`}>/</span>
-                    <span className="shrink-0 font-medium">{timerMeta.pomoLabel}</span>
-                  </>
-                ) : null}
-                {timerMeta.taskLabel ? (
-                  <>
-                    <span className={`shrink-0 ${focusFriendMutedTextClassName}`}>/</span>
-                    <span className="truncate font-medium">{timerMeta.taskLabel}</span>
+                    <span
+                      className={`inline-flex h-5 shrink-0 items-center gap-1 rounded-[0.35rem] border px-1.5 text-[10px] font-black uppercase leading-none ${
+                        isLightTheme ? 'bg-white/78' : 'bg-white/[0.06]'
+                      }`}
+                      style={{
+                        color: timerMeta.categoryColor,
+                        borderColor: colorToRgba(timerMeta.categoryColor, isLightTheme ? 0.26 : 0.22),
+                        backgroundColor: colorToRgba(timerMeta.categoryColor, isLightTheme ? 0.08 : 0.12),
+                      }}
+                    >
+                      <TimerIcon size={11} className="opacity-70" />
+                      {timerMeta.remainingLabel}
+                    </span>
+                    {timerMeta.pomoLabel ? (
+                      <span
+                        className={`inline-flex h-5 shrink-0 items-center rounded-[0.35rem] border px-1.5 text-[10px] font-black uppercase leading-none ${
+                          isLightTheme ? 'bg-white/78' : 'bg-white/[0.06]'
+                        }`}
+                        style={{
+                          color: timerMeta.categoryColor,
+                          borderColor: colorToRgba(timerMeta.categoryColor, isLightTheme ? 0.3 : 0.26),
+                          backgroundColor: colorToRgba(timerMeta.categoryColor, isLightTheme ? 0.11 : 0.16),
+                        }}
+                      >
+                        {timerMeta.pomoLabel}
+                      </span>
+                    ) : null}
+                    {timerMeta.status !== 'running' && (
+                      <span className={`min-w-0 truncate text-xs ${focusFriendMutedTextClassName}`}>{timerMeta.detailLabel}</span>
+                    )}
                   </>
                 ) : null}
               </div>
-              <div className={`mt-1 flex min-w-0 items-center gap-2 text-xs ${focusFriendMutedTextClassName}`}>
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: timerMeta.categoryColor }} />
-                <span className="truncate">{timerMeta.categoryLabel}</span>
-                <span className="shrink-0">/</span>
-                <span className="truncate">{timerMeta.detailLabel}</span>
+              <div className={`mt-0.5 flex min-w-0 items-center gap-1.5 text-[0.78rem] font-semibold leading-tight ${
+                canRequestJoin ? focusFriendMutedTextClassName : isLightTheme ? 'text-slate-400' : 'text-white/24'
+              }`}>
+                <span className="truncate">{activityLine}</span>
               </div>
             </div>
 
-            <div className="doro-focus-friend-hover-actions flex min-w-0 flex-wrap items-center justify-start gap-2 md:justify-end">
+            <div className="doro-focus-friend-hover-actions flex min-w-0 flex-wrap items-center justify-end gap-1.5">
               <div
                 className="doro-focus-friend-encouragement relative"
                 data-focus-friend-encouragement-menu="true"
@@ -3447,6 +3550,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
     const unreadFriendActivityCount = safeFocusFriendInbox.filter(action => !action.readAt).length;
     const focusFriendAddBadgeCount = safeIncomingFocusFriendRequests.length + unreadFriendActivityCount;
+    const onlineFocusFriends = safeFocusFriends.filter(friend => friend.presence.status !== 'idle' && friend.presence.status !== 'offline');
+    const offlineFocusFriends = safeFocusFriends.filter(friend => friend.presence.status === 'idle' || friend.presence.status === 'offline');
+    const renderFocusFriendListSection = (label: string, friends: FocusFriend[], startIndex = 0) => (
+      friends.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className={`px-2 text-[0.72rem] font-black uppercase leading-none tracking-[0.06em] ${
+            isLightTheme ? 'text-slate-500' : 'text-white/38'
+          }`}>
+            {label} - {friends.length}
+          </div>
+          <div className="grid gap-0.5">
+            {friends.map((friend, index) => renderFocusFriendCard(friend, startIndex + index))}
+          </div>
+        </div>
+      ) : null
+    );
 
     return (
       <div className="p-4 md:p-8 space-y-5">
@@ -3579,9 +3698,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
 
             {focusFriendsPage === 'friends' ? (
-              <div className="grid gap-2">
+              <div className="space-y-4">
                 {safeFocusFriends.length > 0 ? (
-                  safeFocusFriends.map(renderFocusFriendCard)
+                  <>
+                    {renderFocusFriendListSection('Online', onlineFocusFriends)}
+                    {renderFocusFriendListSection('Offline', offlineFocusFriends, onlineFocusFriends.length)}
+                  </>
                 ) : (
                   <div className={`${focusFriendRowClassName} text-sm leading-relaxed ${focusFriendBodyTextClassName}`}>
                     No friends yet.
@@ -5070,6 +5192,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-focus-friend-item:hover {
           transform: translateY(-1px);
         }
+        .doro-focus-friend-discord-row {
+          min-height: 3.55rem;
+        }
+        .doro-focus-friend-discord-row:hover {
+          transform: none;
+        }
         .doro-focus-friend-card:focus {
           outline: none;
         }
@@ -5097,12 +5225,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           min-height: 2.35rem;
           padding-inline: 0.78rem;
         }
+        .doro-focus-friend-discord-row .doro-focus-friend-hover-button {
+          min-height: 2rem;
+          padding-inline: 0.58rem;
+        }
         .doro-focus-friend-icon-button {
           position: relative;
           height: 2.35rem;
           width: 2.35rem;
           min-height: 2.35rem;
           padding: 0;
+        }
+        .doro-focus-friend-discord-row .doro-focus-friend-icon-button {
+          height: 2rem;
+          width: 2rem;
+          min-height: 2rem;
+          border-radius: 0.56rem;
         }
         .doro-focus-friend-icon-button::after {
           content: attr(data-tooltip);

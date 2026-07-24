@@ -701,6 +701,7 @@ const defaultFocusFriendsData = (userId) => ({
   incomingRequests: [],
   outgoingRequests: [],
   inbox: [],
+  presence: null,
   updatedAt: new Date().toISOString(),
 });
 
@@ -758,6 +759,83 @@ const normalizeFocusFriendActionRecord = (value) => {
   };
 };
 
+const normalizeRuntimeSnapshot = (value) => {
+  if (!isRuntimeSnapshot(value)) return null;
+  const phase = value.phase === 'running-work'
+    || value.phase === 'running-break'
+    || value.phase === 'all-pause'
+    || value.phase === 'grace'
+    || value.phase === 'idle'
+    ? value.phase
+    : 'idle';
+  return {
+    version: 2,
+    updatedAtMs: Number.isFinite(Number(value.updatedAtMs)) ? Math.max(0, Number(value.updatedAtMs)) : Date.now(),
+    sourceTabId: cleanString(value.sourceTabId, 'focus-friends').slice(0, 80),
+    phase,
+    phaseStartedAtMs: value.phaseStartedAtMs === null || Number.isFinite(Number(value.phaseStartedAtMs))
+      ? (value.phaseStartedAtMs === null ? null : Math.max(0, Number(value.phaseStartedAtMs)))
+      : null,
+    phaseStartWorkTime: clampNumber(value.phaseStartWorkTime, DEFAULT_SETTINGS.workDuration),
+    phaseStartBreakTime: clampNumber(value.phaseStartBreakTime, 0),
+    phaseStartAllPauseTime: clampNumber(value.phaseStartAllPauseTime, 0),
+    phaseStartGraceTotal: clampNumber(value.phaseStartGraceTotal, 0),
+    activityStartIso: typeof value.activityStartIso === 'string' || value.activityStartIso === null
+      ? value.activityStartIso
+      : null,
+  };
+};
+
+const normalizeTimerSpectatorState = (value, fallbackHostName) => {
+  if (!value || typeof value !== 'object') return null;
+  const runtime = normalizeRuntimeSnapshot(value.runtime);
+  const updatedAtMs = Number.isFinite(Number(value.updatedAtMs))
+    ? Math.max(0, Number(value.updatedAtMs))
+    : runtime?.updatedAtMs || Date.now();
+  return {
+    version: 1,
+    hostName: cleanDisplayName(value.hostName, fallbackHostName),
+    activeMode: value.activeMode === 'break' ? 'break' : 'work',
+    timerStarted: Boolean(value.timerStarted),
+    isIdle: typeof value.isIdle === 'boolean' ? value.isIdle : true,
+    workTime: clampNumber(value.workTime, DEFAULT_SETTINGS.workDuration),
+    breakTime: clampNumber(value.breakTime, 0),
+    pomodoroCount: clampNumber(value.pomodoroCount, 0),
+    allPauseActive: Boolean(value.allPauseActive),
+    allPauseTime: clampNumber(value.allPauseTime, 0),
+    graceOpen: Boolean(value.graceOpen),
+    graceContext: value.graceContext === 'afterWork' || value.graceContext === 'afterBreak' ? value.graceContext : null,
+    activeTaskName: typeof value.activeTaskName === 'string' && value.activeTaskName.trim()
+      ? value.activeTaskName.trim().slice(0, 80)
+      : null,
+    activeCategoryName: typeof value.activeCategoryName === 'string' && value.activeCategoryName.trim()
+      ? value.activeCategoryName.trim().slice(0, 60)
+      : undefined,
+    activeCategoryColor: typeof value.activeCategoryColor === 'string' && value.activeCategoryColor.trim()
+      ? value.activeCategoryColor.trim().slice(0, 40)
+      : undefined,
+    activeColor: typeof value.activeColor === 'string' && value.activeColor.trim()
+      ? value.activeColor.trim().slice(0, 40)
+      : undefined,
+    projectedFinishEndMs: value.projectedFinishEndMs === null || Number.isFinite(Number(value.projectedFinishEndMs))
+      ? (value.projectedFinishEndMs === null ? null : Math.max(0, Number(value.projectedFinishEndMs)))
+      : null,
+    settings: pickTimerSpectatorSettings(value.settings),
+    runtime,
+    updatedAtMs,
+  };
+};
+
+const normalizeFocusFriendPresenceRecord = (value, fallbackHostName) => {
+  if (!value || typeof value !== 'object') return null;
+  const timer = normalizeTimerSpectatorState(value.timer, fallbackHostName);
+  if (!timer) return null;
+  return {
+    updatedAt: cleanString(value.updatedAt, new Date(timer.updatedAtMs || Date.now()).toISOString()),
+    timer,
+  };
+};
+
 const normalizeFocusFriendsData = (raw, userId) => {
   const source = raw && typeof raw === 'object' ? raw : defaultFocusFriendsData(userId);
   const dedupeById = (items) => {
@@ -793,6 +871,7 @@ const normalizeFocusFriendsData = (raw, userId) => {
       .filter(Boolean))
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
       .slice(0, FOCUS_FRIEND_INBOX_LIMIT),
+    presence: normalizeFocusFriendPresenceRecord(source.presence, 'Focus Friend'),
     updatedAt: cleanString(source.updatedAt, new Date().toISOString()),
   };
 };
@@ -895,6 +974,35 @@ const getPresenceStatus = (accountData, updatedAtMs) => {
   return 'idle';
 };
 
+const getPresenceStatusFromTimer = (timer) => {
+  const updatedAtMs = Number.isFinite(Number(timer?.updatedAtMs)) ? Number(timer.updatedAtMs) : 0;
+  if (!updatedAtMs || Date.now() - updatedAtMs > FOCUS_FRIEND_OFFLINE_AFTER_MS) return 'offline';
+  const runtime = isRuntimeSnapshot(timer?.runtime) ? timer.runtime : null;
+  if (runtime?.phase === 'running-work') return 'focusing';
+  if (runtime?.phase === 'running-break') return 'break';
+  if (runtime?.phase === 'all-pause') return 'paused';
+  if (runtime?.phase === 'grace') return 'grace';
+  if (timer?.allPauseActive) return 'paused';
+  if (timer?.graceOpen) return 'grace';
+  if (timer?.timerStarted && !timer?.isIdle) {
+    return timer?.activeMode === 'break' ? 'break' : 'focusing';
+  }
+  return 'idle';
+};
+
+const buildFocusFriendPresenceFromTimer = (timer) => {
+  const updatedAtMs = Number.isFinite(Number(timer?.updatedAtMs)) ? Number(timer.updatedAtMs) : 0;
+  const status = getPresenceStatusFromTimer(timer);
+  if (!timer || status === 'offline') {
+    return { status, updatedAtMs: updatedAtMs || null, timer: null };
+  }
+  return {
+    status,
+    updatedAtMs: updatedAtMs || null,
+    timer,
+  };
+};
+
 const buildFocusFriendPresence = (userRecord, accountData) => {
   const updatedAtMs = getAccountUpdatedAtMs(accountData);
   const status = getPresenceStatus(accountData, updatedAtMs);
@@ -941,6 +1049,14 @@ const buildFocusFriendPresence = (userRecord, accountData) => {
       updatedAtMs: updatedAtMs || Date.now(),
     },
   };
+};
+
+const resolveFocusFriendPresence = (userRecord, accountData, focusFriendsData) => {
+  const accountPresence = buildFocusFriendPresence(userRecord, accountData);
+  const publishedPresence = buildFocusFriendPresenceFromTimer(focusFriendsData?.presence?.timer);
+  const publishedUpdatedAtMs = publishedPresence.updatedAtMs || 0;
+  const accountUpdatedAtMs = accountPresence.updatedAtMs || 0;
+  return publishedUpdatedAtMs >= accountUpdatedAtMs - 1000 ? publishedPresence : accountPresence;
 };
 
 const addFriendRelation = (data, userRecord, friendRecord, friendsSince) => {
@@ -1144,7 +1260,10 @@ export const listFocusFriendsForUser = async (userRecord) => {
     const friendRecord = await getUserById(relation.userId);
     if (!friendRecord) return null;
     const publicUser = makeUserPublic(friendRecord);
-    const accountData = await getAccountData(friendRecord.id);
+    const [accountData, friendFocusFriendsData] = await Promise.all([
+      getAccountData(friendRecord.id),
+      getFocusFriendsData(friendRecord.id),
+    ]);
     const displayName = cleanDisplayName(accountData?.userName, friendRecord.username);
     return {
       username: friendRecord.username,
@@ -1152,7 +1271,7 @@ export const listFocusFriendsForUser = async (userRecord) => {
       joinedAt: friendRecord.joinedAt,
       friendsSince: relation.friendsSince,
       lifetimeStats: accountData?.user?.lifetimeStats || publicUser.lifetimeStats || defaultLifetimeStats(),
-      presence: buildFocusFriendPresence(friendRecord, accountData),
+      presence: resolveFocusFriendPresence(friendRecord, accountData, friendFocusFriendsData),
     };
   }));
 
@@ -1184,6 +1303,25 @@ export const listFocusFriendsForUser = async (userRecord) => {
       .map(toPublicFocusFriendAction)
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
   };
+};
+
+export const updateFocusFriendPresence = async (currentUserRecord, timer) => {
+  let data = await getFocusFriendsData(currentUserRecord.id);
+  const normalizedTimer = normalizeTimerSpectatorState(timer, currentUserRecord.username);
+  if (!normalizedTimer) {
+    const error = new Error('Invalid Focus Friend presence.');
+    error.status = 400;
+    throw error;
+  }
+
+  data = {
+    ...data,
+    presence: {
+      updatedAt: new Date(normalizedTimer.updatedAtMs || Date.now()).toISOString(),
+      timer: normalizedTimer,
+    },
+  };
+  await saveFocusFriendsData(currentUserRecord.id, data);
 };
 
 export const createFocusFriendRequest = async (fromUserRecord, targetUsername) => {

@@ -766,6 +766,21 @@ export const playCelebrationTrumpet = async () => {
   }
 };
 
+export const playEncouragementDing = async () => {
+  try {
+    const ctx = await resumeAudioContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    playSmoothTone(ctx, 'triangle', 523.25, now, 0.2, 0.032, 698.46);
+    playSmoothTone(ctx, 'sine', 783.99, now + 0.045, 0.28, 0.024, 1046.5);
+    playSmoothTone(ctx, 'sine', 1318.51, now + 0.12, 0.34, 0.014, 1174.66);
+    playNoiseBurst(ctx, 'pink', now + 0.012, 0.11, 0.0048, 2200, 2.6);
+  } catch (e) {
+    console.error('Encouragement ding failed', e);
+  }
+};
+
 export const playSummaryStatPop = async (delayMs = 0, pitchIndex = 0) => {
   try {
     const ctx = await resumeAudioContext();

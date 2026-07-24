@@ -10,6 +10,7 @@ import {
   parseBody,
   removeFocusFriend,
   requireSession,
+  updateFocusFriendPresence,
 } from './_lib/account-store.js';
 
 const getErrorStatus = (error) => {
@@ -42,6 +43,9 @@ export default async (request) => {
     switch (body.action) {
       case 'send-request':
         await createFocusFriendRequest(session.userRecord, body.username);
+        break;
+      case 'update-presence':
+        await updateFocusFriendPresence(session.userRecord, body.timer);
         break;
       case 'accept-request':
         await acceptFocusFriendRequest(session.userRecord, body.requestId);

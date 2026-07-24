@@ -304,6 +304,155 @@ describe('focus-friends function', () => {
     expect(selfInviteResponse.status).toBe(400);
   });
 
+  it('displays timers from Focus Friends presence without writing account data', async () => {
+    const alice = await createUser('Alice', 'password123');
+    const bob = await createUser('Bob', 'password123');
+    const aliceToken = await createSession(alice);
+    const bobToken = await createSession(bob);
+
+    const inviteResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'accept-invite',
+      username: 'alice',
+    }));
+    expect(inviteResponse.status).toBe(200);
+
+    const nowMs = Date.now();
+    const presenceResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'update-presence',
+      timer: {
+        version: 1,
+        hostName: 'Bob Builder',
+        activeMode: 'work',
+        timerStarted: true,
+        isIdle: false,
+        workTime: 1470,
+        breakTime: 300,
+        pomodoroCount: 2,
+        allPauseActive: false,
+        allPauseTime: 0,
+        graceOpen: false,
+        graceContext: null,
+        activeTaskName: 'Live timer check',
+        activeCategoryName: 'Presence',
+        activeCategoryColor: '#4FAE9B',
+        activeColor: '#4FAE9B',
+        projectedFinishEndMs: null,
+        settings: {
+          workDuration: 1500,
+          shortBreakDuration: 300,
+          longBreakDuration: 900,
+          longBreakInterval: 4,
+          timerPreset: 'classic',
+          twoInARowMode: false,
+        },
+        runtime: {
+          version: 2,
+          updatedAtMs: nowMs,
+          sourceTabId: 'presence-test',
+          phase: 'running-work',
+          phaseStartedAtMs: nowMs,
+          phaseStartWorkTime: 1470,
+          phaseStartBreakTime: 300,
+          phaseStartAllPauseTime: 0,
+          phaseStartGraceTotal: 0,
+          activityStartIso: new Date(nowMs).toISOString(),
+        },
+        updatedAtMs: nowMs,
+      },
+    }));
+    expect(presenceResponse.status).toBe(200);
+
+    const aliceFriendsResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken));
+    expect(aliceFriendsResponse.status).toBe(200);
+    const aliceFriends = await aliceFriendsResponse.json();
+    expect(aliceFriends.friends).toMatchObject([
+      {
+        username: 'bob',
+        presence: {
+          status: 'focusing',
+          timer: {
+            activeTaskName: 'Live timer check',
+            activeCategoryName: 'Presence',
+            pomodoroCount: 2,
+            runtime: {
+              phase: 'running-work',
+              phaseStartWorkTime: 1470,
+            },
+          },
+        },
+      },
+    ]);
+    expect(await getAccountData(bob.id)).toBeNull();
+
+    const breakNowMs = nowMs + 1_000;
+    const breakPresenceResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'update-presence',
+      timer: {
+        version: 1,
+        hostName: 'Bob Builder',
+        activeMode: 'break',
+        timerStarted: true,
+        isIdle: false,
+        workTime: 1470,
+        breakTime: 240,
+        pomodoroCount: 2,
+        allPauseActive: false,
+        allPauseTime: 0,
+        graceOpen: false,
+        graceContext: null,
+        activeTaskName: 'Live timer check',
+        activeCategoryName: 'Presence',
+        activeCategoryColor: '#4FAE9B',
+        activeColor: '#4FAE9B',
+        projectedFinishEndMs: null,
+        settings: {
+          workDuration: 1500,
+          shortBreakDuration: 300,
+          longBreakDuration: 900,
+          longBreakInterval: 4,
+          timerPreset: 'classic',
+          twoInARowMode: false,
+        },
+        runtime: {
+          version: 2,
+          updatedAtMs: breakNowMs,
+          sourceTabId: 'presence-test',
+          phase: 'running-break',
+          phaseStartedAtMs: breakNowMs,
+          phaseStartWorkTime: 1470,
+          phaseStartBreakTime: 240,
+          phaseStartAllPauseTime: 0,
+          phaseStartGraceTotal: 0,
+          activityStartIso: new Date(breakNowMs).toISOString(),
+        },
+        updatedAtMs: breakNowMs,
+      },
+    }));
+    expect(breakPresenceResponse.status).toBe(200);
+
+    const aliceBreakFriendsResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken));
+    expect(aliceBreakFriendsResponse.status).toBe(200);
+    const aliceBreakFriends = await aliceBreakFriendsResponse.json();
+    expect(aliceBreakFriends.friends).toMatchObject([
+      {
+        username: 'bob',
+        presence: {
+          status: 'break',
+          timer: {
+            activeMode: 'break',
+            breakTime: 240,
+            pomodoroCount: 2,
+            runtime: {
+              phase: 'running-break',
+              phaseStartBreakTime: 240,
+            },
+          },
+        },
+      },
+    ]);
+    expect(await getAccountData(bob.id)).toBeNull();
+  });
+
   it('does not synthesize active presence when a friend account payload is missing', async () => {
     const alice = await createUser('Alice', 'password123');
     const bob = await createUser('Bob', 'password123');

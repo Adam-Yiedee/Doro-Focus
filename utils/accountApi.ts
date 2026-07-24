@@ -1,4 +1,4 @@
-import { FocusFriendsState, User } from '../types';
+import { FocusFriendsState, TimerSpectatorState, User } from '../types';
 
 const ACCOUNT_API_BASE = import.meta.env.VITE_ACCOUNT_API_BASE || '/.netlify/functions';
 const ACCOUNT_API_TIMEOUT_MS = 12_000;
@@ -114,6 +114,15 @@ export const sendFocusFriendRequest = async (token: string, username: string): P
     method: 'POST',
     headers: { authorization: `Bearer ${token}` },
     body: JSON.stringify({ action: 'send-request', username }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const updateFocusFriendPresence = async (token: string, timer: TimerSpectatorState): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'update-presence', timer }),
   });
   return payload as FocusFriendsState;
 };

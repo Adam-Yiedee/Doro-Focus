@@ -63,6 +63,7 @@ import {
   sendFocusFriendEncouragement as apiSendFocusFriendEncouragement,
   sendFocusFriendJoinInvite as apiSendFocusFriendJoinInvite,
   sendFocusFriendRequest as apiSendFocusFriendRequest,
+  updateFocusFriendPresence as apiUpdateFocusFriendPresence,
 } from '../utils/accountApi';
 import {
   buildHostMemberList,
@@ -1121,6 +1122,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const seenFocusFriendRequestIdsRef = useRef<Set<string>>(new Set());
   const focusFriendsSnapshotKeyRef = useRef('');
   const focusFriendsRefreshInFlightRef = useRef(false);
+  const focusFriendPresenceInFlightRef = useRef(false);
   const focusFriendsMutationVersionRef = useRef(0);
   const tabIdRef = useRef(`tab_${Math.random().toString(36).slice(2, 10)}`);
   const runtimeRef = useRef<TimerRuntimeSnapshot>(createRuntimeSnapshot({
@@ -2951,6 +2953,70 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updatedAtMs: nowMs,
     };
   }, []);
+
+  const publishFocusFriendPresence = useCallback(async (): Promise<boolean> => {
+    if (!user || !authToken || isPreviewAuthToken(authToken) || !isBrowserTabVisible()) return false;
+    if (focusFriendPresenceInFlightRef.current) return false;
+
+    try {
+      focusFriendPresenceInFlightRef.current = true;
+      const timer = buildTimerSpectatorState(getCurrentState());
+      const snapshot = await apiUpdateFocusFriendPresence(authToken, timer);
+      applyFocusFriendsSnapshot(snapshot);
+      return true;
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        resetAccountSession('Session expired. Sign in again.');
+      }
+      return false;
+    } finally {
+      focusFriendPresenceInFlightRef.current = false;
+    }
+  }, [applyFocusFriendsSnapshot, authToken, buildTimerSpectatorState, getCurrentState, resetAccountSession, user?.username]);
+
+  useEffect(() => {
+    if (!user || !authToken || isPreviewAuthToken(authToken)) return;
+
+    const publishVisiblePresence = () => {
+      if (!isBrowserTabVisible()) return;
+      void publishFocusFriendPresence();
+    };
+
+    publishVisiblePresence();
+    const interval = setInterval(publishVisiblePresence, FOCUS_FRIENDS_REFRESH_MS);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', publishVisiblePresence);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', publishVisiblePresence);
+    }
+    return () => {
+      clearInterval(interval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', publishVisiblePresence);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', publishVisiblePresence);
+      }
+    };
+  }, [authToken, publishFocusFriendPresence, user?.username]);
+
+  useEffect(() => {
+    if (!user || !authToken || isPreviewAuthToken(authToken) || !isBrowserTabVisible()) return;
+    void publishFocusFriendPresence();
+  }, [
+    accountTimerSyncNonce,
+    activeMode,
+    allPauseActive,
+    graceContext,
+    graceOpen,
+    isIdle,
+    pomodoroCount,
+    publishFocusFriendPresence,
+    timerStarted,
+    user?.username,
+    authToken,
+  ]);
 
   const buildFilteredGroupState = useCallback((state: any, config: GroupSyncConfig) => {
       const filteredState: any = { ...state };

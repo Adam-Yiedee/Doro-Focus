@@ -1,6 +1,7 @@
 
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Heart } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
@@ -13,7 +14,7 @@ import SummaryView from './SummaryView';
 import { Task } from '../types';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { getDailyWelcomeMessage } from '../utils/dailyWelcomeMessages';
-import { playCelebrationTrumpet } from '../utils/sound';
+import { playCelebrationTrumpet, playEncouragementDing } from '../utils/sound';
 import { getFocusFriendInviteUsernameFromCurrentUrl } from '../utils/focusFriendInvite';
 
 type NotificationBannerItem = {
@@ -21,8 +22,9 @@ type NotificationBannerItem = {
   actorName: string;
   message: string;
   title: string;
-  tone: 'join' | 'group' | 'friend';
+  tone: 'join' | 'group' | 'friend' | 'encouragement';
   exiting: boolean;
+  exitStyle?: 'fade' | 'pop';
 };
 type DailyWelcomeBanner = { id: string; message: string; exiting: boolean };
 type CelebrationConfettiPiece = {
@@ -61,6 +63,9 @@ type BannerTimerEntry = {
 const GROUP_BANNER_EXIT_MS = 600;
 const GROUP_BANNER_VISIBLE_MS = 8200;
 const GROUP_BANNER_TOTAL_MS = GROUP_BANNER_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
+const ENCOURAGEMENT_BANNER_VISIBLE_MS = 120_000;
+const ENCOURAGEMENT_BANNER_EXIT_MS = 720;
+const ENCOURAGEMENT_BANNER_TOTAL_MS = ENCOURAGEMENT_BANNER_VISIBLE_MS + ENCOURAGEMENT_BANNER_EXIT_MS;
 const DAILY_WELCOME_VISIBLE_MS = 9600;
 const DAILY_WELCOME_EXIT_MS = 680;
 const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + DAILY_WELCOME_EXIT_MS;
@@ -251,6 +256,20 @@ const areNotificationTimersActive = () => (
     : document.visibilityState === 'visible' && (typeof document.hasFocus !== 'function' || document.hasFocus())
 );
 
+const getBannerLifecycle = (tone: NotificationBannerItem['tone']) => (
+  tone === 'encouragement'
+    ? {
+        visibleMs: ENCOURAGEMENT_BANNER_VISIBLE_MS,
+        exitMs: ENCOURAGEMENT_BANNER_EXIT_MS,
+        totalMs: ENCOURAGEMENT_BANNER_TOTAL_MS,
+      }
+    : {
+        visibleMs: GROUP_BANNER_VISIBLE_MS,
+        exitMs: GROUP_BANNER_EXIT_MS,
+        totalMs: GROUP_BANNER_TOTAL_MS,
+      }
+);
+
 const Layout: React.FC = () => {
   const { activeMode, activeColor, settings, tasks, pendingJoinId, pendingMenuAction, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, focusFriendNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
@@ -261,6 +280,8 @@ const Layout: React.FC = () => {
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
   const [notificationTimersActive, setNotificationTimersActive] = useState(areNotificationTimersActive);
   const bannerTimersRef = useRef<Record<string, BannerTimerEntry>>({});
+  const bannerDismissTimeoutsRef = useRef<Record<string, number>>({});
+  const renderedFocusFriendNoticeIdsRef = useRef<Set<string>>(new Set());
   const dailyWelcomeTimersRef = useRef({
     show: createPausableTimeout(DAILY_WELCOME_SHOW_DELAY_MS),
     exit: createPausableTimeout(DAILY_WELCOME_VISIBLE_MS),
@@ -286,8 +307,16 @@ const Layout: React.FC = () => {
     delete bannerTimersRef.current[id];
   };
 
+  const clearBannerDismissTimeout = (id: string) => {
+    const timeout = bannerDismissTimeoutsRef.current[id];
+    if (!timeout) return;
+    clearTimeout(timeout);
+    delete bannerDismissTimeoutsRef.current[id];
+  };
+
   const clearAllBannerTimers = () => {
     Object.keys(bannerTimersRef.current).forEach(clearBannerTimer);
+    Object.keys(bannerDismissTimeoutsRef.current).forEach(clearBannerDismissTimeout);
   };
 
   const clearDailyWelcomeTimers = () => {
@@ -368,13 +397,31 @@ const Layout: React.FC = () => {
     if (!timers) return;
 
     startPausableTimeout(timers.exit, () => {
-      setGroupBanners((prev) => prev.map((item) => (item.id === id ? { ...item, exiting: true } : item)));
+      setGroupBanners((prev) => prev.map((item) => (
+        item.id === id ? { ...item, exiting: true, exitStyle: 'fade' } : item
+      )));
     });
 
     startPausableTimeout(timers.remove, () => {
       setGroupBanners((prev) => prev.filter((item) => item.id !== id));
       clearBannerTimer(id);
     });
+  };
+
+  const dismissBanner = (id: string, exitStyle: NotificationBannerItem['exitStyle'] = 'pop') => {
+    const currentBanner = groupBanners.find((item) => item.id === id);
+    const exitMs = getBannerLifecycle(currentBanner?.tone || 'group').exitMs;
+    clearBannerTimer(id);
+    clearBannerDismissTimeout(id);
+
+    setGroupBanners((prev) => prev.map((item) => (
+      item.id === id ? { ...item, exiting: true, exitStyle } : item
+    )));
+
+    bannerDismissTimeoutsRef.current[id] = window.setTimeout(() => {
+      setGroupBanners((prev) => prev.filter((item) => item.id !== id));
+      clearBannerDismissTimeout(id);
+    }, exitMs);
   };
 
   const clearAllTasksCelebrationTimer = () => {
@@ -479,6 +526,8 @@ const Layout: React.FC = () => {
     if (!groupNotice) return;
     const id = groupNotice.id;
     clearBannerTimer(id);
+    clearBannerDismissTimeout(id);
+    const tone = groupNotice.kind === 'join' ? 'join' as const : 'group' as const;
     setGroupBanners(prev => {
       const next = [
         ...prev.filter(item => item.id !== id),
@@ -487,7 +536,7 @@ const Layout: React.FC = () => {
           actorName: groupNotice.actorName,
           message: groupNotice.message,
           title: groupNotice.kind === 'join' ? 'Member Joined' : 'Group Action',
-          tone: groupNotice.kind === 'join' ? 'join' as const : 'group' as const,
+          tone,
           exiting: false,
         },
       ];
@@ -501,21 +550,26 @@ const Layout: React.FC = () => {
       return trimmed;
     });
 
+    const lifecycle = getBannerLifecycle(tone);
     bannerTimersRef.current[id] = {
-      exit: createPausableTimeout(GROUP_BANNER_VISIBLE_MS),
-      remove: createPausableTimeout(GROUP_BANNER_TOTAL_MS),
+      exit: createPausableTimeout(lifecycle.visibleMs),
+      remove: createPausableTimeout(lifecycle.totalMs),
     };
     scheduleBannerTimer(id);
   }, [groupNotice]);
 
   useEffect(() => {
     if (!focusFriendNotice) return;
+    if (!notificationTimersActive) return;
     const id = focusFriendNotice.id;
+    if (renderedFocusFriendNoticeIdsRef.current.has(id)) return;
+    renderedFocusFriendNoticeIdsRef.current.add(id);
     const banner = focusFriendNotice.type === 'request'
       ? {
           actorName: focusFriendNotice.request.fromDisplayName || focusFriendNotice.request.fromUsername,
           message: 'sent you a Focus Friend request.',
           title: 'Friend Request',
+          tone: 'friend' as const,
         }
       : {
           actorName: focusFriendNotice.action.fromDisplayName || focusFriendNotice.action.fromUsername,
@@ -531,8 +585,10 @@ const Layout: React.FC = () => {
             : focusFriendNotice.action.type === 'join-invite'
               ? 'Session Invite'
               : 'Encouragement',
+          tone: focusFriendNotice.action.type === 'encouragement' ? 'encouragement' as const : 'friend' as const,
         };
     clearBannerTimer(id);
+    clearBannerDismissTimeout(id);
     setGroupBanners(prev => {
       const next = [
         ...prev.filter(item => item.id !== id),
@@ -541,7 +597,7 @@ const Layout: React.FC = () => {
           actorName: banner.actorName,
           message: banner.message,
           title: banner.title,
-          tone: 'friend' as const,
+          tone: banner.tone,
           exiting: false,
         },
       ];
@@ -555,12 +611,17 @@ const Layout: React.FC = () => {
       return trimmed;
     });
 
+    if (banner.tone === 'encouragement') {
+      void playEncouragementDing();
+    }
+
+    const lifecycle = getBannerLifecycle(banner.tone);
     bannerTimersRef.current[id] = {
-      exit: createPausableTimeout(GROUP_BANNER_VISIBLE_MS),
-      remove: createPausableTimeout(GROUP_BANNER_TOTAL_MS),
+      exit: createPausableTimeout(lifecycle.visibleMs),
+      remove: createPausableTimeout(lifecycle.totalMs),
     };
     scheduleBannerTimer(id);
-  }, [focusFriendNotice]);
+  }, [focusFriendNotice, notificationTimersActive]);
 
   useEffect(() => {
     return () => {
@@ -739,8 +800,133 @@ const Layout: React.FC = () => {
             filter: blur(8px) saturate(0.82);
           }
         }
+        @keyframes doroEncouragementBannerIn {
+          0% {
+            opacity: 0;
+            transform: translateY(-22px) scale(0.965);
+            filter: blur(12px) saturate(0.76);
+          }
+          58% {
+            opacity: 1;
+            transform: translateY(3px) scale(1.012);
+            filter: blur(0) saturate(1.14);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doroEncouragementBannerFade {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-16px) scale(0.985);
+            filter: blur(8px) saturate(0.82);
+          }
+        }
+        @keyframes doroEncouragementBannerPop {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          34% {
+            opacity: 1;
+            transform: translateY(-2px) scale(1.045);
+            filter: blur(0) saturate(1.2) brightness(1.08);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-18px) scale(0.82);
+            filter: blur(10px) saturate(0.72) brightness(1.18);
+          }
+        }
+        @keyframes doroEncouragementHeartBeat {
+          0%, 100% {
+            transform: scale(1);
+          }
+          36% {
+            transform: scale(1.18);
+          }
+          62% {
+            transform: scale(0.97);
+          }
+        }
+        @keyframes doroEncouragementHeartPop {
+          0% {
+            opacity: 1;
+            transform: scale(1) rotate(0deg);
+          }
+          46% {
+            opacity: 1;
+            transform: scale(1.42) rotate(-8deg);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(0.42) rotate(15deg);
+          }
+        }
+        @keyframes doroEncouragementSheen {
+          0% {
+            opacity: 0;
+            transform: translateX(-120%) skewX(-16deg);
+          }
+          18% {
+            opacity: 0.32;
+          }
+          100% {
+            opacity: 0;
+            transform: translateX(180%) skewX(-16deg);
+          }
+        }
         .doro-group-banner {
           animation: doroGroupBannerIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-encouragement-banner {
+          animation: doroEncouragementBannerIn 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+          box-shadow:
+            0 34px 76px -24px rgba(0, 0, 0, 0.48),
+            0 22px 42px -25px rgba(0, 0, 0, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.16),
+            inset 0 -24px 46px rgba(0, 0, 0, 0.12);
+          will-change: transform, opacity, filter;
+        }
+        .doro-encouragement-banner-fade {
+          pointer-events: none;
+          animation: doroEncouragementBannerFade ${ENCOURAGEMENT_BANNER_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+        }
+        .doro-encouragement-banner-pop {
+          pointer-events: none;
+          animation: doroEncouragementBannerPop ${ENCOURAGEMENT_BANNER_EXIT_MS}ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .doro-encouragement-banner::before {
+          content: '';
+          position: absolute;
+          inset: -34% -18%;
+          z-index: 0;
+          background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.26) 46%, transparent 66%);
+          animation: doroEncouragementSheen 1250ms cubic-bezier(0.16, 1, 0.3, 1) 120ms both;
+        }
+        .doro-encouragement-heart {
+          animation: doroEncouragementHeartBeat 1050ms ease-in-out 420ms infinite;
+          fill: currentColor;
+          filter: drop-shadow(0 0 12px rgba(255, 190, 202, 0.62));
+          transform-origin: center;
+        }
+        .doro-encouragement-banner-pop .doro-encouragement-heart {
+          animation: doroEncouragementHeartPop ${ENCOURAGEMENT_BANNER_EXIT_MS}ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .doro-encouragement-text-3d {
+          text-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.18),
+            0 -1px 0 rgba(76, 5, 25, 0.62),
+            0 10px 22px rgba(76, 5, 25, 0.48),
+            0 0 18px rgba(255, 205, 213, 0.16);
         }
         .doro-daily-welcome-banner {
           animation: doroDailyWelcomeIn 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -756,7 +942,7 @@ const Layout: React.FC = () => {
         }
         .doro-group-banner-progress {
           transform-origin: left;
-          animation: doroGroupBannerProgress ${GROUP_BANNER_TOTAL_MS}ms linear forwards;
+          animation: doroGroupBannerProgress var(--doro-banner-progress-ms, ${GROUP_BANNER_TOTAL_MS}ms) linear forwards;
         }
         @keyframes doroAllTasksCelebrationIn {
           0% { opacity: 0; transform: scale(0.985); }
@@ -937,6 +1123,7 @@ const Layout: React.FC = () => {
             gap: 0.45rem;
           }
           .doro-daily-welcome-banner,
+          .doro-encouragement-banner,
           .doro-group-banner {
             border-radius: 1.15rem !important;
             padding: 0.75rem 0.875rem !important;
@@ -972,9 +1159,18 @@ const Layout: React.FC = () => {
           .doro-all-tasks-celebration-halo,
           .doro-all-tasks-celebration-sheen,
           .doro-all-tasks-confetti-piece,
+          .doro-encouragement-banner,
+          .doro-encouragement-banner::before,
+          .doro-encouragement-heart,
           .doro-daily-welcome-banner,
           .doro-daily-welcome-banner-exit {
             animation: none !important;
+          }
+          .doro-encouragement-banner-fade,
+          .doro-encouragement-banner-pop {
+            opacity: 0 !important;
+            transform: translateY(-8px) scale(0.98) !important;
+            filter: none !important;
           }
           .doro-daily-welcome-banner-exit {
             opacity: 0 !important;
@@ -1017,37 +1213,87 @@ const Layout: React.FC = () => {
             />
           </button>
         )}
-        {groupBanners.map((notice, i) => (
-          <div
-            key={notice.id}
-            className={`doro-group-banner relative overflow-hidden rounded-2xl border px-4 py-3 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 ${
-              notice.tone === 'join'
-                ? 'border-emerald-200/40 bg-emerald-300/12'
-                : notice.tone === 'friend'
-                  ? 'border-sky-200/35 bg-sky-300/12'
-                : 'border-white/25 bg-white/10'
-            } ${settings.disableBlur ? '' : 'backdrop-blur-2xl'} ${
-              notice.exiting ? 'opacity-0 -translate-y-2 scale-[0.985]' : 'opacity-100 translate-y-0 scale-100'
-            }`}
-            style={{ animationDelay: `${i * 70}ms` }}
-          >
-            <div className="absolute inset-0 opacity-60 bg-[radial-gradient(circle_at_12%_-12%,rgba(255,255,255,0.34),transparent_50%)]" />
-            <div className="relative min-w-0 text-center">
-              <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
-                {notice.title}
-              </div>
-              <div className="mt-1 text-sm leading-snug text-white/95">
-                <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
-              </div>
-            </div>
+        {groupBanners.map((notice, i) => {
+          const lifecycle = getBannerLifecycle(notice.tone);
+          const progressStyle = {
+            animationDuration: `${notice.tone === 'encouragement' ? lifecycle.visibleMs : lifecycle.totalMs}ms`,
+            animationPlayState: notificationTimersActive ? 'running' : 'paused',
+          } as React.CSSProperties;
+
+          if (notice.tone === 'encouragement') {
+            const encouragementExitClass = notice.exiting
+              ? notice.exitStyle === 'pop'
+                ? 'doro-encouragement-banner-pop'
+                : 'doro-encouragement-banner-fade'
+              : '';
+
+            return (
+              <button
+                type="button"
+                key={notice.id}
+                onClick={() => dismissBanner(notice.id, 'pop')}
+                aria-label={`Dismiss encouragement from ${notice.actorName}`}
+                className={`doro-encouragement-banner pointer-events-auto relative w-full overflow-hidden rounded-xl border border-rose-200/32 px-4 py-3 text-left text-white outline-none transition-[border-color,box-shadow,transform] duration-300 hover:border-rose-100/48 focus-visible:ring-2 focus-visible:ring-rose-100/55 ${
+                  settings.disableBlur
+                    ? 'bg-red-950/92'
+                    : 'bg-[linear-gradient(135deg,rgba(127,29,29,0.94),rgba(190,18,60,0.88)_48%,rgba(244,63,94,0.72))] backdrop-blur-2xl'
+                } ${encouragementExitClass}`}
+                style={{ animationDelay: `${i * 70}ms` }}
+              >
+                <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_10%_-8%,rgba(255,228,230,0.34),transparent_46%),radial-gradient(circle_at_92%_8%,rgba(255,255,255,0.12),transparent_28%)]" />
+                <div className="relative z-10 flex min-w-0 items-center gap-3">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-rose-100/24 bg-white/12 text-rose-50 shadow-[0_18px_34px_-24px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.12)]">
+                    <Heart size={22} strokeWidth={2.35} className="doro-encouragement-heart" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[10px] font-black uppercase leading-none tracking-[0.18em] text-rose-100/76">
+                      {notice.actorName}
+                    </span>
+                    <span className="doro-encouragement-text-3d mt-1.5 block text-[0.95rem] font-black leading-snug text-white">
+                      {notice.message}
+                    </span>
+                  </span>
+                </div>
+                <div
+                  className="doro-group-banner-progress absolute bottom-0 left-0 z-10 h-[2px] w-full bg-rose-100/62"
+                  style={progressStyle}
+                />
+              </button>
+            );
+          }
+
+          return (
             <div
-              className={`doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full ${
-                notice.tone === 'join' ? 'bg-emerald-100/55' : notice.tone === 'friend' ? 'bg-sky-100/55' : 'bg-white/45'
+              key={notice.id}
+              className={`doro-group-banner relative overflow-hidden rounded-2xl border px-4 py-3 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 ${
+                notice.tone === 'join'
+                  ? 'border-emerald-200/40 bg-emerald-300/12'
+                  : notice.tone === 'friend'
+                    ? 'border-sky-200/35 bg-sky-300/12'
+                  : 'border-white/25 bg-white/10'
+              } ${settings.disableBlur ? '' : 'backdrop-blur-2xl'} ${
+                notice.exiting ? 'opacity-0 -translate-y-2 scale-[0.985]' : 'opacity-100 translate-y-0 scale-100'
               }`}
-              style={{ animationPlayState: notificationTimersActive ? 'running' : 'paused' }}
-            />
-          </div>
-        ))}
+              style={{ animationDelay: `${i * 70}ms` }}
+            >
+              <div className="absolute inset-0 opacity-60 bg-[radial-gradient(circle_at_12%_-12%,rgba(255,255,255,0.34),transparent_50%)]" />
+              <div className="relative min-w-0 text-center">
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
+                  {notice.title}
+                </div>
+                <div className="mt-1 text-sm leading-snug text-white/95">
+                  <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
+                </div>
+              </div>
+              <div
+                className={`doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full ${
+                  notice.tone === 'join' ? 'bg-emerald-100/55' : notice.tone === 'friend' ? 'bg-sky-100/55' : 'bg-white/45'
+                }`}
+                style={progressStyle}
+              />
+            </div>
+          );
+        })}
         {guestTimerLockNotice && (
           <div
             key={guestTimerLockNotice.id}
