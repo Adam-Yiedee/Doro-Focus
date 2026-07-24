@@ -1,4 +1,5 @@
 import {
+  acceptFocusFriendInvite,
   acceptFocusFriendRequest,
   createFocusFriendAction,
   createFocusFriendRequest,
@@ -44,6 +45,9 @@ export default async (request) => {
         break;
       case 'accept-request':
         await acceptFocusFriendRequest(session.userRecord, body.requestId);
+        break;
+      case 'accept-invite':
+        await acceptFocusFriendInvite(session.userRecord, body.username);
         break;
       case 'decline-request':
         await declineFocusFriendRequest(session.userRecord, body.requestId);

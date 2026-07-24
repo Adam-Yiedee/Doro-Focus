@@ -14,6 +14,7 @@ import { Task } from '../types';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { getDailyWelcomeMessage } from '../utils/dailyWelcomeMessages';
 import { playCelebrationTrumpet } from '../utils/sound';
+import { getFocusFriendInviteUsernameFromCurrentUrl } from '../utils/focusFriendInvite';
 
 type NotificationBannerItem = {
   id: string;
@@ -429,6 +430,12 @@ const Layout: React.FC = () => {
       setShowLogModal(true);
     }
   }, [pendingMenuAction]);
+
+  useEffect(() => {
+    if (getFocusFriendInviteUsernameFromCurrentUrl()) {
+      setShowLogModal(true);
+    }
+  }, []);
 
   useEffect(() => {
     const updateNotificationTimerState = () => {

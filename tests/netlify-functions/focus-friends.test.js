@@ -261,6 +261,49 @@ describe('focus-friends function', () => {
     expect(nonFriendInviteResponse.status).toBe(403);
   });
 
+  it('accepts invite links idempotently and clears pending requests between the accounts', async () => {
+    const alice = await createUser('Alice', 'password123');
+    const bob = await createUser('Bob', 'password123');
+    const aliceToken = await createSession(alice);
+    const bobToken = await createSession(bob);
+
+    const pendingResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'send-request',
+      username: 'alice',
+    }));
+    expect(pendingResponse.status).toBe(200);
+
+    const inviteResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'accept-invite',
+      username: 'ALICE',
+    }));
+    expect(inviteResponse.status).toBe(200);
+    const bobAfterInvite = await inviteResponse.json();
+    expect(bobAfterInvite.friends).toMatchObject([{ username: 'alice' }]);
+    expect(bobAfterInvite.incomingRequests).toHaveLength(0);
+    expect(bobAfterInvite.outgoingRequests).toHaveLength(0);
+
+    const aliceFriendsResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken));
+    const aliceFriends = await aliceFriendsResponse.json();
+    expect(aliceFriends.friends).toMatchObject([{ username: 'bob' }]);
+    expect(aliceFriends.incomingRequests).toHaveLength(0);
+    expect(aliceFriends.outgoingRequests).toHaveLength(0);
+
+    const repeatResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'accept-invite',
+      username: 'alice',
+    }));
+    expect(repeatResponse.status).toBe(200);
+    const repeatPayload = await repeatResponse.json();
+    expect(repeatPayload.friends.filter((friend) => friend.username === 'alice')).toHaveLength(1);
+
+    const selfInviteResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
+      action: 'accept-invite',
+      username: 'alice',
+    }));
+    expect(selfInviteResponse.status).toBe(400);
+  });
+
   it('does not synthesize active presence when a friend account payload is missing', async () => {
     const alice = await createUser('Alice', 'password123');
     const bob = await createUser('Bob', 'password123');

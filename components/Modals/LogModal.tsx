@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Timer as TimerIcon, UserMinus, UserPlus, Users, X } from 'lucide-react';
+import { Check, ChevronDown, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Timer as TimerIcon, UserPlus, Users, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
@@ -16,6 +16,7 @@ import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import {
   formatPomodoroCount,
   getPomodoroEquivalentWeightForReason,
+  getTimerPomoUnitLabel,
   MINI_POMODORO_COMPLETE_REASON,
   POMODORO_COMPLETE_REASON,
 } from '../../utils/pomodoroAccounting';
@@ -33,6 +34,12 @@ import {
   formatTimerShareEndLabel,
   getTimerShareEstimateFromSpectatorState,
 } from '../../utils/timerShare';
+import {
+  buildFocusFriendInviteUrl,
+  getFocusFriendInviteUsernameFromCurrentUrl,
+  normalizeFocusFriendInviteUsername,
+  removeFocusFriendInviteParamsFromCurrentUrl,
+} from '../../utils/focusFriendInvite';
 
 interface LogModalProps {
   isOpen: boolean;
@@ -44,7 +51,19 @@ type TabButton = ModalTab | 'schedule';
 type GroupFlow = 'menu' | 'host' | 'join';
 type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
-type FocusFriendBusyAction = 'refresh' | 'send-request' | `accept:${string}` | `decline:${string}` | `remove:${string}` | `encourage:${string}` | `join:${string}` | `invite:${string}` | `open-invite:${string}` | `read:${string}` | null;
+type FocusFriendsPage = 'friends' | 'add';
+type FocusFriendEncouragementPromptKind = 'pomo' | 'task' | 'category' | 'general';
+type FocusFriendEncouragementPrompt = {
+  kind: FocusFriendEncouragementPromptKind;
+  message: string;
+};
+type FocusFriendEncouragementMenuPlacement = 'down' | 'up';
+type FocusFriendEncouragementConfirmation = {
+  username: string;
+  message: string;
+  phase: 'visible' | 'leaving';
+};
+type FocusFriendBusyAction = 'refresh' | 'send-request' | `accept:${string}` | `accept-invite:${string}` | `decline:${string}` | `encourage:${string}` | `join:${string}` | `invite:${string}` | `open-invite:${string}` | `read:${string}` | null;
 type SettingsPanelTransitionPhase = 'idle' | 'leaving' | 'entering';
 type SettingsPanelTransitionDirection = 'forward' | 'backward';
 type DragInsertPosition = 'before' | 'after';
@@ -106,7 +125,181 @@ const FOCUS_SOUND_OPTIONS: Array<{ label: string; value: FocusSound }> = [
   { label: 'Green Calm', value: 'green-calm' },
 ];
 
+const FOCUS_FRIEND_ENCOURAGEMENT_PRESETS = [
+  "Oh, you're actually locked in locked in.",
+  'Okay productivity machine.',
+  'Who gave you permission to work this hard?',
+  'Casually becoming unstoppable, I see.',
+  'Save some productivity for the rest of us.',
+  'Academic weapon behavior.',
+  "You're making procrastination nervous.",
+  'Rare footage of you getting things done.',
+  'Honestly? Kind of impressive.',
+  'Your brain deserves a little applause.',
+  'Certified locked-in moment.',
+  'The focus is focusing.',
+  'Okay, scholar.',
+  'That task picked the wrong person today.',
+  "Keep going - I'm emotionally invested now.",
+  "You versus your to-do list. Current score: you're winning.",
+  'No distractions. Only greatness.',
+  "You're in the zone. Protect it.",
+  'Tiny win detected.',
+  'Productivity witnessed and officially approved.',
+] as const;
+
+type FocusFriendEncouragementContext = {
+  currentPomoNumber: number | null;
+  completedPomoCount: number | null;
+  pomoLabel: string;
+  taskName: string | null;
+  categoryName: string | null;
+  isBreak: boolean;
+};
+
+const FOCUS_FRIEND_POMO_PROMPT_BUILDERS: Array<(context: FocusFriendEncouragementContext) => string> = [
+  context => context.currentPomoNumber !== null && context.currentPomoNumber > 1
+    ? `${context.pomoLabel} in? You're crazy.`
+    : 'First pomo energy. Lock in.',
+  context => context.currentPomoNumber !== null && context.currentPomoNumber >= 3
+    ? `${context.pomoLabel} deep. Academic weapon behavior.`
+    : 'Next pomo is going to fear you.',
+  context => context.isBreak
+    ? context.completedPomoCount !== null && context.completedPomoCount > 0
+      ? `${context.completedPomoCount} pomo${context.completedPomoCount === 1 ? '' : 's'} down. Break earned.`
+      : 'Break earned. Come back dangerous.'
+    : context.currentPomoNumber !== null
+      ? `${context.pomoLabel} momentum detected.`
+      : 'Pomo momentum detected.',
+  context => context.currentPomoNumber !== null && context.currentPomoNumber >= 5
+    ? `${context.pomoLabel} in? Save some focus for the rest of us.`
+    : context.currentPomoNumber !== null
+      ? `Certified ${context.pomoLabel} progress.`
+      : 'Certified pomo progress.',
+  context => context.currentPomoNumber !== null
+    ? `Tiny ${context.pomoLabel} win detected.`
+    : 'Tiny pomo win detected.',
+];
+
+const FOCUS_FRIEND_TASK_PROMPT_BUILDERS: Array<(context: FocusFriendEncouragementContext) => string> = [
+  context => context.taskName ? `${context.taskName} picked the wrong person today.` : 'That task list picked the wrong person today.',
+  context => context.taskName ? `Rare footage of ${context.taskName} getting handled.` : 'Rare footage of tasks getting handled.',
+  context => context.taskName ? `${context.taskName}? Honestly, kind of impressive.` : 'Honestly? That task momentum is impressive.',
+  context => context.taskName ? `You versus ${context.taskName}. Current score: you're winning.` : "You versus the to-do list. Current score: you're winning.",
+  context => context.taskName ? `No distractions. Only ${context.taskName}.` : 'No distractions. Only greatness.',
+];
+
+const FOCUS_FRIEND_CATEGORY_PROMPT_BUILDERS: Array<(context: FocusFriendEncouragementContext) => string> = [
+  context => context.categoryName ? `${context.categoryName} again? Nice!` : 'Category focus is looking clean.',
+  context => context.categoryName ? `${context.categoryName} mode activated.` : 'Focus mode activated.',
+  context => context.categoryName ? `${context.categoryName} does not stand a chance.` : 'This focus block does not stand a chance.',
+  context => context.categoryName ? `Certified ${context.categoryName} momentum.` : 'Certified momentum.',
+  context => context.categoryName ? `Your ${context.categoryName} focus is looking dangerous.` : 'Your focus is looking dangerous.',
+];
+
+const normalizeEncouragementSubject = (value: string | null | undefined, blockedLabels: string[] = []) => {
+  const normalized = value?.trim();
+  if (!normalized) return null;
+  const normalizedLower = normalized.toLowerCase();
+  if (blockedLabels.some(label => normalizedLower === label.toLowerCase())) return null;
+  return normalized.slice(0, 52);
+};
+
+const appendUniqueEncouragement = (options: FocusFriendEncouragementPrompt[], prompt: FocusFriendEncouragementPrompt | null | undefined) => {
+  const normalized = prompt?.message.trim();
+  if (!prompt || !normalized || options.some(option => option.message === normalized)) return;
+  options.push({ ...prompt, message: normalized });
+};
+
+const getRandomArrayItem = <T,>(items: readonly T[]) => items[Math.floor(Math.random() * items.length)];
+
+const getRandomGeneralEncouragements = (count: number, blockedMessages: Set<string>) => {
+  const pool = FOCUS_FRIEND_ENCOURAGEMENT_PRESETS
+    .filter(message => !blockedMessages.has(message))
+    .sort(() => Math.random() - 0.5);
+  return pool.slice(0, count);
+};
+
+const getFocusFriendPomoMeta = (friend: FocusFriend) => {
+  const timer = friend.presence.timer;
+  const isBreak = timer?.activeMode === 'break' || friend.presence.status === 'break';
+  const isActiveTimerState = Boolean(timer) && friend.presence.status !== 'idle' && friend.presence.status !== 'offline';
+  const completedPomoCount = Number.isFinite(Number(timer?.pomodoroCount))
+    ? Math.max(0, Math.floor(Number(timer?.pomodoroCount)))
+    : null;
+  const safeCompletedPomoCount = completedPomoCount || 0;
+  const currentPomoNumber = timer && isActiveTimerState
+    ? isBreak
+      ? Math.max(1, safeCompletedPomoCount)
+      : safeCompletedPomoCount + 1
+    : null;
+  const singularUnitLabel = timer ? getTimerPomoUnitLabel(timer.settings, false) : 'Pomo';
+  const pluralUnitLabel = timer ? getTimerPomoUnitLabel(timer.settings, true) : 'Pomos';
+  const promptUnitLabel = currentPomoNumber === 1 ? singularUnitLabel.toLowerCase() : pluralUnitLabel.toLowerCase();
+
+  return {
+    currentPomoNumber,
+    completedPomoCount,
+    displayLabel: currentPomoNumber !== null
+      ? isBreak
+        ? `${singularUnitLabel} ${currentPomoNumber} done`
+        : `${singularUnitLabel} ${currentPomoNumber}`
+      : null,
+    promptLabel: currentPomoNumber !== null ? `${currentPomoNumber} ${promptUnitLabel}` : `first ${singularUnitLabel.toLowerCase()}`,
+  };
+};
+
+const getFocusFriendEncouragementContext = (friend: FocusFriend): FocusFriendEncouragementContext => {
+  const timer = friend.presence.timer;
+  const pomoMeta = getFocusFriendPomoMeta(friend);
+  const taskName = normalizeEncouragementSubject(timer?.activeTaskName, ['No selected task']);
+  const categoryName = normalizeEncouragementSubject(timer?.activeCategoryName, ['Uncategorized']);
+  return {
+    currentPomoNumber: pomoMeta.currentPomoNumber,
+    completedPomoCount: pomoMeta.completedPomoCount,
+    pomoLabel: pomoMeta.promptLabel,
+    taskName,
+    categoryName,
+    isBreak: timer?.activeMode === 'break' || friend.presence.status === 'break',
+  };
+};
+
+const buildFocusFriendEncouragementOptions = (friend: FocusFriend): FocusFriendEncouragementPrompt[] => {
+  const context = getFocusFriendEncouragementContext(friend);
+  const prompts: FocusFriendEncouragementPrompt[] = [];
+
+  appendUniqueEncouragement(prompts, {
+    kind: 'pomo',
+    message: getRandomArrayItem(FOCUS_FRIEND_POMO_PROMPT_BUILDERS)(context),
+  });
+  appendUniqueEncouragement(prompts, {
+    kind: 'task',
+    message: getRandomArrayItem(FOCUS_FRIEND_TASK_PROMPT_BUILDERS)(context),
+  });
+  appendUniqueEncouragement(prompts, {
+    kind: 'category',
+    message: getRandomArrayItem(FOCUS_FRIEND_CATEGORY_PROMPT_BUILDERS)(context),
+  });
+
+  const usedMessages = new Set(prompts.map(prompt => prompt.message));
+  getRandomGeneralEncouragements(2, usedMessages).forEach(message => {
+    appendUniqueEncouragement(prompts, { kind: 'general', message });
+    usedMessages.add(message);
+  });
+
+  while (prompts.length < 5) {
+    const fallback = FOCUS_FRIEND_ENCOURAGEMENT_PRESETS.find(message => !usedMessages.has(message));
+    if (!fallback) break;
+    appendUniqueEncouragement(prompts, { kind: 'general', message: fallback });
+    usedMessages.add(fallback);
+  }
+
+  return prompts.slice(0, 5);
+};
+
 const FOCUS_SOUND_PREVIEW_MS = 2600;
+const FOCUS_FRIEND_CONFIRMATION_VISIBLE_MS = 2200;
+const FOCUS_FRIEND_CONFIRMATION_EXIT_MS = 640;
 const DAY_MS = 86_400_000;
 const ROLLING_WEEK_DAYS = 7;
 
@@ -859,9 +1052,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     focusFriendsError,
     refreshFocusFriends,
     sendFocusFriendRequest,
+    acceptFocusFriendInvite,
     acceptFocusFriendRequest,
     declineFocusFriendRequest,
-    removeFocusFriend,
     sendFocusFriendEncouragement,
     requestFocusFriendJoin,
     sendFocusFriendJoinInvite,
@@ -900,8 +1093,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
   const [focusFriendUsernameInput, setFocusFriendUsernameInput] = useState('');
   const [focusFriendBusyAction, setFocusFriendBusyAction] = useState<FocusFriendBusyAction>(null);
-  const [focusFriendDrafts, setFocusFriendDrafts] = useState<Record<string, string>>({});
-  const [focusFriendsPage, setFocusFriendsPage] = useState<'friends' | 'add'>('friends');
+  const [focusFriendEncouragementOptions, setFocusFriendEncouragementOptions] = useState<Record<string, FocusFriendEncouragementPrompt[]>>({});
+  const [focusFriendEncouragementMenuUsername, setFocusFriendEncouragementMenuUsername] = useState<string | null>(null);
+  const [focusFriendEncouragementMenuPlacement, setFocusFriendEncouragementMenuPlacement] = useState<FocusFriendEncouragementMenuPlacement>('down');
+  const [focusFriendEncouragementConfirmation, setFocusFriendEncouragementConfirmation] = useState<FocusFriendEncouragementConfirmation | null>(null);
+  const [focusFriendsPage, setFocusFriendsPage] = useState<FocusFriendsPage>('friends');
+  const [focusFriendInviteUsername, setFocusFriendInviteUsername] = useState<string | null>(() => getFocusFriendInviteUsernameFromCurrentUrl());
+  const [focusFriendInviteCopied, setFocusFriendInviteCopied] = useState(false);
+  const [focusFriendsTabIndicatorStyle, setFocusFriendsTabIndicatorStyle] = useState({ left: 0, width: 0, opacity: 0 });
+  const focusFriendEncouragementConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [groupFlow, setGroupFlow] = useState<GroupFlow>('menu');
   const [groupName, setGroupName] = useState('');
@@ -917,10 +1117,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [timerShareMessage, setTimerShareMessage] = useState<string | null>(null);
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
+  const focusFriendInviteAutoAddKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const categorySettingsSectionRef = useRef<HTMLDivElement | null>(null);
   const settingsTabListRef = useRef<HTMLDivElement | null>(null);
   const settingsTabButtonRefsRef = useRef(new Map<TabButton, HTMLButtonElement>());
+  const focusFriendsTabListRef = useRef<HTMLDivElement | null>(null);
+  const focusFriendsTabButtonRefsRef = useRef(new Map<FocusFriendsPage, HTMLButtonElement>());
   const settingsPanelTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCategoryCommitRef = useRef<(() => void) | null>(null);
   const pendingCategorySectionScrollRef = useRef(false);
@@ -1249,6 +1452,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const groupInviteUrl = useMemo(() => (
     safeGroupSessionId ? buildGroupInviteUrl(safeGroupSessionId) : ''
   ), [safeGroupSessionId]);
+  const focusFriendInviteUrl = useMemo(() => (
+    safeUser ? buildFocusFriendInviteUrl(safeUser.username) : ''
+  ), [safeUser?.username]);
+  const isOwnFocusFriendInvite = Boolean(
+    safeUser
+    && focusFriendInviteUsername
+    && safeUser.username.trim().toLowerCase() === focusFriendInviteUsername,
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1309,6 +1520,37 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     });
   }, [activeTab, isOpen]);
 
+  const registerFocusFriendsPageButton = useCallback((page: FocusFriendsPage, node: HTMLButtonElement | null) => {
+    if (node) focusFriendsTabButtonRefsRef.current.set(page, node);
+    else focusFriendsTabButtonRefsRef.current.delete(page);
+  }, []);
+
+  const updateFocusFriendsTabIndicator = useCallback(() => {
+    if (!isOpen || displayedTab !== 'account') {
+      setFocusFriendsTabIndicatorStyle((prev) => (prev.opacity === 0 ? prev : { ...prev, opacity: 0 }));
+      return;
+    }
+
+    const activeButton = focusFriendsTabButtonRefsRef.current.get(focusFriendsPage);
+    if (!activeButton) {
+      setFocusFriendsTabIndicatorStyle((prev) => (prev.opacity === 0 ? prev : { ...prev, opacity: 0 }));
+      return;
+    }
+
+    const nextLeft = activeButton.offsetLeft;
+    const nextWidth = activeButton.offsetWidth;
+    setFocusFriendsTabIndicatorStyle((prev) => {
+      if (
+        prev.opacity === 1
+        && Math.abs(prev.left - nextLeft) < 0.5
+        && Math.abs(prev.width - nextWidth) < 0.5
+      ) {
+        return prev;
+      }
+      return { left: nextLeft, width: nextWidth, opacity: 1 };
+    });
+  }, [displayedTab, focusFriendsPage, isOpen]);
+
   const scrollActiveSettingsTabIntoView = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const activeButton = settingsTabButtonRefsRef.current.get(activeTab);
     if (!activeButton) return;
@@ -1327,6 +1569,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setSettingsPanelTransitionDirection('forward');
     if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = 0;
   }, [clearSettingsPanelTransitionTimeout]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const inviteUsername = getFocusFriendInviteUsernameFromCurrentUrl();
+    if (!inviteUsername) return;
+    setFocusFriendInviteUsername(inviteUsername);
+    setFocusFriendsPage('add');
+    setAuthLocalError(null);
+    syncDisplayedTabImmediately('account');
+  }, [isOpen, syncDisplayedTabImmediately]);
 
   const scrollCategorySettingsSectionIntoView = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const body = settingsBodyRef.current;
@@ -1468,6 +1720,35 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       resizeObserver?.disconnect();
     };
   }, [activeTab, isOpen, scrollActiveSettingsTabIntoView, updateSettingsTabIndicator]);
+
+  useLayoutEffect(() => {
+    updateFocusFriendsTabIndicator();
+  }, [displayedTab, focusFriendsPage, isOpen, updateFocusFriendsTabIndicator]);
+
+  useEffect(() => {
+    if (!isOpen || displayedTab !== 'account') return;
+
+    const tabList = focusFriendsTabListRef.current;
+    const activeButton = focusFriendsTabButtonRefsRef.current.get(focusFriendsPage);
+    if (!tabList || !activeButton) return;
+
+    const frameId = requestAnimationFrame(updateFocusFriendsTabIndicator);
+    const handleResize = () => updateFocusFriendsTabIndicator();
+    window.addEventListener('resize', handleResize);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(updateFocusFriendsTabIndicator);
+      resizeObserver.observe(tabList);
+      resizeObserver.observe(activeButton);
+    }
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', handleResize);
+      resizeObserver?.disconnect();
+    };
+  }, [displayedTab, focusFriendsPage, isOpen, updateFocusFriendsTabIndicator]);
 
   useEffect(() => {
     return () => {
@@ -1612,15 +1893,89 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setJoinDraftConfig({ ...DEFAULT_GROUP_CONFIG });
   }, [isOpen, safeUser?.username, safeUserName, safeGroupSessionId, safeHostSyncConfig, safeClientSyncConfig]);
 
+  const clearFocusFriendEncouragementConfirmationTimer = useCallback(() => {
+    if (focusFriendEncouragementConfirmationTimeoutRef.current !== null) {
+      clearTimeout(focusFriendEncouragementConfirmationTimeoutRef.current);
+      focusFriendEncouragementConfirmationTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearFocusFriendEncouragementConfirmation = useCallback(() => {
+    clearFocusFriendEncouragementConfirmationTimer();
+    setFocusFriendEncouragementConfirmation(null);
+  }, [clearFocusFriendEncouragementConfirmationTimer]);
+
+  const showFocusFriendEncouragementConfirmation = useCallback((username: string, message: string) => {
+    clearFocusFriendEncouragementConfirmationTimer();
+    setFocusFriendEncouragementConfirmation({ username, message, phase: 'visible' });
+    focusFriendEncouragementConfirmationTimeoutRef.current = setTimeout(() => {
+      setFocusFriendEncouragementConfirmation(current => (
+        current?.username === username && current.message === message
+          ? { ...current, phase: 'leaving' }
+          : current
+      ));
+      focusFriendEncouragementConfirmationTimeoutRef.current = setTimeout(() => {
+        setFocusFriendEncouragementConfirmation(current => (
+          current?.username === username && current.message === message ? null : current
+        ));
+        focusFriendEncouragementConfirmationTimeoutRef.current = null;
+      }, FOCUS_FRIEND_CONFIRMATION_EXIT_MS);
+    }, FOCUS_FRIEND_CONFIRMATION_VISIBLE_MS);
+  }, [clearFocusFriendEncouragementConfirmationTimer]);
+
+  useEffect(() => () => clearFocusFriendEncouragementConfirmationTimer(), [clearFocusFriendEncouragementConfirmationTimer]);
+
   useEffect(() => {
     if (!isOpen) return;
     if (safeUser) {
       setUsernameInput(safeUser.username);
       setPasswordInput('');
       setAuthLocalError(null);
-      setFocusFriendsPage('friends');
+      setFocusFriendsPage(focusFriendInviteUsername ? 'add' : 'friends');
+      setFocusFriendEncouragementMenuUsername(null);
+      setFocusFriendEncouragementMenuPlacement('down');
+      setFocusFriendEncouragementOptions({});
+      clearFocusFriendEncouragementConfirmation();
     }
-  }, [isOpen, safeUser]);
+  }, [clearFocusFriendEncouragementConfirmation, focusFriendInviteUsername, isOpen, safeUser]);
+
+  useEffect(() => {
+    setFocusFriendEncouragementMenuUsername(null);
+    setFocusFriendEncouragementMenuPlacement('down');
+    clearFocusFriendEncouragementConfirmation();
+  }, [clearFocusFriendEncouragementConfirmation, focusFriendsPage]);
+
+  useEffect(() => {
+    if (!isOpen || displayedTab !== 'account') {
+      setFocusFriendEncouragementMenuUsername(null);
+      setFocusFriendEncouragementMenuPlacement('down');
+      clearFocusFriendEncouragementConfirmation();
+    }
+  }, [clearFocusFriendEncouragementConfirmation, displayedTab, isOpen]);
+
+  useEffect(() => {
+    if (!focusFriendEncouragementMenuUsername) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-focus-friend-encouragement-menu="true"]')) return;
+      setFocusFriendEncouragementMenuUsername(null);
+      setFocusFriendEncouragementMenuPlacement('down');
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setFocusFriendEncouragementMenuUsername(null);
+        setFocusFriendEncouragementMenuPlacement('down');
+      }
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [focusFriendEncouragementMenuUsername]);
 
   const updateTimerSettings = (patch: Partial<TimerSettings>) => {
     const nextSettings = { ...settings, ...patch };
@@ -1803,8 +2158,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     busyAction: FocusFriendBusyAction,
     action: () => Promise<{ ok: boolean; error: string | null }>,
     successMessage: string,
-  ) => {
-    if (focusFriendBusyAction) return;
+  ): Promise<boolean> => {
+    if (focusFriendBusyAction) return false;
     setFocusFriendBusyAction(busyAction);
     setAuthLocalError(null);
     setAccountMessage(null);
@@ -1812,11 +2167,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       const result = await action();
       if (result.ok) {
         setAccountMessage(successMessage);
+        return true;
       } else {
         setAuthLocalError(result.error || 'Focus Friends action failed.');
+        return false;
       }
     } catch (error) {
       setAuthLocalError(error instanceof Error ? error.message : 'Focus Friends action failed.');
+      return false;
     } finally {
       setFocusFriendBusyAction(null);
     }
@@ -1854,6 +2212,27 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setFocusFriendUsernameInput('');
   };
 
+  const handleCopyFocusFriendInviteLink = async () => {
+    if (!focusFriendInviteUrl) {
+      setAuthLocalError('Sign in to copy a Focus Friend invite link.');
+      return;
+    }
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable.');
+      }
+      await navigator.clipboard.writeText(focusFriendInviteUrl);
+      setFocusFriendInviteCopied(true);
+      setAuthLocalError(null);
+      setAccountMessage('Invite link copied.');
+      window.setTimeout(() => setFocusFriendInviteCopied(false), 1600);
+    } catch {
+      setFocusFriendInviteCopied(false);
+      setAuthLocalError('Could not copy automatically. Select the link and copy it manually.');
+    }
+  };
+
   const handleAcceptFocusFriendRequest = (request: FocusFriendRequest) => {
     void runFocusFriendAction(
       `accept:${request.id}`,
@@ -1861,6 +2240,51 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       `${request.fromDisplayName || request.fromUsername} is now a Focus Friend.`,
     );
   };
+
+  const handleAcceptFocusFriendInvite = async (rawUsername: string) => {
+    const username = normalizeFocusFriendInviteUsername(rawUsername);
+    if (!username) {
+      setAuthLocalError('This Focus Friend invite link is invalid.');
+      return false;
+    }
+    if (!safeUser) {
+      setAuthMode('login');
+      setFocusFriendsPage('add');
+      syncDisplayedTabImmediately('account');
+      setAuthLocalError('Sign in or create an account to auto add this Focus Friend.');
+      return false;
+    }
+    if (username === safeUser.username.trim().toLowerCase()) {
+      setAuthLocalError('You cannot use your own Focus Friend invite.');
+      setFocusFriendInviteUsername(null);
+      removeFocusFriendInviteParamsFromCurrentUrl();
+      return false;
+    }
+    if (isPreviewAccount) {
+      setAuthLocalError('Focus Friend invites need a syncing account.');
+      return false;
+    }
+
+    const accepted = await runFocusFriendAction(
+      `accept-invite:${username}`,
+      () => acceptFocusFriendInvite(username),
+      `@${username} added as a Focus Friend.`,
+    );
+    if (accepted) {
+      setFocusFriendInviteUsername(null);
+      setFocusFriendsPage('friends');
+      removeFocusFriendInviteParamsFromCurrentUrl();
+    }
+    return accepted;
+  };
+
+  useEffect(() => {
+    if (!isOpen || !focusFriendInviteUsername || !safeUser || isPreviewAccount || focusFriendBusyAction !== null) return;
+    const inviteKey = `${safeUser.username.trim().toLowerCase()}:${focusFriendInviteUsername}`;
+    if (focusFriendInviteAutoAddKeyRef.current === inviteKey) return;
+    focusFriendInviteAutoAddKeyRef.current = inviteKey;
+    void handleAcceptFocusFriendInvite(focusFriendInviteUsername);
+  }, [focusFriendBusyAction, focusFriendInviteUsername, isOpen, isPreviewAccount, safeUser?.username]);
 
   const handleDeclineFocusFriendRequest = (request: FocusFriendRequest) => {
     void runFocusFriendAction(
@@ -1870,23 +2294,55 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     );
   };
 
-  const handleRemoveFocusFriend = (friend: FocusFriend) => {
-    void runFocusFriendAction(
-      `remove:${friend.username}`,
-      () => removeFocusFriend(friend.username),
-      `${friend.displayName || friend.username} removed from Focus Friends.`,
-    );
+  const getFocusFriendEncouragementMenuPlacement = (trigger: HTMLElement): FocusFriendEncouragementMenuPlacement => {
+    const settingsBody = trigger.closest('.settings-body');
+    const focusFriendsPanel = trigger.closest('.doro-focus-friends-panel');
+    const bodyRect = settingsBody?.getBoundingClientRect();
+    const panelRect = focusFriendsPanel?.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    const estimatedMenuHeight = 240;
+    const boundaryTop = Math.max(bodyRect?.top ?? 0, panelRect?.top ?? 0);
+    const boundaryBottom = Math.min(bodyRect?.bottom ?? window.innerHeight, panelRect?.bottom ?? window.innerHeight);
+    const spaceBelow = boundaryBottom - triggerRect.bottom;
+    const spaceAbove = triggerRect.top - boundaryTop;
+    return spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow ? 'up' : 'down';
   };
 
-  const handleSendFocusFriendEncouragement = (friend: FocusFriend) => {
-    const draft = focusFriendDrafts[friend.username]?.trim();
-    const message = draft || 'You are doing great. Keep going.';
-    void runFocusFriendAction(
-      `encourage:${friend.username}`,
-      () => sendFocusFriendEncouragement(friend.username, message),
-      `Encouragement sent to ${friend.displayName || friend.username}.`,
-    );
-    setFocusFriendDrafts(prev => ({ ...prev, [friend.username]: '' }));
+  const handleToggleFocusFriendEncouragementMenu = (friend: FocusFriend, trigger: HTMLElement) => {
+    if (focusFriendBusyAction !== null) return;
+    setAuthLocalError(null);
+    clearFocusFriendEncouragementConfirmation();
+    if (focusFriendEncouragementMenuUsername === friend.username) {
+      setFocusFriendEncouragementMenuUsername(null);
+      setFocusFriendEncouragementMenuPlacement('down');
+      return;
+    }
+
+    setFocusFriendEncouragementOptions(prev => ({
+      ...prev,
+      [friend.username]: buildFocusFriendEncouragementOptions(friend),
+    }));
+    setFocusFriendEncouragementMenuPlacement(getFocusFriendEncouragementMenuPlacement(trigger));
+    setFocusFriendEncouragementMenuUsername(friend.username);
+  };
+
+  const handleSendFocusFriendEncouragement = (friend: FocusFriend, rawMessage: string) => {
+    const message = rawMessage.trim();
+    if (!message) {
+      setAuthLocalError('Encouragement could not be prepared.');
+      return;
+    }
+    setFocusFriendEncouragementMenuUsername(null);
+    setFocusFriendEncouragementMenuPlacement('down');
+    clearFocusFriendEncouragementConfirmation();
+    void (async () => {
+      const sent = await runFocusFriendAction(
+        `encourage:${friend.username}`,
+        () => sendFocusFriendEncouragement(friend.username, message),
+        `Encouragement sent to ${friend.displayName || friend.username}.`,
+      );
+      if (sent) showFocusFriendEncouragementConfirmation(friend.username, message);
+    })();
   };
 
   const handleRequestFocusFriendJoin = (friend: FocusFriend) => {
@@ -2667,65 +3123,28 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       </div>
     );
 
-    const getFriendStatusMeta = (friend: FocusFriend) => {
-      switch (friend.presence.status) {
-        case 'focusing':
-          return {
-            label: 'Focusing',
-            className: isLightTheme
-              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-              : 'border-emerald-400/25 bg-emerald-400/12 text-emerald-100',
-          };
-        case 'break':
-          return {
-            label: 'On Break',
-            className: isLightTheme
-              ? 'border-sky-200 bg-sky-50 text-sky-700'
-              : 'border-sky-400/25 bg-sky-400/12 text-sky-100',
-          };
-        case 'paused':
-          return {
-            label: 'Paused',
-            className: isLightTheme
-              ? 'border-amber-200 bg-amber-50 text-amber-700'
-              : 'border-amber-300/25 bg-amber-300/12 text-amber-100',
-          };
-        case 'grace':
-          return {
-            label: 'Grace',
-            className: isLightTheme
-              ? 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700'
-              : 'border-fuchsia-300/25 bg-fuchsia-300/12 text-fuchsia-100',
-          };
-        case 'offline':
-          return {
-            label: 'Offline',
-            className: isLightTheme
-              ? 'border-slate-200 bg-slate-50 text-slate-500'
-              : 'border-white/10 bg-white/[0.03] text-white/45',
-          };
-        case 'idle':
-        default:
-          return {
-            label: 'Idle',
-            className: isLightTheme
-              ? 'border-slate-200 bg-white text-slate-600'
-              : 'border-white/10 bg-white/[0.04] text-white/58',
-          };
-      }
+    const getFocusFriendLastActiveLabel = (friend: FocusFriend) => {
+      const relative = formatRelativeTimeFromMs(friend.presence.updatedAtMs);
+      if (relative === 'Never') return 'Last active unknown';
+      if (relative === 'Just now') return 'Last active just now';
+      return `Last active ${relative}`;
     };
 
     const getFriendTimerMeta = (friend: FocusFriend) => {
       const timer = friend.presence.timer;
       const estimate = getTimerShareEstimateFromSpectatorState(timer, focusFriendsNowMs);
-      const activeLabel = timer?.activeMode === 'break' ? 'Break timer' : 'Focus timer';
+      const isBreak = friend.presence.status === 'break' || timer?.activeMode === 'break';
+      const pomoMeta = getFocusFriendPomoMeta(friend);
+      const inactiveDetailLabel = friend.presence.status === 'idle' || friend.presence.status === 'offline'
+        ? getFocusFriendLastActiveLabel(friend)
+        : null;
       return {
-        activeLabel,
         remainingLabel: formatTimerShareDuration(estimate.remainingSeconds),
-        endLabel: formatTimerShareEndLabel(estimate.endMs, estimate.status === 'idle' ? 'Not running' : 'No end time'),
-        taskLabel: timer?.activeTaskName || 'No selected task',
-        categoryLabel: timer?.activeCategoryName || 'Uncategorized',
-        categoryColor: timer?.activeCategoryColor || timer?.activeColor || accountPrimaryColor,
+        detailLabel: inactiveDetailLabel || formatTimerShareEndLabel(estimate.endMs, estimate.status === 'idle' ? 'Not running' : 'No end time'),
+        taskLabel: isBreak ? '' : timer?.activeTaskName || 'No selected task',
+        categoryLabel: isBreak ? 'Break' : timer?.activeCategoryName || 'Uncategorized',
+        categoryColor: isBreak ? PRESET_COLORS[1] : timer?.activeCategoryColor || timer?.activeColor || accountPrimaryColor,
+        pomoLabel: pomoMeta.displayLabel,
         status: estimate.status,
       };
     };
@@ -2741,11 +3160,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const focusFriendMutedTextClassName = isLightTheme ? 'text-slate-500' : 'text-white/45';
     const focusFriendBodyTextClassName = isLightTheme ? 'text-slate-700' : 'text-white/66';
     const focusFriendStrongTextClassName = isLightTheme ? 'text-slate-950' : 'text-white';
-    const focusFriendInputClassName = `min-h-10 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-[background-color,border-color,color] duration-200 ${
-      isLightTheme
-        ? 'border-slate-200 bg-white text-slate-950 placeholder-slate-400 focus:border-slate-400'
-        : 'border-white/[0.08] bg-white/[0.035] text-white placeholder-white/25 focus:border-white/[0.16] focus:bg-white/[0.055]'
-    }`;
     const focusFriendButtonBaseClassName = 'doro-focus-friend-button inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-center text-[10px] font-bold uppercase tracking-[0.12em] transition-[background-color,border-color,color,transform] duration-200 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45';
     const focusFriendPrimaryButtonClassName = `${focusFriendButtonBaseClassName} ${
       isLightTheme
@@ -2762,36 +3176,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         ? 'border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100/70'
         : 'border-red-400/18 bg-red-500/[0.035] text-red-100/72 hover:border-red-300/22 hover:bg-red-500/[0.07] hover:text-red-100'
     }`;
-    const getFocusFriendPageButtonClassName = (page: 'friends' | 'add') => {
+    const getFocusFriendPageButtonClassName = (page: FocusFriendsPage) => {
       const active = focusFriendsPage === page;
-      return `inline-flex h-9 items-center justify-center rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.12em] transition-[background-color,border-color,color] duration-200 ${
-        active
-          ? isLightTheme
-            ? 'border-slate-900 bg-slate-950 text-white'
-            : 'border-white bg-white text-slate-950'
-          : isLightTheme
-            ? 'border-transparent bg-transparent text-slate-500 hover:text-slate-950'
-            : 'border-transparent bg-transparent text-white/50 hover:text-white'
+      return `settings-tab-btn doro-focus-friends-tab-btn flex-1 py-3 px-4 font-bold text-[10px] uppercase tracking-[0.16em] whitespace-nowrap ${
+        active ? 'is-active' : ''
       }`;
     };
-    const getFocusFriendStatusDotClassName = (friend: FocusFriend) => {
-      switch (friend.presence.status) {
-        case 'focusing':
-          return 'bg-emerald-400';
-        case 'break':
-          return 'bg-sky-400';
-        case 'paused':
-          return 'bg-amber-300';
-        case 'grace':
-          return 'bg-fuchsia-300';
-        case 'offline':
-          return isLightTheme ? 'bg-slate-300' : 'bg-white/30';
-        case 'idle':
-        default:
-          return isLightTheme ? 'bg-slate-400' : 'bg-white/42';
-      }
-    };
-
     const renderFocusFriendRequest = (request: FocusFriendRequest, index = 0) => (
       <div
         key={request.id}
@@ -2911,16 +3301,17 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     };
 
     const renderFocusFriendCard = (friend: FocusFriend, index = 0) => {
-      const statusMeta = getFriendStatusMeta(friend);
       const timerMeta = getFriendTimerMeta(friend);
-      const draft = focusFriendDrafts[friend.username] || '';
       const canRequestJoin = friend.presence.status !== 'idle' && friend.presence.status !== 'offline';
-      const friendBusy = focusFriendBusyAction?.endsWith(`:${friend.username}`) || focusFriendBusyAction === 'refresh';
+      const encouragementOptions = focusFriendEncouragementOptions[friend.username] || [];
+      const encouragementMenuOpen = focusFriendEncouragementMenuUsername === friend.username;
+      const encouragementConfirmationVisible = focusFriendEncouragementConfirmation?.username === friend.username;
 
       return (
-        <details
+        <div
           key={friend.username}
-          className={`${focusFriendRowClassName} doro-focus-friend-card ${canRequestJoin ? 'doro-focus-friend-card-active' : ''} group outline-none`}
+          className={`${focusFriendRowClassName} doro-focus-friend-card ${canRequestJoin ? 'doro-focus-friend-card-active' : ''} ${encouragementMenuOpen ? 'doro-focus-friend-card-menu-open' : ''} group outline-none`}
+          tabIndex={0}
           style={{
             animationDelay: `${110 + (index * 45)}ms`,
             ['--doro-focus-friend-accent' as string]: timerMeta.categoryColor,
@@ -2928,100 +3319,129 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             borderLeftWidth: '3px',
           } as React.CSSProperties}
         >
-          <summary className="list-none cursor-pointer select-none outline-none [&::-webkit-details-marker]:hidden">
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,0.9fr)_auto] md:items-center">
-              <div className="flex min-w-0 items-center gap-3">
-                <div
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-bold uppercase ${
-                    isLightTheme ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-white/[0.08] bg-white/[0.035] text-white/68'
-                  }`}
-                >
-                  {(friend.displayName || friend.username).slice(0, 1)}
-                </div>
-                <div className="min-w-0">
-                  <div className={`truncate text-sm font-bold leading-tight ${focusFriendStrongTextClassName}`}>
-                    {friend.displayName || friend.username}
-                  </div>
-                  <div className={`mt-0.5 truncate text-xs ${focusFriendMutedTextClassName}`}>
-                    @{friend.username}
-                  </div>
-                </div>
+          <div className="grid gap-3 md:grid-cols-[minmax(12rem,0.75fr)_minmax(16rem,1fr)_auto] md:items-center">
+            <div className="flex min-w-0 items-center gap-3">
+              <div
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-bold uppercase ${
+                  isLightTheme ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-white/[0.08] bg-white/[0.035] text-white/68'
+                }`}
+              >
+                {(friend.displayName || friend.username).slice(0, 1)}
               </div>
-
               <div className="min-w-0">
-                <div className={`flex min-w-0 items-center gap-2 text-sm ${focusFriendStrongTextClassName}`}>
-                  <TimerIcon size={14} className={`shrink-0 ${focusFriendMutedTextClassName}`} />
-                  <span className="shrink-0 font-mono font-bold">{timerMeta.remainingLabel}</span>
-                  <span className={`shrink-0 ${focusFriendMutedTextClassName}`}>/</span>
-                  <span className="truncate font-medium">{timerMeta.taskLabel}</span>
+                <div className={`truncate text-sm font-bold leading-tight ${focusFriendStrongTextClassName}`}>
+                  {friend.displayName || friend.username}
                 </div>
-                <div className={`mt-1 flex min-w-0 items-center gap-2 text-xs ${focusFriendMutedTextClassName}`}>
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: timerMeta.categoryColor }} />
-                  <span className="truncate">{timerMeta.categoryLabel}</span>
-                  <span className="shrink-0">/</span>
-                  <span className="truncate">{timerMeta.endLabel}</span>
+                <div className={`mt-0.5 truncate text-xs ${focusFriendMutedTextClassName}`}>
+                  @{friend.username}
                 </div>
-              </div>
-
-              <div className="flex min-w-0 items-center justify-between gap-2 md:justify-end">
-                <div className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] ${statusMeta.className}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${getFocusFriendStatusDotClassName(friend)}`} />
-                  {statusMeta.label}
-                </div>
-                <ChevronDown
-                  size={16}
-                  strokeWidth={2.2}
-                  className={`doro-focus-friend-chevron shrink-0 transition-transform duration-200 ${focusFriendMutedTextClassName}`}
-                  aria-hidden="true"
-                />
               </div>
             </div>
-          </summary>
 
-          <div className={`doro-focus-friend-actions mt-3 grid gap-2 border-t pt-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] ${
-            isLightTheme ? 'border-slate-200/70' : 'border-white/[0.07]'
-          }`}>
-            <input
-              type="text"
-              maxLength={160}
-              value={draft}
-              onChange={event => setFocusFriendDrafts(prev => ({ ...prev, [friend.username]: event.target.value }))}
-              placeholder="Send encouragement"
-              className={focusFriendInputClassName}
-            />
-            <button
-              type="button"
-              onClick={() => handleSendFocusFriendEncouragement(friend)}
-              disabled={focusFriendBusyAction !== null}
-              className={focusFriendNeutralButtonClassName}
-              aria-label={`Send encouragement to ${friend.username}`}
-            >
-              <Heart size={14} strokeWidth={2.35} />
-              Send
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRequestFocusFriendJoin(friend)}
-              disabled={focusFriendBusyAction !== null || !canRequestJoin}
-              className={focusFriendNeutralButtonClassName}
-              aria-label={`Request to join ${friend.username}'s focus session`}
-              title={canRequestJoin ? 'Request to join' : 'No active session'}
-            >
-              <Send size={14} strokeWidth={2.35} />
-              Join
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRemoveFocusFriend(friend)}
-              disabled={focusFriendBusyAction !== null || Boolean(friendBusy)}
-              className={focusFriendDangerButtonClassName}
-              aria-label={`Remove ${friend.username} from Focus Friends`}
-            >
-              <UserMinus size={14} strokeWidth={2.35} />
-              Remove
-            </button>
+            <div className="min-w-0">
+              <div className={`flex min-w-0 items-center gap-2 text-sm ${focusFriendStrongTextClassName}`}>
+                <TimerIcon size={14} className={`shrink-0 ${focusFriendMutedTextClassName}`} />
+                <span className="shrink-0 font-mono font-bold">{timerMeta.remainingLabel}</span>
+                {timerMeta.pomoLabel ? (
+                  <>
+                    <span className={`shrink-0 ${focusFriendMutedTextClassName}`}>/</span>
+                    <span className="shrink-0 font-medium">{timerMeta.pomoLabel}</span>
+                  </>
+                ) : null}
+                {timerMeta.taskLabel ? (
+                  <>
+                    <span className={`shrink-0 ${focusFriendMutedTextClassName}`}>/</span>
+                    <span className="truncate font-medium">{timerMeta.taskLabel}</span>
+                  </>
+                ) : null}
+              </div>
+              <div className={`mt-1 flex min-w-0 items-center gap-2 text-xs ${focusFriendMutedTextClassName}`}>
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: timerMeta.categoryColor }} />
+                <span className="truncate">{timerMeta.categoryLabel}</span>
+                <span className="shrink-0">/</span>
+                <span className="truncate">{timerMeta.detailLabel}</span>
+              </div>
+            </div>
+
+            <div className="doro-focus-friend-hover-actions flex min-w-0 flex-wrap items-center justify-start gap-2 md:justify-end">
+              <div
+                className="doro-focus-friend-encouragement relative"
+                data-focus-friend-encouragement-menu="true"
+              >
+                <button
+                  type="button"
+                  onPointerDown={event => event.stopPropagation()}
+                  onClick={event => {
+                    event.stopPropagation();
+                    handleToggleFocusFriendEncouragementMenu(friend, event.currentTarget);
+                  }}
+                  disabled={focusFriendBusyAction !== null}
+                  className={`${focusFriendNeutralButtonClassName} doro-focus-friend-hover-button doro-focus-friend-icon-button ${encouragementMenuOpen ? 'is-open' : ''}`}
+                  aria-haspopup="listbox"
+                  aria-expanded={encouragementMenuOpen}
+                  aria-label={`Choose encouragement for ${friend.username}`}
+                  data-tooltip="Encourage"
+                  title="Encourage"
+                >
+                  <Heart size={15} strokeWidth={2.35} aria-hidden="true" />
+                </button>
+                {encouragementMenuOpen && (
+                  <div
+                    className={`doro-focus-friend-encouragement-menu ${
+                      focusFriendEncouragementMenuPlacement === 'up' ? 'doro-focus-friend-encouragement-menu-up' : ''
+                    }`}
+                    role="listbox"
+                    aria-label={`Encouragement options for ${friend.username}`}
+                  >
+                    {encouragementOptions.map(prompt => (
+                      <button
+                        key={`${prompt.kind}:${prompt.message}`}
+                        type="button"
+                        role="option"
+                        data-kind={prompt.kind}
+                        onClick={event => {
+                          event.stopPropagation();
+                          handleSendFocusFriendEncouragement(friend, prompt.message);
+                        }}
+                        disabled={focusFriendBusyAction !== null}
+                        className="doro-focus-friend-encouragement-option"
+                      >
+                        {prompt.message}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onPointerDown={event => event.stopPropagation()}
+                onClick={event => {
+                  event.stopPropagation();
+                  handleRequestFocusFriendJoin(friend);
+                }}
+                disabled={focusFriendBusyAction !== null || !canRequestJoin}
+                className={`${focusFriendNeutralButtonClassName} doro-focus-friend-hover-button doro-focus-friend-icon-button`}
+                aria-label={`Request to join ${friend.username}'s focus session`}
+                data-tooltip={canRequestJoin ? 'Join' : 'No active session'}
+                title={canRequestJoin ? 'Request to join' : 'No active session'}
+              >
+                <Send size={15} strokeWidth={2.35} aria-hidden="true" />
+              </button>
+            </div>
           </div>
-        </details>
+          {encouragementConfirmationVisible ? (
+            <div
+              className={`doro-focus-friend-confirmation mt-3 flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${
+                focusFriendEncouragementConfirmation?.phase === 'leaving' ? 'doro-focus-friend-confirmation-leaving' : ''
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              <Heart size={15} strokeWidth={2.45} className="doro-focus-friend-confirmation-heart shrink-0" aria-hidden="true" />
+              <span className="relative z-[1]">Encouragement sent</span>
+            </div>
+          ) : null}
+        </div>
       );
     };
 
@@ -3088,31 +3508,73 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
           style={accountOverviewSectionStyle}
         >
+          <div className="relative space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className={`${overviewHeadingClassName} mt-0`}>Lifetime totals</div>
+              </div>
+            </div>
+
+            <div className={accountOverviewGridClassName}>
+              {statCards.map((card, index) => renderAccountOverviewCard(card, index))}
+            </div>
+          </div>
+        </div>
+
+        <AccountInsights
+          logs={safeLogs}
+          categories={safeCategories}
+          joinedAt={safeUser.joinedAt}
+          accentColor={accountPrimaryColor}
+          isLightTheme={isLightTheme}
+          showTodayStats={false}
+        />
+
+        <div
+          className={`doro-focus-friends-panel relative overflow-visible rounded-[1.7rem] border p-5 md:p-6 ${
+            focusFriendEncouragementMenuUsername ? 'doro-focus-friends-panel-menu-open' : ''
+          }`}
+          style={accountOverviewSectionStyle}
+        >
           <div className="doro-focus-friends-section relative space-y-4" aria-busy={focusFriendsLoading}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className={`${overviewHeadingClassName} mt-0 flex items-center gap-2`}>
                 <Users size={18} />
                 Focus Friends
               </div>
-              <div className={`grid grid-cols-2 gap-1 rounded-lg border p-1 ${
-                isLightTheme ? 'border-slate-200/80 bg-slate-50/60' : 'border-white/[0.075] bg-white/[0.025]'
-              }`}>
-                <button
-                  type="button"
-                  onClick={() => setFocusFriendsPage('friends')}
-                  className={getFocusFriendPageButtonClassName('friends')}
-                  aria-pressed={focusFriendsPage === 'friends'}
+              <div className="settings-tabbar doro-focus-friends-tabbar flex shrink-0">
+                <div
+                  ref={focusFriendsTabListRef}
+                  className="settings-tablist doro-focus-friends-tablist relative flex min-w-full"
                 >
-                  Friends
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFocusFriendsPage('add')}
-                  className={getFocusFriendPageButtonClassName('add')}
-                  aria-pressed={focusFriendsPage === 'add'}
-                >
-                  Add{focusFriendAddBadgeCount > 0 ? ` ${focusFriendAddBadgeCount}` : ''}
-                </button>
+                  <div
+                    aria-hidden="true"
+                    className="settings-tab-indicator doro-focus-friends-tab-indicator"
+                    style={{
+                      width: focusFriendsTabIndicatorStyle.width,
+                      opacity: focusFriendsTabIndicatorStyle.opacity,
+                      transform: `translate3d(${focusFriendsTabIndicatorStyle.left}px, 0, 0)`,
+                    }}
+                  />
+                  <button
+                    ref={(node) => registerFocusFriendsPageButton('friends', node)}
+                    type="button"
+                    onClick={() => setFocusFriendsPage('friends')}
+                    className={getFocusFriendPageButtonClassName('friends')}
+                    aria-pressed={focusFriendsPage === 'friends'}
+                  >
+                    <span className="settings-tab-label">Friends</span>
+                  </button>
+                  <button
+                    ref={(node) => registerFocusFriendsPageButton('add', node)}
+                    type="button"
+                    onClick={() => setFocusFriendsPage('add')}
+                    className={getFocusFriendPageButtonClassName('add')}
+                    aria-pressed={focusFriendsPage === 'add'}
+                  >
+                    <span className="settings-tab-label">Add{focusFriendAddBadgeCount > 0 ? ` ${focusFriendAddBadgeCount}` : ''}</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -3128,6 +3590,54 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
             ) : (
               <div className="space-y-3">
+                {focusFriendInviteUsername && (
+                  <div className={`${focusFriendRowClassName} flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`}>
+                    <div className="min-w-0">
+                      <div className={`truncate text-sm font-bold ${focusFriendStrongTextClassName}`}>
+                        @{focusFriendInviteUsername}
+                      </div>
+                      <div className={`mt-1 text-xs ${focusFriendMutedTextClassName}`}>
+                        {isOwnFocusFriendInvite ? 'This is your invite link.' : 'Invite ready.'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleAcceptFocusFriendInvite(focusFriendInviteUsername)}
+                      disabled={isPreviewAccount || isOwnFocusFriendInvite || focusFriendBusyAction !== null}
+                      className={focusFriendPrimaryButtonClassName}
+                    >
+                      <UserPlus size={16} />
+                      Auto add
+                    </button>
+                  </div>
+                )}
+
+                {focusFriendInviteUrl && (
+                  <div className={`${focusFriendInsetClassName} overflow-hidden p-2`}>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                      <input
+                        type="text"
+                        readOnly
+                        value={focusFriendInviteUrl}
+                        onFocus={event => event.currentTarget.select()}
+                        aria-label="Focus Friend invite link"
+                        className={`min-h-[2.75rem] w-full border-0 bg-transparent px-3.5 py-2 text-sm outline-none ${
+                          isLightTheme ? 'text-slate-700 placeholder:text-slate-400' : 'text-white/72 placeholder:text-white/25'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleCopyFocusFriendInviteLink}
+                        disabled={isPreviewAccount || focusFriendBusyAction !== null}
+                        className={focusFriendNeutralButtonClassName}
+                      >
+                        <LinkIcon size={16} />
+                        {focusFriendInviteCopied ? 'Copied' : 'Copy link'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <form onSubmit={handleSendFocusFriendRequest} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <div className={focusFriendInsetClassName}>
                     <input
@@ -3184,32 +3694,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             )}
           </div>
         </div>
-
-        <div
-          className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
-          style={accountOverviewSectionStyle}
-        >
-          <div className="relative space-y-3">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <div className={`${overviewHeadingClassName} mt-0`}>Lifetime totals</div>
-              </div>
-            </div>
-
-            <div className={accountOverviewGridClassName}>
-              {statCards.map((card, index) => renderAccountOverviewCard(card, index))}
-            </div>
-          </div>
-        </div>
-
-        <AccountInsights
-          logs={safeLogs}
-          categories={safeCategories}
-          joinedAt={safeUser.joinedAt}
-          accentColor={accountPrimaryColor}
-          isLightTheme={isLightTheme}
-          showTodayStats={false}
-        />
 
         <details
           className="group rounded-[1.7rem] border"
@@ -3296,6 +3780,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
           </div>
         </details>
+
       </div>
     );
   };
@@ -3318,6 +3803,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
 
           <form onSubmit={handleAuthSubmit} className="space-y-4">
+            {focusFriendInviteUsername && (
+              <div className="rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-3 text-sm leading-relaxed text-white/68">
+                Sign in or create an account to add <span className="font-semibold text-white">@{focusFriendInviteUsername}</span>.
+              </div>
+            )}
             {accountError && (
               <div className="rounded-2xl border border-red-500/28 bg-red-500/12 px-4 py-3 text-sm text-red-100">
                 {accountError}
@@ -4486,8 +4976,92 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             transform: translateY(0) scale(1);
           }
         }
+        @keyframes doro-focus-friend-love-in {
+          0% {
+            opacity: 0;
+            transform: translateY(10px) scale(0.955);
+            filter: saturate(0.85) blur(1px);
+          }
+          58% {
+            opacity: 1;
+            transform: translateY(-2px) scale(1.018);
+            filter: saturate(1.14) blur(0);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        @keyframes doro-focus-friend-love-out {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1) blur(0);
+          }
+          34% {
+            opacity: 1;
+            transform: translateY(-2px) scale(1.012);
+            filter: saturate(1.08) blur(0);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.965);
+            filter: saturate(0.86) blur(1px);
+          }
+        }
+        @keyframes doro-focus-friend-love-glow {
+          0%, 100% {
+            box-shadow: 0 16px 26px -24px rgba(248, 113, 113, 0.76), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+          }
+          50% {
+            box-shadow: 0 22px 34px -24px rgba(244, 63, 94, 0.92), 0 0 22px -14px rgba(251, 113, 133, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+          }
+        }
+        @keyframes doro-focus-friend-love-sheen {
+          0% {
+            transform: translateX(-130%) skewX(-18deg);
+          }
+          100% {
+            transform: translateX(130%) skewX(-18deg);
+          }
+        }
+        @keyframes doro-focus-friend-heart-beat {
+          0%, 100% {
+            transform: scale(1);
+          }
+          16% {
+            transform: scale(1.22);
+          }
+          30% {
+            transform: scale(0.96);
+          }
+          46% {
+            transform: scale(1.15);
+          }
+          68% {
+            transform: scale(1);
+          }
+        }
+        @keyframes doro-focus-friend-heart-farewell {
+          0% {
+            opacity: 1;
+            transform: scale(1) rotate(0deg);
+          }
+          38% {
+            opacity: 1;
+            transform: scale(1.26) rotate(-7deg);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(0.72) rotate(9deg);
+          }
+        }
         .doro-focus-friends-section {
           animation: doro-focus-friend-section-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-focus-friends-panel-menu-open {
+          z-index: 8;
         }
         .doro-focus-friend-item {
           animation: doro-focus-friend-item-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
@@ -4496,31 +5070,210 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-focus-friend-item:hover {
           transform: translateY(-1px);
         }
-        .doro-focus-friend-card > summary {
-          list-style: none;
-          outline: none;
-        }
-        .doro-focus-friend-card > summary::-webkit-details-marker {
-          display: none;
-        }
         .doro-focus-friend-card:focus {
           outline: none;
         }
-        .doro-focus-friend-card:focus-visible,
-        .doro-focus-friend-card > summary:focus-visible {
+        .doro-focus-friend-card:focus-visible {
           box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
         }
-        .doro-focus-friend-card[open] {
-          box-shadow: 0 18px 34px -32px rgba(0, 0, 0, 0.58);
+        .doro-focus-friend-card-menu-open {
+          position: relative;
+          z-index: 6;
         }
-        .doro-focus-friend-card[open] .doro-focus-friend-chevron {
-          transform: rotate(180deg);
+        .doro-focus-friend-hover-actions {
+          opacity: 0;
+          pointer-events: none;
+          transform: translateY(4px) scale(0.985);
+          transition: opacity 170ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
         }
-        .doro-focus-friend-actions {
-          animation: doro-focus-friend-section-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        .doro-focus-friend-card:hover .doro-focus-friend-hover-actions,
+        .doro-focus-friend-card:focus-within .doro-focus-friend-hover-actions,
+        .doro-focus-friend-card-menu-open .doro-focus-friend-hover-actions {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0) scale(1);
+        }
+        .doro-focus-friend-hover-button {
+          min-height: 2.35rem;
+          padding-inline: 0.78rem;
+        }
+        .doro-focus-friend-icon-button {
+          position: relative;
+          height: 2.35rem;
+          width: 2.35rem;
+          min-height: 2.35rem;
+          padding: 0;
+        }
+        .doro-focus-friend-icon-button::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          bottom: calc(100% + 0.48rem);
+          left: 50%;
+          z-index: 42;
+          max-width: 11rem;
+          transform: translate3d(-50%, 4px, 0) scale(0.96);
+          border-radius: 0.58rem;
+          padding: 0.42rem 0.56rem;
+          opacity: 0;
+          pointer-events: none;
+          white-space: nowrap;
+          font-size: 0.68rem;
+          font-weight: 800;
+          letter-spacing: 0;
+          line-height: 1;
+          text-transform: none;
+          transition: opacity 140ms ease, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-focus-friend-icon-button::before {
+          content: '';
+          position: absolute;
+          bottom: calc(100% + 0.23rem);
+          left: 50%;
+          z-index: 41;
+          height: 0.42rem;
+          width: 0.42rem;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(-50%, 4px, 0) rotate(45deg);
+          transition: opacity 140ms ease, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-focus-friend-icon-button:hover::after,
+        .doro-focus-friend-icon-button:focus-visible::after,
+        .doro-focus-friend-icon-button:hover::before,
+        .doro-focus-friend-icon-button:focus-visible::before {
+          opacity: 1;
+          transform: translate3d(-50%, 0, 0) scale(1);
+        }
+        .doro-focus-friend-icon-button.is-open::after,
+        .doro-focus-friend-icon-button.is-open::before {
+          opacity: 0;
+        }
+        .doro-settings-shell.theme-light .doro-focus-friend-icon-button::after,
+        .doro-settings-shell.theme-light .doro-focus-friend-icon-button::before {
+          background: rgba(15, 23, 42, 0.94);
+          color: white;
+          box-shadow: 0 12px 20px -18px rgba(15, 23, 42, 0.5);
+        }
+        .doro-settings-shell.theme-dark .doro-focus-friend-icon-button::after,
+        .doro-settings-shell.theme-dark .doro-focus-friend-icon-button::before {
+          background: rgba(246, 248, 252, 0.96);
+          color: rgba(15, 23, 42, 0.95);
+          box-shadow: 0 14px 24px -18px rgba(0, 0, 0, 0.78);
         }
         .doro-focus-friend-button:hover:not(:disabled) {
           transform: translateY(-1px);
+        }
+        .doro-focus-friend-confirmation {
+          position: relative;
+          overflow: hidden;
+          isolation: isolate;
+          border-color: rgba(251, 113, 133, 0.42);
+          color: rgba(255, 247, 247, 0.96);
+          background:
+            radial-gradient(circle at 12% 18%, rgba(255, 205, 213, 0.26), transparent 34%),
+            linear-gradient(135deg, rgba(127, 29, 29, 0.94), rgba(225, 29, 72, 0.8) 48%, rgba(244, 63, 94, 0.58));
+          animation:
+            doro-focus-friend-love-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both,
+            doro-focus-friend-love-glow 1200ms ease-in-out 120ms infinite;
+        }
+        .doro-focus-friend-confirmation::before {
+          content: '';
+          position: absolute;
+          inset: -30% -18%;
+          z-index: 0;
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.24), transparent);
+          animation: doro-focus-friend-love-sheen 1100ms ease-out 110ms both;
+        }
+        .doro-focus-friend-confirmation-heart {
+          position: relative;
+          z-index: 1;
+          fill: currentColor;
+          filter: drop-shadow(0 0 8px rgba(255, 175, 189, 0.68));
+          transform-origin: center;
+          animation: doro-focus-friend-heart-beat 820ms ease-in-out 120ms infinite;
+        }
+        .doro-focus-friend-confirmation-leaving {
+          pointer-events: none;
+          animation: doro-focus-friend-love-out 640ms cubic-bezier(0.42, 0, 0.2, 1) forwards;
+        }
+        .doro-focus-friend-confirmation-leaving::before {
+          animation: doro-focus-friend-love-sheen 560ms ease-out reverse both;
+        }
+        .doro-focus-friend-confirmation-leaving .doro-focus-friend-confirmation-heart {
+          animation: doro-focus-friend-heart-farewell 640ms cubic-bezier(0.42, 0, 0.2, 1) forwards;
+        }
+        .doro-focus-friend-encouragement {
+          position: relative;
+        }
+        .doro-focus-friend-encouragement-menu {
+          position: absolute;
+          inset: calc(100% + 0.45rem) 0 auto auto;
+          z-index: 40;
+          display: grid;
+          width: min(20rem, calc(100vw - 3rem));
+          gap: 0.18rem;
+          max-height: 17rem;
+          overflow-y: auto;
+          border-radius: 0.9rem;
+          border: 1px solid;
+          padding: 0.32rem;
+          animation: doro-focus-friend-section-in 150ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          backdrop-filter: blur(18px) saturate(165%);
+          -webkit-backdrop-filter: blur(18px) saturate(165%);
+        }
+        .doro-focus-friend-encouragement-menu-up {
+          inset: auto 0 calc(100% + 0.45rem) auto;
+        }
+        .doro-focus-friend-encouragement-option {
+          width: 100%;
+          border: 0;
+          border-radius: 0.68rem;
+          background: transparent;
+          padding: 0.68rem 0.76rem;
+          text-align: left;
+          font-size: 0.8125rem;
+          line-height: 1.25;
+          transition: background-color 160ms ease, color 160ms ease, transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-focus-friend-encouragement-option:hover,
+        .doro-focus-friend-encouragement-option:focus-visible {
+          transform: translateY(-1px);
+          outline: none;
+        }
+        .doro-settings-shell.theme-light .doro-focus-friend-encouragement-menu {
+          border-color: rgba(15, 23, 42, 0.12);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 248, 255, 0.9));
+          box-shadow: 0 20px 36px -28px rgba(45, 60, 88, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+        }
+        .doro-settings-shell.theme-light .doro-focus-friend-encouragement-option {
+          color: rgba(15, 23, 42, 0.7);
+        }
+        .doro-settings-shell.theme-light .doro-focus-friend-encouragement-option:hover,
+        .doro-settings-shell.theme-light .doro-focus-friend-encouragement-option:focus-visible {
+          background: rgba(15, 23, 42, 0.065);
+          color: rgba(15, 23, 42, 0.95);
+        }
+        .doro-settings-shell.theme-dark .doro-focus-friend-encouragement-menu {
+          border-color: rgba(255, 255, 255, 0.11);
+          background:
+            radial-gradient(circle at 24% 0%, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.02) 52%, transparent 100%),
+            linear-gradient(180deg, rgba(18, 24, 34, 0.98), rgba(10, 14, 22, 0.96));
+          box-shadow: 0 24px 38px -28px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+        .doro-settings-shell.theme-dark .doro-focus-friend-encouragement-option {
+          color: rgba(255, 255, 255, 0.68);
+        }
+        .doro-settings-shell.theme-dark .doro-focus-friend-encouragement-option:hover,
+        .doro-settings-shell.theme-dark .doro-focus-friend-encouragement-option:focus-visible {
+          background: rgba(255, 255, 255, 0.075);
+          color: rgba(255, 255, 255, 0.94);
+        }
+        @media (hover: none), (pointer: coarse) {
+          .doro-focus-friend-hover-actions {
+            opacity: 1;
+            pointer-events: auto;
+            transform: none;
+          }
         }
         @media (prefers-reduced-motion: reduce) {
           .doro-account-stat-card,
@@ -4528,7 +5281,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           .doro-focus-friends-section,
           .doro-focus-friend-item,
           .doro-focus-friend-card,
-          .doro-focus-friend-actions,
+          .doro-focus-friend-hover-actions,
+          .doro-focus-friend-confirmation,
+          .doro-focus-friend-confirmation::before,
+          .doro-focus-friend-confirmation-heart,
+          .doro-focus-friend-encouragement-menu,
           .doro-auto-start-sound-panel,
           .doro-auto-start-sound-panel-in,
           .doro-auto-start-sound-panel-out,
@@ -5473,6 +6230,52 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.18));
           color: rgba(255, 255, 255, 0.82);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 20px -24px rgba(0, 0, 0, 0.62);
+        }
+        .doro-focus-friends-tabbar {
+          width: min(13rem, 100%);
+          padding: 0.32rem !important;
+          gap: 0 !important;
+          border-radius: 0.92rem;
+          border: 1px solid;
+          overflow: visible;
+        }
+        .doro-focus-friends-tablist {
+          width: 100% !important;
+          min-width: 0 !important;
+          gap: 0.14rem !important;
+          padding: 0 !important;
+        }
+        .doro-focus-friends-tab-indicator {
+          top: 0;
+          bottom: 0;
+        }
+        .doro-focus-friends-tab-btn {
+          min-height: 2.35rem !important;
+          flex: 1 1 0 !important;
+          min-width: 0 !important;
+          width: auto !important;
+          padding: 0.62rem 0.72rem !important;
+          font-size: 0.625rem !important;
+          letter-spacing: 0.14em !important;
+          text-align: center;
+        }
+        .doro-focus-friends-tab-btn .settings-tab-label {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          line-height: 1;
+          white-space: nowrap;
+        }
+        .doro-settings-shell.theme-light .doro-focus-friends-tabbar {
+          border-color: rgba(255, 255, 255, 0.3) !important;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(245, 249, 255, 0.18)) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 16px 24px -26px rgba(77, 93, 123, 0.38);
+        }
+        .doro-settings-shell.theme-dark .doro-focus-friends-tabbar {
+          border-color: rgba(255, 255, 255, 0.08) !important;
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
+            linear-gradient(180deg, rgba(8, 12, 20, 0.82), rgba(8, 12, 20, 0.62)) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 16px 24px -26px rgba(0, 0, 0, 0.72);
         }
       `}</style>
 

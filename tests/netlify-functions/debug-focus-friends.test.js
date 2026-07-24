@@ -76,6 +76,7 @@ describe('debug Focus Friends accounts', () => {
       userName: 'Master',
       timerStarted: true,
       isIdle: false,
+      pomodoroCount: 1,
     });
 
     const master2Response = await authLoginHandler(makeLoginRequest('master2', 'master2'));
@@ -83,15 +84,17 @@ describe('debug Focus Friends accounts', () => {
     const master2Payload = await master2Response.json();
     expect(master2Payload.user.username).toBe('master2');
 
+    const expectedDebugAccountStates = {
+      master3: { timerStarted: true, isIdle: false },
+      master4: { timerStarted: false, isIdle: true },
+      master5: { timerStarted: false, isIdle: true },
+    };
     const extraDebugPayloads = await Promise.all(['master3', 'master4', 'master5'].map(async (username) => {
       const response = await authLoginHandler(makeLoginRequest(username, username));
       expect(response.status).toBe(200);
       const payload = await response.json();
       expect(payload.user.username).toBe(username);
-      expect(payload.accountData).toMatchObject({
-        timerStarted: true,
-        isIdle: false,
-      });
+      expect(payload.accountData).toMatchObject(expectedDebugAccountStates[username]);
       return payload;
     }));
 
@@ -107,6 +110,7 @@ describe('debug Focus Friends accounts', () => {
           timer: {
             activeTaskName: 'Test friend activity',
             activeCategoryName: 'Friend Testing',
+            pomodoroCount: 4,
           },
         },
       },
@@ -118,6 +122,7 @@ describe('debug Focus Friends accounts', () => {
           timer: {
             activeTaskName: 'Review request flow',
             activeCategoryName: 'Deep Work',
+            pomodoroCount: 2,
           },
         },
       },
@@ -125,7 +130,7 @@ describe('debug Focus Friends accounts', () => {
         username: 'master4',
         displayName: 'Master 4',
         presence: {
-          status: 'focusing',
+          status: 'idle',
           timer: {
             activeTaskName: 'Check session invites',
             activeCategoryName: 'Pair Focus',
@@ -136,11 +141,8 @@ describe('debug Focus Friends accounts', () => {
         username: 'master5',
         displayName: 'Master 5',
         presence: {
-          status: 'focusing',
-          timer: {
-            activeTaskName: 'Send friend nudges',
-            activeCategoryName: 'Encouragement',
-          },
+          status: 'offline',
+          timer: null,
         },
       },
     ]);
@@ -209,6 +211,42 @@ describe('debug Focus Friends accounts', () => {
     expect(secondLoginPayload.accountData).toMatchObject({
       userName: 'Custom Master',
       revision: 8,
+    });
+  });
+
+  it('repairs untouched debug fixture presence without replacing customized data', async () => {
+    await authLoginHandler(makeLoginRequest('master5', 'master5'));
+    const master5Record = await getUserByUsername('master5');
+    const staleMaster5Fixture = await getAccountData(master5Record.id);
+    staleMaster5Fixture.timerStarted = true;
+    staleMaster5Fixture.isIdle = false;
+    staleMaster5Fixture.updatedAt = new Date().toISOString();
+    staleMaster5Fixture.runtime = {
+      ...staleMaster5Fixture.runtime,
+      updatedAtMs: Date.now(),
+      phase: 'running-work',
+    };
+
+    const { saveAccountData } = await import('../../netlify/functions/_lib/account-store.js');
+    await saveAccountData(master5Record.id, staleMaster5Fixture);
+
+    const repairedResponse = await authLoginHandler(makeLoginRequest('master5', 'master5'));
+    expect(repairedResponse.status).toBe(200);
+    const repairedPayload = await repairedResponse.json();
+    expect(repairedPayload.accountData).toMatchObject({
+      timerStarted: false,
+      isIdle: true,
+    });
+
+    const masterResponse = await authLoginHandler(makeLoginRequest('master', 'master'));
+    const masterPayload = await masterResponse.json();
+    const masterFriendsResponse = await focusFriendsHandler(makeAuthedRequest(masterPayload.token));
+    const masterFriends = await masterFriendsResponse.json();
+    expect(masterFriends.friends.find((friend) => friend.username === 'master5')).toMatchObject({
+      presence: {
+        status: 'offline',
+        timer: null,
+      },
     });
   });
 

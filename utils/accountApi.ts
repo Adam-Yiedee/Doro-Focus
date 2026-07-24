@@ -127,6 +127,15 @@ export const acceptFocusFriendRequest = async (token: string, requestId: string)
   return payload as FocusFriendsState;
 };
 
+export const acceptFocusFriendInvite = async (token: string, username: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'accept-invite', username }),
+  });
+  return payload as FocusFriendsState;
+};
+
 export const declineFocusFriendRequest = async (token: string, requestId: string): Promise<FocusFriendsState> => {
   const payload = await callAccountApi('focus-friends', {
     method: 'POST',

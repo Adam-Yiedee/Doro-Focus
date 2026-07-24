@@ -35,6 +35,8 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     categoryColor: '#60A5FA',
     taskName: 'Review Focus Friends',
     workTime: 1420,
+    pomodoroCount: 1,
+    presence: 'focusing',
   },
   {
     username: 'master2',
@@ -44,6 +46,8 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     categoryColor: '#34D399',
     taskName: 'Test friend activity',
     workTime: 1180,
+    pomodoroCount: 4,
+    presence: 'focusing',
   },
   {
     username: 'master3',
@@ -53,6 +57,8 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     categoryColor: '#FBBF24',
     taskName: 'Review request flow',
     workTime: 960,
+    pomodoroCount: 2,
+    presence: 'focusing',
   },
   {
     username: 'master4',
@@ -62,6 +68,8 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     categoryColor: '#A78BFA',
     taskName: 'Check session invites',
     workTime: 720,
+    pomodoroCount: 0,
+    presence: 'idle',
   },
   {
     username: 'master5',
@@ -71,6 +79,8 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     categoryColor: '#FB7185',
     taskName: 'Send friend nudges',
     workTime: 540,
+    pomodoroCount: 0,
+    presence: 'offline',
   },
 ];
 
@@ -998,7 +1008,10 @@ const upsertDebugFocusFriendUser = async (debugAccount) => {
 
 const buildDebugAccountData = (userRecord, debugAccount) => {
   const nowMs = Date.now();
-  const nowIso = new Date(nowMs).toISOString();
+  const isOffline = debugAccount.presence === 'offline';
+  const isActive = debugAccount.presence === 'focusing';
+  const updatedAtMs = isOffline ? nowMs - FOCUS_FRIEND_OFFLINE_AFTER_MS - 60_000 : nowMs;
+  const nowIso = new Date(updatedAtMs).toISOString();
   const publicUser = makeUserPublic(userRecord);
   return sanitizeAccountPayload({
     ...buildDefaultAccountData(publicUser),
@@ -1024,16 +1037,17 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
       },
     ],
     activeMode: 'work',
-    timerStarted: true,
-    isIdle: false,
+    timerStarted: isActive,
+    isIdle: !isActive,
     workTime: debugAccount.workTime,
     breakTime: 0,
+    pomodoroCount: Number.isFinite(Number(debugAccount.pomodoroCount)) ? Math.max(0, Math.floor(Number(debugAccount.pomodoroCount))) : 0,
     runtime: {
       version: 2,
-      updatedAtMs: nowMs,
+      updatedAtMs,
       sourceTabId: `debug-${debugAccount.username}`,
-      phase: 'running-work',
-      phaseStartedAtMs: nowMs,
+      phase: isActive ? 'running-work' : 'idle',
+      phaseStartedAtMs: updatedAtMs,
       phaseStartWorkTime: debugAccount.workTime,
       phaseStartBreakTime: 0,
       phaseStartAllPauseTime: 0,
@@ -1044,9 +1058,23 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
   }, publicUser, { revision: 1, updatedAt: nowIso });
 };
 
+const isUntouchedDebugAccountData = (accountData, debugAccount) => (
+  accountData
+  && accountData.revision === 1
+  && accountData.userName === debugAccount.displayName
+  && Array.isArray(accountData.tasks)
+  && accountData.tasks.length === 1
+  && accountData.tasks[0]?.id === 9301
+  && accountData.tasks[0]?.name === debugAccount.taskName
+  && Array.isArray(accountData.categories)
+  && accountData.categories.length === 1
+  && accountData.categories[0]?.id === 9201
+  && accountData.categories[0]?.name === debugAccount.categoryName
+);
+
 const ensureDebugAccountData = async (userRecord, debugAccount) => {
   const existing = await getAccountData(userRecord.id);
-  if (existing) return existing;
+  if (existing && !isUntouchedDebugAccountData(existing, debugAccount)) return existing;
 
   const accountData = buildDebugAccountData(userRecord, debugAccount);
   await Promise.all([
@@ -1281,6 +1309,54 @@ export const acceptFocusFriendRequest = async (currentUserRecord, requestId) => 
   ]);
 };
 
+export const acceptFocusFriendInvite = async (currentUserRecord, inviterUsername) => {
+  const normalizedInviter = normalizeUsername(inviterUsername);
+  const inviterRecord = await getUserByUsername(normalizedInviter);
+  if (!inviterRecord) {
+    const error = new Error('Focus Friend invite account not found.');
+    error.status = 404;
+    throw error;
+  }
+  if (inviterRecord.id === currentUserRecord.id) {
+    const error = new Error('You cannot use your own Focus Friend invite.');
+    error.status = 400;
+    throw error;
+  }
+
+  let currentData = await getFocusFriendsData(currentUserRecord.id);
+  let inviterData = await getFocusFriendsData(inviterRecord.id);
+  const currentAlreadyFriends = areFocusFriends(currentData, inviterRecord.id);
+  const inviterAlreadyFriends = areFocusFriends(inviterData, currentUserRecord.id);
+
+  if (
+    (!currentAlreadyFriends && currentData.friends.length >= FOCUS_FRIENDS_LIMIT)
+    || (!inviterAlreadyFriends && inviterData.friends.length >= FOCUS_FRIENDS_LIMIT)
+  ) {
+    const error = new Error('Focus Friend limit reached.');
+    error.status = 409;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  currentData = addFriendRelation(
+    removePendingFocusFriendRequestsBetween(currentData, inviterRecord.id),
+    currentUserRecord,
+    inviterRecord,
+    now,
+  );
+  inviterData = addFriendRelation(
+    removePendingFocusFriendRequestsBetween(inviterData, currentUserRecord.id),
+    inviterRecord,
+    currentUserRecord,
+    now,
+  );
+
+  await Promise.all([
+    saveFocusFriendsData(currentUserRecord.id, currentData),
+    saveFocusFriendsData(inviterRecord.id, inviterData),
+  ]);
+};
+
 export const declineFocusFriendRequest = async (currentUserRecord, requestId) => {
   let currentData = await getFocusFriendsData(currentUserRecord.id);
   const request = currentData.incomingRequests.find((item) => item.id === requestId);
@@ -1407,7 +1483,9 @@ export const markFocusFriendActionRead = async (currentUserRecord, actionId) => 
 };
 
 export const attachPublicUserToData = (accountData, publicUser) => {
-  const patched = sanitizeAccountPayload(accountData, publicUser);
+  const patched = sanitizeAccountPayload(accountData, publicUser, {
+    updatedAt: typeof accountData?.updatedAt === 'string' ? accountData.updatedAt : undefined,
+  });
   return patched;
 };
 

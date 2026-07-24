@@ -59,6 +59,7 @@ import {
   requestFocusFriendJoin as apiRequestFocusFriendJoin,
   registerAccount,
   saveAccountData,
+  acceptFocusFriendInvite as apiAcceptFocusFriendInvite,
   sendFocusFriendEncouragement as apiSendFocusFriendEncouragement,
   sendFocusFriendJoinInvite as apiSendFocusFriendJoinInvite,
   sendFocusFriendRequest as apiSendFocusFriendRequest,
@@ -203,6 +204,7 @@ interface TimerContextType {
   refreshAccountFromCloud: (options?: { force?: boolean }) => Promise<boolean>;
   refreshFocusFriends: (options?: { silent?: boolean }) => Promise<boolean>;
   sendFocusFriendRequest: (username: string) => Promise<AuthResult>;
+  acceptFocusFriendInvite: (username: string) => Promise<AuthResult>;
   acceptFocusFriendRequest: (requestId: string) => Promise<AuthResult>;
   declineFocusFriendRequest: (requestId: string) => Promise<AuthResult>;
   removeFocusFriend: (username: string) => Promise<AuthResult>;
@@ -1837,6 +1839,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const acceptFocusFriendRequest = useCallback((requestId: string) => (
     runFocusFriendMutation((token) => apiAcceptFocusFriendRequest(token, requestId))
+  ), [runFocusFriendMutation]);
+
+  const acceptFocusFriendInvite = useCallback((username: string) => (
+    runFocusFriendMutation((token) => apiAcceptFocusFriendInvite(token, username))
   ), [runFocusFriendMutation]);
 
   const declineFocusFriendRequest = useCallback((requestId: string) => (
@@ -5280,7 +5286,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
       accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount, focusFriends, focusFriendsLoading, focusFriendsError, focusFriendNotice,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
-      refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, markFocusFriendActionRead,
+      refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendInvite, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, markFocusFriendActionRead,
       startTimer, stopTimer, toggleTimer, toggleTimerLock, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,
