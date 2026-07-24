@@ -190,6 +190,24 @@ export const sendFocusFriendJoinInvite = async (token: string, username: string,
   return payload as FocusFriendsState;
 };
 
+export const approveFocusFriendJoinRequest = async (token: string, actionId: string, sessionId: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'approve-join-request', actionId, sessionId }),
+  });
+  return payload as FocusFriendsState;
+};
+
+export const declineFocusFriendJoinRequest = async (token: string, actionId: string): Promise<FocusFriendsState> => {
+  const payload = await callAccountApi('focus-friends', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'decline-join-request', actionId }),
+  });
+  return payload as FocusFriendsState;
+};
+
 export const markFocusFriendActionRead = async (token: string, actionId: string): Promise<FocusFriendsState> => {
   const payload = await callAccountApi('focus-friends', {
     method: 'POST',

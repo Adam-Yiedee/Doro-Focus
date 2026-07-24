@@ -48,11 +48,13 @@ import {
 import {
   fetchAccountData,
   fetchFocusFriends,
+  approveFocusFriendJoinRequest as apiApproveFocusFriendJoinRequest,
   isConflictError,
   isUnauthorizedError,
   loginAccount,
   logoutAccount,
   acceptFocusFriendRequest as apiAcceptFocusFriendRequest,
+  declineFocusFriendJoinRequest as apiDeclineFocusFriendJoinRequest,
   declineFocusFriendRequest as apiDeclineFocusFriendRequest,
   markFocusFriendActionRead as apiMarkFocusFriendActionRead,
   removeFocusFriend as apiRemoveFocusFriend,
@@ -212,6 +214,8 @@ interface TimerContextType {
   sendFocusFriendEncouragement: (username: string, message: string) => Promise<AuthResult>;
   requestFocusFriendJoin: (username: string, message?: string) => Promise<AuthResult>;
   sendFocusFriendJoinInvite: (username: string, sessionId: string, message?: string) => Promise<AuthResult>;
+  approveFocusFriendJoinRequest: (actionId: string, sessionId: string) => Promise<AuthResult>;
+  declineFocusFriendJoinRequest: (actionId: string) => Promise<AuthResult>;
   markFocusFriendActionRead: (actionId: string) => Promise<AuthResult>;
   
   startTimer: () => void;
@@ -1865,6 +1869,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const sendFocusFriendJoinInvite = useCallback((username: string, sessionId: string, message?: string) => (
     runFocusFriendMutation((token) => apiSendFocusFriendJoinInvite(token, username, sessionId, message))
+  ), [runFocusFriendMutation]);
+
+  const approveFocusFriendJoinRequest = useCallback((actionId: string, sessionId: string) => (
+    runFocusFriendMutation((token) => apiApproveFocusFriendJoinRequest(token, actionId, sessionId))
+  ), [runFocusFriendMutation]);
+
+  const declineFocusFriendJoinRequest = useCallback((actionId: string) => (
+    runFocusFriendMutation((token) => apiDeclineFocusFriendJoinRequest(token, actionId))
   ), [runFocusFriendMutation]);
 
   const markFocusFriendActionRead = useCallback((actionId: string) => (
@@ -5352,7 +5364,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
       accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount, focusFriends, focusFriendsLoading, focusFriendsError, focusFriendNotice,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
-      refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendInvite, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, markFocusFriendActionRead,
+      refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendInvite, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, approveFocusFriendJoinRequest, declineFocusFriendJoinRequest, markFocusFriendActionRead,
       startTimer, stopTimer, toggleTimer, toggleTimerLock, switchMode, activateMode,
       startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,

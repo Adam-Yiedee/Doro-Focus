@@ -1,7 +1,7 @@
 
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Heart } from 'lucide-react';
+import { Check, Heart, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
@@ -11,11 +11,12 @@ import GraceModal from './Modals/GraceModal';
 import TaskViewModal from './Modals/TaskViewModal';
 import WeeklySchedulePanel from './Modals/WeeklySchedulePanel';
 import SummaryView from './SummaryView';
-import { Task } from '../types';
+import { FocusFriendAction, Task } from '../types';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { getDailyWelcomeMessage } from '../utils/dailyWelcomeMessages';
 import { playCelebrationTrumpet, playEncouragementDing } from '../utils/sound';
 import { getFocusFriendInviteUsernameFromCurrentUrl } from '../utils/focusFriendInvite';
+import { TIMER_ONLY_GROUP_SYNC_CONFIG } from '../utils/groupStudy';
 
 type NotificationBannerItem = {
   id: string;
@@ -25,6 +26,9 @@ type NotificationBannerItem = {
   tone: 'join' | 'group' | 'friend' | 'encouragement';
   exiting: boolean;
   exitStyle?: 'fade' | 'pop';
+  focusFriendAction?: FocusFriendAction;
+  status?: 'working' | 'success' | 'error';
+  statusMessage?: string;
 };
 type DailyWelcomeBanner = { id: string; message: string; exiting: boolean };
 type CelebrationConfettiPiece = {
@@ -64,7 +68,7 @@ const GROUP_BANNER_EXIT_MS = 600;
 const GROUP_BANNER_VISIBLE_MS = 8200;
 const GROUP_BANNER_TOTAL_MS = GROUP_BANNER_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
 const ENCOURAGEMENT_BANNER_VISIBLE_MS = 120_000;
-const ENCOURAGEMENT_BANNER_EXIT_MS = 720;
+const ENCOURAGEMENT_BANNER_EXIT_MS = 860;
 const ENCOURAGEMENT_BANNER_TOTAL_MS = ENCOURAGEMENT_BANNER_VISIBLE_MS + ENCOURAGEMENT_BANNER_EXIT_MS;
 const DAILY_WELCOME_VISIBLE_MS = 9600;
 const DAILY_WELCOME_EXIT_MS = 680;
@@ -271,7 +275,31 @@ const getBannerLifecycle = (tone: NotificationBannerItem['tone']) => (
 );
 
 const Layout: React.FC = () => {
-  const { activeMode, activeColor, settings, tasks, pendingJoinId, pendingMenuAction, isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, groupNotice, groupSessionId, guestTimerLockNotice, focusFriendNotice, dismissGuestTimerLockNotice, leaveGroupSession } = useTimer();
+  const {
+    activeMode,
+    activeColor,
+    settings,
+    tasks,
+    user,
+    userName,
+    pendingJoinId,
+    pendingMenuAction,
+    isScheduleOpen,
+    setScheduleOpen,
+    isWeeklyScheduleOpen,
+    setWeeklyScheduleOpen,
+    groupNotice,
+    groupSessionId,
+    guestTimerLockNotice,
+    focusFriendNotice,
+    createGroupSession,
+    joinGroupSession,
+    approveFocusFriendJoinRequest,
+    declineFocusFriendJoinRequest,
+    markFocusFriendActionRead,
+    dismissGuestTimerLockNotice,
+    leaveGroupSession,
+  } = useTimer();
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
   const [groupBanners, setGroupBanners] = useState<NotificationBannerItem[]>([]);
@@ -279,6 +307,7 @@ const Layout: React.FC = () => {
   const [allTasksCelebration, setAllTasksCelebration] = useState<AllTasksCelebration | null>(null);
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
   const [notificationTimersActive, setNotificationTimersActive] = useState(areNotificationTimersActive);
+  const [focusFriendJoinBusyId, setFocusFriendJoinBusyId] = useState<string | null>(null);
   const bannerTimersRef = useRef<Record<string, BannerTimerEntry>>({});
   const bannerDismissTimeoutsRef = useRef<Record<string, number>>({});
   const renderedFocusFriendNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -424,6 +453,120 @@ const Layout: React.FC = () => {
     }, exitMs);
   };
 
+  const updateFocusFriendBannerStatus = (
+    bannerId: string,
+    status: NotificationBannerItem['status'],
+    statusMessage: string,
+  ) => {
+    setGroupBanners((prev) => prev.map((item) => (
+      item.id === bannerId ? { ...item, status, statusMessage } : item
+    )));
+  };
+
+  const scheduleFocusFriendBannerDismiss = (bannerId: string, delayMs = 1050) => {
+    clearBannerDismissTimeout(bannerId);
+    bannerDismissTimeoutsRef.current[bannerId] = window.setTimeout(() => {
+      dismissBanner(bannerId, 'fade');
+    }, delayMs);
+  };
+
+  const getLayoutFocusFriendSessionName = (fallback?: string | null) => (
+    user?.username || userName || fallback || 'Focus Friend'
+  );
+
+  const getSafeFocusFriendSessionId = (value: string | null | undefined) => (
+    typeof value === 'string' && value.trim()
+      ? value.trim().toUpperCase().slice(0, 64)
+      : ''
+  );
+
+  const handleApproveFocusFriendJoinBanner = async (action: FocusFriendAction, bannerId: string) => {
+    if (focusFriendJoinBusyId) return;
+    setFocusFriendJoinBusyId(bannerId);
+    clearBannerTimer(bannerId);
+    clearBannerDismissTimeout(bannerId);
+    updateFocusFriendBannerStatus(bannerId, 'working', 'Opening your focus session...');
+
+    try {
+      let sessionId = getSafeFocusFriendSessionId(groupSessionId);
+      if (!sessionId) {
+        sessionId = await createGroupSession(
+          getLayoutFocusFriendSessionName(action.toUsername),
+          TIMER_ONLY_GROUP_SYNC_CONFIG,
+        );
+      }
+
+      const result = await approveFocusFriendJoinRequest(action.id, sessionId);
+      if (!result.ok) throw new Error(result.error || 'Could not approve join request.');
+      updateFocusFriendBannerStatus(bannerId, 'success', 'Allowed. Joining them now.');
+      scheduleFocusFriendBannerDismiss(bannerId);
+    } catch (error) {
+      updateFocusFriendBannerStatus(
+        bannerId,
+        'error',
+        error instanceof Error ? error.message : 'Could not approve join request.',
+      );
+    } finally {
+      setFocusFriendJoinBusyId(null);
+    }
+  };
+
+  const handleDeclineFocusFriendJoinBanner = async (action: FocusFriendAction, bannerId: string) => {
+    if (focusFriendJoinBusyId) return;
+    setFocusFriendJoinBusyId(bannerId);
+    clearBannerTimer(bannerId);
+    clearBannerDismissTimeout(bannerId);
+    updateFocusFriendBannerStatus(bannerId, 'working', 'Declining request...');
+
+    try {
+      const result = await declineFocusFriendJoinRequest(action.id);
+      if (!result.ok) throw new Error(result.error || 'Could not decline join request.');
+      updateFocusFriendBannerStatus(bannerId, 'success', 'Request declined.');
+      scheduleFocusFriendBannerDismiss(bannerId, 800);
+    } catch (error) {
+      updateFocusFriendBannerStatus(
+        bannerId,
+        'error',
+        error instanceof Error ? error.message : 'Could not decline join request.',
+      );
+    } finally {
+      setFocusFriendJoinBusyId(null);
+    }
+  };
+
+  const handleAutoJoinFocusFriendInvite = async (action: FocusFriendAction, bannerId: string) => {
+    const sessionId = getSafeFocusFriendSessionId(action.sessionId);
+    if (!sessionId || focusFriendJoinBusyId) return;
+    setFocusFriendJoinBusyId(bannerId);
+    clearBannerTimer(bannerId);
+    clearBannerDismissTimeout(bannerId);
+    updateFocusFriendBannerStatus(bannerId, 'working', 'Joining focus session...');
+
+    try {
+      if (getSafeFocusFriendSessionId(groupSessionId) !== sessionId) {
+        await joinGroupSession(
+          sessionId,
+          getLayoutFocusFriendSessionName(action.toUsername),
+          TIMER_ONLY_GROUP_SYNC_CONFIG,
+        );
+      }
+      if (!action.readAt) {
+        const readResult = await markFocusFriendActionRead(action.id);
+        if (!readResult.ok) throw new Error(readResult.error || 'Could not mark invite handled.');
+      }
+      updateFocusFriendBannerStatus(bannerId, 'success', 'Joined focus session.');
+      scheduleFocusFriendBannerDismiss(bannerId, 900);
+    } catch (error) {
+      updateFocusFriendBannerStatus(
+        bannerId,
+        'error',
+        error instanceof Error ? error.message : 'Could not join focus session.',
+      );
+    } finally {
+      setFocusFriendJoinBusyId(null);
+    }
+  };
+
   const clearAllTasksCelebrationTimer = () => {
     if (!allTasksCelebrationTimeoutRef.current) return;
     clearTimeout(allTasksCelebrationTimeoutRef.current);
@@ -517,10 +660,13 @@ const Layout: React.FC = () => {
   useEffect(() => {
     if (previousGroupSessionIdRef.current !== groupSessionId) {
       clearAllBannerTimers();
-      setGroupBanners([]);
+      setGroupBanners((prev) => prev.filter((banner) => (
+        banner.id === focusFriendJoinBusyId
+        && (banner.focusFriendAction?.type === 'join-request' || banner.focusFriendAction?.type === 'join-invite')
+      )));
       previousGroupSessionIdRef.current = groupSessionId;
     }
-  }, [groupSessionId]);
+  }, [focusFriendJoinBusyId, groupSessionId]);
 
   useEffect(() => {
     if (!groupNotice) return;
@@ -564,12 +710,14 @@ const Layout: React.FC = () => {
     const id = focusFriendNotice.id;
     if (renderedFocusFriendNoticeIdsRef.current.has(id)) return;
     renderedFocusFriendNoticeIdsRef.current.add(id);
+    const focusFriendAction = focusFriendNotice.type === 'action' ? focusFriendNotice.action : undefined;
     const banner = focusFriendNotice.type === 'request'
       ? {
           actorName: focusFriendNotice.request.fromDisplayName || focusFriendNotice.request.fromUsername,
           message: 'sent you a Focus Friend request.',
           title: 'Friend Request',
           tone: 'friend' as const,
+          focusFriendAction: undefined,
         }
       : {
           actorName: focusFriendNotice.action.fromDisplayName || focusFriendNotice.action.fromUsername,
@@ -586,6 +734,7 @@ const Layout: React.FC = () => {
               ? 'Session Invite'
               : 'Encouragement',
           tone: focusFriendNotice.action.type === 'encouragement' ? 'encouragement' as const : 'friend' as const,
+          focusFriendAction,
         };
     clearBannerTimer(id);
     clearBannerDismissTimeout(id);
@@ -599,6 +748,7 @@ const Layout: React.FC = () => {
           title: banner.title,
           tone: banner.tone,
           exiting: false,
+          focusFriendAction: banner.focusFriendAction,
         },
       ];
       const trimmed = next.slice(-3);
@@ -621,6 +771,10 @@ const Layout: React.FC = () => {
       remove: createPausableTimeout(lifecycle.totalMs),
     };
     scheduleBannerTimer(id);
+
+    if (focusFriendAction?.type === 'join-invite' && !focusFriendAction.readAt) {
+      void handleAutoJoinFocusFriendInvite(focusFriendAction, id);
+    }
   }, [focusFriendNotice, notificationTimersActive]);
 
   useEffect(() => {
@@ -823,10 +977,15 @@ const Layout: React.FC = () => {
             transform: translateY(0) scale(1);
             filter: blur(0) saturate(1);
           }
+          42% {
+            opacity: 1;
+            transform: translateY(2px) scale(1.008);
+            filter: blur(0) saturate(1.16) brightness(1.04);
+          }
           100% {
             opacity: 0;
-            transform: translateY(-16px) scale(0.985);
-            filter: blur(8px) saturate(0.82);
+            transform: translateY(-24px) scale(0.955);
+            filter: blur(13px) saturate(0.76) brightness(1.08);
           }
         }
         @keyframes doroEncouragementBannerPop {
@@ -835,15 +994,20 @@ const Layout: React.FC = () => {
             transform: translateY(0) scale(1);
             filter: blur(0) saturate(1);
           }
-          34% {
+          28% {
             opacity: 1;
-            transform: translateY(-2px) scale(1.045);
-            filter: blur(0) saturate(1.2) brightness(1.08);
+            transform: translateY(-3px) scale(1.035);
+            filter: blur(0) saturate(1.28) brightness(1.12);
+          }
+          52% {
+            opacity: 0.92;
+            transform: translateY(3px) scale(0.972);
+            filter: blur(1px) saturate(1.08) brightness(1.04);
           }
           100% {
             opacity: 0;
-            transform: translateY(-18px) scale(0.82);
-            filter: blur(10px) saturate(0.72) brightness(1.18);
+            transform: translateY(-28px) scale(0.86);
+            filter: blur(16px) saturate(0.72) brightness(1.2);
           }
         }
         @keyframes doroEncouragementHeartBeat {
@@ -890,10 +1054,11 @@ const Layout: React.FC = () => {
         .doro-encouragement-banner {
           animation: doroEncouragementBannerIn 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
           box-shadow:
-            0 34px 76px -24px rgba(0, 0, 0, 0.48),
-            0 22px 42px -25px rgba(0, 0, 0, 0.5),
-            inset 0 1px 0 rgba(255, 255, 255, 0.16),
-            inset 0 -24px 46px rgba(0, 0, 0, 0.12);
+            0 34px 84px -20px rgba(76, 5, 25, 0.72),
+            0 22px 46px -22px rgba(0, 0, 0, 0.72),
+            0 10px 28px -16px rgba(190, 18, 60, 0.64),
+            inset 0 1px 0 rgba(255, 255, 255, 0.18),
+            inset 0 -24px 46px rgba(76, 5, 25, 0.3);
           will-change: transform, opacity, filter;
         }
         .doro-encouragement-banner-fade {
@@ -907,15 +1072,17 @@ const Layout: React.FC = () => {
         .doro-encouragement-banner::before {
           content: '';
           position: absolute;
-          inset: -34% -18%;
+          inset: -58% -18%;
           z-index: 0;
-          background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.26) 46%, transparent 66%);
+          background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.25) 45%, transparent 66%);
           animation: doroEncouragementSheen 1250ms cubic-bezier(0.16, 1, 0.3, 1) 120ms both;
         }
         .doro-encouragement-heart {
-          animation: doroEncouragementHeartBeat 1050ms ease-in-out 420ms infinite;
+          animation: doroEncouragementHeartBeat 1050ms ease-in-out 360ms infinite;
           fill: currentColor;
-          filter: drop-shadow(0 0 12px rgba(255, 190, 202, 0.62));
+          filter:
+            drop-shadow(0 0 9px rgba(255, 228, 230, 0.72))
+            drop-shadow(0 8px 13px rgba(76, 5, 25, 0.42));
           transform-origin: center;
         }
         .doro-encouragement-banner-pop .doro-encouragement-heart {
@@ -1128,6 +1295,18 @@ const Layout: React.FC = () => {
             border-radius: 1.15rem !important;
             padding: 0.75rem 0.875rem !important;
           }
+          .doro-encouragement-banner {
+            min-height: 2.85rem !important;
+            padding: 0.65rem 0.82rem !important;
+          }
+          .doro-encouragement-text-3d {
+            gap: 0.45rem !important;
+            font-size: 0.82rem !important;
+          }
+          .doro-encouragement-heart {
+            width: 1.25rem;
+            height: 1.25rem;
+          }
           .doro-mobile-topbar {
             margin-bottom: 0.55rem;
             padding-inline: 0.25rem;
@@ -1180,7 +1359,7 @@ const Layout: React.FC = () => {
         }
       `}</style>
 
-      <div className="doro-notification-stack fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,34rem)] pointer-events-none flex flex-col gap-2">
+      <div className="doro-notification-stack fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,42rem)] pointer-events-none flex flex-col gap-2">
         {dailyWelcomeBanner && (
           <button
             type="button"
@@ -1219,6 +1398,13 @@ const Layout: React.FC = () => {
             animationDuration: `${notice.tone === 'encouragement' ? lifecycle.visibleMs : lifecycle.totalMs}ms`,
             animationPlayState: notificationTimersActive ? 'running' : 'paused',
           } as React.CSSProperties;
+          const isJoinRequestBanner = notice.focusFriendAction?.type === 'join-request' && !notice.focusFriendAction.readAt;
+          const isFocusFriendBannerBusy = focusFriendJoinBusyId === notice.id;
+          const focusFriendStatusClassName = notice.status === 'error'
+            ? 'text-red-100/88'
+            : notice.status === 'success'
+              ? 'text-emerald-100/88'
+              : 'text-white/62';
 
           if (notice.tone === 'encouragement') {
             const encouragementExitClass = notice.exiting
@@ -1233,23 +1419,21 @@ const Layout: React.FC = () => {
                 key={notice.id}
                 onClick={() => dismissBanner(notice.id, 'pop')}
                 aria-label={`Dismiss encouragement from ${notice.actorName}`}
-                className={`doro-encouragement-banner pointer-events-auto relative w-full overflow-hidden rounded-xl border border-rose-200/32 px-4 py-3 text-left text-white outline-none transition-[border-color,box-shadow,transform] duration-300 hover:border-rose-100/48 focus-visible:ring-2 focus-visible:ring-rose-100/55 ${
+                className={`doro-encouragement-banner pointer-events-auto relative w-full min-h-[3.05rem] overflow-hidden rounded-xl border border-rose-100/28 px-4 py-2.5 text-left text-white outline-none transition-[border-color,box-shadow,transform] duration-300 hover:border-rose-50/50 focus-visible:ring-2 focus-visible:ring-rose-100/55 ${
                   settings.disableBlur
-                    ? 'bg-red-950/92'
-                    : 'bg-[linear-gradient(135deg,rgba(127,29,29,0.94),rgba(190,18,60,0.88)_48%,rgba(244,63,94,0.72))] backdrop-blur-2xl'
+                    ? 'bg-red-950'
+                    : 'bg-[linear-gradient(135deg,#7f1d1d_0%,#be123c_48%,#f43f5e_100%)]'
                 } ${encouragementExitClass}`}
                 style={{ animationDelay: `${i * 70}ms` }}
               >
-                <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_10%_-8%,rgba(255,228,230,0.34),transparent_46%),radial-gradient(circle_at_92%_8%,rgba(255,255,255,0.12),transparent_28%)]" />
-                <div className="relative z-10 flex min-w-0 items-center gap-3">
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-rose-100/24 bg-white/12 text-rose-50 shadow-[0_18px_34px_-24px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.12)]">
-                    <Heart size={22} strokeWidth={2.35} className="doro-encouragement-heart" aria-hidden="true" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[10px] font-black uppercase leading-none tracking-[0.18em] text-rose-100/76">
+                <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_9%_-18%,rgba(255,228,230,0.32),transparent_38%),radial-gradient(circle_at_96%_-12%,rgba(255,255,255,0.16),transparent_34%)]" />
+                <div className="relative z-10 flex min-w-0 items-center gap-2.5">
+                  <Heart size={24} strokeWidth={2.35} className="doro-encouragement-heart shrink-0 text-rose-50" aria-hidden="true" />
+                  <span className="doro-encouragement-text-3d min-w-0 flex flex-1 items-baseline gap-2 overflow-hidden whitespace-nowrap text-[0.95rem] font-black leading-none text-white">
+                    <span className="shrink-0 text-[10px] font-black uppercase leading-none tracking-[0.18em] text-rose-100/78">
                       {notice.actorName}
                     </span>
-                    <span className="doro-encouragement-text-3d mt-1.5 block text-[0.95rem] font-black leading-snug text-white">
+                    <span className="min-w-0 truncate">
                       {notice.message}
                     </span>
                   </span>
@@ -1284,6 +1468,38 @@ const Layout: React.FC = () => {
                 <div className="mt-1 text-sm leading-snug text-white/95">
                   <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
                 </div>
+                {notice.statusMessage && (
+                  <div className={`mt-2 text-[11px] font-semibold leading-tight ${focusFriendStatusClassName}`}>
+                    {notice.statusMessage}
+                  </div>
+                )}
+                {isJoinRequestBanner && notice.status !== 'working' && notice.status !== 'success' && (
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleApproveFocusFriendJoinBanner(notice.focusFriendAction!, notice.id)}
+                      disabled={Boolean(focusFriendJoinBusyId)}
+                      className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-white/18 bg-white text-slate-950 px-3 text-[10px] font-black uppercase tracking-[0.14em] transition-[transform,background-color,border-color,opacity] duration-200 hover:-translate-y-[1px] hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeclineFocusFriendJoinBanner(notice.focusFriendAction!, notice.id)}
+                      disabled={Boolean(focusFriendJoinBusyId)}
+                      className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-white/14 bg-white/[0.08] px-3 text-[10px] font-black uppercase tracking-[0.14em] text-white/82 transition-[transform,background-color,border-color,color,opacity] duration-200 hover:-translate-y-[1px] hover:border-white/22 hover:bg-white/[0.12] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <X size={13} strokeWidth={2.5} aria-hidden="true" />
+                      No
+                    </button>
+                  </div>
+                )}
+                {isFocusFriendBannerBusy && !notice.statusMessage && (
+                  <div className="mt-2 text-[11px] font-semibold leading-tight text-white/62">
+                    Working...
+                  </div>
+                )}
               </div>
               <div
                 className={`doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full ${

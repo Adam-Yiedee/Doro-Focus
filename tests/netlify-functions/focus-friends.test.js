@@ -183,6 +183,41 @@ describe('focus-friends function', () => {
     });
     const joinRequestId = bobActivity.inbox[0].id;
 
+    const missingApprovalSessionResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'approve-join-request',
+      actionId: joinRequestId,
+    }));
+    expect(missingApprovalSessionResponse.status).toBe(400);
+
+    const approvalResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'approve-join-request',
+      actionId: joinRequestId,
+      sessionId: 'room99',
+    }));
+    expect(approvalResponse.status).toBe(200);
+    const bobAfterApproval = await approvalResponse.json();
+    expect(bobAfterApproval.inbox[0]).toMatchObject({
+      id: joinRequestId,
+      readAt: expect.any(String),
+    });
+
+    const duplicateApprovalResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'approve-join-request',
+      actionId: joinRequestId,
+      sessionId: 'room99',
+    }));
+    expect(duplicateApprovalResponse.status).toBe(409);
+
+    const aliceApprovedInviteResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken));
+    const aliceApprovedInvite = await aliceApprovedInviteResponse.json();
+    expect(aliceApprovedInvite.inbox[0]).toMatchObject({
+      type: 'join-invite',
+      fromUsername: 'bob',
+      message: 'approved your join request.',
+      sessionId: 'ROOM99',
+      readAt: null,
+    });
+
     const missingInviteResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
       action: 'send-join-invite',
       username: 'alice',
@@ -259,6 +294,54 @@ describe('focus-friends function', () => {
       sessionId: 'room42',
     }));
     expect(nonFriendInviteResponse.status).toBe(403);
+  });
+
+  it('declines Focus Friend join requests without sending an invite', async () => {
+    const alice = await createUser('Alice', 'password123');
+    const bob = await createUser('Bob', 'password123');
+    const aliceToken = await createSession(alice);
+    const bobToken = await createSession(bob);
+
+    await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
+      action: 'send-request',
+      username: 'bob',
+    }));
+    const bobRequestsResponse = await focusFriendsHandler(makeAuthedRequest(bobToken));
+    const bobRequests = await bobRequestsResponse.json();
+    await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'accept-request',
+      requestId: bobRequests.incomingRequests[0].id,
+    }));
+
+    await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
+      action: 'request-join',
+      username: 'bob',
+      message: 'Can I join?',
+    }));
+    const bobActivityResponse = await focusFriendsHandler(makeAuthedRequest(bobToken));
+    const bobActivity = await bobActivityResponse.json();
+    const joinRequestId = bobActivity.inbox[0].id;
+
+    const declineResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'decline-join-request',
+      actionId: joinRequestId,
+    }));
+    expect(declineResponse.status).toBe(200);
+    const bobAfterDecline = await declineResponse.json();
+    expect(bobAfterDecline.inbox[0]).toMatchObject({
+      id: joinRequestId,
+      readAt: expect.any(String),
+    });
+
+    const duplicateDeclineResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
+      action: 'decline-join-request',
+      actionId: joinRequestId,
+    }));
+    expect(duplicateDeclineResponse.status).toBe(409);
+
+    const aliceActivityResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken));
+    const aliceActivity = await aliceActivityResponse.json();
+    expect(aliceActivity.inbox).toHaveLength(0);
   });
 
   it('accepts invite links idempotently and clears pending requests between the accounts', async () => {

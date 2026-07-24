@@ -1603,6 +1603,98 @@ export const createFocusFriendAction = async (fromUserRecord, targetUsername, ty
   });
 };
 
+const getFocusFriendJoinRequestForUser = (data, actionId) => {
+  const action = data.inbox.find((item) => item.id === actionId);
+  if (!action || action.type !== 'join-request') {
+    const error = new Error('Focus Friend join request not found.');
+    error.status = 404;
+    throw error;
+  }
+  return action;
+};
+
+export const approveFocusFriendJoinRequest = async (currentUserRecord, actionId, sessionId) => {
+  const normalizedSessionId = typeof sessionId === 'string' && sessionId.trim()
+    ? sessionId.trim().toUpperCase().slice(0, 64)
+    : null;
+  if (!normalizedSessionId) {
+    const error = new Error('Start a focus session before allowing a friend to join.');
+    error.status = 400;
+    throw error;
+  }
+
+  const currentData = await getFocusFriendsData(currentUserRecord.id);
+  const joinRequest = getFocusFriendJoinRequestForUser(currentData, actionId);
+  if (joinRequest.readAt) {
+    const error = new Error('Focus Friend join request was already handled.');
+    error.status = 409;
+    throw error;
+  }
+  const requesterRecord = await getUserById(joinRequest.fromUserId);
+  if (!requesterRecord) {
+    const error = new Error('Focus Friend not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  const [requesterData, currentDisplayName] = await Promise.all([
+    getFocusFriendsData(requesterRecord.id),
+    getCurrentAccountDisplayName(currentUserRecord),
+  ]);
+  if (!areFocusFriends(currentData, requesterRecord.id) || !areFocusFriends(requesterData, currentUserRecord.id)) {
+    const error = new Error('You can only approve requests from Focus Friends.');
+    error.status = 403;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const invite = {
+    id: makeFocusFriendId('join_invite'),
+    type: 'join-invite',
+    fromUserId: currentUserRecord.id,
+    fromUsername: currentUserRecord.username,
+    fromDisplayName: currentDisplayName,
+    toUserId: requesterRecord.id,
+    toUsername: requesterRecord.username,
+    message: 'approved your join request.',
+    sessionId: normalizedSessionId,
+    createdAt: now,
+    readAt: null,
+  };
+  const nextCurrentInbox = currentData.inbox.map((action) => (
+    action.id === actionId ? { ...action, readAt: action.readAt || now } : action
+  ));
+
+  await Promise.all([
+    saveFocusFriendsData(currentUserRecord.id, {
+      ...currentData,
+      inbox: nextCurrentInbox,
+    }),
+    saveFocusFriendsData(requesterRecord.id, {
+      ...requesterData,
+      inbox: [invite, ...requesterData.inbox].slice(0, FOCUS_FRIEND_INBOX_LIMIT),
+    }),
+  ]);
+};
+
+export const declineFocusFriendJoinRequest = async (currentUserRecord, actionId) => {
+  const currentData = await getFocusFriendsData(currentUserRecord.id);
+  const joinRequest = getFocusFriendJoinRequestForUser(currentData, actionId);
+  if (joinRequest.readAt) {
+    const error = new Error('Focus Friend join request was already handled.');
+    error.status = 409;
+    throw error;
+  }
+  const now = new Date().toISOString();
+  const nextInbox = currentData.inbox.map((action) => (
+    action.id === actionId ? { ...action, readAt: action.readAt || now } : action
+  ));
+  await saveFocusFriendsData(currentUserRecord.id, {
+    ...currentData,
+    inbox: nextInbox,
+  });
+};
+
 export const markFocusFriendActionRead = async (currentUserRecord, actionId) => {
   const currentData = await getFocusFriendsData(currentUserRecord.id);
   if (!currentData.inbox.some((action) => action.id === actionId)) {
