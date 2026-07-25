@@ -6,10 +6,12 @@ const makeSession = ({
   id,
   startTime,
   workMinutes,
+  pomosCompleted = workMinutes / 25,
 }: {
   id: string;
   startTime: string;
   workMinutes: number;
+  pomosCompleted?: number;
 }): SessionRecord => ({
   id,
   startTime,
@@ -17,7 +19,7 @@ const makeSession = ({
   stats: {
     totalWorkMinutes: workMinutes,
     totalBreakMinutes: 0,
-    pomosCompleted: workMinutes / 25,
+    pomosCompleted,
     tasksCompleted: 0,
   },
 });
@@ -88,5 +90,35 @@ describe('getSummaryPomoComparison', () => {
     expect(result.summaryDayPomos).toBe(3);
     expect(result.lastFocusDelta).toBe(2);
     expect(result.weeklyAverageDelta).toBe(2);
+  });
+
+  it('compares completed pomos rather than partial focus-minute equivalents', () => {
+    const result = getSummaryPomoComparison({
+      pastSessions: [
+        makeSession({
+          id: 'today-partial',
+          startTime: '2026-07-20T15:00:00.000Z',
+          workMinutes: 40,
+          pomosCompleted: 1,
+        }),
+        makeSession({
+          id: 'yesterday-complete',
+          startTime: '2026-07-19T17:00:00.000Z',
+          workMinutes: 25,
+          pomosCompleted: 1,
+        }),
+      ],
+      sessionStats: {
+        sessionStartTime: '2026-07-20T17:00:00.000Z',
+        sessionEndTime: '2026-07-20T17:12:30.000Z',
+        totalWorkMinutes: 12.5,
+        pomosCompleted: 0,
+      },
+      now: new Date('2026-07-20T18:00:00.000Z'),
+    });
+
+    expect(result.summaryDayPomos).toBe(1);
+    expect(result.lastFocusDelta).toBe(0);
+    expect(result.weeklyAverageDelta).toBe(0);
   });
 });

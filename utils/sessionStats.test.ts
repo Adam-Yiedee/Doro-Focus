@@ -208,6 +208,97 @@ describe('buildEndSessionStats', () => {
     expect(stats.categoryStats).toEqual({ 'Deep Work': 25 });
   });
 
+  it('clamps overlapping timer logs to the current session window', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T08:50:00.000Z',
+          end: '2026-07-18T09:10:00.000Z',
+          duration: 20 * 60,
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-07-18T09:40:00.000Z',
+          end: '2026-07-18T10:10:00.000Z',
+          duration: 30 * 60,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T10:00:00.000Z',
+      categories,
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(10);
+    expect(stats.totalBreakMinutes).toBe(20);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 10 });
+  });
+
+  it('does not count completed work logs that only touch the session boundary', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T08:35:00.000Z',
+          end: '2026-07-18T09:00:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T10:00:00.000Z',
+          end: '2026-07-18T10:25:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T10:00:00.000Z',
+      categories,
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(0);
+    expect(stats.pomosCompleted).toBe(0);
+    expect(stats.categoryStats).toEqual({});
+  });
+
+  it('only counts pomodoro completions that finish inside the session window', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T08:50:00.000Z',
+          end: '2026-07-18T09:10:00.000Z',
+          duration: 20 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T09:50:00.000Z',
+          end: '2026-07-18T10:15:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T10:00:00.000Z',
+      categories,
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(20);
+    expect(stats.pomosCompleted).toBe(1);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 20 });
+  });
+
   it('finds unique task completions inside the session window only', () => {
     const completionIds = getSessionTaskCompletionIdsFromLogs([
       makeLog({

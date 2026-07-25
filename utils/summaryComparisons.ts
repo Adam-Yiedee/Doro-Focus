@@ -1,5 +1,5 @@
 import { SessionRecord } from '../types';
-import { formatPomodoroCount, getAccountStatsSessionPomodoroEquivalent } from './pomodoroAccounting';
+import { formatPomodoroCount, getSessionPomodoroEquivalent } from './pomodoroAccounting';
 
 const SUMMARY_DAY_MS = 24 * 60 * 60 * 1000;
 const SUMMARY_WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -68,7 +68,6 @@ export const formatSummaryComparisonTargetLabel = (value: string) => (
 
 const getCurrentSummaryPomos = (sessionStats: SummaryComparisonStatsLike) => Math.max(
   0,
-  Number(sessionStats.totalWorkMinutes || 0) / 25,
   Number(sessionStats.pomosCompleted || 0),
 );
 
@@ -104,7 +103,7 @@ export const getSummaryPomoComparison = ({
     const dateKey = getSummaryDateKeyFromIso(session.startTime) || getSummaryDateKeyFromIso(session.endTime);
     if (!dateKey) return;
 
-    const pomos = getAccountStatsSessionPomodoroEquivalent(session);
+    const pomos = getSessionPomodoroEquivalent(session);
     if (!Number.isFinite(pomos) || pomos <= 0) return;
     dailyPomoTotals.set(dateKey, (dailyPomoTotals.get(dateKey) || 0) + pomos);
   });

@@ -94,6 +94,53 @@ const getPositiveSeconds = (value: unknown) => {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 };
 
+const getLogStartMs = (entry: Pick<LogEntry, 'start'>) => {
+  const parsed = Date.parse(entry.start);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getLogEndMs = (entry: Pick<LogEntry, 'start' | 'end' | 'duration'>) => {
+  const startMs = getLogStartMs(entry);
+  if (startMs === null) return null;
+
+  const durationSeconds = getPositiveSeconds(entry.duration);
+  if (durationSeconds > 0) return startMs + (durationSeconds * 1000);
+
+  const parsedEnd = Date.parse(entry.end);
+  return Number.isFinite(parsedEnd) ? parsedEnd : startMs;
+};
+
+const getSessionLogDurationSeconds = (
+  entry: Pick<LogEntry, 'start' | 'end' | 'duration'>,
+  sessionStartMs: number,
+  sessionEndMs: number | null,
+) => {
+  const entryStartMs = getLogStartMs(entry);
+  const entryEndMs = getLogEndMs(entry);
+  if (entryStartMs === null || entryEndMs === null) return 0;
+
+  const overlapStartMs = Math.max(entryStartMs, sessionStartMs);
+  const overlapEndMs = sessionEndMs === null ? entryEndMs : Math.min(entryEndMs, sessionEndMs);
+  const seconds = (overlapEndMs - overlapStartMs) / 1000;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+};
+
+const getCompletionLogsInsideSession = (
+  entries: LogEntry[],
+  sessionStartMs: number | null,
+  sessionEndMs: number | null,
+) => {
+  if (sessionStartMs === null) return [];
+
+  return entries.filter((entry) => {
+    const completedAtMs = getLogEndMs(entry);
+    if (completedAtMs === null) return false;
+    if (completedAtMs <= sessionStartMs) return false;
+    if (sessionEndMs !== null && completedAtMs > sessionEndMs) return false;
+    return true;
+  });
+};
+
 const getLogsForSession = (
   logs: LogEntry[],
   sessionStartTime: string | null | undefined,
@@ -104,10 +151,17 @@ const getLogsForSession = (
   const sessionEndMs = getSessionEndMs(sessionEndTime);
 
   return logs.filter((entry) => {
-    const entryStartMs = Date.parse(entry.start);
-    if (!Number.isFinite(entryStartMs)) return false;
-    if (entryStartMs < sessionStartMs) return false;
-    if (sessionEndMs !== null && entryStartMs > sessionEndMs) return false;
+    const entryStartMs = getLogStartMs(entry);
+    const entryEndMs = getLogEndMs(entry);
+    if (entryStartMs === null || entryEndMs === null) return false;
+    const durationSeconds = getPositiveSeconds(entry.duration);
+    if (durationSeconds > 0) {
+      if (entryEndMs <= sessionStartMs) return false;
+      if (sessionEndMs !== null && entryStartMs >= sessionEndMs) return false;
+    } else {
+      if (entryStartMs < sessionStartMs) return false;
+      if (sessionEndMs !== null && entryStartMs > sessionEndMs) return false;
+    }
     return isTimerLog(entry);
   });
 };
@@ -156,11 +210,18 @@ export const buildEndSessionStats = ({
   settings: Pick<TimerSettings, 'timerPreset'>;
   tasksCompleted: number;
 }): EndSessionStatsResult => {
+  const sessionStartMs = getSessionStartMs(sessionStartTime);
+  const sessionEndMs = getSessionEndMs(sessionEndTime);
   const sessionLogs = getLogsForSession(logs, sessionStartTime, sessionEndTime);
   const workLogs = sessionLogs.filter((entry) => (
     entry.type === 'work' && !isPauseCreditedWorkLog(entry)
   ));
   const breakLogs = sessionLogs.filter((entry) => entry.type === 'break');
+  const getBoundedLogDurationSeconds = (entry: LogEntry) => (
+    sessionStartMs === null
+      ? 0
+      : getSessionLogDurationSeconds(entry, sessionStartMs, sessionEndMs)
+  );
   const pendingWorkSeconds = pendingActivity?.mode === 'work'
     ? getPositiveSeconds(pendingActivity.durationSeconds)
     : 0;
@@ -169,11 +230,11 @@ export const buildEndSessionStats = ({
     : 0;
 
   const totalWorkMinutes = (
-    workLogs.reduce((acc, entry) => acc + getPositiveSeconds(entry.duration), 0)
+    workLogs.reduce((acc, entry) => acc + getBoundedLogDurationSeconds(entry), 0)
     + pendingWorkSeconds
   ) / 60;
   const totalBreakMinutes = (
-    breakLogs.reduce((acc, entry) => acc + getPositiveSeconds(entry.duration), 0)
+    breakLogs.reduce((acc, entry) => acc + getBoundedLogDurationSeconds(entry), 0)
     + pendingBreakSeconds
   ) / 60;
 
@@ -208,7 +269,7 @@ export const buildEndSessionStats = ({
   };
 
   workLogs.forEach((entry) => {
-    addSessionCategoryMinutes(entry, getPositiveSeconds(entry.duration) / 60);
+    addSessionCategoryMinutes(entry, getBoundedLogDurationSeconds(entry) / 60);
   });
 
   if (pendingWorkSeconds > 0 && pendingActivity) {
@@ -222,7 +283,9 @@ export const buildEndSessionStats = ({
     return acc;
   }, {});
 
-  const loggedCompletionStats = getPomodoroCompletionStatsFromLogs(workLogs);
+  const loggedCompletionStats = getPomodoroCompletionStatsFromLogs(
+    getCompletionLogsInsideSession(workLogs, sessionStartMs, sessionEndMs),
+  );
   const pomosCompleted = loggedCompletionStats.completedLogs > 0
     ? loggedCompletionStats.standardPomosCompleted
     : getStandardPomodoroCountForTimer(pomodoroCount, settings);

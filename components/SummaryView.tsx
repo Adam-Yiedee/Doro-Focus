@@ -297,8 +297,11 @@ const SummaryView: React.FC = () => {
   if (!showSummary || !sessionStats) return null;
 
   const formatSummaryMinutes = (minutes: number) => {
-    if (!Number.isFinite(minutes) || minutes <= 0) return '0';
-    return `${Math.max(1, Math.round(minutes))}`;
+    const safeMinutes = Number(minutes);
+    if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return '0';
+    if (safeMinutes < 1) return '<1';
+    if (safeMinutes < 10) return safeMinutes.toFixed(1).replace(/\.0$/, '');
+    return `${Math.round(safeMinutes)}`;
   };
   const pomoDisplay = getSessionPomoDisplay(sessionStats);
   const {
