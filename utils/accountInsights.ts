@@ -114,10 +114,13 @@ export interface AccountInsights {
   weekComparison: AccountWeekComparison;
 }
 
-interface NormalizedLogWindow {
-  entry: LogEntry;
+export interface AccountLogWindow {
   startMs: number;
   endMs: number;
+}
+
+interface NormalizedLogWindow extends AccountLogWindow {
+  entry: LogEntry;
 }
 
 const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
@@ -193,18 +196,27 @@ const getDayPart = (hour: number): DayPartKey => {
   return 'night';
 };
 
-const normalizeLogWindow = (entry: LogEntry): NormalizedLogWindow | null => {
+const getPositiveDurationSeconds = (duration: unknown) => {
+  const seconds = typeof duration === 'number' ? duration : Number(duration || 0);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+};
+
+export const normalizeAccountLogWindow = (entry: LogEntry): AccountLogWindow | null => {
   const startMs = Date.parse(entry.start);
   if (!Number.isFinite(startMs)) return null;
 
-  let endMs = Date.parse(entry.end);
-  if (!Number.isFinite(endMs) || endMs <= startMs) {
-    if (!Number.isFinite(entry.duration) || entry.duration <= 0) return null;
-    endMs = startMs + (entry.duration * 1000);
-  }
+  const durationSeconds = getPositiveDurationSeconds(entry.duration);
+  const durationEndMs = durationSeconds > 0 ? startMs + (durationSeconds * 1000) : null;
+  const parsedEndMs = Date.parse(entry.end);
+  const endMs = durationEndMs ?? (Number.isFinite(parsedEndMs) ? parsedEndMs : null);
 
-  if (endMs <= startMs) return null;
-  return { entry, startMs, endMs };
+  if (endMs === null || endMs <= startMs) return null;
+  return { startMs, endMs };
+};
+
+const normalizeLogWindow = (entry: LogEntry): NormalizedLogWindow | null => {
+  const window = normalizeAccountLogWindow(entry);
+  return window ? { entry, ...window } : null;
 };
 
 const countWeekdayOccurrences = (joinedAtMs: number, nowMs: number) => {

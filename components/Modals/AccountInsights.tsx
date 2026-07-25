@@ -3,6 +3,7 @@ import { Category, LogEntry } from '../../types';
 import {
   computeAccountInsights,
   DayPartKey,
+  normalizeAccountLogWindow,
   WEEKDAY_LABELS,
   WEEKDAY_SHORT_LABELS,
 } from '../../utils/accountInsights';
@@ -196,17 +197,7 @@ const isPauseCreditedWorkLog = (entry: LogEntry) => {
 const normalizeProductiveFocusWindow = (entry: LogEntry) => {
   if (entry.type !== 'work' || isPauseCreditedWorkLog(entry)) return null;
 
-  const startMs = Date.parse(entry.start);
-  if (!Number.isFinite(startMs)) return null;
-
-  let endMs = Date.parse(entry.end);
-  if (!Number.isFinite(endMs) || endMs <= startMs) {
-    if (!Number.isFinite(entry.duration) || entry.duration <= 0) return null;
-    endMs = startMs + (entry.duration * 1000);
-  }
-
-  if (endMs <= startMs) return null;
-  return { startMs, endMs };
+  return normalizeAccountLogWindow(entry);
 };
 
 const distributeMinutesByDay = (

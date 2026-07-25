@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Category, LogEntry } from '../types';
-import { computeAccountInsights } from './accountInsights';
+import { computeAccountInsights, normalizeAccountLogWindow } from './accountInsights';
 
 const categories: Category[] = [
   { id: 1, name: 'Writing', color: '#C86D80', icon: 'pen' },
@@ -15,6 +15,7 @@ const makeLog = ({
   source,
   categoryId = null,
   categoryName,
+  duration,
 }: {
   type?: LogEntry['type'];
   start: string;
@@ -23,11 +24,12 @@ const makeLog = ({
   source?: LogEntry['source'];
   categoryId?: number | null;
   categoryName?: string;
+  duration?: number;
 }): LogEntry => ({
   type,
   start,
   end,
-  duration: Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000),
+  duration: duration ?? Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000),
   reason,
   source,
   task: null,
@@ -208,6 +210,53 @@ describe('computeAccountInsights', () => {
     expect(insights.today.focusMinutes).toBeCloseTo(25, 5);
     expect(insights.sessions[0].totalDurationMinutes).toBeCloseTo(35, 5);
     expect(insights.sessionLanes.find((lane) => lane.dateKey === '2026-01-14')?.sessions[0].durationMinutes).toBeCloseTo(35, 5);
+  });
+
+  it('uses logged duration instead of wall-clock span for account focus minutes', () => {
+    const today = '2026-01-14';
+    const insights = computeAccountInsights({
+      joinedAt: `${today}T00:00:00`,
+      nowMs: Date.parse(`${today}T23:00:00`),
+      categories,
+      logs: [
+        makeLog({
+          start: `${today}T09:00:00`,
+          end: `${today}T10:20:00`,
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: `${today}T10:20:00`,
+          end: `${today}T11:00:00`,
+          duration: 5 * 60,
+          reason: 'Session End',
+        }),
+      ],
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(25, 5);
+    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.focusMinutes).toBeCloseTo(25, 5);
+    expect(insights.sessionLanes.find((lane) => lane.dateKey === today)?.totalFocusMinutes).toBeCloseTo(25, 5);
+    expect(insights.sessions[0].totalDurationMinutes).toBeCloseTo(30, 5);
+    expect(insights.topCategory).toMatchObject({
+      name: 'Writing',
+      minutes: 25,
+    });
+  });
+
+  it('normalizes account log windows from canonical duration before parsed end time', () => {
+    const window = normalizeAccountLogWindow(makeLog({
+      start: '2026-01-14T09:00:00',
+      end: '2026-01-14T10:20:00',
+      duration: 25 * 60,
+    }));
+
+    expect(window).toEqual({
+      startMs: Date.parse('2026-01-14T09:00:00'),
+      endMs: Date.parse('2026-01-14T09:25:00'),
+    });
   });
 
   it('converts mini-pomodoro work minutes to standard pomodoros in today and trend stats', () => {
