@@ -370,6 +370,7 @@ describe('persisted session reset', () => {
       graceTotal: 7200,
       sessionStartTime: '2026-03-12T09:00:00.000Z',
       scheduleStartTime: '09:00',
+      focusTimerDisplayOffsetSeconds: 2700,
       tasks: [{ id: 1, name: 'Preserved' }],
     };
 
@@ -399,6 +400,7 @@ describe('persisted session reset', () => {
     expect(reset.graceTotal).toBe(0);
     expect(reset.sessionStartTime).toBeNull();
     expect(reset.scheduleStartTime).toBe('13:37');
+    expect(reset.focusTimerDisplayOffsetSeconds).toBe(0);
   });
 
   it('falls back to the provided work duration when persisted work time is invalid', () => {

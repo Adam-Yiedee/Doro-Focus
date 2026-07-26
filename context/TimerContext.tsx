@@ -106,6 +106,8 @@ import {
   shouldShowTimerTabTitleNotification,
   type TimerTabTitleNotification,
 } from '../utils/tabTitleNotifications';
+import { getFocusTimerDisplaySeconds } from '../utils/focusTimerDisplay';
+import { getFocusTimerBreakAutoEndMs } from '../utils/focusTimerAutoEnd';
 import {
   markFocusFriendNoticeSeen,
   selectFocusFriendNotice,
@@ -182,6 +184,7 @@ interface TimerContextType {
   scheduleStartTime: string;
   sessionStartTime: string | null;
   timerActivityStartTime: string | null;
+  focusTimerDisplayOffsetSeconds: number;
   isScheduleOpen: boolean;
   isWeeklyScheduleOpen: boolean;
   showCompletedTasks: boolean;
@@ -442,6 +445,10 @@ const getScheduleStartLabel = (date: Date) => {
   const m = date.getMinutes().toString().padStart(2, '0');
   return `${h}:${m}`;
 };
+
+const normalizeFocusTimerDisplayOffsetSeconds = (value: unknown) => (
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+);
 
 const isDeferredTaskFromToday = (task: Pick<Task, 'isFuture' | 'scheduledDate'>, todayKey: string = getDateKey(new Date())) => {
   if (task.isFuture) return true;
@@ -775,6 +782,7 @@ interface TimerPersistencePayload {
   scheduleBreaks?: ScheduleBreak[];
   scheduleStartTime?: string;
   sessionStartTime?: string | null;
+  focusTimerDisplayOffsetSeconds?: number;
   userName?: string;
   user?: User | null;
   updatedAt?: string;
@@ -798,6 +806,7 @@ type PersistedRuntimeTimerState = Pick<TimerPersistencePayload,
   | 'graceTotal'
   | 'sessionStartTime'
   | 'scheduleStartTime'
+  | 'focusTimerDisplayOffsetSeconds'
 >;
 
 const isRuntimeSnapshot = (value: any): value is TimerRuntimeSnapshot => {
@@ -1057,6 +1066,7 @@ const buildPreviewAccountPayload = (sourceTabId: string): TimerPersistencePayloa
     scheduleBreaks: [],
     scheduleStartTime: '08:30',
     sessionStartTime: null,
+    focusTimerDisplayOffsetSeconds: 0,
     userName: 'Master Preview',
     user: {
       username: PREVIEW_ACCOUNT_USERNAME,
@@ -1108,6 +1118,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [scheduleBreaks, setScheduleBreaks] = useState<ScheduleBreak[]>([]);
   const [scheduleStartTime, setScheduleStartTime] = useState<string>('08:00');
   const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
+  const [focusTimerDisplayOffsetSeconds, setFocusTimerDisplayOffsetSeconds] = useState(0);
   const [isScheduleOpen, setScheduleOpen] = useState(false);
   const [isWeeklyScheduleOpen, setWeeklyScheduleOpen] = useState(false);
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
@@ -1161,6 +1172,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const currentActivityStartRef = useRef<Date | null>(null);
   const lastLoopTimeRef = useRef<number>(0);
   const lastBreakBoundaryAlertPhaseRef = useRef<number | null>(null);
+  const focusTimerAutoEndedBreakStartRef = useRef<number | null>(null);
   const previousLegacyBreakTimeRef = useRef<number | null>(null);
   const isProcessingRef = useRef(false);
   const isResolvingGraceRef = useRef(false);
@@ -1224,6 +1236,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     scheduleBreaks,
     scheduleStartTime,
     sessionStartTime,
+    focusTimerDisplayOffsetSeconds,
     allPauseActive,
     allPauseTime,
     allPauseReason,
@@ -1290,6 +1303,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           : 0,
         sessionStartTime: timerState?.sessionStartTime !== undefined ? timerState.sessionStartTime : sessionStartTime,
         scheduleStartTime: timerState?.scheduleStartTime ?? scheduleStartTime,
+        focusTimerDisplayOffsetSeconds: typeof timerState?.focusTimerDisplayOffsetSeconds === 'number'
+          ? timerState.focusTimerDisplayOffsetSeconds
+          : focusTimerDisplayOffsetSeconds,
       };
       localStorage.setItem(key, JSON.stringify(merged));
     } catch (error) {
@@ -1309,6 +1325,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     graceContext,
     scheduleStartTime,
     sessionStartTime,
+    focusTimerDisplayOffsetSeconds,
     settings.timerPreset,
   ]);
 
@@ -1330,6 +1347,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pomodoroCount?: number;
       sessionStartTime?: string | null;
       scheduleStartTime?: string;
+      focusTimerDisplayOffsetSeconds?: number;
     },
   ) => {
     const phaseWorkTime = overrides?.phaseStartWorkTime ?? workTime;
@@ -1379,6 +1397,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pomodoroCount: typeof overrides?.pomodoroCount === 'number' ? overrides.pomodoroCount : pomodoroCount,
       sessionStartTime: overrides?.sessionStartTime !== undefined ? overrides.sessionStartTime : sessionStartTime,
       scheduleStartTime: overrides?.scheduleStartTime ?? scheduleStartTime,
+      focusTimerDisplayOffsetSeconds: typeof overrides?.focusTimerDisplayOffsetSeconds === 'number'
+        ? overrides.focusTimerDisplayOffsetSeconds
+        : focusTimerDisplayOffsetSeconds,
     };
     persistRuntimeSnapshot(snapshot, undefined, phaseTimerState);
     if (broadcastChannelRef.current) {
@@ -1390,7 +1411,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
     }
     bumpAccountTimerSyncNonce();
-  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, isIdle, lockedTimerMode, lockedTimerStartedAtMs, allPauseReason, allPauseStartTime, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime]);
+  }, [workTime, breakTime, allPauseTime, graceTotal, persistRuntimeSnapshot, getActiveStorageKey, activeMode, isIdle, lockedTimerMode, lockedTimerStartedAtMs, allPauseReason, allPauseStartTime, graceContext, pomodoroCount, sessionStartTime, scheduleStartTime, focusTimerDisplayOffsetSeconds]);
 
   // Load Data Helper
   const loadData = useCallback((username?: string) => {
@@ -1418,6 +1439,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setLogs(parsedLogs);
             setPomodoroCount(parsed.pomodoroCount || 0);
             setScheduleBreaks(parsed.scheduleBreaks || []);
+            setFocusTimerDisplayOffsetSeconds(normalizeFocusTimerDisplayOffsetSeconds(parsed.focusTimerDisplayOffsetSeconds));
             const nextBreakTime = parsed.breakTime !== undefined ? parsed.breakTime : 0;
             const nextWorkTime = parsed.workTime !== undefined ? parsed.workTime : DEFAULT_SETTINGS.workDuration;
             const parsedTimerStarted = parsed.timerStarted !== undefined ? Boolean(parsed.timerStarted) : false;
@@ -1521,6 +1543,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   setActiveMode(collapsedGraceState.activeMode);
                   setIsIdle(collapsedGraceState.isIdle);
                   setSessionStartTime(collapsedGraceState.sessionStartTime);
+                  setFocusTimerDisplayOffsetSeconds(0);
                   currentActivityStartRef.current = null;
                   pendingRuntimeMigrationRef.current = true;
                 } else {
@@ -1567,6 +1590,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setLogs([]);
           setCategories([]);
           setPomodoroCount(0);
+          setFocusTimerDisplayOffsetSeconds(0);
           setBreakTime(0);
           setWorkTime(DEFAULT_SETTINGS.workDuration);
           setActiveMode('work');
@@ -1693,6 +1717,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       scheduleBreaks,
       scheduleStartTime,
       sessionStartTime,
+      focusTimerDisplayOffsetSeconds,
       userName,
       user: payloadUser,
       updatedAt: options?.updatedAt ?? new Date().toISOString(),
@@ -1708,6 +1733,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     graceContext,
     graceOpen,
     graceTotal,
+    focusTimerDisplayOffsetSeconds,
     isIdle,
     lockedTimerMode,
     lockedTimerStartedAtMs,
@@ -2043,6 +2069,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       sessionStartTime: typeof timerWinner.sessionStartTime === 'string' || timerWinner.sessionStartTime === null
         ? timerWinner.sessionStartTime
         : (typeof dataWinner.sessionStartTime === 'string' || dataWinner.sessionStartTime === null ? dataWinner.sessionStartTime : null),
+      focusTimerDisplayOffsetSeconds: normalizeFocusTimerDisplayOffsetSeconds(timerWinner.focusTimerDisplayOffsetSeconds),
       userName: normalizeStoredUserName(
         dataWinner.userName,
         normalizeStoredUserName(timerWinner.userName, normalizeStoredUserName(remoteData.userName, normalizeStoredUserName(localData.userName))),
@@ -2173,6 +2200,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       scheduleBreaks: Array.isArray(source.scheduleBreaks) ? source.scheduleBreaks : [],
       scheduleStartTime: typeof source.scheduleStartTime === 'string' && source.scheduleStartTime ? source.scheduleStartTime : '08:00',
       sessionStartTime: collapsedGraceState ? collapsedGraceState.sessionStartTime : safeSessionStartTime,
+      focusTimerDisplayOffsetSeconds: collapsedGraceState
+        ? 0
+        : normalizeFocusTimerDisplayOffsetSeconds(source.focusTimerDisplayOffsetSeconds),
       userName: normalizedUserName,
       user: normalizedUser,
       updatedAt: options?.updatedAt ?? (typeof source.updatedAt === 'string' ? source.updatedAt : new Date().toISOString()),
@@ -2681,6 +2711,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseStartTime,
       graceOpen,
       graceContext,
+      focusTimerDisplayOffsetSeconds,
       scheduleBreaks,
       scheduleStartTime,
       sessionStartTime,
@@ -3141,7 +3172,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           delete filteredState.pomodoroCount;
           delete filteredState.allPauseActive; delete filteredState.allPauseTime; delete filteredState.allPauseReason;
           delete filteredState.allPauseStartTime; delete filteredState.graceOpen; delete filteredState.graceContext;
-          delete filteredState.graceTotal; delete filteredState.runtime;
+          delete filteredState.graceTotal; delete filteredState.focusTimerDisplayOffsetSeconds; delete filteredState.runtime;
       }
       if (!config.syncTasks) { delete filteredState.tasks; delete filteredState.categories; }
       if (!config.syncHistory) { delete filteredState.logs; }
@@ -3190,6 +3221,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (typeof remote.sessionStartTime === 'string' || remote.sessionStartTime === null) setSessionStartTime(remote.sessionStartTime ?? null);
       }
       if (config.syncTimers) {
+          if (Object.prototype.hasOwnProperty.call(remote, 'focusTimerDisplayOffsetSeconds')) {
+              setFocusTimerDisplayOffsetSeconds(normalizeFocusTimerDisplayOffsetSeconds(remote.focusTimerDisplayOffsetSeconds));
+          }
           if (Object.prototype.hasOwnProperty.call(remote, 'lockedTimerMode')) {
               const shouldDropRemoteTimerLock = incomingSettings?.timerPreset === 'focus' || settings.timerPreset === 'focus';
               const remoteTimerLock = shouldDropRemoteTimerLock
@@ -3270,7 +3304,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
      if(!groupSessionId || isRemoteUpdate.current) return;
      const t = setTimeout(() => { broadcastState(); }, 80);
      return () => clearTimeout(t);
-  }, [tasks, settings, activeMode, timerStarted, isIdle, lockedTimerMode, lockedTimerStartedAtMs, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
+  }, [tasks, settings, activeMode, timerStarted, isIdle, lockedTimerMode, lockedTimerStartedAtMs, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, focusTimerDisplayOffsetSeconds, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
 
   const updateMembersList = useCallback(() => {
       if (!isHostRef.current) return;
@@ -4394,6 +4428,223 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [activeMode, timerStarted, isIdle, allPauseActive, graceOpen]);
 
+  const autoEndLongFocusTimerBreak = useCallback((autoEndMs: number) => {
+    if (settings.timerPreset !== 'focus') return;
+    if (activeMode !== 'break' || isIdle || !timerStarted || allPauseActive || graceOpen) return;
+    if (!sessionStartTime) return;
+
+    const breakStart = currentActivityStartRef.current;
+    if (!breakStart) return;
+    const breakStartMs = breakStart.getTime();
+    if (typeof breakStartMs !== 'number' || !Number.isFinite(breakStartMs)) return;
+    if (focusTimerAutoEndedBreakStartRef.current === breakStartMs) return;
+    focusTimerAutoEndedBreakStartRef.current = breakStartMs;
+
+    const effectiveEndDate = new Date(autoEndMs);
+    const effectiveEndIso = effectiveEndDate.toISOString();
+    let sessionEndEntry: LogEntry | null = null;
+    let pendingActivity: EndSessionPendingActivity | null = null;
+    const pendingWindow = getEndSessionPendingActivityWindow({
+      isIdle,
+      timerStarted,
+      activityStartMs: breakStartMs,
+      effectiveEndMs: autoEndMs,
+      allPauseActive,
+      allPauseStartTime,
+    });
+
+    if (pendingWindow) {
+      const parsedSessionStartMs = Date.parse(sessionStartTime);
+      const boundedPendingStartMs = Number.isFinite(parsedSessionStartMs)
+        ? Math.max(pendingWindow.startMs, parsedSessionStartMs)
+        : pendingWindow.startMs;
+      const boundedPendingEndMs = pendingWindow.endMs;
+      const boundedPendingDurationSeconds = (boundedPendingEndMs - boundedPendingStartMs) / 1000;
+      if (Number.isFinite(boundedPendingDurationSeconds) && boundedPendingDurationSeconds > 0.5) {
+        const pendingActiveCategoryId = activeTask?.categoryId;
+        const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
+        const pendingActiveStartIso = new Date(boundedPendingStartMs).toISOString();
+        const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+
+        pendingActivity = {
+          mode: 'break',
+          durationSeconds: boundedPendingDurationSeconds,
+          startMs: boundedPendingStartMs,
+          endMs: boundedPendingEndMs,
+          categoryId: pendingActiveCategoryId ?? null,
+          ...pendingActiveCategorySnapshot,
+        };
+        sessionEndEntry = {
+          type: 'break',
+          start: pendingActiveStartIso,
+          end: effectiveEndIso,
+          duration: boundedPendingDurationSeconds,
+          reason: 'Focus Timer Auto Session End',
+          source: 'timer',
+          task: selectedTask,
+          color: activeColor,
+          categoryId: pendingActiveCategoryId ?? null,
+          ...pendingActiveCategorySnapshot,
+        };
+      }
+    }
+
+    const baseLogs = logsRef.current;
+    const logsIncludingSessionEnd = sessionEndEntry
+      ? [sessionEndEntry, ...baseLogs]
+      : baseLogs;
+    const checkedTaskIds = getCheckedTaskIdSet(tasks);
+    const baselineCheckedTaskIds = (
+      sessionTaskBaselineRef.current?.sessionStartTime === sessionStartTime
+        ? sessionTaskBaselineRef.current.checkedTaskIds
+        : checkedTaskIds
+    );
+    const completedTaskIds = getSessionTaskCompletionIdsFromLogs(baseLogs, sessionStartTime, effectiveEndIso);
+    checkedTaskIds.forEach((taskId) => {
+      if (!baselineCheckedTaskIds.has(taskId)) completedTaskIds.add(taskId);
+    });
+    const completedTasksCount = Array.from(completedTaskIds)
+      .filter(taskId => checkedTaskIds.has(taskId))
+      .length;
+    const sessionSummary = buildEndSessionStats({
+      logs: baseLogs,
+      sessionStartTime,
+      sessionEndTime: effectiveEndIso,
+      categories,
+      pendingActivity,
+      pomodoroCount,
+      settings: {
+        timerPreset: settings.timerPreset,
+        workDuration: settings.workDuration,
+      },
+      tasksCompleted: completedTasksCount,
+    });
+    const carryFocusSeconds = Math.max(
+      focusTimerDisplayOffsetSeconds,
+      focusTimerDisplayOffsetSeconds + getFocusTimerDisplaySeconds({
+        logs: logsIncludingSessionEnd,
+        sessionStartTime,
+        nowMs: autoEndMs,
+        timerStarted,
+        isIdle,
+        activeMode,
+        currentActivityStartTime: breakStart.toISOString(),
+        workTime,
+        workDuration: settings.workDuration,
+        allPauseActive,
+        graceOpen,
+      }),
+    );
+
+    if (sessionEndEntry) {
+      logsRef.current = logsIncludingSessionEnd;
+      setLogs(logsIncludingSessionEnd);
+    }
+
+    const record: SessionRecord = {
+      id: `focus-auto-${autoEndMs}`,
+      startTime: sessionStartTime,
+      endTime: effectiveEndIso,
+      stats: {
+        totalWorkMinutes: sessionSummary.totalWorkMinutes,
+        totalBreakMinutes: sessionSummary.totalBreakMinutes,
+        pomosCompleted: sessionSummary.pomosCompleted,
+        ...(sessionSummary.miniPomosCompleted !== undefined ? { miniPomosCompleted: sessionSummary.miniPomosCompleted } : {}),
+        tasksCompleted: sessionSummary.tasksCompleted,
+        categoryStats: sessionSummary.categoryStats,
+        categoryDetails: sessionSummary.categoryDetails,
+      },
+    };
+
+    setPastSessions(prev => [record, ...prev]);
+    if (user) {
+      setUser(prev => {
+        if (!prev) return null;
+        const nextStats = calculateLifetimeStats(
+          [record, ...pastSessions],
+          logsIncludingSessionEnd,
+          prev.joinedAt,
+          categories,
+        );
+        return { ...prev, lifetimeStats: nextStats };
+      });
+    }
+
+    setSessionStats(null);
+    setShowSummary(false);
+    setPomodoroCount(0);
+    setWorkTime(settings.workDuration);
+    setBreakTime(0);
+    setTimerStarted(false);
+    setIsIdle(true);
+    setLockedTimerMode(null);
+    setLockedTimerStartedAtMs(null);
+    setAllPauseActive(false);
+    setAllPauseTime(0);
+    setAllPauseReason('');
+    setAllPauseStartTime(null);
+    setGraceOpen(false);
+    setGraceContext(null);
+    setGraceTotal(0);
+    setSessionStartTime(null);
+    setFocusTimerDisplayOffsetSeconds(carryFocusSeconds);
+    sessionTaskBaselineRef.current = null;
+    taskCompletionWatcherRef.current = {
+      sessionStartTime: null,
+      checkedTaskIds,
+    };
+    currentActivityStartRef.current = null;
+    lastTickRef.current = null;
+    shadowTickRef.current = null;
+    workerRef.current?.postMessage('stop');
+
+    anchorRuntimePhase('idle', {
+      phaseStartWorkTime: settings.workDuration,
+      phaseStartBreakTime: 0,
+      phaseStartAllPauseTime: 0,
+      phaseStartGraceTotal: 0,
+      activityStartIso: null,
+      activeMode: 'break',
+      timerStarted: false,
+      isIdle: true,
+      lockedTimerMode: null,
+      lockedTimerStartedAtMs: null,
+      allPauseActive: false,
+      allPauseTime: 0,
+      allPauseReason: '',
+      allPauseStartTime: null,
+      graceOpen: false,
+      graceContext: null,
+      graceTotal: 0,
+      pomodoroCount: 0,
+      sessionStartTime: null,
+      scheduleStartTime,
+      focusTimerDisplayOffsetSeconds: carryFocusSeconds,
+    });
+  }, [
+    activeColor,
+    activeMode,
+    activeTask,
+    allPauseActive,
+    allPauseStartTime,
+    anchorRuntimePhase,
+    calculateLifetimeStats,
+    categories,
+    focusTimerDisplayOffsetSeconds,
+    graceOpen,
+    isIdle,
+    pastSessions,
+    pomodoroCount,
+    scheduleStartTime,
+    sessionStartTime,
+    settings.timerPreset,
+    settings.workDuration,
+    tasks,
+    timerStarted,
+    user,
+    workTime,
+  ]);
+
   const reconcileFromRuntime = useCallback((now: number) => {
     const runtime = runtimeRef.current;
     const derived = deriveRuntimeValues(runtime, now);
@@ -4412,6 +4663,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (runtime.phase === 'running-break') {
       if (Math.abs(derived.workTime - workTime) > 0.05) setWorkTime(derived.workTime);
       if (Math.abs(derived.breakTime - breakTime) > 0.05) setBreakTime(derived.breakTime);
+      const focusTimerAutoEndMs = getFocusTimerBreakAutoEndMs({
+        timerPreset: settings.timerPreset,
+        activeMode,
+        timerStarted,
+        isIdle,
+        allPauseActive,
+        graceOpen,
+        activityStartMs: currentActivityStartRef.current?.getTime() ?? null,
+        nowMs: now,
+        alreadyAutoEndedActivityStartMs: focusTimerAutoEndedBreakStartRef.current,
+      });
+      if (focusTimerAutoEndMs !== null) {
+        autoEndLongFocusTimerBreak(focusTimerAutoEndMs);
+        return;
+      }
       const boundary = detectRuntimeBoundaryCrossing(runtime, now);
       const phaseStart = runtime.phaseStartedAtMs ?? null;
       if (boundary?.mode === 'break' && phaseStart !== null && lastBreakBoundaryAlertPhaseRef.current !== phaseStart) {
@@ -4439,8 +4705,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     breakTime,
     allPauseTime,
     graceTotal,
+    activeMode,
+    allPauseActive,
+    autoEndLongFocusTimerBreak,
+    graceOpen,
     handleBreakBoundaryReached,
     handleWorkLoopComplete,
+    isIdle,
+    settings.timerPreset,
+    timerStarted,
   ]);
 
   const tick = useCallback(() => {
@@ -4533,6 +4806,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     );
     if (typeof payload.sessionStartTime === 'string' || payload.sessionStartTime === null) setSessionStartTime(payload.sessionStartTime ?? null);
     if (typeof payload.scheduleStartTime === 'string') setScheduleStartTime(payload.scheduleStartTime);
+    if (Object.prototype.hasOwnProperty.call(payload, 'focusTimerDisplayOffsetSeconds')) {
+      setFocusTimerDisplayOffsetSeconds(normalizeFocusTimerDisplayOffsetSeconds(payload.focusTimerDisplayOffsetSeconds));
+    }
 
     currentActivityStartRef.current = runtime.activityStartIso ? new Date(runtime.activityStartIso) : null;
     reconcileFromRuntime(Date.now());
@@ -5193,6 +5469,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceContext(null);
     setGraceTotal(0);
     setSessionStartTime(null);
+    setFocusTimerDisplayOffsetSeconds(0);
     sessionTaskBaselineRef.current = null;
     taskCompletionWatcherRef.current = {
       sessionStartTime: null,
@@ -5229,6 +5506,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pomodoroCount: 0,
       sessionStartTime: null,
       scheduleStartTime: nextScheduleStartTime,
+      focusTimerDisplayOffsetSeconds: 0,
     });
 
     setShowSummary(options?.showSummary !== false);
@@ -5263,6 +5541,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setTasks([]);
       setPastSessions([]);
       setCategories([]);
+      logsRef.current = [];
       setLogs([]);
       setPomodoroCount(0);
       setWorkTime(DEFAULT_SETTINGS.workDuration);
@@ -5280,6 +5559,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setGraceContext(null);
       setGraceTotal(0);
       setSessionStartTime(null);
+      setFocusTimerDisplayOffsetSeconds(0);
       setScheduleBreaks([]);
       setSessionStats(null);
       setShowSummary(false);
@@ -5319,6 +5599,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         pomodoroCount: 0,
         sessionStartTime: null,
         scheduleStartTime: nextScheduleStartTime,
+        focusTimerDisplayOffsetSeconds: 0,
       });
   };
 
@@ -5571,7 +5852,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const clearLogs = () => { setLogs([]); setPomodoroCount(0); };
+  const clearLogs = () => {
+    logsRef.current = [];
+    setLogs([]);
+    setPomodoroCount(0);
+    setFocusTimerDisplayOffsetSeconds(0);
+  };
   const resetTimers = () => restartActiveTimer();
 
   return (
@@ -5580,6 +5866,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
       timerActivityStartTime: runtimeRef.current.activityStartIso ?? null,
+      focusTimerDisplayOffsetSeconds,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, showCompletedTasks, setShowCompletedTasks,
       activeTask, activeColor, showSummary, sessionStats,
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,

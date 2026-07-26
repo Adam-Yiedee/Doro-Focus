@@ -121,6 +121,7 @@ type ResettablePersistedTimerSessionState = {
   graceTotal?: number;
   sessionStartTime?: string | null;
   scheduleStartTime?: string;
+  focusTimerDisplayOffsetSeconds?: number;
   runtime?: TimerRuntimeSnapshot | null;
 };
 
@@ -143,6 +144,7 @@ type ResetPersistedTimerSessionStateResult<T> = Omit<T,
   | 'graceTotal'
   | 'sessionStartTime'
   | 'scheduleStartTime'
+  | 'focusTimerDisplayOffsetSeconds'
 > & {
   runtime: TimerRuntimeSnapshot;
   workTime: number;
@@ -162,6 +164,7 @@ type ResetPersistedTimerSessionStateResult<T> = Omit<T,
   graceTotal: 0;
   sessionStartTime: null;
   scheduleStartTime: string;
+  focusTimerDisplayOffsetSeconds: 0;
 };
 
 export const getTimerStateFreshnessStamp = ({
@@ -238,6 +241,7 @@ export const resetPersistedTimerSessionState = <T extends ResettablePersistedTim
     graceTotal: 0,
     sessionStartTime: null,
     scheduleStartTime,
+    focusTimerDisplayOffsetSeconds: 0,
   };
 };
 

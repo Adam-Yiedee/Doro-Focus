@@ -488,6 +488,7 @@ const TimerDisplay: React.FC = () => {
     logs,
     sessionStartTime,
     timerActivityStartTime,
+    focusTimerDisplayOffsetSeconds,
   } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
@@ -584,7 +585,7 @@ const TimerDisplay: React.FC = () => {
     focusDisplaySecondsRef.current = 0;
   }
   const focusTimerDisplaySeconds = isFocusTimerPreset
-    ? Math.max(rawFocusTimerDisplaySeconds, focusDisplaySecondsRef.current)
+    ? Math.max(rawFocusTimerDisplaySeconds + focusTimerDisplayOffsetSeconds, focusDisplaySecondsRef.current)
     : 0;
   if (isFocusTimerPreset) {
     focusDisplaySecondsRef.current = focusTimerDisplaySeconds;
