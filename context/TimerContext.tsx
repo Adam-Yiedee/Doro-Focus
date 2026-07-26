@@ -100,6 +100,12 @@ import {
   getEndSessionPendingActivityWindow,
   getSessionTaskCompletionIdsFromLogs,
 } from '../utils/sessionStats';
+import {
+  DEFAULT_TAB_TITLE,
+  getTimerTabTitleNotification,
+  shouldShowTimerTabTitleNotification,
+  type TimerTabTitleNotification,
+} from '../utils/tabTitleNotifications';
 
 export interface ScheduleBreak {
   id: string;
@@ -4053,10 +4059,48 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof navigator !== 'undefined' && "vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
   }, []);
 
+  const resetTimerTabTitle = useCallback(() => {
+    if (typeof document === 'undefined') return;
+    document.title = DEFAULT_TAB_TITLE;
+  }, []);
+
+  const showTimerTabTitleNotification = useCallback((notification: TimerTabTitleNotification) => {
+    if (typeof document === 'undefined') return;
+    const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+    document.title = shouldShowTimerTabTitleNotification({
+      visibilityState: document.visibilityState,
+      hasFocus,
+    })
+      ? getTimerTabTitleNotification(notification)
+      : DEFAULT_TAB_TITLE;
+  }, []);
+
+  useEffect(() => {
+    resetTimerTabTitle();
+
+    const resetOnOpen = () => {
+      if (document.visibilityState === 'visible') {
+        resetTimerTabTitle();
+      }
+    };
+
+    document.addEventListener('visibilitychange', resetOnOpen);
+    window.addEventListener('focus', resetTimerTabTitle);
+
+    return () => {
+      document.removeEventListener('visibilitychange', resetOnOpen);
+      window.removeEventListener('focus', resetTimerTabTitle);
+      resetTimerTabTitle();
+    };
+  }, [resetTimerTabTitle]);
+
   const handleBreakBoundaryReached = useCallback((overflowSeconds: number = 0) => {
     if (graceOpen) return;
     const now = new Date();
     const isFocusTimerPreset = settings.timerPreset === 'focus';
+    if (!isFocusTimerPreset) {
+      showTimerTabTitleNotification('breakDone');
+    }
     if (currentActivityStartRef.current) {
       const elapsed = Math.max(0, (now.getTime() - currentActivityStartRef.current.getTime()) / 1000);
       const completedBreakDuration = Math.max(0, elapsed - overflowSeconds);
@@ -4128,7 +4172,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       graceContext: 'afterBreak',
       graceTotal: Math.max(0, overflowSeconds),
     });
-  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, settings.timerPreset, workTime]);
+  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, settings.timerPreset, showTimerTabTitleNotification, workTime]);
 
   const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
@@ -4234,6 +4278,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
+    showTimerTabTitleNotification('workDone');
     setTimerStarted(false);
     setGraceContext('afterWork');
     setGraceTotal(initialGraceSeconds);
@@ -4252,7 +4297,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pomodoroCount: completion.nextPomoCount,
     });
     setTimeout(() => { isProcessingRef.current = false; }, 2000);
-  }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase, lockedTimerMode]);
+  }, [settings, logActivity, sendNotification, pomodoroCount, breakTime, anchorRuntimePhase, lockedTimerMode, showTimerTabTitleNotification]);
 
   useEffect(() => {
     if (!legacyRuntimeMode) return;
