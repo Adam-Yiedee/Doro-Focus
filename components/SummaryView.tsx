@@ -8,6 +8,7 @@ import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, PASTEL_SWATCHES, getMutedS
 import { playCelebrationTrumpet, playSummaryCountSound, playSummaryDistributionSound, playSummaryStatPop } from '../utils/sound';
 import {
   formatSummaryDeltaValue,
+  getSummaryPomoDeltaLabel,
   getSummaryPomoComparison,
 } from '../utils/summaryComparisons';
 
@@ -305,10 +306,9 @@ const SummaryView: React.FC = () => {
   };
   const pomoDisplay = getSessionPomoDisplay(sessionStats);
   const {
-    lastFocusDay,
-    lastFocusDelta,
-    lastFocusTargetLabel,
-    weeklyFocusDays,
+    previousDayDelta,
+    previousDayTargetLabel,
+    weeklyComparisonDays,
     weeklyAverageDelta,
   } = getSummaryPomoComparison({ pastSessions, sessionStats });
 
@@ -318,18 +318,16 @@ const SummaryView: React.FC = () => {
     { label: pomoDisplay.label, value: pomoDisplay.value, accent: SUMMARY_STAT_COLORS[2], icon: CheckCircle2 },
     { label: 'Tasks Done', value: sessionStats.tasksCompleted, accent: SUMMARY_STAT_COLORS[3], icon: ListChecks },
     {
-      label: `More Pomos Than ${lastFocusTargetLabel}`,
-      value: lastFocusDay ? formatSummaryDeltaValue(lastFocusDelta) : 'First',
+      label: getSummaryPomoDeltaLabel(previousDayDelta, previousDayTargetLabel),
+      value: formatSummaryDeltaValue(previousDayDelta),
       accent: SUMMARY_STAT_COLORS[4],
       icon: CalendarDays,
-      valueClassName: lastFocusDay ? undefined : 'text-[1.9rem] md:text-[2.15rem]',
     },
     {
-      label: 'More Pomos Than Average',
-      value: weeklyFocusDays.length > 0 ? formatSummaryDeltaValue(weeklyAverageDelta) : 'First',
+      label: getSummaryPomoDeltaLabel(weeklyAverageDelta, 'Average'),
+      value: weeklyComparisonDays.length > 0 ? formatSummaryDeltaValue(weeklyAverageDelta) : '0',
       accent: SUMMARY_STAT_COLORS[5],
       icon: TrendingUp,
-      valueClassName: weeklyFocusDays.length > 0 ? undefined : 'text-[1.9rem] md:text-[2.15rem]',
     },
   ];
   let nextSummaryStatDelayMs = SUMMARY_FIRST_STAT_DELAY_MS;

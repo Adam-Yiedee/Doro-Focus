@@ -49,6 +49,24 @@ describe('account store blob compatibility', () => {
     stores.clear();
   });
 
+  it('uses classic pomodoro settings for a brand-new account', () => {
+    const accountData = buildDefaultAccountData({
+      username: 'fresh-user',
+      joinedAt: '2026-07-26T12:00:00.000Z',
+      lifetimeStats: {},
+    });
+
+    expect(accountData.settings).toMatchObject({
+      timerPreset: 'classic',
+      workDuration: 1500,
+      shortBreakDuration: 300,
+      longBreakDuration: 900,
+      longBreakInterval: 4,
+    });
+    expect(accountData.isIdle).toBe(true);
+    expect(accountData.sessionStartTime).toBeNull();
+  });
+
   it('creates and reloads a user when the store only supports get(type: json)', async () => {
     const record = await createUser('Alice', 'password123');
 

@@ -1,8 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { TimerSpectatorState } from '../types';
-import { getTimerShareEstimateFromSpectatorState } from './timerShare';
+import {
+  getSpectatorSettingsFallback,
+  getTimerShareEstimateFromSpectatorState,
+  pickTimerSpectatorSettings,
+} from './timerShare';
 
 describe('getTimerShareEstimateFromSpectatorState', () => {
+  it('defaults shared timers to classic pomodoro settings', () => {
+    expect(getSpectatorSettingsFallback()).toMatchObject({
+      timerPreset: 'classic',
+      workDuration: 1500,
+      shortBreakDuration: 300,
+      longBreakDuration: 900,
+    });
+    expect(pickTimerSpectatorSettings(undefined).timerPreset).toBe('classic');
+  });
+
+  it('preserves focus timer as an explicit shared timer preset', () => {
+    expect(pickTimerSpectatorSettings({
+      workDuration: 1500,
+      shortBreakDuration: 300,
+      longBreakDuration: 900,
+      longBreakInterval: 4,
+      timerPreset: 'focus',
+      twoInARowMode: false,
+    }).timerPreset).toBe('focus');
+  });
+
   it('uses the running break runtime to count down the remote break bank', () => {
     const startMs = 1_700_000_000_000;
     const state: TimerSpectatorState = {

@@ -4,6 +4,7 @@ import {
   getPomodoroCompletionStatsFromLogs,
   getStandardPomodoroCountForTimer,
 } from './pomodoroAccounting';
+import { TIMER_PRESETS } from './timerRuntime';
 
 export interface EndSessionPendingActivityWindow {
   startMs: number;
@@ -271,7 +272,7 @@ export const buildEndSessionStats = ({
   categories: Category[];
   pendingActivity?: EndSessionPendingActivity | null;
   pomodoroCount: number;
-  settings: Pick<TimerSettings, 'timerPreset'>;
+  settings: Pick<TimerSettings, 'timerPreset'> & Partial<Pick<TimerSettings, 'workDuration'>>;
   tasksCompleted: number;
 }): EndSessionStatsResult => {
   const sessionStartMs = getSessionStartMs(sessionStartTime);
@@ -301,7 +302,7 @@ export const buildEndSessionStats = ({
     breakLogs,
   );
 
-  const totalWorkMinutes = (
+  const loggedAndPendingWorkMinutes = (
     workLogs.reduce((acc, entry) => acc + getBoundedLogDurationSeconds(entry), 0)
     + pendingWorkSeconds
   ) / 60;
@@ -364,7 +365,7 @@ export const buildEndSessionStats = ({
     if (loggedCompletionStats.completedLogs === 0) return true;
     if (settings.timerPreset === 'custom') return true;
     const requiredSecondsPerTimerCount = settings.timerPreset === 'compact' ? 15 * 60 : 25 * 60;
-    const availableWorkSeconds = totalWorkMinutes * 60;
+    const availableWorkSeconds = loggedAndPendingWorkMinutes * 60;
     return (safePomodoroCount * requiredSecondsPerTimerCount) <= (availableWorkSeconds + 1);
   })();
   const boundedTimerPomosCompleted = canUseTimerPomodoroCount ? timerPomosCompleted : 0;
@@ -375,6 +376,16 @@ export const buildEndSessionStats = ({
   const miniPomosCompleted = settings.timerPreset === 'compact'
     ? Math.max(loggedCompletionStats.miniPomosCompleted || 0, canUseTimerPomodoroCount ? safePomodoroCount : 0)
     : loggedCompletionStats.miniPomosCompleted;
+  const presetWorkDuration = settings.timerPreset !== 'custom'
+    ? TIMER_PRESETS[settings.timerPreset].workDuration
+    : 25 * 60;
+  const safeWorkDurationSeconds = typeof settings.workDuration === 'number' && Number.isFinite(settings.workDuration) && settings.workDuration > 0
+    ? settings.workDuration
+    : presetWorkDuration;
+  const fallbackCompletedWorkMinutes = loggedCompletionStats.completedLogs === 0 && canUseTimerPomodoroCount
+    ? (safePomodoroCount * safeWorkDurationSeconds) / 60
+    : 0;
+  const totalWorkMinutes = Math.max(loggedAndPendingWorkMinutes, fallbackCompletedWorkMinutes);
 
   return {
     totalWorkMinutes,

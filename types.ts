@@ -68,7 +68,7 @@ export type AlarmSound =
   | 'sprout'
   | 'comet';
 export type FocusSound = 'off' | 'white-soft' | 'white-bright' | 'pink-soft' | 'pink-air' | 'brown-deep' | 'brown-warm' | 'green-calm';
-export type TimerPreset = 'classic' | 'compact' | 'custom';
+export type TimerPreset = 'classic' | 'compact' | 'focus' | 'custom';
 
 export interface TimerSettings {
   timerPreset: TimerPreset;
@@ -165,6 +165,7 @@ export interface TimerSpectatorState {
   breakTime: number;
   pomodoroCount: number;
   todayPomodoroCount?: number;
+  sessionStartTime?: string | null;
   allPauseActive: boolean;
   allPauseTime: number;
   graceOpen: boolean;

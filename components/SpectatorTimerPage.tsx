@@ -166,6 +166,7 @@ const isTimerSpectatorState = (value: unknown): value is TimerSpectatorState => 
     && (candidate.activeMode === 'work' || candidate.activeMode === 'break')
     && typeof candidate.workTime === 'number'
     && typeof candidate.breakTime === 'number'
+    && (candidate.sessionStartTime === undefined || candidate.sessionStartTime === null || typeof candidate.sessionStartTime === 'string')
     && (candidate.activeCategoryName === undefined || typeof candidate.activeCategoryName === 'string')
     && (candidate.activeCategoryColor === undefined || typeof candidate.activeCategoryColor === 'string');
 };
@@ -190,6 +191,10 @@ interface SpectatorTimerTileProps {
   maxTime: number;
   activeMode: TimerMode;
   label?: string;
+  displayValue?: string;
+  displayVariant?: 'time' | 'word';
+  hideLabel?: boolean;
+  hideLiquid?: boolean;
   isLiveish: boolean;
 }
 
@@ -275,6 +280,10 @@ const SpectatorTimerTile: React.FC<SpectatorTimerTileProps> = ({
   maxTime,
   activeMode,
   label,
+  displayValue,
+  displayVariant = 'time',
+  hideLabel = false,
+  hideLiquid = false,
   isLiveish,
 }) => {
   const isWork = type === 'work';
@@ -315,7 +324,7 @@ const SpectatorTimerTile: React.FC<SpectatorTimerTileProps> = ({
     >
       <SpectatorLiquidWave
         percent={fillPercent}
-        isVisible={isActive && showLiquid}
+        isVisible={isActive && showLiquid && !hideLiquid}
         isActive={isActive}
         colorMode={liquidColor}
       />
@@ -328,15 +337,39 @@ const SpectatorTimerTile: React.FC<SpectatorTimerTileProps> = ({
         </>
       )}
 
-      <div className={`z-20 max-w-[82%] truncate text-center text-[10px] font-bold uppercase tracking-[0.18em] transition-all duration-500 md:text-xs ${labelClasses}`}>
-        <span className="relative z-10 drop-shadow-md">{label || (isWork ? 'Focus' : 'Break Bank')}</span>
-      </div>
+      {!hideLabel && (
+        <div className={`z-20 max-w-[82%] truncate text-center text-[10px] font-bold uppercase tracking-[0.18em] transition-all duration-500 md:text-xs ${labelClasses}`}>
+          <span className="relative z-10 drop-shadow-md">{label || (isWork ? 'Focus' : 'Break Bank')}</span>
+        </div>
+      )}
 
-      <div className={`z-20 font-sans text-[2.6rem] font-bold leading-none tracking-tighter tabular-nums transition-all duration-500 sm:text-[3.35rem] md:text-[4.45rem] lg:text-[4.9rem] ${textClasses} ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}`}>
-        <span className="drop-shadow-lg filter">{formatTimerSquareTime(time)}</span>
+      <div className={`z-20 font-sans font-bold leading-none tabular-nums transition-all duration-500 ${
+        displayVariant === 'word'
+          ? 'text-[2.25rem] uppercase tracking-normal sm:text-[2.8rem] md:text-[3.55rem] lg:text-[3.95rem]'
+          : 'text-[2.6rem] tracking-tighter sm:text-[3.35rem] md:text-[4.45rem] lg:text-[4.9rem]'
+      } ${textClasses} ${displayVariant === 'time' && time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}`}>
+        <span className="drop-shadow-lg filter">{displayValue || formatTimerSquareTime(time)}</span>
       </div>
     </div>
   );
+};
+
+const getSpectatorFocusTimerDisplaySeconds = (
+  state: TimerSpectatorState | null,
+  focusTime: number,
+) => {
+  if (!state || state.settings.timerPreset !== 'focus') return focusTime;
+
+  const workDuration = Number.isFinite(state.settings.workDuration)
+    ? Math.max(0, state.settings.workDuration)
+    : 0;
+  const completedWorkSeconds = Math.max(0, Number(state.pomodoroCount) || 0) * workDuration;
+  const shouldIncludeCurrentCycle = !state.isIdle && !state.graceOpen;
+  const currentCycleSeconds = shouldIncludeCurrentCycle
+    ? Math.max(0, workDuration - Math.max(0, focusTime))
+    : 0;
+
+  return completedWorkSeconds + currentCycleSeconds;
 };
 
 const getPreviewEstimate = (
@@ -423,11 +456,19 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
   const pendingEncouragementIdRef = useRef<string | null>(null);
   const encouragementFeedbackTimeoutRef = useRef<number | null>(null);
   const encouragementAckTimeoutRef = useRef<number | null>(null);
+  const focusDisplaySessionRef = useRef<string | null>(null);
+  const focusDisplaySecondsRef = useRef(0);
 
   useEffect(() => {
     const tick = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(tick);
   }, []);
+
+  const spectatorSettings = useMemo(
+    () => remoteState?.settings || getSpectatorSettingsFallback(),
+    [remoteState?.settings],
+  );
+  const isFocusTimerPreset = spectatorSettings.timerPreset === 'focus';
 
   const clearEncouragementFeedbackTimer = useCallback(() => {
     if (encouragementFeedbackTimeoutRef.current !== null) {
@@ -579,6 +620,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         activeMode: previewMode,
         focusTime: previewMode === 'work' && previewRemainingSeconds ? previewRemainingSeconds : 0,
         breakTime: previewMode === 'break' && previewRemainingSeconds ? previewRemainingSeconds : 0,
+        focusDisplayTime: previewMode === 'work' && previewRemainingSeconds ? previewRemainingSeconds : 0,
       };
     }
 
@@ -596,8 +638,27 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
       activeMode: runtimeMode,
       focusTime: derived.workTime,
       breakTime: derived.breakTime,
+      focusDisplayTime: getSpectatorFocusTimerDisplaySeconds(remoteState, derived.workTime),
     };
   }, [nowMs, previewMode, previewRemainingSeconds, remoteState]);
+  const focusDisplaySessionKey = remoteState?.sessionStartTime
+    || (remoteState && !remoteState.isIdle ? normalizedSessionId : null);
+  if (!isFocusTimerPreset) {
+    focusDisplaySessionRef.current = null;
+    focusDisplaySecondsRef.current = 0;
+  } else if (focusDisplaySessionRef.current !== focusDisplaySessionKey) {
+    focusDisplaySessionRef.current = focusDisplaySessionKey;
+    focusDisplaySecondsRef.current = 0;
+  }
+  if (isFocusTimerPreset && (!remoteState || remoteState.isIdle)) {
+    focusDisplaySecondsRef.current = 0;
+  }
+  const spectatorFocusDisplayTime = isFocusTimerPreset
+    ? Math.max(timerValues.focusDisplayTime, focusDisplaySecondsRef.current)
+    : timerValues.focusDisplayTime;
+  if (isFocusTimerPreset) {
+    focusDisplaySecondsRef.current = spectatorFocusDisplayTime;
+  }
 
   const canSendEncouragement = status === 'live' && Boolean(connectionRef.current?.open);
   const isEncouragementSending = encouragementFeedback?.phase === 'sending';
@@ -708,7 +769,6 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
     ? formatTimerShareEndLabel(headlineEndMs)
     : (previewEndKind === 'finish' && previewEndLabel ? previewEndLabel : formatTimerShareEndLabel(null));
   const statusLabel = 'Time Finished';
-  const spectatorSettings = remoteState?.settings || getSpectatorSettingsFallback();
   const hasKnownTimerState = remoteState
     ? (!remoteState.isIdle || estimate.status !== 'idle')
     : estimate.status === 'running';
@@ -838,6 +898,8 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
               maxTime={spectatorSettings.workDuration}
               activeMode={timerValues.activeMode}
               label={workTileLabel}
+              displayValue={isFocusTimerPreset ? formatTimerSquareTime(spectatorFocusDisplayTime) : undefined}
+              hideLiquid={isFocusTimerPreset}
               isLiveish={hasKnownTimerState}
             />
             <SpectatorTimerTile
@@ -845,6 +907,10 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
               time={timerValues.breakTime}
               maxTime={spectatorSettings.longBreakDuration}
               activeMode={timerValues.activeMode}
+              displayValue={isFocusTimerPreset ? 'Break' : undefined}
+              displayVariant={isFocusTimerPreset ? 'word' : 'time'}
+              hideLabel={isFocusTimerPreset}
+              hideLiquid={isFocusTimerPreset}
               isLiveish={hasKnownTimerState}
             />
           </div>

@@ -198,6 +198,7 @@ const ROLLING_WEEK_DAYS = 7;
 const TIMER_PRESET_OPTIONS: Array<{ label: string; value: Exclude<TimerPreset, 'custom'>; detail: string }> = [
   { label: 'Classic', value: 'classic', detail: '25 / 5 / 15' },
   { label: 'Mini-Pomos', value: 'compact', detail: '15 / 3 / 9' },
+  { label: 'Focus Timer', value: 'focus', detail: 'Count Up' },
 ];
 
 const MAX_VALID_DATE_MS = 8.64e15;
@@ -4562,7 +4563,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       ? 'rgba(15, 23, 42, 0.12)'
       : 'rgba(255, 255, 255, 0.08)';
     const focusSoundSliderProgressWidth = `${focusSoundVolumePercent}%`;
-    const activeTimerPreset = settings.timerPreset === 'classic' || settings.timerPreset === 'compact'
+    const activeTimerPreset = settings.timerPreset === 'classic' || settings.timerPreset === 'compact' || settings.timerPreset === 'focus'
       ? settings.timerPreset
       : 'custom';
     const isCompactTimerPreset = activeTimerPreset === 'compact';
@@ -4721,7 +4722,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               {TIMER_PRESET_OPTIONS.map(option => (
                 <button
                   key={option.value}

@@ -174,6 +174,21 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 240 });
   });
 
+  it('counts session-end partial pomodoros in account statistics', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:12:30.000Z',
+        reason: 'Session End',
+        categoryId: 1,
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(12.5 / 60, 5);
+    expect(stats.totalPomos).toBeCloseTo(0.5, 5);
+    expect(stats.categoryBreakdown).toEqual({ Writing: 12.5 });
+  });
+
   it('converts archived mini-pomodoro session work minutes to standard pomodoros', () => {
     const sessions: SessionRecord[] = [
       {

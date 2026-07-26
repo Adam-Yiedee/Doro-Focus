@@ -171,6 +171,7 @@ interface TimerContextType {
   scheduleBreaks: ScheduleBreak[];
   scheduleStartTime: string;
   sessionStartTime: string | null;
+  timerActivityStartTime: string | null;
   isScheduleOpen: boolean;
   isWeeklyScheduleOpen: boolean;
   showCompletedTasks: boolean;
@@ -321,6 +322,7 @@ const normalizeSettings = (settings?: Partial<TimerSettings> | null): TimerSetti
   const presetIsValid = (
     nextSettings.timerPreset === 'classic'
     || nextSettings.timerPreset === 'compact'
+    || nextSettings.timerPreset === 'focus'
     || nextSettings.timerPreset === 'custom'
   );
 
@@ -1204,8 +1206,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     activeMode,
     timerStarted,
     isIdle,
-    lockedTimerMode,
-    lockedTimerStartedAtMs,
+    lockedTimerMode: settings.timerPreset === 'focus' ? null : lockedTimerMode,
+    lockedTimerStartedAtMs: settings.timerPreset === 'focus' ? null : lockedTimerStartedAtMs,
     workTime,
     breakTime,
     pomodoroCount,
@@ -1254,6 +1256,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const existingRaw = localStorage.getItem(key);
       const existing: TimerPersistencePayload = existingRaw ? JSON.parse(existingRaw) : {};
+      const shouldSuppressTimerLock = settings.timerPreset === 'focus';
       const merged: TimerPersistencePayload = {
         ...existing,
         schemaVersion: DATA_SCHEMA_VERSION,
@@ -1264,8 +1267,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeMode: runtimeMode,
         timerStarted: typeof timerState?.timerStarted === 'boolean' ? timerState.timerStarted : runtimeRunning,
         isIdle: typeof timerState?.isIdle === 'boolean' ? timerState.isIdle : snapshot.phase === 'idle',
-        lockedTimerMode: timerState?.lockedTimerMode !== undefined ? timerState.lockedTimerMode : lockedTimerMode,
-        lockedTimerStartedAtMs: timerState?.lockedTimerStartedAtMs !== undefined ? timerState.lockedTimerStartedAtMs : lockedTimerStartedAtMs,
+        lockedTimerMode: shouldSuppressTimerLock ? null : (timerState?.lockedTimerMode !== undefined ? timerState.lockedTimerMode : lockedTimerMode),
+        lockedTimerStartedAtMs: shouldSuppressTimerLock ? null : (timerState?.lockedTimerStartedAtMs !== undefined ? timerState.lockedTimerStartedAtMs : lockedTimerStartedAtMs),
         allPauseActive: typeof timerState?.allPauseActive === 'boolean' ? timerState.allPauseActive : snapshot.phase === 'all-pause',
         allPauseTime: typeof timerState?.allPauseTime === 'number' ? timerState.allPauseTime : allPauseTime,
         allPauseReason: timerState?.allPauseReason ?? allPauseReason,
@@ -1296,6 +1299,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     graceContext,
     scheduleStartTime,
     sessionStartTime,
+    settings.timerPreset,
   ]);
 
   const anchorRuntimePhase = useCallback((
@@ -1394,7 +1398,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const parsedSessions = parsed.pastSessions || [];
             const parsedCategories = parsed.categories || [];
             const parsedLogs = parsed.logs || [];
-            setSettings(normalizeSettings(parsed.settings));
+            const nextSettings = normalizeSettings(parsed.settings);
+            setSettings(nextSettings);
             setTasks(parsedTasks);
             lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(parsedTasks));
             setPastSessions(parsedSessions);
@@ -1413,7 +1418,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setWorkTime(nextWorkTime);
             setActiveMode(parsed.activeMode || 'work');
             setIsIdle(nextInitialIdle);
-            const parsedTimerLock = normalizeLockedTimerState(parsed.lockedTimerMode, parsed.lockedTimerStartedAtMs);
+            const parsedTimerLock = nextSettings.timerPreset === 'focus'
+              ? { mode: null, startedAtMs: null }
+              : normalizeLockedTimerState(parsed.lockedTimerMode, parsed.lockedTimerStartedAtMs);
             setLockedTimerMode(parsedTimerLock.mode);
             setLockedTimerStartedAtMs(parsedTimerLock.startedAtMs);
             
@@ -1664,8 +1671,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeMode,
       timerStarted,
       isIdle: runtimeRef.current.phase === 'idle' ? true : isIdle,
-      lockedTimerMode,
-      lockedTimerStartedAtMs,
+      lockedTimerMode: settings.timerPreset === 'focus' ? null : lockedTimerMode,
+      lockedTimerStartedAtMs: settings.timerPreset === 'focus' ? null : lockedTimerStartedAtMs,
       allPauseActive,
       allPauseTime,
       allPauseReason,
@@ -2008,14 +2015,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         payloadUpdatedAtMs: getPayloadUpdatedAtMs(payload),
       }),
     );
-    const timerLock = normalizeLockedTimerState(timerWinner.lockedTimerMode, timerWinner.lockedTimerStartedAtMs);
+    const mergedSettings = normalizeSettings(dataWinner.settings);
+    const timerLock = mergedSettings.timerPreset === 'focus'
+      ? { mode: null, startedAtMs: null }
+      : normalizeLockedTimerState(timerWinner.lockedTimerMode, timerWinner.lockedTimerStartedAtMs);
     const mergedTasks = mergeTaskLists(remoteData.tasks, localData.tasks, prefer, { membership: 'preferred' });
     lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(mergedTasks));
 
     return {
       schemaVersion: DATA_SCHEMA_VERSION,
       revision: Math.max(getPayloadRevision(localData), getPayloadRevision(remoteData)),
-      settings: normalizeSettings(dataWinner.settings),
+      settings: mergedSettings,
       tasks: normalizeTaskState(mergedTasks),
       categories: mergeOrderedEntitiesById<Category>(remoteData.categories, localData.categories, prefer, { membership: 'preferred' }),
       logs: mergeLogs(remoteData.logs, localData.logs),
@@ -2116,7 +2126,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       rawGraceContext: source.graceContext,
       fallbackMode: safeMode,
     });
-    const normalizedTimerLock = normalizeLockedTimerState(source.lockedTimerMode, source.lockedTimerStartedAtMs, nowMs);
+    const normalizedTimerLock = safeSettings.timerPreset === 'focus'
+      ? { mode: null, startedAtMs: null }
+      : normalizeLockedTimerState(source.lockedTimerMode, source.lockedTimerStartedAtMs, nowMs);
     const normalizedUserName = normalizeStoredUserName(source.userName, options?.fallbackUserName || payloadUser.username);
     const normalizedUser: User = {
       ...payloadUser,
@@ -3045,6 +3057,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       workTime: typeof state?.workTime === 'number' && Number.isFinite(state.workTime) ? state.workTime : DEFAULT_SETTINGS.workDuration,
       breakTime: typeof state?.breakTime === 'number' && Number.isFinite(state.breakTime) ? state.breakTime : 0,
       pomodoroCount: typeof state?.pomodoroCount === 'number' && Number.isFinite(state.pomodoroCount) ? state.pomodoroCount : 0,
+      sessionStartTime: typeof state?.sessionStartTime === 'string' || state?.sessionStartTime === null
+        ? state.sessionStartTime
+        : null,
       todayPomodoroCount: getTodayPomodoroCountFromLogs(
         Array.isArray(state?.logs) ? state.logs : [],
         nowMs,
@@ -3167,10 +3182,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         remoteHostConfig,
         clientSyncConfig: clientSyncConfigRef.current,
       });
+      const incomingSettings = mode === 'full' && config.syncSettings && remote.settings
+        ? normalizeSettings(remote.settings)
+        : null;
       
-      if (mode === 'full' && config.syncSettings && remote.settings) {
+      if (incomingSettings) {
           setSettings(prev => ({
-            ...normalizeSettings(remote.settings),
+            ...incomingSettings,
             disableBlur: prev.disableBlur,
             themeMode: prev.themeMode,
           }));
@@ -3188,7 +3206,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
       if (config.syncTimers) {
           if (Object.prototype.hasOwnProperty.call(remote, 'lockedTimerMode')) {
-              const remoteTimerLock = normalizeLockedTimerState(remote.lockedTimerMode, remote.lockedTimerStartedAtMs);
+              const shouldDropRemoteTimerLock = incomingSettings?.timerPreset === 'focus' || settings.timerPreset === 'focus';
+              const remoteTimerLock = shouldDropRemoteTimerLock
+                ? { mode: null, startedAtMs: null }
+                : normalizeLockedTimerState(remote.lockedTimerMode, remote.lockedTimerStartedAtMs);
               setLockedTimerMode(remoteTimerLock.mode);
               setLockedTimerStartedAtMs(remoteTimerLock.startedAtMs);
           }
@@ -3258,7 +3279,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               conn.send({ type: 'STATE_UPDATE', state: filteredState });
           }
       });
-  }, [getCurrentState, buildFilteredGroupState, buildTimerSpectatorState, pruneConnections]);
+  }, [getCurrentState, buildFilteredGroupState, buildTimerSpectatorState, pruneConnections, settings.timerPreset]);
 
   useEffect(() => {
      if(!groupSessionId || isRemoteUpdate.current) return;
@@ -4035,6 +4056,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const handleBreakBoundaryReached = useCallback((overflowSeconds: number = 0) => {
     if (graceOpen) return;
     const now = new Date();
+    const isFocusTimerPreset = settings.timerPreset === 'focus';
     if (currentActivityStartRef.current) {
       const elapsed = Math.max(0, (now.getTime() - currentActivityStartRef.current.getTime()) / 1000);
       const completedBreakDuration = Math.max(0, elapsed - overflowSeconds);
@@ -4043,17 +4065,21 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
       currentActivityStartRef.current = null;
     }
-    playAlarm(settings.alarmSound);
+    if (!isFocusTimerPreset) {
+      playAlarm(settings.alarmSound);
+    }
     const roundedDebtMinutes = Math.max(0, Math.ceil(overflowSeconds / 60));
-    if (lockedTimerMode === 'break') {
+    if (lockedTimerMode === 'break' || isFocusTimerPreset) {
       const nextBreakTime = -Math.max(0, overflowSeconds);
       const nextActivityStart = new Date(Date.now() - Math.max(0, overflowSeconds) * 1000);
-      sendNotification(
-        'Break Time Ended',
-        roundedDebtMinutes > 0
-          ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
-          : 'Break bank depleted. Continuing break timer.',
-      );
+      if (!isFocusTimerPreset) {
+        sendNotification(
+          'Break Time Ended',
+          roundedDebtMinutes > 0
+            ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
+            : 'Break bank depleted. Continuing break timer.',
+        );
+      }
       setTimerStarted(true);
       setActiveMode('break');
       setIsIdle(false);
@@ -4077,12 +4103,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
       return;
     }
-    sendNotification(
-      'Break Time Ended',
-      roundedDebtMinutes > 0
-        ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
-        : 'Break bank depleted. Timer is now counting break debt.',
-    );
+    if (!isFocusTimerPreset) {
+      sendNotification(
+        'Break Time Ended',
+        roundedDebtMinutes > 0
+          ? `Break bank depleted. You are ${roundedDebtMinutes} min into break debt.`
+          : 'Break bank depleted. Timer is now counting break debt.',
+      );
+    }
     setTimerStarted(false);
     setBreakTime(0);
     setGraceContext('afterBreak');
@@ -4100,7 +4128,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       graceContext: 'afterBreak',
       graceTotal: Math.max(0, overflowSeconds),
     });
-  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, workTime]);
+  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, settings.timerPreset, workTime]);
 
   const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
@@ -4117,8 +4145,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
     const completion = computeWorkCompletion(pomodoroCount, breakBankBase, settings);
     const shouldAutoStartNextFocus = shouldAutoStartTwoInARowFocus(completion.nextPomoCount, settings);
-    const shouldStartNextFocus = shouldAutoStartNextFocus || lockedTimerMode === 'work';
-    playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound);
+    const isFocusTimerPreset = settings.timerPreset === 'focus';
+    const shouldStartNextFocus = shouldAutoStartNextFocus || lockedTimerMode === 'work' || isFocusTimerPreset;
+    if (!isFocusTimerPreset) {
+      playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound);
+    }
     const nextWorkTime = shouldStartNextFocus ? settings.workDuration : 0;
 
     setBreakTime(completion.nextBreakTime);
@@ -4163,16 +4194,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return normalizeTaskState(updatedTasks, { selectFirstAvailableIfNoSelection: true });
     });
 
-    sendNotification(
-      completion.isLongBreak
-        ? "Long Break Earned!"
-        : settings.timerPreset === 'compact'
-          ? "Mini-Pomo Complete"
-          : "Focus Session Complete",
-      shouldStartNextFocus
-        ? `${Math.floor(completion.reward/60)} minutes added to break bank. Next focus started.`
-        : `${Math.floor(completion.reward/60)} minutes added to break bank.`,
-    );
+    if (!isFocusTimerPreset) {
+      sendNotification(
+        completion.isLongBreak
+          ? "Long Break Earned!"
+          : settings.timerPreset === 'compact'
+            ? "Mini-Pomo Complete"
+            : "Focus Session Complete",
+        shouldStartNextFocus
+          ? `${Math.floor(completion.reward/60)} minutes added to break bank. Next focus started.`
+          : `${Math.floor(completion.reward/60)} minutes added to break bank.`,
+      );
+    }
 
     if (shouldStartNextFocus) {
       const nextActivityStart = new Date();
@@ -4448,7 +4481,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     else setTimerStarted(runtimeRunning);
     setIsIdle(runtime.phase === 'idle');
     if (Object.prototype.hasOwnProperty.call(payload, 'lockedTimerMode')) {
-      const payloadTimerLock = normalizeLockedTimerState(payload.lockedTimerMode, payload.lockedTimerStartedAtMs);
+      const payloadSettings = normalizeSettings(payload.settings);
+      const payloadTimerLock = payloadSettings.timerPreset === 'focus'
+        ? { mode: null, startedAtMs: null }
+        : normalizeLockedTimerState(payload.lockedTimerMode, payload.lockedTimerStartedAtMs);
       setLockedTimerMode(payloadTimerLock.mode);
       setLockedTimerStartedAtMs(payloadTimerLock.startedAtMs);
     }
@@ -4576,32 +4612,40 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => window.removeEventListener('storage', onStorageSync);
   }, [getActiveStorageKey, applyExternalTimerState]);
 
+  const ensureSessionStarted = useCallback((startDate: Date = new Date()) => {
+    if (!sessionStartTime) {
+      const nextSessionStartTime = startDate.toISOString();
+      setSessionStartTime(nextSessionStartTime);
+      const checkedTaskIds = getCheckedTaskIdSet(tasks);
+      sessionTaskBaselineRef.current = {
+        sessionStartTime: nextSessionStartTime,
+        checkedTaskIds: new Set(checkedTaskIds),
+      };
+      taskCompletionWatcherRef.current = {
+        sessionStartTime: nextSessionStartTime,
+        checkedTaskIds,
+      };
+      const h = startDate.getHours().toString().padStart(2, '0');
+      const m = startDate.getMinutes().toString().padStart(2, '0');
+      const nextScheduleStartTime = `${h}:${m}`;
+      setScheduleStartTime(nextScheduleStartTime);
+      return { nextSessionStartTime, nextScheduleStartTime };
+    }
+
+    return {
+      nextSessionStartTime: sessionStartTime,
+      nextScheduleStartTime: scheduleStartTime,
+    };
+  }, [scheduleStartTime, sessionStartTime, tasks]);
+
   const startTimerInternal = (opts?: { mode?: TimerMode, workOverride?: number, breakOverride?: number, forceActivityStart?: Date, playSound?: boolean, forceStart?: boolean }) => {
     if (timerStarted && !opts?.forceStart) return;
     if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
     void resumeAudioContext();
-    let nextSessionStartTime = sessionStartTime;
-    let nextScheduleStartTime = scheduleStartTime;
-    if (!sessionStartTime) {
-        const now = new Date();
-        nextSessionStartTime = now.toISOString();
-        setSessionStartTime(nextSessionStartTime);
-        const checkedTaskIds = getCheckedTaskIdSet(tasks);
-        sessionTaskBaselineRef.current = {
-          sessionStartTime: nextSessionStartTime,
-          checkedTaskIds: new Set(checkedTaskIds),
-        };
-        taskCompletionWatcherRef.current = {
-          sessionStartTime: nextSessionStartTime,
-          checkedTaskIds,
-        };
-        const h = now.getHours().toString().padStart(2, '0');
-        const m = now.getMinutes().toString().padStart(2, '0');
-        nextScheduleStartTime = `${h}:${m}`;
-        setScheduleStartTime(nextScheduleStartTime);
-    }
+    const sessionAnchorDate = opts?.forceActivityStart || (!isIdle ? currentActivityStartRef.current : null) || new Date();
+    const { nextSessionStartTime, nextScheduleStartTime } = ensureSessionStarted(sessionAnchorDate);
     if (isIdle) setIsIdle(false);
-    const activityStart = opts?.forceActivityStart || currentActivityStartRef.current || new Date();
+    const activityStart = opts?.forceActivityStart || currentActivityStartRef.current || sessionAnchorDate;
     currentActivityStartRef.current = activityStart;
     setTimerStarted(true);
     lastTickRef.current = Date.now();
@@ -4680,6 +4724,26 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const publishTimerLockStateRef = useRef(publishTimerLockState);
   publishTimerLockStateRef.current = publishTimerLockState;
 
+  useEffect(() => {
+    if (!timerStarted || isIdle || sessionStartTime) return;
+
+    const sessionAnchorDate = currentActivityStartRef.current || new Date();
+    const { nextSessionStartTime, nextScheduleStartTime } = ensureSessionStarted(sessionAnchorDate);
+    const currentRuntime = runtimeRef.current;
+    const repairedPhase = currentRuntime.phase === 'idle'
+      ? (activeMode === 'break' ? 'running-break' : 'running-work')
+      : currentRuntime.phase;
+
+    anchorRuntimePhase(repairedPhase, {
+      activeMode,
+      timerStarted: true,
+      isIdle: false,
+      activityStartIso: currentRuntime.activityStartIso || sessionAnchorDate.toISOString(),
+      sessionStartTime: nextSessionStartTime,
+      scheduleStartTime: nextScheduleStartTime,
+    });
+  }, [activeMode, anchorRuntimePhase, ensureSessionStarted, isIdle, sessionStartTime, timerStarted]);
+
   const toggleTimerLock = (mode: TimerMode) => {
     if (blockGuestTimerControl()) return;
     const nowMs = Date.now();
@@ -4714,6 +4778,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const performSwitch = (targetMode: TimerMode) => {
     if (blockGuestTimerControl()) return;
+    const switchStartedAt = new Date();
+    const { nextSessionStartTime, nextScheduleStartTime } = ensureSessionStarted(currentActivityStartRef.current || switchStartedAt);
     const shouldClearTimerLock = lockedTimerMode !== null && lockedTimerMode !== targetMode;
     playSwitch();
     if (!isIdle && currentActivityStartRef.current) {
@@ -4729,9 +4795,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGraceOpen(false);
     setGraceContext(null);
     setGraceTotal(0);
-    currentActivityStartRef.current = new Date();
+    currentActivityStartRef.current = switchStartedAt;
     setTimerStarted(true);
-    lastTickRef.current = Date.now();
+    lastTickRef.current = switchStartedAt.getTime();
     anchorRuntimePhase(targetMode === 'work' ? 'running-work' : 'running-break', {
       activityStartIso: currentActivityStartRef.current.toISOString(),
       activeMode: targetMode,
@@ -4740,6 +4806,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       graceOpen: false,
       graceContext: null,
       graceTotal: 0,
+      sessionStartTime: nextSessionStartTime,
+      scheduleStartTime: nextScheduleStartTime,
       lockedTimerMode: shouldClearTimerLock ? null : lockedTimerMode,
       lockedTimerStartedAtMs: shouldClearTimerLock ? null : lockedTimerStartedAtMs,
     });
@@ -5025,7 +5093,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       categories,
       pendingActivity,
       pomodoroCount,
-      settings: { timerPreset: settings.timerPreset },
+      settings: {
+        timerPreset: settings.timerPreset,
+        workDuration: settings.workDuration,
+      },
       tasksCompleted: completedTasksCount,
     });
     const logsIncludingSessionEnd = sessionEndEntry
@@ -5463,6 +5534,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateSettings = (newSettings: TimerSettings) => {
     const safeSettings = normalizeSettings(newSettings);
+    const focusPresetBoundary = settings.timerPreset === 'focus' || safeSettings.timerPreset === 'focus';
+    if (focusPresetBoundary && lockedTimerMode !== null) {
+      publishTimerLockState(null, null);
+    }
     setSettings(safeSettings);
     if (!timerStarted && activeMode === 'work') {
       setWorkTime(safeSettings.workDuration);
@@ -5480,6 +5555,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       user, workTime, breakTime, activeMode, timerStarted, isIdle, lockedTimerMode, pomodoroCount,
       allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime,
+      timerActivityStartTime: runtimeRef.current.activityStartIso ?? null,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, showCompletedTasks, setShowCompletedTasks,
       activeTask, activeColor, showSummary, sessionStats,
       groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,

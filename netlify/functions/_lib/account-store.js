@@ -834,6 +834,9 @@ const normalizeTimerSpectatorState = (value, fallbackHostName) => {
     workTime: clampNumber(value.workTime, DEFAULT_SETTINGS.workDuration),
     breakTime: clampNumber(value.breakTime, 0),
     pomodoroCount: clampNumber(value.pomodoroCount, 0),
+    sessionStartTime: typeof value.sessionStartTime === 'string' || value.sessionStartTime === null
+      ? value.sessionStartTime
+      : null,
     todayPomodoroCount: Number.isFinite(Number(value.todayPomodoroCount))
       ? Math.max(0, Number(value.todayPomodoroCount))
       : undefined,
@@ -985,7 +988,7 @@ const pickTimerSpectatorSettings = (settings) => ({
   shortBreakDuration: Number.isFinite(Number(settings?.shortBreakDuration)) ? Number(settings.shortBreakDuration) : 5 * 60,
   longBreakDuration: Number.isFinite(Number(settings?.longBreakDuration)) ? Number(settings.longBreakDuration) : 15 * 60,
   longBreakInterval: Number.isFinite(Number(settings?.longBreakInterval)) ? Number(settings.longBreakInterval) : 4,
-  timerPreset: settings?.timerPreset === 'compact' || settings?.timerPreset === 'custom' ? settings.timerPreset : 'classic',
+  timerPreset: settings?.timerPreset === 'compact' || settings?.timerPreset === 'focus' || settings?.timerPreset === 'custom' ? settings.timerPreset : 'classic',
   twoInARowMode: Boolean(settings?.twoInARowMode),
 });
 
@@ -1075,6 +1078,9 @@ const buildFocusFriendPresence = (userRecord, accountData) => {
       workTime: Number.isFinite(Number(accountData.workTime)) ? Number(accountData.workTime) : DEFAULT_SETTINGS.workDuration,
       breakTime: Number.isFinite(Number(accountData.breakTime)) ? Number(accountData.breakTime) : 0,
       pomodoroCount: Number.isFinite(Number(accountData.pomodoroCount)) ? Number(accountData.pomodoroCount) : 0,
+      sessionStartTime: typeof accountData.sessionStartTime === 'string' || accountData.sessionStartTime === null
+        ? accountData.sessionStartTime
+        : null,
       todayPomodoroCount: getTodayPomodoroCountFromLogs(accountData.logs, Date.now()),
       allPauseActive: Boolean(accountData.allPauseActive),
       allPauseTime: Number.isFinite(Number(accountData.allPauseTime)) ? Number(accountData.allPauseTime) : 0,

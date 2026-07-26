@@ -461,6 +461,7 @@ describe('behavior-locked transition math', () => {
       longBreakDuration: 540,
       longBreakInterval: 4,
     });
+    expect(TIMER_PRESETS.focus).toEqual(TIMER_PRESETS.classic);
     expect(TIMER_PRESETS.classic.workDuration / TIMER_PRESETS.classic.shortBreakDuration).toBe(5);
     expect(TIMER_PRESETS.compact.workDuration / TIMER_PRESETS.compact.shortBreakDuration).toBe(5);
     expect(TIMER_PRESETS.compact.longBreakDuration / TIMER_PRESETS.compact.shortBreakDuration).toBe(3);
@@ -469,6 +470,7 @@ describe('behavior-locked transition math', () => {
   it('detects classic, compact, and custom timer presets from duration settings', () => {
     expect(getMatchingTimerPreset(TIMER_PRESETS.classic)).toBe('classic');
     expect(getMatchingTimerPreset(TIMER_PRESETS.compact)).toBe('compact');
+    expect(getMatchingTimerPreset(TIMER_PRESETS.focus)).toBe('classic');
     expect(getMatchingTimerPreset({
       workDuration: 1200,
       shortBreakDuration: 240,
@@ -720,6 +722,7 @@ describe('behavior-locked transition math', () => {
   it('keeps two-in-a-row disabled outside the compact preset', () => {
     expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'classic', twoInARowMode: true })).toBe(false);
     expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'compact', twoInARowMode: false })).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'focus', twoInARowMode: true })).toBe(false);
     expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'custom', twoInARowMode: true })).toBe(false);
   });
 

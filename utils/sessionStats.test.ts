@@ -141,8 +141,58 @@ describe('buildEndSessionStats', () => {
       tasksCompleted: 0,
     });
 
+    expect(stats.totalWorkMinutes).toBe(45);
     expect(stats.pomosCompleted).toBe(1.5);
     expect(stats.miniPomosCompleted).toBe(3);
+  });
+
+  it('uses compact work duration when mini-pomo completion logs are missing but timer count is available', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          type: 'break',
+          start: '2026-07-18T09:15:00.000Z',
+          end: '2026-07-18T09:18:00.000Z',
+          duration: 3 * 60,
+          reason: 'Break Complete',
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:45:00.000Z',
+      categories,
+      pomodoroCount: 2,
+      settings: { timerPreset: 'compact' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(30);
+    expect(stats.totalBreakMinutes).toBe(3);
+    expect(stats.pomosCompleted).toBe(1);
+    expect(stats.miniPomosCompleted).toBe(2);
+  });
+
+  it('treats focus timer completions as standard pomodoros', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:25:00.000Z',
+          duration: 25 * 60,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:25:00.000Z',
+      categories,
+      pomodoroCount: 1,
+      settings: { timerPreset: 'focus' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(25);
+    expect(stats.pomosCompleted).toBe(1);
+    expect(stats.miniPomosCompleted).toBeUndefined();
   });
 
   it('keeps work logged before a pause when resumed work is pending', () => {

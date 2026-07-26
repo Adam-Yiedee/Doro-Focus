@@ -400,6 +400,7 @@ describe('focus-friends function', () => {
     expect(inviteResponse.status).toBe(200);
 
     const nowMs = Date.now();
+    const sessionStartTime = new Date(nowMs - 120_000).toISOString();
     const presenceResponse = await focusFriendsHandler(makeAuthedRequest(bobToken, 'POST', {
       action: 'update-presence',
       timer: {
@@ -411,6 +412,7 @@ describe('focus-friends function', () => {
         workTime: 1470,
         breakTime: 300,
         pomodoroCount: 2,
+        sessionStartTime,
         todayPomodoroCount: 5.5,
         allPauseActive: false,
         allPauseTime: 0,
@@ -427,7 +429,7 @@ describe('focus-friends function', () => {
           shortBreakDuration: 300,
           longBreakDuration: 900,
           longBreakInterval: 4,
-          timerPreset: 'classic',
+          timerPreset: 'focus',
           twoInARowMode: false,
         },
         runtime: {
@@ -460,7 +462,11 @@ describe('focus-friends function', () => {
             activeCategoryName: 'Presence',
             activeCategoryIcon: 'target',
             pomodoroCount: 2,
+            sessionStartTime,
             todayPomodoroCount: 5.5,
+            settings: {
+              timerPreset: 'focus',
+            },
             runtime: {
               phase: 'running-work',
               phaseStartWorkTime: 1470,
@@ -483,6 +489,7 @@ describe('focus-friends function', () => {
         workTime: 1470,
         breakTime: 240,
         pomodoroCount: 2,
+        sessionStartTime,
         todayPomodoroCount: 5.5,
         allPauseActive: false,
         allPauseTime: 0,
@@ -499,7 +506,7 @@ describe('focus-friends function', () => {
           shortBreakDuration: 300,
           longBreakDuration: 900,
           longBreakInterval: 4,
-          timerPreset: 'classic',
+          timerPreset: 'focus',
           twoInARowMode: false,
         },
         runtime: {
@@ -531,6 +538,10 @@ describe('focus-friends function', () => {
             activeMode: 'break',
             breakTime: 240,
             pomodoroCount: 2,
+            sessionStartTime,
+            settings: {
+              timerPreset: 'focus',
+            },
             runtime: {
               phase: 'running-break',
               phaseStartBreakTime: 240,

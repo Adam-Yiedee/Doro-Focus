@@ -1,9 +1,6 @@
 import { SessionRecord } from '../types';
 import { formatPomodoroCount, getSessionPomodoroEquivalent } from './pomodoroAccounting';
 
-const SUMMARY_DAY_MS = 24 * 60 * 60 * 1000;
-const SUMMARY_WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
 export interface SummaryComparisonStatsLike {
   sessionStartTime?: string | null;
   sessionEndTime?: string | null;
@@ -14,10 +11,11 @@ export interface SummaryComparisonStatsLike {
 export interface SummaryPomoComparisonResult {
   summaryDateKey: string;
   summaryDayPomos: number;
-  lastFocusDay: [string, number] | null;
-  lastFocusDelta: number;
-  lastFocusTargetLabel: string;
-  weeklyFocusDays: Array<[string, number]>;
+  previousDayKey: string;
+  previousDayPomos: number;
+  previousDayDelta: number;
+  previousDayTargetLabel: string;
+  weeklyComparisonDays: Array<[string, number]>;
   weeklyAveragePomos: number;
   weeklyAverageDelta: number;
 }
@@ -38,18 +36,10 @@ export const getSummaryDateKeyFromIso = (iso: string | null | undefined) => {
 
 const getSummaryDateFromKey = (dateKey: string) => new Date(`${dateKey}T12:00:00`);
 
-const getSummaryDayStartMs = (dateKey: string) => new Date(`${dateKey}T00:00:00`).getTime();
-
-const getSummaryLastFocusLabel = (lastFocusDateKey: string, summaryDateKey: string) => {
-  const summaryStartMs = getSummaryDayStartMs(summaryDateKey);
-  const lastFocusStartMs = getSummaryDayStartMs(lastFocusDateKey);
-  const diffDays = Math.round((summaryStartMs - lastFocusStartMs) / SUMMARY_DAY_MS);
-
-  if (diffDays === 1) return 'yesterday';
-  if (diffDays > 1 && diffDays <= 7) {
-    return SUMMARY_WEEKDAY_LABELS[getSummaryDateFromKey(lastFocusDateKey).getDay()];
-  }
-  return 'last focus';
+const getRelativeSummaryDateKey = (dateKey: string, offsetDays: number) => {
+  const date = getSummaryDateFromKey(dateKey);
+  date.setDate(date.getDate() + offsetDays);
+  return getSummaryDateKey(date);
 };
 
 export const formatSummaryDeltaValue = (value: number) => {
@@ -58,13 +48,12 @@ export const formatSummaryDeltaValue = (value: number) => {
   return formatPomodoroCount(safeValue);
 };
 
-export const formatSummaryComparisonTargetLabel = (value: string) => (
-  value
-    .split(' ')
-    .filter(Boolean)
-    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`)
-    .join(' ')
-);
+export const getSummaryPomoDeltaLabel = (delta: number, targetLabel: string) => {
+  if (Math.abs(delta) < 0.05) return `Same Pomos As ${targetLabel}`;
+  return delta > 0
+    ? `More Pomos Than ${targetLabel}`
+    : `Fewer Pomos Than ${targetLabel}`;
+};
 
 const getCurrentSummaryPomos = (sessionStats: SummaryComparisonStatsLike) => Math.max(
   0,
@@ -94,7 +83,6 @@ export const getSummaryPomoComparison = ({
   const summaryDateKey = getSummaryDateKeyFromIso(sessionStats.sessionStartTime)
     || getSummaryDateKeyFromIso(sessionStats.sessionEndTime)
     || fallbackDateKey;
-  const summaryStartMs = getSummaryDayStartMs(summaryDateKey);
   const dailyPomoTotals = new Map<string, number>();
 
   pastSessions.forEach((session) => {
@@ -112,32 +100,26 @@ export const getSummaryPomoComparison = ({
   const summaryDayPomos = (dailyPomoTotals.get(summaryDateKey) || 0) + currentSummaryPomos;
   if (summaryDayPomos > 0) dailyPomoTotals.set(summaryDateKey, summaryDayPomos);
 
-  const previousFocusDays = Array.from(dailyPomoTotals.entries())
-    .filter(([dateKey, pomos]) => dateKey < summaryDateKey && pomos > 0)
-    .sort(([leftDateKey], [rightDateKey]) => rightDateKey.localeCompare(leftDateKey));
-  const lastFocusDay = previousFocusDays[0] || null;
-  const lastFocusDelta = lastFocusDay ? summaryDayPomos - lastFocusDay[1] : 0;
-  const lastFocusLabel = lastFocusDay ? getSummaryLastFocusLabel(lastFocusDay[0], summaryDateKey) : 'last focus';
-  const lastFocusTargetLabel = formatSummaryComparisonTargetLabel(lastFocusLabel);
+  const previousDayKey = getRelativeSummaryDateKey(summaryDateKey, -1);
+  const previousDayPomos = dailyPomoTotals.get(previousDayKey) || 0;
+  const previousDayDelta = summaryDayPomos - previousDayPomos;
+  const previousDayTargetLabel = 'Yesterday';
 
-  const weeklyFocusDays = Array.from(dailyPomoTotals.entries())
-    .filter(([dateKey, pomos]) => {
-      if (dateKey >= summaryDateKey || pomos <= 0) return false;
-      const dayStartMs = getSummaryDayStartMs(dateKey);
-      return dayStartMs >= summaryStartMs - (7 * SUMMARY_DAY_MS) && dayStartMs < summaryStartMs;
-    });
-  const weeklyAveragePomos = weeklyFocusDays.length > 0
-    ? weeklyFocusDays.reduce((total, [, pomos]) => total + pomos, 0) / weeklyFocusDays.length
-    : 0;
+  const weeklyComparisonDays = Array.from({ length: 7 }, (_, index): [string, number] => {
+    const dateKey = getRelativeSummaryDateKey(summaryDateKey, index - 7);
+    return [dateKey, dailyPomoTotals.get(dateKey) || 0];
+  });
+  const weeklyAveragePomos = weeklyComparisonDays.reduce((total, [, pomos]) => total + pomos, 0) / weeklyComparisonDays.length;
   const weeklyAverageDelta = summaryDayPomos - weeklyAveragePomos;
 
   return {
     summaryDateKey,
     summaryDayPomos,
-    lastFocusDay,
-    lastFocusDelta,
-    lastFocusTargetLabel,
-    weeklyFocusDays,
+    previousDayKey,
+    previousDayPomos,
+    previousDayDelta,
+    previousDayTargetLabel,
+    weeklyComparisonDays,
     weeklyAveragePomos,
     weeklyAverageDelta,
   };

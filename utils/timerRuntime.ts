@@ -18,6 +18,12 @@ export const TIMER_PRESETS: Record<Exclude<TimerPreset, 'custom'>, Pick<TimerSet
     longBreakDuration: 9 * 60,
     longBreakInterval: 4,
   },
+  focus: {
+    workDuration: 25 * 60,
+    shortBreakDuration: 5 * 60,
+    longBreakDuration: 15 * 60,
+    longBreakInterval: 4,
+  },
 };
 
 export const getMatchingTimerPreset = (

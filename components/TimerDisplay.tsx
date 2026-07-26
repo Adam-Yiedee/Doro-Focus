@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Lock } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
+import { getFocusTimerDisplaySeconds } from '../utils/focusTimerDisplay';
 
 const formatTime = (seconds: number) => {
   const absSec = Math.abs(seconds);
@@ -140,14 +141,45 @@ interface TimerSquareProps {
   maxTime: number;
   activeMode: 'work' | 'break';
   label?: string;
+  displayValue?: string;
+  displayVariant?: 'time' | 'word';
+  displayHidden?: boolean;
+  hideLabel?: boolean;
+  hideLiquid?: boolean;
   isIdle: boolean;
   isLocked: boolean;
   disableBlur: boolean;
+  enableLockControls?: boolean;
+  allowHoldWhenInactive?: boolean;
+  holdHintLabel?: string;
+  promoteLabelWhenDisplayHidden?: boolean;
   onActivate: (type: 'work' | 'break') => void;
   onToggleLock: (type: 'work' | 'break') => void;
+  onHoldAction?: (type: 'work' | 'break') => void;
 }
 
-const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMode, label, isIdle, isLocked, disableBlur, onActivate, onToggleLock }) => {
+const TimerSquare: React.FC<TimerSquareProps> = ({
+  type,
+  time,
+  maxTime,
+  activeMode,
+  label,
+  displayValue,
+  displayVariant = 'time',
+  displayHidden = false,
+  hideLabel = false,
+  hideLiquid = false,
+  isIdle,
+  isLocked,
+  disableBlur,
+  enableLockControls = true,
+  allowHoldWhenInactive = false,
+  holdHintLabel,
+  promoteLabelWhenDisplayHidden = false,
+  onActivate,
+  onToggleLock,
+  onHoldAction,
+}) => {
   const [isHovered, setIsHovered] = useState(false);
   const [tilt, setTilt] = useState<TimerTiltState>(TIMER_TILT_REST);
   const prefersReducedMotion = usePrefersReducedMotion();
@@ -228,7 +260,8 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (!isActive || isLocked) return;
+    if (!enableLockControls) return;
+    if ((!isActive && !allowHoldWhenInactive) || isLocked) return;
 
     lockPressFiredRef.current = false;
     clearLockTimeout();
@@ -236,7 +269,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       lockTimeoutRef.current = null;
       lockPressFiredRef.current = true;
       suppressClickRef.current = true;
-      onToggleLock(type);
+      (onHoldAction || onToggleLock)(type);
     }, 550);
   };
 
@@ -279,6 +312,9 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
   
   const blurEffect = disableBlur ? '' : 'backdrop-blur-xl';
   const hoverBlurEffect = disableBlur ? '' : 'backdrop-blur-md';
+  const shouldPromoteLabel = promoteLabelWhenDisplayHidden && displayHidden && !hideLabel;
+  const labelText = label || (isWork ? 'Focus' : 'Break Bank');
+  const activeHoldHint = holdHintLabel || 'Hold to Lock';
 
   if (isActive) {
     containerClasses = `z-20 opacity-100 blur-0 bg-white/10 border-white/20 ring-1 ring-white/30 border cursor-pointer ${blurEffect}`;
@@ -357,6 +393,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
           return;
         }
         if (isLocked) {
+          if (!enableLockControls) return;
           onToggleLock(type);
           return;
         }
@@ -368,7 +405,7 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       {/* Liquid Animation Background */}
       <LiquidWave 
         percent={fillPercent} 
-        isVisible={(isActive || isHovered) && showLiquid} 
+        isVisible={(isActive || isHovered) && showLiquid && !hideLiquid}
         isActive={isActive} 
         colorMode={liquidColor}
       />
@@ -385,50 +422,82 @@ const TimerSquare: React.FC<TimerSquareProps> = ({ type, time, maxTime, activeMo
       )}
 
       {/* Label */}
-      <div className={`
-        z-20 pointer-events-none text-xs md:text-sm font-bold uppercase tracking-[0.2em] transition-all duration-500 max-w-[80%] text-center truncate relative
-        ${labelClasses}
-      `}>
-        <span className="relative z-10 drop-shadow-md">{label || (isWork ? 'Focus' : 'Break Bank')}</span>
-      </div>
+      {!hideLabel && (
+        <div className={`
+          z-20 pointer-events-none font-bold uppercase transition-all duration-500 max-w-[82%] text-center relative
+          ${shouldPromoteLabel
+            ? 'font-sans tabular-nums leading-[0.9] text-[3.1rem] sm:text-[3.55rem] md:text-6xl lg:text-7xl tracking-normal whitespace-normal break-words'
+            : 'text-xs md:text-sm tracking-[0.2em] truncate'
+          }
+          ${shouldPromoteLabel ? textClasses : labelClasses}
+        `}>
+          <span className="relative z-10 drop-shadow-md" style={shouldPromoteLabel ? { overflowWrap: 'anywhere' } : undefined}>{labelText}</span>
+        </div>
+      )}
 
       {/* Time Display */}
       <div className={`
         z-20 pointer-events-none font-sans tabular-nums font-bold tracking-tighter transition-all duration-500 leading-none relative
-        text-[4.35rem] sm:text-[4.85rem] md:text-8xl lg:text-9xl
+        ${displayVariant === 'word'
+          ? 'text-[3.1rem] sm:text-[3.55rem] md:text-6xl lg:text-7xl uppercase tracking-normal'
+          : 'text-[4.35rem] sm:text-[4.85rem] md:text-8xl lg:text-9xl'
+        }
         ${textClasses}
-        ${time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}
+        ${displayVariant === 'time' && time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}
+        ${displayHidden ? 'opacity-0 scale-75 -translate-y-4 max-h-0 overflow-hidden' : 'opacity-100 max-h-40'}
       `}>
-        <span className="drop-shadow-lg filter">{formatTime(time)}</span>
+        <span className="drop-shadow-lg filter">{displayValue || formatTime(time)}</span>
       </div>
 
       {/* Action Hint */}
-      <div className={`
-         z-20 absolute bottom-8 flex items-center justify-center gap-1.5 text-[10px] text-white/80 uppercase tracking-widest whitespace-nowrap
-         transition-all duration-300 transform drop-shadow-md pointer-events-none
-         ${isLocked || isHovered ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
-      `}>
-         {isLocked ? (
-           <>
-             <Lock size={12} strokeWidth={2.4} className="text-white" aria-hidden="true" />
-             <span className="text-white">Timer Locked</span>
-           </>
-         ) : (
-           <span>{isActive ? 'Hold to Lock' : `Click to ${isWork ? 'Focus' : 'Switch'}`}</span>
-         )}
-      </div>
+      {enableLockControls && (
+        <div className={`
+           z-20 absolute bottom-8 flex items-center justify-center gap-1.5 text-[10px] text-white/80 uppercase tracking-widest whitespace-nowrap
+           transition-all duration-300 transform drop-shadow-md pointer-events-none
+           ${isLocked || isHovered ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
+        `}>
+           {isLocked ? (
+             <>
+               <Lock size={12} strokeWidth={2.4} className="text-white" aria-hidden="true" />
+               <span className="text-white">Timer Locked</span>
+             </>
+           ) : (
+             <span>{(isActive || (allowHoldWhenInactive && holdHintLabel)) ? activeHoldHint : `Click to ${isWork ? 'Focus' : 'Switch'}`}</span>
+           )}
+        </div>
+      )}
     </div>
   );
 };
 
 const TimerDisplay: React.FC = () => {
-  const { workTime, breakTime, activeMode, isIdle, lockedTimerMode, activateMode, toggleTimerLock, restartActiveTimer, activeTask, settings } = useTimer();
+  const {
+    workTime,
+    breakTime,
+    activeMode,
+    timerStarted,
+    isIdle,
+    lockedTimerMode,
+    allPauseActive,
+    graceOpen,
+    activateMode,
+    toggleTimerLock,
+    restartActiveTimer,
+    activeTask,
+    settings,
+    logs,
+    sessionStartTime,
+    timerActivityStartTime,
+  } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  const [isFocusTimerHidden, setIsFocusTimerHidden] = useState(false);
   
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLongPressRef = useRef(false);
   const isPressingResetRef = useRef(false);
+  const focusDisplaySessionRef = useRef<string | null>(null);
+  const focusDisplaySecondsRef = useRef(0);
 
   const clearResetTimeout = () => {
     if (resetTimeoutRef.current) {
@@ -478,6 +547,49 @@ const TimerDisplay: React.FC = () => {
       setEditValue(Math.floor(Math.abs(currentTime) / 60).toString());
       setIsEditing(true);
   };
+
+  const isFocusTimerPreset = settings.timerPreset === 'focus';
+  useEffect(() => {
+    if (!isFocusTimerPreset) setIsFocusTimerHidden(false);
+  }, [isFocusTimerPreset]);
+
+  const toggleFocusTimerHidden = () => {
+    setIsFocusTimerHidden(prev => !prev);
+  };
+
+  const focusTimerNowMs = Date.now();
+  const rawFocusTimerDisplaySeconds = isFocusTimerPreset
+    ? getFocusTimerDisplaySeconds({
+      logs,
+      sessionStartTime,
+      nowMs: focusTimerNowMs,
+      timerStarted,
+      isIdle,
+      activeMode,
+      currentActivityStartTime: timerActivityStartTime,
+      workTime,
+      workDuration: settings.workDuration,
+      allPauseActive,
+      graceOpen,
+    })
+    : 0;
+  if (!isFocusTimerPreset) {
+    focusDisplaySessionRef.current = null;
+    focusDisplaySecondsRef.current = 0;
+  } else if (focusDisplaySessionRef.current !== sessionStartTime) {
+    focusDisplaySessionRef.current = sessionStartTime;
+    focusDisplaySecondsRef.current = 0;
+  }
+  if (isFocusTimerPreset && !sessionStartTime && isIdle) {
+    focusDisplaySecondsRef.current = 0;
+  }
+  const focusTimerDisplaySeconds = isFocusTimerPreset
+    ? Math.max(rawFocusTimerDisplaySeconds, focusDisplaySecondsRef.current)
+    : 0;
+  if (isFocusTimerPreset) {
+    focusDisplaySecondsRef.current = focusTimerDisplaySeconds;
+  }
+  const focusTimerDisplayValue = formatTime(focusTimerDisplaySeconds);
 
   return (
     <div className="relative w-full flex flex-col items-center py-4 px-2">
@@ -587,21 +699,34 @@ const TimerDisplay: React.FC = () => {
             time={workTime}
             maxTime={settings.workDuration}
             activeMode={activeMode} 
-            label={activeTask ? activeTask.name : 'Focus'}
+            label={activeTask ? activeTask.name : (isFocusTimerPreset ? 'Focus Timer' : 'Focus')}
+            displayValue={isFocusTimerPreset ? focusTimerDisplayValue : undefined}
+            displayHidden={isFocusTimerPreset && isFocusTimerHidden}
+            hideLiquid={isFocusTimerPreset}
             isIdle={isIdle} 
-            isLocked={lockedTimerMode === 'work'}
+            isLocked={!isFocusTimerPreset && lockedTimerMode === 'work'}
             disableBlur={settings.disableBlur}
+            enableLockControls
+            allowHoldWhenInactive={isFocusTimerPreset}
+            holdHintLabel={isFocusTimerPreset ? (isFocusTimerHidden ? 'Hold to Show Timer' : 'Hold to Hide Timer') : undefined}
+            promoteLabelWhenDisplayHidden={isFocusTimerPreset}
             onActivate={activateMode} 
             onToggleLock={toggleTimerLock}
+            onHoldAction={isFocusTimerPreset ? toggleFocusTimerHidden : undefined}
         />
         <TimerSquare 
             type="break" 
             time={breakTime}
             maxTime={settings.longBreakDuration}
             activeMode={activeMode} 
+            displayValue={isFocusTimerPreset ? 'Break' : undefined}
+            displayVariant={isFocusTimerPreset ? 'word' : 'time'}
+            hideLabel={isFocusTimerPreset}
+            hideLiquid={isFocusTimerPreset}
             isIdle={isIdle} 
-            isLocked={lockedTimerMode === 'break'}
+            isLocked={!isFocusTimerPreset && lockedTimerMode === 'break'}
             disableBlur={settings.disableBlur}
+            enableLockControls={!isFocusTimerPreset}
             onActivate={activateMode} 
             onToggleLock={toggleTimerLock}
         />
