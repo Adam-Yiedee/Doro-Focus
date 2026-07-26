@@ -1036,6 +1036,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [focusFriendInviteCopied, setFocusFriendInviteCopied] = useState(false);
   const [focusFriendsTabIndicatorStyle, setFocusFriendsTabIndicatorStyle] = useState({ left: 0, width: 0, opacity: 0 });
   const focusFriendEncouragementConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusFriendBusyActionRef = useRef<FocusFriendBusyAction>(null);
   const focusFriendJoinFeedbackTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const focusFriendJoinFollowupPollingRef = useRef<FocusFriendJoinFollowupPolling>({ interval: null, timeout: null });
 
@@ -2097,7 +2098,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     action: () => Promise<{ ok: boolean; error: string | null }>,
     successMessage: string,
   ): Promise<boolean> => {
-    if (focusFriendBusyAction) return false;
+    if (focusFriendBusyActionRef.current || focusFriendBusyAction) return false;
+    focusFriendBusyActionRef.current = busyAction;
     setFocusFriendBusyAction(busyAction);
     setAuthLocalError(null);
     setAccountMessage(null);
@@ -2114,6 +2116,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setAuthLocalError(error instanceof Error ? error.message : 'Focus Friends action failed.');
       return false;
     } finally {
+      focusFriendBusyActionRef.current = null;
       setFocusFriendBusyAction(null);
     }
   };
@@ -2184,14 +2187,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   }, [safeGroupSessionId]);
 
   const handleRefreshFocusFriends = async () => {
-    if (focusFriendBusyAction) return;
+    if (focusFriendBusyActionRef.current || focusFriendBusyAction) return;
+    focusFriendBusyActionRef.current = 'refresh';
     setFocusFriendBusyAction('refresh');
     setAuthLocalError(null);
     setAccountMessage(null);
-    const ok = await refreshFocusFriends();
-    if (ok) setAccountMessage('Focus Friends refreshed.');
-    else if (!focusFriendsError) setAccountMessage('Focus Friends could not refresh.');
-    setFocusFriendBusyAction(null);
+    try {
+      const ok = await refreshFocusFriends();
+      if (ok) setAccountMessage('Focus Friends refreshed.');
+      else if (!focusFriendsError) setAccountMessage('Focus Friends could not refresh.');
+    } finally {
+      focusFriendBusyActionRef.current = null;
+      setFocusFriendBusyAction(null);
+    }
   };
 
   const handleSendFocusFriendRequest = async (event: React.FormEvent) => {
@@ -2312,7 +2320,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   };
 
   const handleToggleFocusFriendEncouragementMenu = (friend: FocusFriend, trigger: HTMLElement) => {
-    if (focusFriendBusyAction !== null) return;
+    if (focusFriendBusyActionRef.current || focusFriendBusyAction !== null) return;
     setAuthLocalError(null);
     clearFocusFriendEncouragementConfirmation();
     if (focusFriendEncouragementMenuUsername === friend.username) {
@@ -2350,7 +2358,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
   const handleRequestFocusFriendJoin = (friend: FocusFriend) => {
     const username = friend.username.trim();
-    if (!username || focusFriendBusyAction !== null) return;
+    if (!username || focusFriendBusyActionRef.current || focusFriendBusyAction !== null) return;
     if (friend.presence.status === 'idle' || friend.presence.status === 'offline') {
       setFocusFriendJoinFeedbackForUser(username, {
         phase: 'error',
@@ -2372,7 +2380,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setFocusFriendEncouragementMenuPlacement('down');
     setAuthLocalError(null);
     setAccountMessage(null);
-    setFocusFriendBusyAction(`join:${username}`);
+    const busyAction: FocusFriendBusyAction = `join:${username}`;
+    focusFriendBusyActionRef.current = busyAction;
+    setFocusFriendBusyAction(busyAction);
     setFocusFriendJoinFeedbackForUser(username, {
       phase: 'sending',
       message: 'Requesting',
@@ -2404,6 +2414,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           message: 'Try again',
         }, FOCUS_FRIEND_JOIN_ERROR_VISIBLE_MS);
       } finally {
+        focusFriendBusyActionRef.current = null;
         setFocusFriendBusyAction(null);
       }
     })();

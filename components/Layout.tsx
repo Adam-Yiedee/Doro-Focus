@@ -798,6 +798,10 @@ const Layout: React.FC = () => {
       void playEncouragementDing();
     }
 
+    if (focusFriendAction?.type === 'encouragement' && !focusFriendAction.readAt) {
+      void markFocusFriendActionRead(focusFriendAction.id);
+    }
+
     if (!shouldHoldFocusFriendJoinBanner(focusFriendAction)) {
       const lifecycle = getBannerLifecycle(banner.tone);
       bannerTimersRef.current[id] = {
@@ -810,7 +814,7 @@ const Layout: React.FC = () => {
     if (focusFriendAction?.type === 'join-invite' && !focusFriendAction.readAt) {
       void handleAutoJoinFocusFriendInvite(focusFriendAction, id);
     }
-  }, [focusFriendNotice, notificationTimersActive]);
+  }, [focusFriendNotice, markFocusFriendActionRead, notificationTimersActive]);
 
   useEffect(() => {
     return () => {

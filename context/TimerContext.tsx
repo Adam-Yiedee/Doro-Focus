@@ -106,6 +106,10 @@ import {
   shouldShowTimerTabTitleNotification,
   type TimerTabTitleNotification,
 } from '../utils/tabTitleNotifications';
+import {
+  markFocusFriendNoticeSeen,
+  selectFocusFriendNotice,
+} from '../utils/focusFriendNotifications';
 
 export interface ScheduleBreak {
   id: string;
@@ -1787,44 +1791,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const applyFocusFriendsSnapshot = useCallback((snapshot: Partial<FocusFriendsState> | null | undefined) => {
     const normalized = normalizeFocusFriendsState(snapshot);
     const snapshotKey = JSON.stringify(normalized);
-    const shouldNotify = isBrowserTabVisible();
-    const newUnreadActions = normalized.inbox
-      .filter((action) => !action.readAt && !seenFocusFriendActionIdsRef.current.has(action.id))
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    const newIncomingRequests = normalized.incomingRequests
-      .filter((request) => !seenFocusFriendRequestIdsRef.current.has(request.id))
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    if (isBrowserTabVisible()) {
+      const nextNotice = selectFocusFriendNotice({
+        snapshot: normalized,
+        seenActionIds: seenFocusFriendActionIdsRef.current,
+        seenRequestIds: seenFocusFriendRequestIdsRef.current,
+      });
 
-    if (shouldNotify) {
-      const newestJoinInvite = [...newUnreadActions].reverse().find(action => action.type === 'join-invite');
-      const newestJoinRequest = [...newUnreadActions].reverse().find(action => action.type === 'join-request');
-      const newestUnread = newUnreadActions[newUnreadActions.length - 1];
-      const newestRequest = newIncomingRequests[newIncomingRequests.length - 1];
-      const newestUnreadAt = newestUnread ? Date.parse(newestUnread.createdAt) || 0 : -1;
-      const newestRequestAt = newestRequest ? Date.parse(newestRequest.createdAt) || 0 : -1;
-      const prioritizedAction = newestJoinInvite || newestJoinRequest || newestUnread;
-
-      if (prioritizedAction?.type === 'join-invite' || prioritizedAction?.type === 'join-request') {
-        seenFocusFriendActionIdsRef.current.add(prioritizedAction.id);
-        setFocusFriendNotice({
-          id: `${prioritizedAction.id}_${Date.now()}`,
-          type: 'action',
-          action: prioritizedAction,
-        });
-      } else if (newestRequest && newestRequestAt > newestUnreadAt) {
-        seenFocusFriendRequestIdsRef.current.add(newestRequest.id);
-        setFocusFriendNotice({
-          id: `${newestRequest.id}_${Date.now()}`,
-          type: 'request',
-          request: newestRequest,
-        });
-      } else if (prioritizedAction) {
-        seenFocusFriendActionIdsRef.current.add(prioritizedAction.id);
-        setFocusFriendNotice({
-          id: `${prioritizedAction.id}_${Date.now()}`,
-          type: 'action',
-          action: prioritizedAction,
-        });
+      if (nextNotice) {
+        markFocusFriendNoticeSeen(
+          nextNotice,
+          seenFocusFriendActionIdsRef.current,
+          seenFocusFriendRequestIdsRef.current,
+        );
+        setFocusFriendNotice(nextNotice);
       }
     }
 
@@ -2651,25 +2631,24 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setFocusFriendsError(null);
           return;
       }
-      const refreshVisibleFocusFriends = () => {
-          if (!isBrowserTabVisible()) return;
+      const refreshFocusFriendsSnapshot = () => {
           void refreshFocusFriends({ silent: true });
       };
-      refreshVisibleFocusFriends();
-      const interval = setInterval(refreshVisibleFocusFriends, FOCUS_FRIENDS_REFRESH_MS);
+      refreshFocusFriendsSnapshot();
+      const interval = setInterval(refreshFocusFriendsSnapshot, FOCUS_FRIENDS_REFRESH_MS);
       if (typeof document !== 'undefined') {
-          document.addEventListener('visibilitychange', refreshVisibleFocusFriends);
+          document.addEventListener('visibilitychange', refreshFocusFriendsSnapshot);
       }
       if (typeof window !== 'undefined') {
-          window.addEventListener('focus', refreshVisibleFocusFriends);
+          window.addEventListener('focus', refreshFocusFriendsSnapshot);
       }
       return () => {
           clearInterval(interval);
           if (typeof document !== 'undefined') {
-              document.removeEventListener('visibilitychange', refreshVisibleFocusFriends);
+              document.removeEventListener('visibilitychange', refreshFocusFriendsSnapshot);
           }
           if (typeof window !== 'undefined') {
-              window.removeEventListener('focus', refreshVisibleFocusFriends);
+              window.removeEventListener('focus', refreshFocusFriendsSnapshot);
           }
       };
   }, [authToken, refreshFocusFriends, user?.username]);
