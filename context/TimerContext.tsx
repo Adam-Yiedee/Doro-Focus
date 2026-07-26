@@ -4962,31 +4962,44 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
 
     if (pendingWindow) {
-      const pendingActiveCategoryId = activeTask?.categoryId;
-      const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
-      const pendingActiveStartIso = new Date(pendingWindow.startMs).toISOString();
-      const pendingActiveEndIso = new Date(pendingWindow.endMs).toISOString();
-      const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+      const parsedSessionStartMs = typeof sessionStartTime === 'string' ? Date.parse(sessionStartTime) : NaN;
+      const boundedPendingStartMs = Number.isFinite(parsedSessionStartMs)
+        ? Math.max(pendingWindow.startMs, parsedSessionStartMs)
+        : pendingWindow.startMs;
+      const boundedPendingEndMs = pendingWindow.endMs;
+      const boundedPendingDurationSeconds = (boundedPendingEndMs - boundedPendingStartMs) / 1000;
+      if (!Number.isFinite(boundedPendingDurationSeconds) || boundedPendingDurationSeconds <= 0.5) {
+        pendingActivity = null;
+        sessionEndEntry = null;
+      } else {
+        const pendingActiveCategoryId = activeTask?.categoryId;
+        const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
+        const pendingActiveStartIso = new Date(boundedPendingStartMs).toISOString();
+        const pendingActiveEndIso = new Date(boundedPendingEndMs).toISOString();
+        const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
 
-      pendingActivity = {
-        mode: activeMode,
-        durationSeconds: pendingWindow.durationSeconds,
-        categoryId: pendingActiveCategoryId ?? null,
-        ...pendingActiveCategorySnapshot,
-      };
-      const nextSessionEndEntry: LogEntry = {
-        type: activeMode,
-        start: pendingActiveStartIso,
-        end: pendingActiveEndIso,
-        duration: pendingWindow.durationSeconds,
-        reason: 'Session End',
-        source: 'timer',
-        task: selectedTask,
-        color: activeColor,
-        categoryId: pendingActiveCategoryId ?? null,
-        ...pendingActiveCategorySnapshot,
-      };
-      sessionEndEntry = nextSessionEndEntry;
+        pendingActivity = {
+          mode: activeMode,
+          durationSeconds: boundedPendingDurationSeconds,
+          startMs: boundedPendingStartMs,
+          endMs: boundedPendingEndMs,
+          categoryId: pendingActiveCategoryId ?? null,
+          ...pendingActiveCategorySnapshot,
+        };
+        const nextSessionEndEntry: LogEntry = {
+          type: activeMode,
+          start: pendingActiveStartIso,
+          end: pendingActiveEndIso,
+          duration: boundedPendingDurationSeconds,
+          reason: 'Session End',
+          source: 'timer',
+          task: selectedTask,
+          color: activeColor,
+          categoryId: pendingActiveCategoryId ?? null,
+          ...pendingActiveCategorySnapshot,
+        };
+        sessionEndEntry = nextSessionEndEntry;
+      }
     }
 
     const baseLogs = logsRef.current;

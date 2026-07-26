@@ -237,6 +237,106 @@ describe('buildEndSessionStats', () => {
     expect(stats.categoryStats).toEqual({ 'Deep Work': 10 });
   });
 
+  it('clamps pending activity to the session window when window metadata is available', () => {
+    const stats = buildEndSessionStats({
+      logs: [],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:05:00.000Z',
+      categories,
+      pendingActivity: {
+        mode: 'work',
+        startMs: Date.parse('2026-07-18T08:50:00.000Z'),
+        endMs: Date.parse('2026-07-18T09:10:00.000Z'),
+        durationSeconds: 20 * 60,
+        categoryId: 1,
+      },
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(5);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 5 });
+  });
+
+  it('does not double count pending activity that is already logged as the session end', () => {
+    const pendingStartMs = Date.parse('2026-07-18T09:00:00.000Z');
+    const pendingEndMs = Date.parse('2026-07-18T09:10:00.000Z');
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:10:00.000Z',
+          duration: 10 * 60,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:10:00.000Z',
+      categories,
+      pendingActivity: {
+        mode: 'work',
+        startMs: pendingStartMs,
+        endMs: pendingEndMs,
+        durationSeconds: 10 * 60,
+        categoryId: 1,
+      },
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(10);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 10 });
+  });
+
+  it('deduplicates repeated timer windows before totaling session stats', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:25:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:25:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-07-18T09:25:00.000Z',
+          end: '2026-07-18T09:30:00.000Z',
+          duration: 5 * 60,
+          reason: 'Session End',
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-07-18T09:25:00.000Z',
+          end: '2026-07-18T09:30:00.000Z',
+          duration: 5 * 60,
+          reason: 'Session End',
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:30:00.000Z',
+      categories,
+      pomodoroCount: 1,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(25);
+    expect(stats.totalBreakMinutes).toBe(5);
+    expect(stats.pomosCompleted).toBe(1);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 25 });
+  });
+
   it('does not count completed work logs that only touch the session boundary', () => {
     const stats = buildEndSessionStats({
       logs: [
@@ -297,6 +397,72 @@ describe('buildEndSessionStats', () => {
     expect(stats.totalWorkMinutes).toBe(20);
     expect(stats.pomosCompleted).toBe(1);
     expect(stats.categoryStats).toEqual({ 'Deep Work': 20 });
+  });
+
+  it('uses the live timer pomodoro count when completion logs lag behind', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:25:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T09:30:00.000Z',
+          end: '2026-07-18T09:55:00.000Z',
+          duration: 25 * 60,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T10:00:00.000Z',
+      categories,
+      pomodoroCount: 2,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.pomosCompleted).toBe(2);
+  });
+
+  it('uses the live compact timer count when mini-pomodoro logs lag behind', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:15:00.000Z',
+          duration: 15 * 60,
+          reason: 'Mini-Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T09:18:00.000Z',
+          end: '2026-07-18T09:33:00.000Z',
+          duration: 15 * 60,
+          reason: 'Switch',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: '2026-07-18T09:36:00.000Z',
+          end: '2026-07-18T09:51:00.000Z',
+          duration: 15 * 60,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T10:00:00.000Z',
+      categories,
+      pomodoroCount: 3,
+      settings: { timerPreset: 'compact' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.pomosCompleted).toBe(1.5);
+    expect(stats.miniPomosCompleted).toBe(3);
   });
 
   it('finds unique task completions inside the session window only', () => {

@@ -14,6 +14,8 @@ export interface EndSessionPendingActivityWindow {
 export interface EndSessionPendingActivity {
   mode: TimerMode;
   durationSeconds: number;
+  startMs?: number | null;
+  endMs?: number | null;
   categoryId?: number | null;
   categoryName?: string;
   categoryColor?: string;
@@ -125,6 +127,38 @@ const getSessionLogDurationSeconds = (
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 };
 
+const getLogDedupeKey = (entry: LogEntry) => {
+  const entryStartMs = getLogStartMs(entry);
+  const entryEndMs = getLogEndMs(entry);
+  if (entryStartMs === null || entryEndMs === null) return null;
+  const source = entry.source || 'timer';
+  const reason = (entry.reason || '').trim().toLowerCase();
+  return `${source}|${entry.type}|${entryStartMs}|${entryEndMs}|${reason}`;
+};
+
+const getCategorySnapshotScore = (entry: LogEntry) => (
+  (typeof entry.categoryId === 'number' && Number.isFinite(entry.categoryId) ? 2 : 0)
+  + (entry.categoryName ? 1 : 0)
+  + (entry.categoryColor ? 1 : 0)
+  + (entry.categoryIcon ? 1 : 0)
+);
+
+const dedupeTimerLogs = (logs: LogEntry[]) => {
+  const byKey = new Map<string, LogEntry>();
+
+  logs.forEach((entry) => {
+    const key = getLogDedupeKey(entry);
+    if (!key) return;
+
+    const existing = byKey.get(key);
+    if (!existing || getCategorySnapshotScore(entry) > getCategorySnapshotScore(existing)) {
+      byKey.set(key, entry);
+    }
+  });
+
+  return Array.from(byKey.values());
+};
+
 const getCompletionLogsInsideSession = (
   entries: LogEntry[],
   sessionStartMs: number | null,
@@ -150,7 +184,7 @@ const getLogsForSession = (
   if (sessionStartMs === null) return [];
   const sessionEndMs = getSessionEndMs(sessionEndTime);
 
-  return logs.filter((entry) => {
+  const sessionLogs = logs.filter((entry) => {
     const entryStartMs = getLogStartMs(entry);
     const entryEndMs = getLogEndMs(entry);
     if (entryStartMs === null || entryEndMs === null) return false;
@@ -164,6 +198,36 @@ const getLogsForSession = (
     }
     return isTimerLog(entry);
   });
+
+  return dedupeTimerLogs(sessionLogs);
+};
+
+const getPendingActivityWindowSeconds = (
+  pendingActivity: EndSessionPendingActivity | null | undefined,
+  mode: TimerMode,
+  sessionStartMs: number | null,
+  sessionEndMs: number | null,
+  matchingLogs: LogEntry[],
+) => {
+  if (pendingActivity?.mode !== mode) return 0;
+
+  const pendingStartMs = getFiniteNumber(pendingActivity.startMs);
+  const pendingEndMs = getFiniteNumber(pendingActivity.endMs);
+  if (pendingStartMs !== null && pendingEndMs !== null && pendingEndMs > pendingStartMs) {
+    const alreadyLogged = matchingLogs.some((entry) => {
+      const entryStartMs = getLogStartMs(entry);
+      const entryEndMs = getLogEndMs(entry);
+      return entryStartMs === pendingStartMs && entryEndMs === pendingEndMs;
+    });
+    if (alreadyLogged) return 0;
+    if (sessionStartMs === null) return 0;
+    const boundedEndMs = sessionEndMs === null ? pendingEndMs : Math.min(pendingEndMs, sessionEndMs);
+    const boundedStartMs = Math.max(pendingStartMs, sessionStartMs);
+    const seconds = (boundedEndMs - boundedStartMs) / 1000;
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  }
+
+  return getPositiveSeconds(pendingActivity.durationSeconds);
 };
 
 export const getSessionTaskCompletionIdsFromLogs = (
@@ -222,12 +286,20 @@ export const buildEndSessionStats = ({
       ? 0
       : getSessionLogDurationSeconds(entry, sessionStartMs, sessionEndMs)
   );
-  const pendingWorkSeconds = pendingActivity?.mode === 'work'
-    ? getPositiveSeconds(pendingActivity.durationSeconds)
-    : 0;
-  const pendingBreakSeconds = pendingActivity?.mode === 'break'
-    ? getPositiveSeconds(pendingActivity.durationSeconds)
-    : 0;
+  const pendingWorkSeconds = getPendingActivityWindowSeconds(
+    pendingActivity,
+    'work',
+    sessionStartMs,
+    sessionEndMs,
+    workLogs,
+  );
+  const pendingBreakSeconds = getPendingActivityWindowSeconds(
+    pendingActivity,
+    'break',
+    sessionStartMs,
+    sessionEndMs,
+    breakLogs,
+  );
 
   const totalWorkMinutes = (
     workLogs.reduce((acc, entry) => acc + getBoundedLogDurationSeconds(entry), 0)
@@ -286,12 +358,23 @@ export const buildEndSessionStats = ({
   const loggedCompletionStats = getPomodoroCompletionStatsFromLogs(
     getCompletionLogsInsideSession(workLogs, sessionStartMs, sessionEndMs),
   );
-  const pomosCompleted = loggedCompletionStats.completedLogs > 0
-    ? loggedCompletionStats.standardPomosCompleted
-    : getStandardPomodoroCountForTimer(pomodoroCount, settings);
-  const miniPomosCompleted = loggedCompletionStats.completedLogs > 0
-    ? loggedCompletionStats.miniPomosCompleted
-    : (settings.timerPreset === 'compact' ? pomodoroCount : undefined);
+  const safePomodoroCount = Number.isFinite(pomodoroCount) ? Math.max(0, pomodoroCount) : 0;
+  const timerPomosCompleted = getStandardPomodoroCountForTimer(safePomodoroCount, settings);
+  const canUseTimerPomodoroCount = (() => {
+    if (loggedCompletionStats.completedLogs === 0) return true;
+    if (settings.timerPreset === 'custom') return true;
+    const requiredSecondsPerTimerCount = settings.timerPreset === 'compact' ? 15 * 60 : 25 * 60;
+    const availableWorkSeconds = totalWorkMinutes * 60;
+    return (safePomodoroCount * requiredSecondsPerTimerCount) <= (availableWorkSeconds + 1);
+  })();
+  const boundedTimerPomosCompleted = canUseTimerPomodoroCount ? timerPomosCompleted : 0;
+  const pomosCompleted = Math.max(
+    loggedCompletionStats.standardPomosCompleted,
+    boundedTimerPomosCompleted,
+  );
+  const miniPomosCompleted = settings.timerPreset === 'compact'
+    ? Math.max(loggedCompletionStats.miniPomosCompleted || 0, canUseTimerPomodoroCount ? safePomodoroCount : 0)
+    : loggedCompletionStats.miniPomosCompleted;
 
   return {
     totalWorkMinutes,
