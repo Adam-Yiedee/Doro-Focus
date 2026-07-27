@@ -13,6 +13,7 @@ import {
   TIMER_ONLY_GROUP_SYNC_CONFIG,
 } from '../../utils/groupStudy';
 import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
+import { isProductiveFocusLog } from '../../utils/logClassification';
 import {
   formatPomodoroCount,
   getPomodoroEquivalentWeightForReason,
@@ -655,7 +656,7 @@ const getLogDisplayReason = (entry: LogEntry) => {
 };
 
 const getActivityLogDisplayMode = (entry: LogEntry): ActivityLogDisplayMode => {
-  if (entry.type === 'work') return 'focus';
+  if (isProductiveFocusLog(entry)) return 'focus';
   if (entry.type === 'break') return 'break';
   if (entry.type === 'allpause') return 'pause';
   return 'grace';
@@ -1174,7 +1175,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       const displayEntries = buildActivityLogDisplayEntries(sortedEntries, categoriesById);
       const totals = sortedEntries.reduce(
         (acc, entry) => {
-          if (entry.type === 'work') acc.work += Math.max(0, entry.duration);
+          if (isProductiveFocusLog(entry)) acc.work += Math.max(0, entry.duration);
           else if (entry.type === 'break') acc.break += Math.max(0, entry.duration);
           else if (entry.type === 'allpause') acc.pause += Math.max(0, entry.duration);
           else if (isGraceLike(entry)) acc.grace += Math.max(0, entry.duration);

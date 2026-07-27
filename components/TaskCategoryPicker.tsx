@@ -8,7 +8,7 @@ type SwatchSize = 'sm' | 'md';
 
 const getColorSwatchClass = (selected: boolean, size: SwatchSize) => {
   const baseSize = size === 'sm' ? 'w-4 h-4' : 'w-5 h-5';
-  return `${baseSize} rounded-full transform-gpu transition-all duration-300 ease-out ${
+  return `doro-task-color-swatch ${baseSize} rounded-full transform-gpu transition-all duration-300 ease-out ${
     selected
       ? 'ring-2 ring-white ring-offset-1 ring-offset-transparent shadow-[0_0_12px_rgba(255,255,255,0.25)] scale-105'
       : 'opacity-75 hover:opacity-100 hover:-translate-y-[1px] hover:scale-110 hover:shadow-[0_0_10px_rgba(255,255,255,0.18)] active:scale-95'
@@ -69,7 +69,7 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
                 key={category.id}
                 type="button"
                 onClick={() => onCategorySelect(category)}
-                className={`shrink-0 flex items-center gap-1 rounded-full border px-2 py-0.5 transition-all ${
+                className={`doro-task-category-chip shrink-0 flex items-center gap-1 rounded-full border px-2 py-0.5 transition-all ${
                   selectedCategoryId === category.id
                     ? 'bg-white/20 border-white/40'
                     : 'bg-white/5 border-white/10 opacity-60 hover:opacity-100'
@@ -88,7 +88,7 @@ const TaskCategoryPicker: React.FC<TaskCategoryPickerProps> = ({
           <button
             type="button"
             onClick={onRequestNewCategory}
-            className="flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 transition-all opacity-60 hover:opacity-100"
+            className="doro-task-add-category-chip flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 transition-all opacity-60 hover:opacity-100"
           >
             <div className="w-3 h-3 flex items-center justify-center text-white/80">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

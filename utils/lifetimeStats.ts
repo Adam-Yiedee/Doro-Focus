@@ -4,6 +4,7 @@ import {
   getAccountStatsPomodoroEquivalent,
   getAccountStatsSessionPomodoroEquivalent,
 } from './pomodoroAccounting';
+import { isProductiveFocusLog } from './logClassification';
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
@@ -25,12 +26,6 @@ const getDateKey = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
-const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
-  if (entry.type !== 'work') return false;
-  const reason = (entry.reason || '').trim().toLowerCase();
-  return reason.startsWith('paused') || reason.includes('pause credit');
-};
-
 const isManualFocusLog = (entry: LogEntry): boolean => (
   entry.type === 'work' && entry.source === 'manual'
 );
@@ -38,7 +33,7 @@ const isManualFocusLog = (entry: LogEntry): boolean => (
 const isTimerSessionDurationLog = (entry: LogEntry): boolean => {
   if (entry.source === 'manual') return false;
   if (entry.type === 'break') return true;
-  return entry.type === 'work' && !isPauseCreditedWorkLog(entry);
+  return isProductiveFocusLog(entry);
 };
 
 const getSessionWorkMinutes = (session: SessionRecord): number => {
@@ -83,9 +78,9 @@ export const calculateLifetimeStatsFromData = (
   const safeCategories = Array.isArray(categories) ? categories : [];
 
   const productiveLogs = safeLogs.filter((entry) => {
-    if (entry.type !== 'work') return false;
+    if (!isProductiveFocusLog(entry)) return false;
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
-    return !isPauseCreditedWorkLog(entry);
+    return true;
   });
   const completedPomodoroWeightFromLogs = productiveLogs.reduce(
     (acc, entry) => acc + getAccountStatsPomodoroEquivalent(entry),

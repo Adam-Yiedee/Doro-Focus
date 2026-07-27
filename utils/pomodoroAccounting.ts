@@ -1,4 +1,5 @@
 import { LogEntry, SessionRecord, TimerSettings } from '../types';
+import { isProductiveFocusLog } from './logClassification';
 
 export const POMODORO_COMPLETE_REASON = 'Pomodoro Complete';
 export const MINI_POMODORO_COMPLETE_REASON = 'Mini-Pomodoro Complete';
@@ -8,11 +9,6 @@ export const ACCOUNT_STATS_POMODORO_SECONDS = 25 * 60;
 const normalizeReason = (reason: unknown) => (
   typeof reason === 'string' ? reason.trim().toLowerCase() : ''
 );
-
-const isPauseCreditedReason = (reason: unknown) => {
-  const normalized = normalizeReason(reason);
-  return normalized.startsWith('paused') || normalized.includes('pause credit');
-};
 
 export const getCompletionReasonForSettings = (
   settings: Pick<TimerSettings, 'timerPreset'>,
@@ -47,8 +43,7 @@ const getPositiveDurationSeconds = (duration: unknown) => {
 export const getAccountStatsPomodoroEquivalent = (
   entry: Pick<LogEntry, 'type' | 'reason' | 'duration' | 'source'>,
 ) => {
-  if (entry.type !== 'work') return 0;
-  if (isPauseCreditedReason(entry.reason)) return 0;
+  if (!isProductiveFocusLog(entry)) return 0;
 
   const durationSeconds = getPositiveDurationSeconds(entry.duration);
   if (durationSeconds > 0) return durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS;

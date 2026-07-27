@@ -1,8 +1,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Lock } from 'lucide-react';
+import { Check, Clock, Lock, Play, Timer as TimerIcon } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
+import type { TimerPreset, TimerSettings } from '../types';
 import { getFocusTimerDisplaySeconds } from '../utils/focusTimerDisplay';
+import { TIMER_PRESETS } from '../utils/timerRuntime';
 
 const formatTime = (seconds: number) => {
   const absSec = Math.abs(seconds);
@@ -190,6 +192,8 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
   const lockPressFiredRef = useRef(false);
   const isActive = !isIdle && activeMode === type;
   const isWork = type === 'work';
+  const isFocusTimerRevealMode = promoteLabelWhenDisplayHidden && !hideLabel;
+  const [isHoldPriming, setIsHoldPriming] = useState(false);
 
   const clearLockTimeout = () => {
     if (lockTimeoutRef.current) {
@@ -264,16 +268,19 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
     if ((!isActive && !allowHoldWhenInactive) || isLocked) return;
 
     lockPressFiredRef.current = false;
+    if (isFocusTimerRevealMode && onHoldAction) setIsHoldPriming(true);
     clearLockTimeout();
     lockTimeoutRef.current = setTimeout(() => {
       lockTimeoutRef.current = null;
       lockPressFiredRef.current = true;
       suppressClickRef.current = true;
+      setIsHoldPriming(false);
       (onHoldAction || onToggleLock)(type);
     }, 550);
   };
 
   const handlePointerEnd = () => {
+    setIsHoldPriming(false);
     clearLockTimeout();
     if (lockPressFiredRef.current) clearSuppressedClickSoon();
   };
@@ -312,9 +319,17 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
   
   const blurEffect = disableBlur ? '' : 'backdrop-blur-xl';
   const hoverBlurEffect = disableBlur ? '' : 'backdrop-blur-md';
-  const shouldPromoteLabel = promoteLabelWhenDisplayHidden && displayHidden && !hideLabel;
+  const shouldPromoteLabel = isFocusTimerRevealMode && displayHidden;
   const labelText = label || (isWork ? 'Focus' : 'Break Bank');
   const activeHoldHint = holdHintLabel || 'Hold to Lock';
+  const labelLength = labelText.trim().length;
+  const focusLabelLengthClass = !isFocusTimerRevealMode
+    ? ''
+    : labelLength > 42
+      ? 'doro-focus-label-long'
+      : labelLength > 18
+        ? 'doro-focus-label-medium'
+        : 'doro-focus-label-short';
 
   if (isActive) {
     containerClasses = `z-20 opacity-100 blur-0 bg-white/10 border-white/20 ring-1 ring-white/30 border cursor-pointer ${blurEffect}`;
@@ -329,6 +344,11 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
     textClasses = `scale-90 text-white/50 saturate-50 ${disableBlur ? '' : 'blur-[3px]'}`; 
     labelClasses = `text-white/40 ${disableBlur ? '' : 'blur-[3px]'}`;
   }
+  const focusToneClasses = isActive
+    ? 'text-white drop-shadow-2xl'
+    : isHovered
+      ? 'text-white/90'
+      : `text-white/50 saturate-50 ${disableBlur ? '' : 'blur-[2px]'}`;
 
   const effectiveTilt = prefersReducedMotion ? TIMER_TILT_REST : tilt;
   const baseScale = isActive ? 1 : isHovered ? 1.02 : 0.9;
@@ -364,6 +384,8 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
         flex flex-col items-center justify-center gap-2
         ${containerClasses}
         ${isLocked ? 'cursor-pointer' : ''}
+        ${isFocusTimerRevealMode ? `doro-focus-timer-shell ${displayHidden ? 'doro-focus-timer-is-hidden' : 'doro-focus-timer-is-visible'} ${focusLabelLengthClass}` : ''}
+        ${isHoldPriming ? 'doro-focus-timer-hold-priming' : ''}
         group
       `}
       style={timerSquareStyle}
@@ -424,27 +446,30 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
       {/* Label */}
       {!hideLabel && (
         <div className={`
-          z-20 pointer-events-none font-bold uppercase transition-all duration-500 max-w-[82%] text-center relative
-          ${shouldPromoteLabel
-            ? 'font-sans tabular-nums leading-[0.9] text-[3.1rem] sm:text-[3.55rem] md:text-6xl lg:text-7xl tracking-normal whitespace-normal break-words'
-            : 'text-xs md:text-sm tracking-[0.2em] truncate'
+          z-20 pointer-events-none font-bold text-center relative
+          ${isFocusTimerRevealMode
+            ? `doro-focus-timer-label font-sans tabular-nums ${focusToneClasses}`
+            : `uppercase transition-all duration-500 max-w-[82%] ${shouldPromoteLabel
+                ? 'font-sans tabular-nums leading-[0.9] text-[3.1rem] sm:text-[3.55rem] md:text-6xl lg:text-7xl tracking-normal whitespace-normal break-words'
+                : 'text-xs md:text-sm tracking-[0.2em] truncate'
+              } ${shouldPromoteLabel ? textClasses : labelClasses}`
           }
-          ${shouldPromoteLabel ? textClasses : labelClasses}
         `}>
-          <span className="relative z-10 drop-shadow-md" style={shouldPromoteLabel ? { overflowWrap: 'anywhere' } : undefined}>{labelText}</span>
+          <span className={`relative z-10 drop-shadow-md ${isFocusTimerRevealMode ? 'doro-focus-timer-label-text' : ''}`} style={!isFocusTimerRevealMode && shouldPromoteLabel ? { overflowWrap: 'anywhere' } : undefined}>{labelText}</span>
         </div>
       )}
 
       {/* Time Display */}
       <div className={`
-        z-20 pointer-events-none font-sans tabular-nums font-bold tracking-tighter transition-all duration-500 leading-none relative
+        z-20 pointer-events-none font-sans tabular-nums font-bold tracking-tighter leading-none relative
+        ${isFocusTimerRevealMode ? 'doro-focus-timer-time' : 'transition-all duration-500'}
         ${displayVariant === 'word'
           ? 'text-[3.1rem] sm:text-[3.55rem] md:text-6xl lg:text-7xl uppercase tracking-normal'
           : 'text-[4.35rem] sm:text-[4.85rem] md:text-8xl lg:text-9xl'
         }
-        ${textClasses}
+        ${isFocusTimerRevealMode ? focusToneClasses : textClasses}
         ${displayVariant === 'time' && time < 0 ? 'text-red-200 drop-shadow-[0_0_15px_rgba(220,38,38,0.5)]' : ''}
-        ${displayHidden ? 'opacity-0 scale-75 -translate-y-4 max-h-0 overflow-hidden' : 'opacity-100 max-h-40'}
+        ${isFocusTimerRevealMode ? '' : displayHidden ? 'opacity-0 scale-75 -translate-y-4 max-h-0 overflow-hidden' : 'opacity-100 max-h-40'}
       `}>
         <span className="drop-shadow-lg filter">{displayValue || formatTime(time)}</span>
       </div>
@@ -470,6 +495,354 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
   );
 };
 
+type IdlePresetMenuValue = Exclude<TimerPreset, 'custom'>;
+type IdlePresetMenuView = 'choices' | 'timer' | 'delayed';
+const START_SESSION_MENU_CLOSE_SETTLE_MS = 660;
+const START_SESSION_EXIT_DURATION_MS = 840;
+
+interface IdlePresetControlProps {
+  isRendered: boolean;
+  isVisible: boolean;
+  isOpen: boolean;
+  settings: TimerSettings;
+  chromeButtonClass: string;
+  topIconClass: string;
+  onOpenChange: (isOpen: boolean) => void;
+  onSelectPreset: (preset: IdlePresetMenuValue) => void;
+  onStartDelayedStart: (minutes: number) => void;
+}
+
+const formatPresetMinutes = (workSeconds: number, shortBreakSeconds: number, longBreakSeconds: number) => (
+  `${Math.round(workSeconds / 60)} / ${Math.round(shortBreakSeconds / 60)} / ${Math.round(longBreakSeconds / 60)}`
+);
+
+const getDelayedStartPreviewDate = (minutes: number, nowMs: number) => {
+  const target = new Date(nowMs);
+  target.setSeconds(0, 0);
+  target.setMinutes(target.getMinutes() + Math.min(30, Math.max(1, Math.round(minutes))));
+  if (target.getTime() <= nowMs) {
+    target.setMinutes(target.getMinutes() + 1);
+  }
+  return target;
+};
+
+const formatDelayedStartTime = (date: Date) => (
+  date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+);
+
+const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
+  isRendered,
+  isVisible,
+  isOpen,
+  settings,
+  chromeButtonClass,
+  topIconClass,
+  onOpenChange,
+  onSelectPreset,
+  onStartDelayedStart,
+}) => {
+  const controlRef = useRef<HTMLDivElement | null>(null);
+  const wasOpenRef = useRef(isOpen);
+  const [, forceClosedSettledRender] = useState(0);
+  const [menuView, setMenuView] = useState<IdlePresetMenuView>('choices');
+  const [isMenuViewSettled, setIsMenuViewSettled] = useState(false);
+  const [delayedMinutes, setDelayedMinutes] = useState(5);
+  const [previewNowMs, setPreviewNowMs] = useState(() => Date.now());
+  const wasOpenOnPreviousRender = wasOpenRef.current;
+  const isClosingFromOpen = !isOpen && wasOpenOnPreviousRender;
+
+  useEffect(() => {
+    if (isOpen) {
+      wasOpenRef.current = true;
+      return undefined;
+    }
+
+    if (!wasOpenRef.current) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      wasOpenRef.current = false;
+      forceClosedSettledRender(value => value + 1);
+    }, START_SESSION_MENU_CLOSE_SETTLE_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (controlRef.current?.contains(target)) return;
+      onOpenChange(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onOpenChange(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onOpenChange]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      const timeoutId = window.setTimeout(() => setMenuView('choices'), START_SESSION_MENU_CLOSE_SETTLE_MS);
+      setIsMenuViewSettled(false);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    setPreviewNowMs(Date.now());
+    const intervalId = window.setInterval(() => setPreviewNowMs(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    setIsMenuViewSettled(false);
+    const timeoutId = window.setTimeout(() => setIsMenuViewSettled(true), 760);
+    return () => window.clearTimeout(timeoutId);
+  }, [isOpen, menuView]);
+
+  if (!isRendered) return null;
+
+  const activePreset: IdlePresetMenuValue = (
+    settings.timerPreset === 'classic' || settings.timerPreset === 'compact'
+      ? settings.timerPreset
+      : 'focus'
+  );
+
+  const presetOptions: Array<{ value: IdlePresetMenuValue; label: string; detail: string; recommended?: boolean }> = [
+    {
+      value: 'compact',
+      label: 'Mini Pomos',
+      recommended: true,
+      detail: formatPresetMinutes(
+        TIMER_PRESETS.compact.workDuration,
+        TIMER_PRESETS.compact.shortBreakDuration,
+        TIMER_PRESETS.compact.longBreakDuration,
+      ),
+    },
+    {
+      value: 'classic',
+      label: 'Traditional',
+      detail: formatPresetMinutes(
+        TIMER_PRESETS.classic.workDuration,
+        TIMER_PRESETS.classic.shortBreakDuration,
+        TIMER_PRESETS.classic.longBreakDuration,
+      ),
+    },
+    {
+      value: 'focus',
+      label: 'Focus Timer',
+      detail: 'Unstructured Focus',
+    },
+  ];
+
+  const shellStateClass = !isVisible
+    ? `is-exiting${isClosingFromOpen ? ' is-exiting-from-menu' : ''}`
+    : isOpen
+      ? 'is-open'
+      : isClosingFromOpen
+        ? 'is-closing'
+        : 'is-closed';
+  const shellViewClass = (isOpen || isClosingFromOpen) ? `view-${menuView}` : 'view-choices';
+  const shellViewMotionClass = isOpen
+    ? isMenuViewSettled
+      ? 'is-view-settled'
+      : 'is-view-entering'
+    : '';
+  const choicePanelStateClass = menuView === 'choices'
+    ? 'is-active'
+    : menuView === 'timer'
+      ? 'is-drilling-timer'
+      : 'is-drilling-delayed';
+  const delayedStartDate = getDelayedStartPreviewDate(delayedMinutes, previewNowMs);
+  const delayedStartTimeLabel = formatDelayedStartTime(delayedStartDate);
+  const delayedSliderPercent = ((delayedMinutes - 1) / 29) * 100;
+
+  return (
+    <div ref={controlRef} className="relative z-40 flex shrink-0 items-center justify-center self-center">
+      <div
+        className={`
+          doro-start-session-shell ${shellStateClass} ${shellViewClass} ${shellViewMotionClass}
+          relative overflow-hidden border transform-gpu
+          ${chromeButtonClass}
+        `}
+      >
+        <button
+          type="button"
+          aria-label="Open start session menu"
+          aria-haspopup="menu"
+          aria-expanded={isOpen}
+          title="Start Session"
+          tabIndex={isOpen ? -1 : 0}
+          onClick={() => onOpenChange(true)}
+          className={`
+            doro-start-session-button absolute inset-0 flex items-center justify-center
+            focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40
+          `}
+        >
+          <Clock size={18} strokeWidth={2.15} className={topIconClass} />
+        </button>
+
+        <div
+          role="menu"
+          aria-label="Timer mode"
+          aria-hidden={!isOpen}
+          className={`
+            doro-start-session-menu relative h-full min-w-0
+            ${isOpen ? '' : 'pointer-events-none'}
+          `}
+        >
+          <div className={`doro-start-session-panel doro-start-choice-panel ${choicePanelStateClass}`}>
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={isOpen && menuView === 'choices' ? 0 : -1}
+              onClick={() => {
+                setIsMenuViewSettled(false);
+                setMenuView('timer');
+              }}
+              className="doro-start-session-choice doro-start-session-choice-timer group/choice"
+              style={{ ['--doro-start-choice-delay' as any]: '130ms' }}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.12] bg-white/[0.08] text-white/88">
+                <TimerIcon size={16} strokeWidth={2.2} />
+              </span>
+              <span className="min-w-0 text-left">
+                <span className="block text-[10px] font-bold uppercase leading-tight tracking-[0.13em] text-white">Focus Timers</span>
+                <span className="mt-0.5 block truncate font-mono text-[10px] font-semibold text-white/[0.52] group-hover/choice:text-white/[0.68]">
+                  Select Mode
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={isOpen && menuView === 'choices' ? 0 : -1}
+              onClick={() => {
+                setIsMenuViewSettled(false);
+                setMenuView('delayed');
+              }}
+              className="doro-start-session-choice doro-start-session-choice-delayed group/choice"
+              style={{ ['--doro-start-choice-delay' as any]: '205ms' }}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.12] bg-white/[0.08] text-white/88">
+                <span className="doro-start-sleep-icon" aria-hidden="true">Zzz</span>
+              </span>
+              <span className="min-w-0 text-left">
+                <span className="block text-[10px] font-bold uppercase leading-tight tracking-[0.13em] text-white">Delayed Start</span>
+                <span className="mt-0.5 block truncate font-mono text-[10px] font-semibold text-white/[0.52] group-hover/choice:text-white/[0.68]">
+                  Procrastinate
+                </span>
+              </span>
+            </button>
+          </div>
+
+          <div
+            className={`doro-start-session-panel doro-start-timer-panel flex-col gap-1.5 ${menuView === 'timer' ? 'is-active' : ''}`}
+            aria-hidden={menuView !== 'timer'}
+          >
+            {presetOptions.map((option, index) => {
+              const isActivePreset = activePreset === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={isActivePreset}
+                  tabIndex={isOpen && menuView === 'timer' ? 0 : -1}
+                  onClick={() => onSelectPreset(option.value)}
+                  className={`
+                    doro-start-session-option group/preset flex min-h-[3rem] w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left
+                    transition-[background-color,border-color,color,transform] duration-300 active:scale-[0.98]
+                    ${isActivePreset
+                      ? 'border-white/[0.24] bg-black/[0.36] text-white hover:border-white/[0.34] hover:bg-black/[0.44]'
+                      : 'border-white/[0.16] bg-black/[0.26] text-white/[0.86] hover:border-white/[0.28] hover:bg-black/[0.36] hover:text-white'
+                    }
+                  `}
+                  style={{
+                    ['--doro-start-option-delay' as any]: `${150 + (index * 72)}ms`,
+                  }}
+                >
+                  <span className="min-w-0 flex-1 overflow-hidden pr-0.5">
+                    <span className="flex max-w-full flex-nowrap items-baseline gap-x-1.5 overflow-hidden text-[10px] font-bold leading-tight">
+                      <span className="shrink-0 whitespace-nowrap uppercase tracking-[0.105em]">{option.label}</span>
+                      {option.recommended && (
+                        <span className="shrink-0 whitespace-nowrap text-[8px] font-semibold normal-case tracking-normal text-white/[0.38]">
+                          (Recommended)
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block truncate font-mono text-[10px] font-semibold text-white/[0.54] group-hover/preset:text-white/[0.7]">
+                      {option.detail}
+                    </span>
+                  </span>
+                  <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-all duration-300 ${
+                    isActivePreset
+                      ? 'border-white/25 bg-white/[0.16] text-white'
+                      : 'border-white/10 bg-white/5 text-white/0'
+                  }`}>
+                    <Check size={12} strokeWidth={2.4} />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div
+            className={`doro-start-session-panel doro-start-delayed-panel flex-col ${menuView === 'delayed' ? 'is-active' : ''}`}
+            aria-hidden={menuView !== 'delayed'}
+          >
+            <div className="doro-start-delayed-time text-center">
+              <span className="doro-start-delayed-time-label">Start At:</span>
+              <span className="doro-start-delayed-time-value">
+                {delayedStartTimeLabel}
+              </span>
+            </div>
+            <div
+              className="doro-start-delay-slider-wrap mt-3"
+              style={{ ['--doro-delay-progress' as any]: `${delayedSliderPercent}%` }}
+            >
+              <div className="doro-start-delay-minutes-label" aria-hidden="true">
+                {delayedMinutes} min
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={30}
+                step={1}
+                value={delayedMinutes}
+                aria-label="Delayed start minutes"
+                aria-valuetext={`${delayedMinutes} minutes`}
+                onChange={(event) => setDelayedMinutes(Number(event.target.value))}
+                className="doro-start-delay-slider"
+              />
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={isOpen && menuView === 'delayed' ? 0 : -1}
+              onClick={() => onStartDelayedStart(delayedMinutes)}
+              className="doro-start-delayed-start-button mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border px-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white"
+            >
+              <Play size={13} strokeWidth={2.4} fill="currentColor" />
+              Start
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const TimerDisplay: React.FC = () => {
   const {
     workTime,
@@ -487,12 +860,19 @@ const TimerDisplay: React.FC = () => {
     settings,
     logs,
     sessionStartTime,
+    delayedStartTargetTime,
     timerActivityStartTime,
     focusTimerDisplayOffsetSeconds,
+    updateSettings,
+    startDelayedStart,
   } = useTimer();
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const [isFocusTimerHidden, setIsFocusTimerHidden] = useState(false);
+  const shouldShowIdlePresetControl = isIdle && !timerStarted;
+  const [shouldRenderIdlePresetControl, setShouldRenderIdlePresetControl] = useState(shouldShowIdlePresetControl);
+  const [isIdlePresetControlVisible, setIsIdlePresetControlVisible] = useState(shouldShowIdlePresetControl);
+  const [isIdlePresetMenuOpen, setIsIdlePresetMenuOpen] = useState(false);
   
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLongPressRef = useRef(false);
@@ -591,6 +971,52 @@ const TimerDisplay: React.FC = () => {
     focusDisplaySecondsRef.current = focusTimerDisplaySeconds;
   }
   const focusTimerDisplayValue = formatTime(focusTimerDisplaySeconds);
+  const delayedStartBeginLabel = (() => {
+    if (!delayedStartTargetTime || !timerStarted || isIdle || activeMode !== 'break') return undefined;
+    const delayedStartDate = new Date(delayedStartTargetTime);
+    if (Number.isNaN(delayedStartDate.getTime())) return undefined;
+    return `Begin At ${formatDelayedStartTime(delayedStartDate)}`;
+  })();
+
+  useEffect(() => {
+    if (shouldShowIdlePresetControl) {
+      setShouldRenderIdlePresetControl(true);
+      const frameId = window.requestAnimationFrame(() => {
+        setIsIdlePresetControlVisible(true);
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    setIsIdlePresetControlVisible(false);
+    setIsIdlePresetMenuOpen(false);
+    const timeoutId = window.setTimeout(() => {
+      setShouldRenderIdlePresetControl(false);
+    }, START_SESSION_EXIT_DURATION_MS + 80);
+    return () => window.clearTimeout(timeoutId);
+  }, [shouldShowIdlePresetControl]);
+
+  const selectIdlePreset = (preset: IdlePresetMenuValue) => {
+    updateSettings({
+      ...settings,
+      timerPreset: preset,
+      ...TIMER_PRESETS[preset],
+      twoInARowMode: preset === 'compact' ? settings.twoInARowMode : false,
+    });
+    setIsIdlePresetMenuOpen(false);
+  };
+
+  const isLightTheme = settings.themeMode !== 'dark';
+  const chromeButtonClass = settings.disableBlur
+    ? isLightTheme
+      ? 'border-white/40 bg-white/72 text-slate-700 shadow-[0_18px_36px_-28px_rgba(66,88,122,0.55)]'
+      : 'border-white/10 bg-black/40 text-white shadow-[0_18px_36px_-28px_rgba(0,0,0,0.75)]'
+    : isLightTheme
+      ? 'border-white/45 bg-white/32 text-slate-700 backdrop-blur-xl shadow-[0_20px_40px_-28px_rgba(66,88,122,0.55)]'
+      : 'border-white/5 bg-white/5 text-white backdrop-blur-md shadow-[0_18px_36px_-28px_rgba(0,0,0,0.72)]';
+  const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
+  const timerContainerGapClass = shouldRenderIdlePresetControl
+    ? 'gap-4'
+    : 'gap-6 md:gap-10 lg:gap-24';
 
   return (
     <div className="relative w-full flex flex-col items-center py-4 px-2">
@@ -604,10 +1030,695 @@ const TimerDisplay: React.FC = () => {
             transform: rotate(-1turn);
           }
         }
+        @keyframes doro-start-session-exit {
+          0% {
+            opacity: 0.98;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+          38% {
+            opacity: 0.82;
+            transform: translate3d(0, -1px, 0) scale(0.965);
+            filter: blur(0.2px);
+          }
+          72% {
+            opacity: 0.34;
+            transform: translate3d(0, -4px, 0) scale(0.82);
+            filter: blur(1.35px);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, -7px, 0) scale(0.72);
+            filter: blur(2.6px);
+          }
+        }
         /* Slower animations for more satisfying, less chaotic feel */
         .animate-wave-slow { animation: wave-rotate 40s linear infinite; }
         .animate-wave-med { animation: wave-rotate 32s linear infinite reverse; }
         .animate-wave-fast { animation: wave-rotate 25s linear infinite; }
+        .doro-focus-timer-shell {
+          container-type: inline-size;
+          isolation: isolate;
+        }
+        .doro-focus-timer-shell::after {
+          content: '';
+          position: absolute;
+          inset: 1.15rem;
+          z-index: 26;
+          border-radius: 2.25rem;
+          border: 1px solid rgba(255, 255, 255, 0.22);
+          opacity: 0;
+          pointer-events: none;
+          transform: scale(0.965);
+          box-shadow:
+            0 0 0 0 rgba(255, 255, 255, 0),
+            inset 0 0 34px rgba(255, 255, 255, 0.04);
+          transition:
+            opacity 240ms ease,
+            transform 540ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 540ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-focus-timer-shell.doro-focus-timer-hold-priming::after {
+          opacity: 1;
+          transform: scale(1);
+          box-shadow:
+            0 0 38px -18px rgba(255, 255, 255, 0.5),
+            inset 0 0 38px rgba(255, 255, 255, 0.07);
+        }
+        .doro-focus-timer-label,
+        .doro-focus-timer-time {
+          position: absolute;
+          left: 9%;
+          right: 9%;
+          max-width: none;
+          text-align: center;
+          transform-origin: center;
+          will-change: top, opacity, transform, filter, font-size, letter-spacing;
+          backface-visibility: hidden;
+          transition:
+            top 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            opacity 360ms ease,
+            transform 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            filter 420ms ease,
+            color 420ms ease,
+            font-size 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            line-height 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            letter-spacing 520ms ease;
+        }
+        .doro-focus-timer-label {
+          top: 33%;
+          margin: 0;
+          font-size: clamp(0.72rem, 4cqw, 0.95rem);
+          line-height: 1.05;
+          letter-spacing: 0.2em;
+          text-transform: uppercase;
+          transform: translate3d(0, -50%, 0) scale(1);
+          opacity: 0.92;
+        }
+        .doro-focus-timer-label-text {
+          display: block;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          overflow-wrap: anywhere;
+        }
+        .doro-focus-timer-time {
+          top: 52%;
+          margin: 0;
+          font-size: clamp(4.15rem, 30cqw, 8rem);
+          line-height: 0.86;
+          letter-spacing: -0.04em;
+          opacity: 1;
+          transform: translate3d(0, -50%, 0) scale(1);
+          filter: blur(0);
+        }
+        .doro-focus-timer-is-hidden .doro-focus-timer-label {
+          top: 50%;
+          letter-spacing: 0;
+          text-transform: none;
+          opacity: 1;
+          transform: translate3d(0, -50%, 0) scale(1);
+        }
+        .doro-focus-timer-is-hidden .doro-focus-timer-label-text {
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          white-space: normal;
+          overflow: hidden;
+          text-overflow: clip;
+          overflow-wrap: anywhere;
+          text-wrap: balance;
+        }
+        .doro-focus-timer-is-hidden.doro-focus-label-short .doro-focus-timer-label {
+          font-size: clamp(2.35rem, 16cqw, 4.55rem);
+          line-height: 0.9;
+        }
+        .doro-focus-timer-is-hidden.doro-focus-label-short .doro-focus-timer-label-text {
+          -webkit-line-clamp: 2;
+        }
+        .doro-focus-timer-is-hidden.doro-focus-label-medium .doro-focus-timer-label {
+          font-size: clamp(1.75rem, 12cqw, 3.45rem);
+          line-height: 0.94;
+        }
+        .doro-focus-timer-is-hidden.doro-focus-label-medium .doro-focus-timer-label-text {
+          -webkit-line-clamp: 3;
+        }
+        .doro-focus-timer-is-hidden.doro-focus-label-long .doro-focus-timer-label {
+          font-size: clamp(1.22rem, 8.7cqw, 2.55rem);
+          line-height: 1.03;
+        }
+        .doro-focus-timer-is-hidden.doro-focus-label-long .doro-focus-timer-label-text {
+          -webkit-line-clamp: 4;
+        }
+        .doro-focus-timer-is-hidden .doro-focus-timer-time {
+          top: 57%;
+          opacity: 0;
+          transform: translate3d(0, -50%, 0) scale(0.84);
+          filter: blur(8px);
+        }
+        .doro-focus-timer-is-visible .doro-focus-timer-time {
+          opacity: 1;
+          transform: translate3d(0, -50%, 0) scale(1);
+          filter: blur(0);
+        }
+        .doro-start-session-shell {
+          --doro-start-ease: cubic-bezier(0.16, 1, 0.3, 1);
+          --doro-start-ease-soft: cubic-bezier(0.22, 0.76, 0.26, 1);
+          --doro-start-ease-close: cubic-bezier(0.34, 0, 0.2, 1);
+          --doro-start-ease-exit: cubic-bezier(0.32, 0, 0.2, 1);
+          width: 2.75rem;
+          max-width: 78vw;
+          height: 2.75rem;
+          padding: 0.625rem;
+          border-radius: 0.75rem;
+          opacity: 0.6;
+          background-image: none;
+          transform: translate3d(0, 0, 0) scale(1);
+          transform-origin: center;
+          transition:
+            width 620ms var(--doro-start-ease),
+            height 620ms var(--doro-start-ease),
+            padding 620ms var(--doro-start-ease),
+            border-radius 620ms var(--doro-start-ease),
+            opacity 380ms ease,
+            transform 520ms var(--doro-start-ease),
+            box-shadow 520ms ease,
+            border-color 420ms ease,
+            background-color 420ms ease,
+            filter 420ms ease;
+          will-change: width, height, transform, opacity;
+          backface-visibility: hidden;
+          contain: layout paint;
+        }
+        .doro-start-session-shell.is-closed {
+          background-color: transparent;
+          background-image: none;
+          border-color: transparent;
+          box-shadow: none;
+        }
+        .doro-start-session-shell.is-closed:hover {
+          opacity: 0.92;
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.13), rgba(255,255,255,0.055));
+          border-color: rgba(255,255,255,0.18);
+          box-shadow:
+            0 34px 74px -38px rgba(0,0,0,0.82),
+            0 16px 32px -20px rgba(0,0,0,0.62),
+            inset 0 1px 0 rgba(255,255,255,0.16);
+          transform: perspective(680px) translate3d(0, -8px, 12px) scale(1.045) rotateX(1.4deg);
+        }
+        .doro-start-session-shell.is-closed:active {
+          transform: perspective(680px) translate3d(0, -5px, 8px) scale(0.98) rotateX(0.8deg);
+        }
+        .doro-start-session-shell.is-open {
+          width: 14rem;
+          height: 11.75rem;
+          padding: 0.75rem;
+          border-radius: 1.45rem;
+          opacity: 1;
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
+            rgba(255,255,255,0.075);
+          border-color: rgba(255,255,255,0.18);
+          box-shadow:
+            0 38px 82px -40px rgba(0,0,0,0.84),
+            0 18px 38px -22px rgba(0,0,0,0.64),
+            inset 0 1px 0 rgba(255,255,255,0.16);
+          transform: perspective(680px) translate3d(0, -8px, 12px) scale(1) rotateX(0deg);
+        }
+        .doro-start-session-shell.is-open.view-choices {
+          width: 14rem;
+          height: 8rem;
+          border-radius: 1.25rem;
+        }
+        .doro-start-session-shell.is-open.view-timer {
+          width: 14rem;
+          height: 11.75rem;
+        }
+        .doro-start-session-shell.is-open.view-delayed {
+          width: 15rem;
+          height: 11.5rem;
+        }
+        .doro-start-session-shell.is-closing {
+          opacity: 0.72;
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.11), rgba(255,255,255,0.035));
+          border-color: rgba(255,255,255,0.11);
+          box-shadow:
+            0 22px 52px -36px rgba(0,0,0,0.72),
+            0 10px 24px -21px rgba(0,0,0,0.54),
+            inset 0 1px 0 rgba(255,255,255,0.12);
+          transform: perspective(680px) translate3d(0, -2px, 5px) scale(0.985) rotateX(0.4deg);
+          transition:
+            width ${START_SESSION_MENU_CLOSE_SETTLE_MS}ms var(--doro-start-ease-close),
+            height ${START_SESSION_MENU_CLOSE_SETTLE_MS}ms var(--doro-start-ease-close),
+            padding ${START_SESSION_MENU_CLOSE_SETTLE_MS}ms var(--doro-start-ease-close),
+            border-radius ${START_SESSION_MENU_CLOSE_SETTLE_MS}ms var(--doro-start-ease-close),
+            opacity 360ms ease 130ms,
+            transform 520ms var(--doro-start-ease-close),
+            box-shadow 520ms ease,
+            border-color 420ms ease,
+            background-color 420ms ease,
+            filter 420ms ease;
+        }
+        .doro-start-session-shell.is-exiting {
+          pointer-events: none;
+          width: 0;
+          max-width: 0;
+          height: 0;
+          padding: 0;
+          border-color: rgba(255,255,255,0);
+          background: transparent;
+          box-shadow: none;
+          animation: doro-start-session-exit ${START_SESSION_EXIT_DURATION_MS}ms var(--doro-start-ease-soft) both;
+          transition:
+            width ${START_SESSION_EXIT_DURATION_MS}ms var(--doro-start-ease-exit),
+            max-width ${START_SESSION_EXIT_DURATION_MS}ms var(--doro-start-ease-exit),
+            height ${START_SESSION_EXIT_DURATION_MS}ms var(--doro-start-ease-exit),
+            padding ${Math.max(620, START_SESSION_EXIT_DURATION_MS - 120)}ms var(--doro-start-ease-exit),
+            border-radius ${START_SESSION_EXIT_DURATION_MS}ms var(--doro-start-ease-exit),
+            border-color 360ms ease,
+            background-color 360ms ease,
+            box-shadow 360ms ease;
+        }
+        .doro-start-session-shell.is-exiting.is-exiting-from-menu.view-choices {
+          width: 0;
+          max-width: 0;
+          height: 0;
+          padding: 0;
+          border-radius: 1.25rem;
+        }
+        .doro-start-session-shell.is-exiting.is-exiting-from-menu.view-timer {
+          width: 0;
+          max-width: 0;
+          height: 0;
+          padding: 0;
+          border-radius: 1.45rem;
+        }
+        .doro-start-session-shell.is-exiting.is-exiting-from-menu.view-delayed {
+          width: 0;
+          max-width: 0;
+          height: 0;
+          padding: 0;
+          border-radius: 1.45rem;
+        }
+        .doro-start-session-button {
+          z-index: 3;
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+          transition:
+            opacity 220ms ease,
+            transform 420ms var(--doro-start-ease),
+            filter 260ms ease;
+          will-change: opacity, transform, filter;
+        }
+        .doro-start-session-shell.is-open .doro-start-session-button,
+        .doro-start-session-shell.is-closing .doro-start-session-button,
+        .doro-start-session-shell.is-exiting .doro-start-session-button {
+          opacity: 0;
+          transform: translate3d(0, -2px, 0) scale(0.64) rotate(-8deg);
+          filter: blur(0.7px);
+          pointer-events: none;
+        }
+        .doro-start-session-menu {
+          z-index: 2;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 11px, 0) scale(0.925);
+          filter: blur(0.7px);
+          transition:
+            opacity 190ms ease,
+            transform 360ms var(--doro-start-ease-close),
+            filter 260ms ease;
+          will-change: opacity, transform, filter;
+          transform-origin: center;
+        }
+        .doro-start-session-shell.is-open .doro-start-session-menu {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+          transition:
+            opacity 260ms ease 105ms,
+            transform 500ms var(--doro-start-ease) 105ms,
+            filter 300ms ease 105ms;
+        }
+        .doro-start-session-shell.is-closing .doro-start-session-menu,
+        .doro-start-session-shell.is-exiting .doro-start-session-menu {
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 5px, 0) scale(0.975);
+          filter: blur(1px);
+          transition-delay: 0ms;
+        }
+        .doro-start-session-shell.is-closed .doro-start-session-panel,
+        .doro-start-session-shell.is-closing .doro-start-session-panel,
+        .doro-start-session-shell.is-exiting .doro-start-session-panel {
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 6px, 0) scale(0.965);
+          filter: blur(1px);
+        }
+        .doro-start-session-panel {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          min-width: 0;
+          justify-content: center;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 12px, 0) scale(0.955);
+          filter: blur(0.7px);
+          transition:
+            opacity 230ms ease,
+            transform 500ms var(--doro-start-ease),
+            filter 300ms ease;
+          will-change: opacity, transform, filter;
+        }
+        .doro-start-session-panel.is-active {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+        }
+        .doro-start-choice-panel {
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+        .doro-start-choice-panel.is-drilling-timer,
+        .doro-start-choice-panel.is-drilling-delayed {
+          opacity: 0;
+          transform: translate3d(0, -4px, 0) scale(1.03);
+          filter: blur(2px);
+          transition-duration: 260ms;
+        }
+        .doro-start-session-choice {
+          display: flex;
+          min-height: 3rem;
+          width: 100%;
+          align-items: center;
+          gap: 0.65rem;
+          border-radius: 0.85rem;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)),
+            rgba(0, 0, 0, 0.24);
+          padding: 0.55rem 0.7rem;
+          color: rgba(255, 255, 255, 0.88);
+          box-shadow: 0 14px 26px -24px rgba(0, 0, 0, 0.54);
+          transform: translate3d(0, 8px, 0) scale(0.97);
+          opacity: 0;
+          transition:
+            opacity 240ms ease,
+            transform 370ms var(--doro-start-ease),
+            background-color 280ms ease,
+            border-color 280ms ease,
+            box-shadow 300ms ease,
+            filter 280ms ease;
+          transition-delay: 0ms;
+          will-change: transform, opacity, box-shadow, background-color;
+          backface-visibility: hidden;
+        }
+        .doro-start-session-shell.is-open.is-view-entering.view-choices .doro-start-session-choice {
+          transition-delay: var(--doro-start-choice-delay, 120ms);
+        }
+        .doro-start-sleep-icon {
+          display: inline-block;
+          font-family: inherit;
+          font-size: 0.77rem;
+          font-weight: 800;
+          line-height: 1;
+          letter-spacing: 0;
+          color: rgba(255, 255, 255, 0.88);
+          transform: translate3d(0, -0.5px, 0) rotate(-8deg);
+          text-shadow: 0 9px 16px rgba(0, 0, 0, 0.38);
+        }
+        .doro-start-choice-panel.is-active .doro-start-session-choice {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        .doro-start-choice-panel.is-drilling-timer .doro-start-session-choice-delayed,
+        .doro-start-choice-panel.is-drilling-delayed .doro-start-session-choice-timer {
+          opacity: 0;
+          transform: translate3d(0, 12px, 0) scale(0.88);
+          filter: blur(3px);
+        }
+        .doro-start-choice-panel.is-drilling-timer .doro-start-session-choice-timer,
+        .doro-start-choice-panel.is-drilling-delayed .doro-start-session-choice-delayed {
+          opacity: 0;
+          transform: translate3d(0, -3px, 0) scale(1.08);
+          filter: blur(1.5px);
+        }
+        .doro-start-session-shell.is-open.view-choices .doro-start-choice-panel.is-active .doro-start-session-choice:hover {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.095), rgba(255,255,255,0.035)),
+            rgba(0, 0, 0, 0.3);
+          border-color: rgba(255, 255, 255, 0.28);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.6),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+          transform: translate3d(0, -1px, 0) scale(1.003);
+          filter: brightness(1.018);
+        }
+        .doro-start-timer-panel,
+        .doro-start-delayed-panel {
+          justify-content: flex-start;
+          transition-delay: 90ms;
+        }
+        .doro-start-timer-panel.is-active,
+        .doro-start-delayed-panel.is-active {
+          transition-delay: 150ms;
+        }
+        .doro-start-session-option {
+          opacity: 0;
+          transform: translate3d(0, 10px, 0) scale(0.96);
+          box-shadow: 0 10px 20px -22px rgba(0, 0, 0, 0.46);
+          transition:
+            opacity 180ms ease,
+            transform 370ms var(--doro-start-ease),
+            box-shadow 300ms ease,
+            background-color 280ms ease,
+            border-color 280ms ease,
+            color 260ms ease,
+            filter 280ms ease;
+          transition-delay: 0ms;
+          will-change: transform, opacity, box-shadow, background-color;
+          backface-visibility: hidden;
+        }
+        .doro-start-session-shell.is-open.view-timer .doro-start-session-option {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+          box-shadow: 0 16px 28px -24px rgba(0, 0, 0, 0.54);
+        }
+        .doro-start-session-shell.is-open.is-view-entering.view-timer .doro-start-session-option {
+          transition-delay: var(--doro-start-option-delay, 180ms);
+        }
+        .doro-start-session-shell.is-open .doro-start-session-option:hover {
+          transform: translate3d(0, -1px, 0) scale(1.003);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.6),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+          filter: brightness(1.018);
+        }
+        .doro-start-session-shell.is-open .doro-start-session-option:active {
+          transform: perspective(520px) translate3d(0, 0, 1px) scale(0.996) rotateX(0.08deg);
+          box-shadow: 0 14px 24px -23px rgba(0, 0, 0, 0.54);
+        }
+        .doro-start-delayed-time,
+        .doro-start-delay-slider-wrap,
+        .doro-start-delayed-start-button {
+          opacity: 0;
+          transform: translate3d(0, 12px, 0) scale(0.97);
+          transition:
+            opacity 260ms ease,
+            transform 500ms var(--doro-start-ease),
+            box-shadow 280ms ease,
+            background-color 280ms ease,
+            border-color 280ms ease;
+        }
+        .doro-start-delayed-time {
+          padding: 0 0.25rem;
+          text-shadow: 0 13px 24px rgba(0, 0, 0, 0.34);
+        }
+        .doro-start-delayed-time-label {
+          display: block;
+          font-family: inherit;
+          font-size: 0.625rem;
+          font-weight: 700;
+          line-height: 1;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.5);
+        }
+        .doro-start-delayed-time-value {
+          display: block;
+          margin-top: 0.22rem;
+          font-family: inherit;
+          font-size: 2.45rem;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          line-height: 0.9;
+          letter-spacing: 0;
+          color: #fff;
+        }
+        .doro-start-delay-slider-wrap {
+          position: relative;
+          padding: 1rem 0.2rem 0;
+        }
+        .doro-start-delay-minutes-label {
+          position: absolute;
+          top: 0;
+          left: clamp(1.15rem, var(--doro-delay-progress, 0%), calc(100% - 1.15rem));
+          transform: translate3d(-50%, 0, 0);
+          color: rgba(255, 255, 255, 0.62);
+          font-family: inherit;
+          font-size: 0.625rem;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          line-height: 1;
+          letter-spacing: 0.04em;
+          text-shadow: 0 10px 18px rgba(0, 0, 0, 0.46);
+          white-space: nowrap;
+          pointer-events: none;
+          transition:
+            left 130ms ease-out,
+            color 240ms ease,
+            opacity 240ms ease;
+        }
+        .doro-start-delayed-start-button {
+          border-color: rgba(255, 255, 255, 0.2);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.075), rgba(255,255,255,0.025)),
+            rgba(0, 0, 0, 0.28);
+          box-shadow:
+            0 14px 26px -24px rgba(0, 0, 0, 0.58),
+            inset 0 1px 0 rgba(255, 255, 255, 0.08);
+          font-family: inherit;
+          transform-origin: center;
+          transition:
+            opacity 180ms ease,
+            transform 370ms var(--doro-start-ease),
+            box-shadow 300ms ease,
+            background-color 280ms ease,
+            border-color 280ms ease,
+            color 260ms ease,
+            filter 280ms ease;
+          will-change: transform, opacity, box-shadow, background-color;
+        }
+        .doro-start-delayed-panel.is-active .doro-start-delayed-time,
+        .doro-start-delayed-panel.is-active .doro-start-delay-slider-wrap,
+        .doro-start-delayed-panel.is-active .doro-start-delayed-start-button {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        .doro-start-delayed-panel.is-active .doro-start-delayed-time {
+          transition-delay: 0ms;
+        }
+        .doro-start-delayed-panel.is-active .doro-start-delay-slider-wrap {
+          transition-delay: 0ms;
+        }
+        .doro-start-delayed-panel.is-active .doro-start-delayed-start-button {
+          transition-delay: 0ms;
+        }
+        .doro-start-session-shell.is-view-entering .doro-start-delayed-panel.is-active .doro-start-delayed-time {
+          transition-delay: 185ms;
+        }
+        .doro-start-session-shell.is-view-entering .doro-start-delayed-panel.is-active .doro-start-delay-slider-wrap {
+          transition-delay: 245ms;
+        }
+        .doro-start-session-shell.is-view-entering .doro-start-delayed-panel.is-active .doro-start-delayed-start-button {
+          transition-delay: 305ms;
+        }
+        .doro-start-delayed-start-button:hover {
+          border-color: rgba(255, 255, 255, 0.3);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025)),
+            rgba(0, 0, 0, 0.35);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.62),
+            inset 0 1px 0 rgba(255, 255, 255, 0.11);
+          transform: translate3d(0, -1px, 0) scale(1.003);
+        }
+        .doro-start-delayed-start-button:active {
+          transform: perspective(520px) translate3d(0, 0, 1px) scale(0.996) rotateX(0.06deg);
+          box-shadow: 0 14px 24px -23px rgba(0, 0, 0, 0.54);
+        }
+        .doro-start-delay-slider {
+          width: 100%;
+          height: 1.05rem;
+          appearance: none;
+          -webkit-appearance: none;
+          background: transparent;
+          cursor: pointer;
+          display: block;
+        }
+        .doro-start-delay-slider::-webkit-slider-runnable-track {
+          height: 0.38rem;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background:
+            linear-gradient(
+              90deg,
+              rgba(255,255,255,0.55) 0%,
+              rgba(255,255,255,0.42) var(--doro-delay-progress, 0%),
+              rgba(255,255,255,0.16) var(--doro-delay-progress, 0%),
+              rgba(255,255,255,0.12) 100%
+            );
+          box-shadow: inset 0 1px 2px rgba(0,0,0,0.34);
+          transition: background 160ms ease;
+        }
+        .doro-start-delay-slider::-webkit-slider-thumb {
+          width: 1.05rem;
+          height: 1.05rem;
+          margin-top: -0.38rem;
+          appearance: none;
+          -webkit-appearance: none;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.72);
+          background: rgba(255,255,255,0.92);
+          box-shadow: 0 12px 22px -12px rgba(0,0,0,0.72);
+          transition:
+            transform 160ms ease,
+            box-shadow 160ms ease,
+            background-color 160ms ease;
+        }
+        .doro-start-delay-slider:hover::-webkit-slider-thumb {
+          transform: scale(1.08);
+          background: rgba(255,255,255,0.98);
+          box-shadow: 0 15px 24px -12px rgba(0,0,0,0.78);
+        }
+        .doro-start-delay-slider::-moz-range-track {
+          height: 0.38rem;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background:
+            linear-gradient(
+              90deg,
+              rgba(255,255,255,0.55) 0%,
+              rgba(255,255,255,0.42) var(--doro-delay-progress, 0%),
+              rgba(255,255,255,0.16) var(--doro-delay-progress, 0%),
+              rgba(255,255,255,0.12) 100%
+            );
+          box-shadow: inset 0 1px 2px rgba(0,0,0,0.34);
+        }
+        .doro-start-delay-slider::-moz-range-thumb {
+          width: 1.05rem;
+          height: 1.05rem;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.72);
+          background: rgba(255,255,255,0.92);
+          box-shadow: 0 12px 22px -12px rgba(0,0,0,0.72);
+          transition:
+            transform 160ms ease,
+            box-shadow 160ms ease,
+            background-color 160ms ease;
+        }
+        .doro-start-delay-slider:hover::-moz-range-thumb {
+          transform: scale(1.08);
+          background: rgba(255,255,255,0.98);
+          box-shadow: 0 15px 24px -12px rgba(0,0,0,0.78);
+        }
         .doro-reset-icon {
           transform-origin: center;
           transform-box: fill-box;
@@ -616,6 +1727,36 @@ const TimerDisplay: React.FC = () => {
           animation: doro-reset-icon-spin 820ms linear infinite;
         }
         @media (prefers-reduced-motion: reduce) {
+          .doro-start-session-shell,
+          .doro-start-session-button,
+          .doro-start-session-menu,
+          .doro-start-session-panel,
+          .doro-start-session-choice,
+          .doro-start-session-option,
+          .doro-start-delayed-time,
+          .doro-start-delay-slider-wrap,
+          .doro-start-delay-minutes-label,
+          .doro-start-delayed-start-button,
+          .doro-focus-timer-label,
+          .doro-focus-timer-time,
+          .doro-focus-timer-shell::after {
+            animation: none !important;
+            transition-duration: 1ms !important;
+            transition-delay: 0ms !important;
+          }
+          .doro-start-session-panel.is-active,
+          .doro-start-choice-panel.is-active .doro-start-session-choice,
+          .doro-start-session-shell.is-open.view-timer .doro-start-session-option,
+          .doro-start-delayed-panel.is-active .doro-start-delayed-time,
+          .doro-start-delayed-panel.is-active .doro-start-delay-slider-wrap,
+          .doro-start-delayed-panel.is-active .doro-start-delayed-start-button {
+            opacity: 1;
+            transform: none;
+          }
+          .doro-start-session-shell.is-exiting {
+            opacity: 0;
+            transform: scale(0.7);
+          }
           .group:hover .doro-reset-icon {
             animation: none;
           }
@@ -694,7 +1835,7 @@ const TimerDisplay: React.FC = () => {
       )}
 
       {/* Timer Container */}
-      <div className="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-10 lg:gap-24 w-full mt-8 md:mt-0">
+      <div className={`flex flex-col md:flex-row items-center justify-center ${timerContainerGapClass} w-full mt-8 md:mt-0 transition-[gap] duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]`}>
         <TimerSquare 
             type="work" 
             time={workTime}
@@ -715,11 +1856,23 @@ const TimerDisplay: React.FC = () => {
             onToggleLock={toggleTimerLock}
             onHoldAction={isFocusTimerPreset ? toggleFocusTimerHidden : undefined}
         />
+        <IdlePresetControl
+            isRendered={shouldRenderIdlePresetControl}
+            isVisible={isIdlePresetControlVisible}
+            isOpen={isIdlePresetMenuOpen}
+            settings={settings}
+            chromeButtonClass={chromeButtonClass}
+            topIconClass={topIconClass}
+            onOpenChange={setIsIdlePresetMenuOpen}
+            onSelectPreset={selectIdlePreset}
+            onStartDelayedStart={startDelayedStart}
+        />
         <TimerSquare 
             type="break" 
             time={breakTime}
             maxTime={settings.longBreakDuration}
             activeMode={activeMode} 
+            label={delayedStartBeginLabel}
             displayValue={isFocusTimerPreset ? 'Break' : undefined}
             displayVariant={isFocusTimerPreset ? 'word' : 'time'}
             hideLabel={isFocusTimerPreset}

@@ -2,6 +2,7 @@ import { Category, LogEntry } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import { LONG_GRACE_SESSION_TIMEOUT_SECONDS } from './timerRuntime';
 import { getAccountStatsPomodoroEquivalent } from './pomodoroAccounting';
+import { isProductiveFocusLog } from './logClassification';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -123,12 +124,6 @@ interface NormalizedLogWindow extends AccountLogWindow {
   entry: LogEntry;
 }
 
-const isPauseCreditedWorkLog = (entry: LogEntry): boolean => {
-  if (entry.type !== 'work') return false;
-  const reason = (entry.reason || '').trim().toLowerCase();
-  return reason.startsWith('paused') || reason.includes('pause credit');
-};
-
 const isGraceLike = (entry: LogEntry) => {
   return entry.type === 'grace' || (typeof entry.reason === 'string' && entry.reason.startsWith('Grace Period'));
 };
@@ -149,7 +144,7 @@ const isSessionEndLog = (entry: LogEntry) => {
 
 const isTotalSessionDurationLog = (entry: LogEntry) => {
   if (entry.type === 'break') return true;
-  return entry.type === 'work' && !isPauseCreditedWorkLog(entry);
+  return isProductiveFocusLog(entry);
 };
 
 const startOfLocalDay = (ms: number) => {
@@ -377,9 +372,7 @@ export const computeAccountInsights = ({
     .filter((entry) => entry.entry.type !== 'task-complete')
     .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
 
-  const productiveWindows = normalizedLogs.filter((window) => (
-    window.entry.type === 'work' && !isPauseCreditedWorkLog(window.entry)
-  ));
+  const productiveWindows = normalizedLogs.filter((window) => isProductiveFocusLog(window.entry));
   const completedPomos = productiveWindows
     .map((window) => ({
       ...window,

@@ -201,6 +201,36 @@ describe('focus timer display accounting', () => {
     )).toBe(5 * 60);
   });
 
+  it('includes grace marked as working in session focus seconds', () => {
+    const logs = [
+      makeLog({
+        start: '2026-07-18T09:00:00.000Z',
+        end: '2026-07-18T09:25:00.000Z',
+        duration: 25 * 60,
+      }),
+      makeLog({
+        type: 'grace',
+        start: '2026-07-18T09:25:00.000Z',
+        end: '2026-07-18T09:32:00.000Z',
+        duration: 7 * 60,
+        reason: 'Grace Period (Working)',
+      }),
+      makeLog({
+        type: 'grace',
+        start: '2026-07-18T09:32:00.000Z',
+        end: '2026-07-18T09:35:00.000Z',
+        duration: 3 * 60,
+        reason: 'Grace Period',
+      }),
+    ];
+
+    expect(getSessionTimerFocusSeconds(
+      logs,
+      '2026-07-18T09:00:00.000Z',
+      Date.parse('2026-07-18T09:40:00.000Z'),
+    )).toBe(32 * 60);
+  });
+
   it('ignores future timer logs when finding the current active segment start', () => {
     const logs = [
       makeLog({

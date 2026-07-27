@@ -95,6 +95,14 @@ export interface RuntimeBoundaryCrossing {
   overflowSeconds: number;
 }
 
+export interface DelayedStartBoundaryState {
+  targetIso: string;
+  targetMs: number;
+  focusElapsedSeconds: number;
+  countdownRemainingSeconds: number;
+  hasReachedTarget: boolean;
+}
+
 export interface ResetPersistedTimerSessionStateOptions {
   sourceTabId: string;
   nowMs: number;
@@ -120,6 +128,7 @@ type ResettablePersistedTimerSessionState = {
   graceContext?: GraceContext;
   graceTotal?: number;
   sessionStartTime?: string | null;
+  delayedStartTargetTime?: string | null;
   scheduleStartTime?: string;
   focusTimerDisplayOffsetSeconds?: number;
   runtime?: TimerRuntimeSnapshot | null;
@@ -143,6 +152,7 @@ type ResetPersistedTimerSessionStateResult<T> = Omit<T,
   | 'graceContext'
   | 'graceTotal'
   | 'sessionStartTime'
+  | 'delayedStartTargetTime'
   | 'scheduleStartTime'
   | 'focusTimerDisplayOffsetSeconds'
 > & {
@@ -163,6 +173,7 @@ type ResetPersistedTimerSessionStateResult<T> = Omit<T,
   graceContext: null;
   graceTotal: 0;
   sessionStartTime: null;
+  delayedStartTargetTime: null;
   scheduleStartTime: string;
   focusTimerDisplayOffsetSeconds: 0;
 };
@@ -240,6 +251,7 @@ export const resetPersistedTimerSessionState = <T extends ResettablePersistedTim
     graceContext: null,
     graceTotal: 0,
     sessionStartTime: null,
+    delayedStartTargetTime: null,
     scheduleStartTime,
     focusTimerDisplayOffsetSeconds: 0,
   };
@@ -383,6 +395,27 @@ export const detectRuntimeBoundaryCrossing = (snapshot: TimerRuntimeSnapshot, no
   }
 
   return null;
+};
+
+export const getDelayedStartBoundaryState = (
+  delayedStartTargetTime: string | null | undefined,
+  nowMs: number,
+): DelayedStartBoundaryState | null => {
+  if (typeof delayedStartTargetTime !== 'string' || delayedStartTargetTime.trim().length === 0) return null;
+  if (typeof nowMs !== 'number' || !Number.isFinite(nowMs)) return null;
+
+  const targetMs = Date.parse(delayedStartTargetTime);
+  if (!Number.isFinite(targetMs)) return null;
+
+  const deltaSeconds = (nowMs - targetMs) / 1000;
+
+  return {
+    targetIso: delayedStartTargetTime,
+    targetMs,
+    focusElapsedSeconds: Math.max(0, deltaSeconds),
+    countdownRemainingSeconds: Math.max(0, -deltaSeconds),
+    hasReachedTarget: nowMs >= targetMs,
+  };
 };
 
 export const normalizeGraceWindow = ({

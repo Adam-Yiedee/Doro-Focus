@@ -50,9 +50,10 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
-const TASK_EDIT_OPEN_DURATION_MS = 380;
-const TASK_EDIT_CLOSE_DURATION_MS = 300;
-const TASK_EDIT_SETTLE_DURATION_MS = 160;
+const TASK_EDIT_OPEN_DURATION_MS = 540;
+const TASK_EDIT_CLOSE_DURATION_MS = 460;
+const TASK_EDIT_SETTLE_DURATION_MS = 320;
+const TASK_DELETE_DURATION_MS = 480;
 const CATEGORY_RAIL_DRAG_THRESHOLD_PX = 6;
 
 const preserveMobileTaskComposerFocus = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -125,17 +126,21 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [subName, setSubName] = useState('');
   const [subEst, setSubEst] = useState(1);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [removeHeight, setRemoveHeight] = useState<number | null>(null);
   const isRemovingRef = useRef(false);
   const [isCheckAnimating, setIsCheckAnimating] = useState(false);
   const removeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const removeFrameRef = useRef<number | null>(null);
   const checkAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editSettleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editFormRef = useRef<HTMLFormElement | null>(null);
+  const taskShellRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     return () => {
       if (removeTimeoutRef.current) clearTimeout(removeTimeoutRef.current);
+      if (removeFrameRef.current !== null && typeof window !== 'undefined') window.cancelAnimationFrame(removeFrameRef.current);
       if (checkAnimTimeoutRef.current) clearTimeout(checkAnimTimeoutRef.current);
       if (editTransitionTimeoutRef.current) clearTimeout(editTransitionTimeoutRef.current);
       if (editSettleTimeoutRef.current) clearTimeout(editSettleTimeoutRef.current);
@@ -222,10 +227,29 @@ const TaskItem: React.FC<TaskItemProps> = ({
     e.stopPropagation();
     if (isRemovingRef.current) return;
     isRemovingRef.current = true;
-    setIsRemoving(true);
-    removeTimeoutRef.current = setTimeout(() => {
-      deleteTask(task.id);
-    }, 280);
+
+    const startRemoval = () => {
+      setIsRemoving(true);
+      removeTimeoutRef.current = setTimeout(() => {
+        deleteTask(task.id);
+      }, TASK_DELETE_DURATION_MS);
+    };
+
+    const measuredHeight = taskShellRef.current?.getBoundingClientRect().height;
+    if (typeof measuredHeight === 'number' && measuredHeight > 0) {
+      setRemoveHeight(measuredHeight);
+      if (typeof window !== 'undefined') {
+        removeFrameRef.current = window.requestAnimationFrame(() => {
+          removeFrameRef.current = window.requestAnimationFrame(() => {
+            removeFrameRef.current = null;
+            startRemoval();
+          });
+        });
+        return;
+      }
+    }
+
+    startRemoval();
   };
 
   const handleStartAddingSubtask = (e: React.SyntheticEvent) => {
@@ -253,6 +277,17 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const editFooterClass = isNestedTask
     ? 'doro-task-edit-footer flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'
     : 'doro-task-edit-footer flex items-center justify-between gap-3';
+  const setTaskShellRef = useCallback((node: HTMLDivElement | null) => {
+    taskShellRef.current = node;
+    if (isTopLevel && registerTaskRef) {
+      registerTaskRef(task.id, node);
+    }
+  }, [isTopLevel, registerTaskRef, task.id]);
+  const taskShellStyle: React.CSSProperties | undefined = !isVisibleInList
+    ? { marginTop: 0 }
+    : removeHeight !== null
+      ? { maxHeight: isRemoving ? 0 : removeHeight }
+      : undefined;
 
   if (isEditing) {
     return (
@@ -262,7 +297,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           e.preventDefault();
           handleSave();
         }}
-        className={`doro-task-edit-shell rounded-lg border border-white/[0.10] bg-white/[0.055] backdrop-blur-md overflow-hidden shadow-[0_18px_42px_-28px_rgba(0,0,0,0.35)] ${
+        className={`doro-task-edit-shell doro-task-composer-shell rounded-lg border border-white/[0.10] bg-white/[0.055] backdrop-blur-md overflow-hidden shadow-[0_18px_42px_-28px_rgba(0,0,0,0.35)] ${
           editCloseState === 'save'
             ? 'doro-task-edit-close-save'
             : editCloseState === 'cancel'
@@ -330,7 +365,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             <span>{editEst}</span>
           </div>
 
-          <div className="doro-task-action-rail pointer-events-none shrink-0 opacity-0" aria-hidden="true" />
+          <div className="doro-task-edit-rail-placeholder pointer-events-none shrink-0 opacity-0" aria-hidden="true" />
         </div>
 
         <div className="doro-task-edit-controls flex flex-col gap-3 border-t border-white/[0.07] px-4 py-3">
@@ -440,7 +475,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
   return (
     <div
-      ref={isTopLevel && registerTaskRef ? (node) => registerTaskRef(task.id, node) : undefined}
+      ref={setTaskShellRef}
       data-task-id={task.id}
       draggable={isTopLevel && !isRemoving && isVisibleInList}
       onDragStart={(event) => {
@@ -482,9 +517,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
         ${isVisibleInList ? 'max-h-[2000px] opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2 pointer-events-none'}
         ${isEntering ? 'doro-task-enter' : ''}
         ${isSettlingAfterEdit ? 'doro-task-edit-return-settle' : ''}
-        ${isRemoving ? 'opacity-0 scale-[0.96] -translate-x-2 pointer-events-none' : ''}
+        ${isRemoving ? 'doro-task-removing pointer-events-none' : ''}
       `}
-      style={isVisibleInList ? undefined : { marginTop: 0 }}
+      style={taskShellStyle}
       aria-hidden={!isVisibleInList}
     >
       <div 
@@ -493,19 +528,23 @@ const TaskItem: React.FC<TaskItemProps> = ({
         className={`
           group relative rounded-lg cursor-pointer transform-gpu transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out
           doro-task-card-row
+          ${task.selected ? 'doro-task-card-selected' : 'doro-task-card-rest'}
+          ${isSectionActive ? 'doro-task-card-section-active' : ''}
+          ${isDraggedTask ? 'doro-task-card-dragged' : ''}
+          ${isCheckAnimating ? 'doro-task-card-checking' : ''}
           flex items-center gap-3 border
           p-3
           ${task.selected
-            ? 'z-20 -translate-y-1 scale-[1.006] bg-white/[0.075] border-white/[0.10] shadow-[0_24px_46px_-18px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.06)] blur-0 opacity-100'
+            ? 'z-20 bg-white/[0.075] border-white/[0.10] shadow-[0_24px_46px_-18px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.06)] blur-0 opacity-100'
             : 'z-10 bg-white/[0.025] border-white/[0.08] shadow-none opacity-60'
           }
           ${!isSectionActive 
             ? (task.selected ? '' : 'hover:opacity-90')
-            : (task.selected ? '' : 'hover:-translate-y-0.5 hover:bg-white/10 hover:border-white/16 hover:shadow-[0_16px_34px_-20px_rgba(0,0,0,0.28)] hover:opacity-90')
+            : (task.selected ? '' : 'hover:bg-white/10 hover:border-white/16 hover:shadow-[0_16px_34px_-20px_rgba(0,0,0,0.28)] hover:opacity-90')
           }
           ${task.checked ? 'opacity-40' : ''}
-          ${isDraggedTask ? 'opacity-45 scale-[0.985]' : ''}
-          ${isCheckAnimating ? 'doro-check-burst scale-[1.015]' : ''}
+          ${isDraggedTask ? 'opacity-45' : ''}
+          ${isCheckAnimating ? 'doro-check-burst' : ''}
         `}
       >
         {task.selected && (
@@ -1138,6 +1177,200 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           animation: doro-soft-expand 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
           transform-origin: top center;
         }
+        @keyframes doro-task-composer-bloom {
+          0% {
+            opacity: 0;
+            transform: translate3d(-8%, -18%, 0) scale(0.84);
+            filter: blur(10px);
+          }
+          58% {
+            opacity: 0.72;
+            transform: translate3d(0, 0, 0) scale(1.05);
+            filter: blur(2px);
+          }
+          100% {
+            opacity: 0.42;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        @keyframes doro-task-composer-item-in {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 12px, 0) scale(0.965);
+            filter: blur(1.4px) saturate(0.9);
+          }
+          64% {
+            opacity: 1;
+            transform: translate3d(0, -1px, 0) scale(1.008);
+            filter: blur(0) saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doro-task-composer-item-out {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, 9px, 0) scale(0.972);
+            filter: blur(1.2px) saturate(0.92);
+          }
+        }
+        .doro-task-composer-shell {
+          position: relative;
+          isolation: isolate;
+          transform-origin: top center;
+          will-change: max-height, transform, opacity, filter, background-color, border-color, box-shadow;
+          transition:
+            background-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            border-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 560ms cubic-bezier(0.22, 1, 0.36, 1),
+            transform 560ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 520ms ease;
+        }
+        .doro-task-composer-shell::before {
+          content: '';
+          position: absolute;
+          inset: -42% -18% auto -18%;
+          z-index: 0;
+          height: 78%;
+          border-radius: 999px;
+          background:
+            radial-gradient(circle at 20% 28%, rgba(255, 255, 255, 0.2), transparent 45%),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0));
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(-8%, -18%, 0) scale(0.84);
+          transition:
+            opacity 460ms ease,
+            transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 520ms ease;
+        }
+        .doro-task-composer-shell > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-task-composer-shell-open::before,
+        .doro-task-edit-open::before {
+          animation: doro-task-composer-bloom 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-new-task-details {
+          max-height: 0;
+          opacity: 0;
+          padding-top: 0;
+          padding-bottom: 0;
+          border-color: rgba(255, 255, 255, 0);
+          transform: translate3d(0, -3px, 0) scale(0.985);
+          filter: saturate(0.94);
+          transition:
+            max-height 560ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 280ms ease 50ms,
+            padding-top 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            padding-bottom 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            border-color 380ms ease,
+            transform 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 420ms ease;
+          will-change: max-height, opacity, transform, padding, filter;
+        }
+        .doro-new-task-details-open {
+          max-height: 13.75rem;
+          opacity: 1;
+          padding-top: 0.5rem;
+          padding-bottom: 0.5rem;
+          border-color: rgba(255, 255, 255, 0.05);
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: saturate(1);
+          transition-duration: 640ms, 300ms, 600ms, 600ms, 420ms, 620ms, 480ms;
+        }
+        .doro-task-composer-shell .doro-task-picker-row,
+        .doro-task-composer-shell .doro-task-color-swatch,
+        .doro-task-composer-shell .doro-task-category-chip,
+        .doro-task-composer-shell .doro-task-add-category-chip,
+        .doro-task-composer-shell .doro-task-create-estimate,
+        .doro-task-composer-shell .doro-task-create-actions > button,
+        .doro-task-composer-shell .doro-task-edit-footer > div:last-child > button,
+        .doro-task-composer-shell .doro-task-estimate-stepper {
+          backface-visibility: hidden;
+          transform-origin: center;
+          will-change: opacity, transform, filter;
+        }
+        .doro-task-create-surface .doro-task-picker-row,
+        .doro-task-create-surface .doro-task-color-swatch,
+        .doro-task-create-surface .doro-task-category-chip,
+        .doro-task-create-surface .doro-task-add-category-chip,
+        .doro-task-create-surface .doro-task-create-estimate,
+        .doro-task-create-surface .doro-task-create-actions > button {
+          opacity: 0;
+          transform: translate3d(0, 9px, 0) scale(0.972);
+          filter: blur(1.1px) saturate(0.92);
+          transition:
+            opacity 260ms ease,
+            transform 480ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 340ms ease;
+          transition-delay: var(--doro-task-composer-close-delay, 0ms);
+        }
+        .doro-task-create-surface.doro-task-composer-shell-open .doro-task-picker-row,
+        .doro-task-create-surface.doro-task-composer-shell-open .doro-task-color-swatch,
+        .doro-task-create-surface.doro-task-composer-shell-open .doro-task-category-chip,
+        .doro-task-create-surface.doro-task-composer-shell-open .doro-task-add-category-chip,
+        .doro-task-create-surface.doro-task-composer-shell-open .doro-task-create-estimate,
+        .doro-task-create-surface.doro-task-composer-shell-open .doro-task-create-actions > button {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0) saturate(1);
+          transition-delay: var(--doro-task-composer-open-delay, 90ms);
+        }
+        .doro-task-picker-row {
+          --doro-task-composer-open-delay: 70ms;
+          --doro-task-composer-close-delay: 80ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(1) {
+          --doro-task-composer-open-delay: 105ms;
+          --doro-task-composer-close-delay: 115ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(2) {
+          --doro-task-composer-open-delay: 130ms;
+          --doro-task-composer-close-delay: 95ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(3) {
+          --doro-task-composer-open-delay: 155ms;
+          --doro-task-composer-close-delay: 75ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(4) {
+          --doro-task-composer-open-delay: 180ms;
+          --doro-task-composer-close-delay: 55ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(n+5) {
+          --doro-task-composer-open-delay: 205ms;
+          --doro-task-composer-close-delay: 35ms;
+        }
+        .doro-task-category-chip,
+        .doro-task-add-category-chip {
+          --doro-task-composer-open-delay: 190ms;
+          --doro-task-composer-close-delay: 55ms;
+        }
+        .doro-task-create-estimate,
+        .doro-task-edit-footer > div:first-child {
+          --doro-task-composer-open-delay: 230ms;
+          --doro-task-composer-close-delay: 35ms;
+        }
+        .doro-task-create-actions > button:nth-child(1),
+        .doro-task-edit-footer > div:last-child > button:nth-child(1) {
+          --doro-task-composer-open-delay: 275ms;
+          --doro-task-composer-close-delay: 20ms;
+        }
+        .doro-task-create-actions > button:nth-child(2),
+        .doro-task-edit-footer > div:last-child > button:nth-child(2) {
+          --doro-task-composer-open-delay: 315ms;
+          --doro-task-composer-close-delay: 0ms;
+        }
         @keyframes doro-task-edit-open {
           0% {
             max-height: var(--doro-task-edit-collapsed-height);
@@ -1145,11 +1378,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             transform: translateY(0) scale(1);
             filter: saturate(0.98);
           }
-          62% {
+          72% {
             max-height: var(--doro-task-edit-expanded-height);
             opacity: 1;
-            transform: translateY(-1px) scale(1.006);
-            filter: saturate(1.03);
+            transform: translateY(-1px) scale(1.004);
+            filter: saturate(1.04);
           }
           100% {
             max-height: var(--doro-task-edit-expanded-height);
@@ -1165,12 +1398,97 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           --doro-task-edit-expanded-height: 24rem;
           --doro-task-edit-controls-height: 18rem;
           transform-origin: top center;
-          will-change: max-height, transform, opacity, filter;
+          will-change: max-height, transform, opacity, filter, background-color, border-color, box-shadow;
         }
         .doro-task-action-rail {
           width: 5.125rem;
           min-width: 5.125rem;
           justify-content: flex-end;
+        }
+        .doro-task-card-row {
+          --doro-task-row-y: 0rem;
+          --doro-task-row-scale: 1;
+          transform: translate3d(0, var(--doro-task-row-y), 0) scale(var(--doro-task-row-scale));
+        }
+        .doro-task-card-selected {
+          --doro-task-row-y: -0.25rem;
+          --doro-task-row-scale: 1.006;
+        }
+        .doro-task-card-section-active.doro-task-card-rest:hover {
+          --doro-task-row-y: -0.125rem;
+        }
+        .doro-task-card-dragged {
+          --doro-task-row-scale: 0.985;
+        }
+        .doro-task-card-checking {
+          --doro-task-row-scale: 1.015;
+        }
+        .doro-task-edit-rail-placeholder {
+          width: 0;
+          min-width: 0;
+          overflow: hidden;
+        }
+        .doro-task-pomo-pill {
+          transition:
+            background-color 240ms ease,
+            border-color 240ms ease,
+            color 220ms ease,
+            opacity 260ms ease,
+            transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 260ms ease;
+          will-change: transform, opacity, filter;
+        }
+        .doro-task-card-row .doro-task-action-rail {
+          width: 0;
+          min-width: 0;
+          gap: 0;
+          opacity: 0;
+          overflow: hidden;
+          transform: translate3d(8px, 0, 0) scale(0.96);
+          transition:
+            width 430ms cubic-bezier(0.22, 1, 0.36, 1),
+            min-width 430ms cubic-bezier(0.22, 1, 0.36, 1),
+            gap 430ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 220ms ease,
+            transform 430ms cubic-bezier(0.22, 1, 0.36, 1);
+          will-change: width, min-width, opacity, transform;
+        }
+        .doro-task-card-row:hover .doro-task-action-rail,
+        .doro-task-card-row:focus-within .doro-task-action-rail {
+          width: 5.125rem;
+          min-width: 5.125rem;
+          gap: 0.125rem;
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        .doro-task-card-row .doro-task-action-rail button {
+          opacity: 0;
+          transform: translate3d(7px, 0, 0) scale(0.9);
+          filter: blur(0.7px);
+          transition:
+            opacity 190ms ease,
+            transform 340ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 240ms ease,
+            background-color 180ms ease,
+            color 180ms ease;
+        }
+        .doro-task-card-row:hover .doro-task-action-rail button,
+        .doro-task-card-row:focus-within .doro-task-action-rail button {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+        }
+        .doro-task-card-row:hover .doro-task-action-rail button:nth-child(1),
+        .doro-task-card-row:focus-within .doro-task-action-rail button:nth-child(1) {
+          transition-delay: 80ms;
+        }
+        .doro-task-card-row:hover .doro-task-action-rail button:nth-child(2),
+        .doro-task-card-row:focus-within .doro-task-action-rail button:nth-child(2) {
+          transition-delay: 120ms;
+        }
+        .doro-task-card-row:hover .doro-task-action-rail button:nth-child(3),
+        .doro-task-card-row:focus-within .doro-task-action-rail button:nth-child(3) {
+          transition-delay: 160ms;
         }
         .doro-task-edit-open {
           animation: doro-task-edit-open ${TASK_EDIT_OPEN_DURATION_MS}ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
@@ -1205,16 +1523,18 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             opacity: 0;
             padding-top: 0;
             padding-bottom: 0;
-            transform: translateY(6px) scale(0.985);
+            transform: translateY(8px) scale(0.982);
             border-color: rgba(255, 255, 255, 0);
+            filter: blur(1px) saturate(0.94);
           }
-          62% {
+          72% {
             max-height: var(--doro-task-edit-controls-height);
             opacity: 1;
             padding-top: 0.75rem;
             padding-bottom: 0.75rem;
-            transform: translateY(-1px) scale(1.008);
+            transform: translateY(-1px) scale(1.006);
             border-color: rgba(255, 255, 255, 0.07);
+            filter: blur(0) saturate(1.04);
           }
           100% {
             max-height: var(--doro-task-edit-controls-height);
@@ -1223,20 +1543,61 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             padding-bottom: 0.75rem;
             transform: translateY(0) scale(1);
             border-color: rgba(255, 255, 255, 0.07);
+            filter: blur(0) saturate(1);
           }
         }
         .doro-task-edit-open .doro-task-edit-controls {
-          animation: doro-task-edit-controls-in ${TASK_EDIT_OPEN_DURATION_MS}ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
+          animation: doro-task-edit-controls-in ${TASK_EDIT_OPEN_DURATION_MS}ms cubic-bezier(0.18, 0.9, 0.32, 1.08) both;
         }
         @keyframes doro-task-edit-controls-out {
           0% {
+            max-height: var(--doro-task-edit-controls-height);
             opacity: 1;
+            padding-top: 0.75rem;
+            padding-bottom: 0.75rem;
             transform: translateY(0) scale(1);
+            border-color: rgba(255, 255, 255, 0.07);
+            filter: blur(0) saturate(1);
           }
           100% {
+            max-height: 0;
             opacity: 0;
-            transform: translateY(6px) scale(0.975);
+            padding-top: 0;
+            padding-bottom: 0;
+            transform: translateY(8px) scale(0.974);
+            border-color: rgba(255, 255, 255, 0);
+            filter: blur(1.2px) saturate(0.92);
           }
+        }
+        .doro-task-edit-open .doro-task-picker-row,
+        .doro-task-edit-open .doro-task-color-swatch,
+        .doro-task-edit-open .doro-task-category-chip,
+        .doro-task-edit-open .doro-task-add-category-chip,
+        .doro-task-edit-open .doro-task-create-estimate,
+        .doro-task-edit-open .doro-task-edit-footer > div:first-child,
+        .doro-task-edit-open .doro-task-estimate-stepper,
+        .doro-task-edit-open .doro-task-edit-footer > div:last-child > button {
+          animation: doro-task-composer-item-in 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation-delay: var(--doro-task-composer-open-delay, 120ms);
+        }
+        .doro-task-edit-close-save .doro-task-picker-row,
+        .doro-task-edit-close-save .doro-task-color-swatch,
+        .doro-task-edit-close-save .doro-task-category-chip,
+        .doro-task-edit-close-save .doro-task-add-category-chip,
+        .doro-task-edit-close-save .doro-task-create-estimate,
+        .doro-task-edit-close-save .doro-task-edit-footer > div:first-child,
+        .doro-task-edit-close-save .doro-task-estimate-stepper,
+        .doro-task-edit-close-save .doro-task-edit-footer > div:last-child > button,
+        .doro-task-edit-close-cancel .doro-task-picker-row,
+        .doro-task-edit-close-cancel .doro-task-color-swatch,
+        .doro-task-edit-close-cancel .doro-task-category-chip,
+        .doro-task-edit-close-cancel .doro-task-add-category-chip,
+        .doro-task-edit-close-cancel .doro-task-create-estimate,
+        .doro-task-edit-close-cancel .doro-task-edit-footer > div:first-child,
+        .doro-task-edit-close-cancel .doro-task-estimate-stepper,
+        .doro-task-edit-close-cancel .doro-task-edit-footer > div:last-child > button {
+          animation: doro-task-composer-item-out 280ms cubic-bezier(0.4, 0, 0.2, 1) both;
+          animation-delay: var(--doro-task-composer-close-delay, 0ms);
         }
         @keyframes doro-task-edit-close-save {
           0% {
@@ -1253,11 +1614,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           }
         }
         .doro-task-edit-close-save {
-          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
+          animation: doro-task-edit-close-save ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
           pointer-events: none;
         }
         .doro-task-edit-close-save .doro-task-edit-controls {
-          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
+          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
         }
         @keyframes doro-task-edit-close-cancel {
           0% {
@@ -1274,11 +1635,11 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           }
         }
         .doro-task-edit-close-cancel {
-          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
+          animation: doro-task-edit-close-cancel ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
           pointer-events: none;
         }
         .doro-task-edit-close-cancel .doro-task-edit-controls {
-          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms ease-in-out forwards;
+          animation: doro-task-edit-controls-out ${TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
         }
         @keyframes doro-task-edit-return-settle {
           0% {
@@ -1291,6 +1652,57 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         .doro-task-edit-return-settle {
           animation: doro-task-edit-return-settle ${TASK_EDIT_SETTLE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1);
           transform-origin: top center;
+        }
+        @keyframes doro-task-card-return-rest {
+          0% {
+            transform: translate3d(0, 1px, 0) scale(0.998);
+            filter: saturate(0.98);
+          }
+          100% {
+            transform: translate3d(0, var(--doro-task-row-y), 0) scale(var(--doro-task-row-scale));
+            filter: saturate(1);
+          }
+        }
+        @keyframes doro-task-card-return-selected {
+          0% {
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: saturate(0.98);
+          }
+          68% {
+            transform: translate3d(0, calc(var(--doro-task-row-y) - 0.025rem), 0) scale(1.008);
+            filter: saturate(1.03);
+          }
+          100% {
+            transform: translate3d(0, var(--doro-task-row-y), 0) scale(var(--doro-task-row-scale));
+            filter: saturate(1);
+          }
+        }
+        .doro-task-edit-return-settle .doro-task-card-row {
+          animation: doro-task-card-return-rest ${TASK_EDIT_SETTLE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          transform-origin: center;
+        }
+        .doro-task-edit-return-settle .doro-task-card-selected {
+          animation-name: doro-task-card-return-selected;
+        }
+        @keyframes doro-task-pomo-return-settle {
+          0% {
+            opacity: 0.45;
+            transform: translate3d(7px, 0, 0) scale(0.94);
+            filter: blur(0.8px);
+          }
+          62% {
+            opacity: 1;
+            transform: translate3d(-1px, 0, 0) scale(1.025);
+            filter: blur(0);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        .doro-task-edit-return-settle .doro-task-pomo-pill {
+          animation: doro-task-pomo-return-settle ${TASK_EDIT_SETTLE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1) both;
         }
         @keyframes doro-task-enter {
           0% {
@@ -1309,6 +1721,25 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         .doro-task-enter {
           animation: doro-task-enter 540ms cubic-bezier(0.16, 0.88, 0.3, 1.12);
           transform-origin: top center;
+        }
+        .doro-task-removing {
+          max-height: 0 !important;
+          margin-top: 0 !important;
+          opacity: 0 !important;
+          overflow: hidden !important;
+          pointer-events: none;
+          transform: translate3d(-0.55rem, -0.18rem, 0) scale(0.965) !important;
+          filter: blur(0.7px) saturate(0.9);
+          transition:
+            max-height ${TASK_DELETE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1),
+            margin-top ${TASK_DELETE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 230ms ease,
+            transform ${TASK_DELETE_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 280ms ease !important;
+        }
+        .doro-task-removing .doro-task-card-row {
+          box-shadow: 0 14px 32px -24px rgba(0, 0, 0, 0.32);
+          transition-duration: ${TASK_DELETE_DURATION_MS}ms;
         }
         @keyframes doro-check-burst {
           0% {
@@ -1475,8 +1906,15 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
             min-width: max-content;
             gap: 0.16rem;
             opacity: 1;
+            overflow: visible;
+            transform: none;
+            transition: none;
           }
           .doro-task-action-rail button {
+            opacity: 1 !important;
+            transform: none !important;
+            filter: none !important;
+            transition-delay: 0ms !important;
             min-width: 1.6rem;
             min-height: 1.6rem;
             flex: 0 0 1.6rem;
@@ -1638,7 +2076,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
         <form 
           onSubmit={handleSubmit} 
           className={`
-            mb-8 relative group z-30 transition-[transform,opacity,box-shadow] duration-300
+            doro-task-create-form mb-8 relative group z-30 transition-[transform,opacity,box-shadow] duration-300
             ${isInputFocused 
               ? 'scale-100 shadow-xl' 
               : 'scale-[0.98] shadow-none'
@@ -1654,9 +2092,10 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
           }}
         >
           <div className={`
-            bg-white/5 rounded-xl border 
+            doro-task-create-surface doro-task-composer-shell rounded-xl border
             ${!settings.disableBlur ? 'backdrop-blur-xl' : ''}
             ${isInputFocused ? 'border-white/30 bg-white/15' : 'border-white/10 hover:border-white/20 hover:bg-white/10'}
+            ${isInputFocused ? 'doro-task-composer-shell-open' : ''}
             overflow-hidden transition-all duration-300
           `}>
             <div className="flex items-center p-1.5">
@@ -1686,11 +2125,10 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                  )}
             </div>
             
-            <div className={`doro-new-task-details ${isInputFocused ? 'doro-new-task-details-open' : ''}
-              overflow-hidden border-t transition-[max-height,opacity,padding,border-color] duration-300 ease-in-out
-              ${isInputFocused ? 'doro-soft-expand max-h-40 border-white/5 opacity-100 py-2 px-4' : 'max-h-0 border-white/0 opacity-0 py-0 px-4'}
+            <div className={`doro-new-task-details doro-task-composer-panel ${isInputFocused ? 'doro-new-task-details-open' : ''}
+              overflow-hidden border-t px-4
             `}>
-              <div className="flex flex-col gap-3">
+              <div className="doro-task-composer-content flex flex-col gap-3">
                   {/* Category & Color Selection */}
                   <div className="doro-task-picker-row flex items-center gap-2 overflow-hidden pl-1 py-1">
                       <div className="flex shrink-0 items-center gap-1.5">

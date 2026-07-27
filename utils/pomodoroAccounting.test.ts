@@ -99,4 +99,24 @@ describe('pomodoro accounting', () => {
       duration: 25 * 60,
     })).toBe(0);
   });
+
+  it('counts grace marked as working as productive account time only', () => {
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'grace',
+      reason: 'Grace Period (Working)',
+      duration: 5 * 60,
+    })).toBeCloseTo(0.2, 5);
+
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'grace',
+      reason: 'Grace Period',
+      duration: 5 * 60,
+    })).toBe(0);
+
+    expect(getAccountStatsPomodoroEquivalent({
+      type: 'grace',
+      reason: 'Grace Period (Resting)',
+      duration: 5 * 60,
+    })).toBe(0);
+  });
 });

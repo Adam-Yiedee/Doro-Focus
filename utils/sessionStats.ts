@@ -5,6 +5,7 @@ import {
   getStandardPomodoroCountForTimer,
 } from './pomodoroAccounting';
 import { TIMER_PRESETS } from './timerRuntime';
+import { isProductiveFocusLog } from './logClassification';
 
 export interface EndSessionPendingActivityWindow {
   startMs: number;
@@ -36,12 +37,6 @@ export interface EndSessionStatsResult {
 const getFiniteNumber = (value: unknown): number | null => (
   typeof value === 'number' && Number.isFinite(value) ? value : null
 );
-
-export const isPauseCreditedWorkLog = (entry: Pick<LogEntry, 'type' | 'reason'>): boolean => {
-  if (entry.type !== 'work') return false;
-  const reason = (entry.reason || '').trim().toLowerCase();
-  return reason.startsWith('paused') || reason.includes('pause credit');
-};
 
 export const getEndSessionPendingActivityWindow = ({
   isIdle,
@@ -278,9 +273,7 @@ export const buildEndSessionStats = ({
   const sessionStartMs = getSessionStartMs(sessionStartTime);
   const sessionEndMs = getSessionEndMs(sessionEndTime);
   const sessionLogs = getLogsForSession(logs, sessionStartTime, sessionEndTime);
-  const workLogs = sessionLogs.filter((entry) => (
-    entry.type === 'work' && !isPauseCreditedWorkLog(entry)
-  ));
+  const workLogs = sessionLogs.filter(isProductiveFocusLog);
   const breakLogs = sessionLogs.filter((entry) => entry.type === 'break');
   const getBoundedLogDurationSeconds = (entry: LogEntry) => (
     sessionStartMs === null

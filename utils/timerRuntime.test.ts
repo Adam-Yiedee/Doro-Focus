@@ -7,6 +7,7 @@ import {
   getBreakBankBaseForWorkCompletion,
   getMatchingTimerPreset,
   getCompletedPhaseDuration,
+  getDelayedStartBoundaryState,
   getPomodoroCycleProgress,
   getProjectedTaskFinishSeconds,
   getTimerLockAutoUnlockDelay,
@@ -207,6 +208,42 @@ describe('boundary catch-up policy', () => {
       activityStartIso: new Date(BASE_NOW).toISOString(),
       fallbackDuration: 1500,
     })).toBeCloseTo(1500, 2);
+  });
+});
+
+describe('delayed start boundary state', () => {
+  it('reports remaining countdown seconds before the selected start time', () => {
+    const targetIso = new Date(BASE_NOW + 9 * 60_000 + 1_000).toISOString();
+
+    const state = getDelayedStartBoundaryState(targetIso, BASE_NOW);
+
+    expect(state).toMatchObject({
+      targetIso,
+      targetMs: BASE_NOW + 9 * 60_000 + 1_000,
+      focusElapsedSeconds: 0,
+      countdownRemainingSeconds: 9 * 60 + 1,
+      hasReachedTarget: false,
+    });
+  });
+
+  it('reports focus elapsed only after the selected start time is reached', () => {
+    const targetIso = new Date(BASE_NOW + 10 * 60_000).toISOString();
+
+    const state = getDelayedStartBoundaryState(targetIso, BASE_NOW + 12 * 60_000 + 30_000);
+
+    expect(state).toMatchObject({
+      targetIso,
+      targetMs: BASE_NOW + 10 * 60_000,
+      focusElapsedSeconds: 150,
+      countdownRemainingSeconds: 0,
+      hasReachedTarget: true,
+    });
+  });
+
+  it('ignores missing or invalid delayed start targets', () => {
+    expect(getDelayedStartBoundaryState(null, BASE_NOW)).toBeNull();
+    expect(getDelayedStartBoundaryState('not-a-date', BASE_NOW)).toBeNull();
+    expect(getDelayedStartBoundaryState(new Date(BASE_NOW).toISOString(), NaN)).toBeNull();
   });
 });
 

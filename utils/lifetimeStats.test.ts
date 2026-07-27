@@ -56,6 +56,37 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 25 });
   });
 
+  it('counts grace marked as working in lifetime focus totals and categories', () => {
+    const stats = calculateLifetimeStatsFromData([], [
+      makeLog({
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        reason: 'Pomodoro Complete',
+        categoryId: 1,
+      }),
+      makeLog({
+        type: 'grace',
+        start: '2026-03-12T09:25:00.000Z',
+        end: '2026-03-12T09:32:00.000Z',
+        reason: 'Grace Period (Working)',
+        categoryId: 1,
+      }),
+      makeLog({
+        type: 'grace',
+        start: '2026-03-12T09:32:00.000Z',
+        end: '2026-03-12T09:35:00.000Z',
+        reason: 'Grace Period',
+        categoryId: 1,
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(32 / 60, 5);
+    expect(stats.totalSessionHours).toBeCloseTo(32 / 60, 5);
+    expect(stats.totalPomos).toBeCloseTo(32 / 25, 5);
+    expect(stats.activeDays).toBe(1);
+    expect(stats.categoryBreakdown).toEqual({ Writing: 32 });
+  });
+
   it('keeps focus time separate from total session time that includes breaks', () => {
     const stats = calculateLifetimeStatsFromData([], [
       makeLog({

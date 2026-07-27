@@ -447,6 +447,53 @@ describe('computeAccountInsights', () => {
     });
   });
 
+  it('counts grace marked as working in account focus charts', () => {
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-14T00:00:00',
+      nowMs: Date.parse('2026-01-14T23:00:00'),
+      categories,
+      logs: [
+        makeLog({
+          start: '2026-01-14T09:00:00',
+          end: '2026-01-14T09:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'grace',
+          start: '2026-01-14T09:25:00',
+          end: '2026-01-14T09:32:00',
+          reason: 'Grace Period (Working)',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'grace',
+          start: '2026-01-14T09:32:00',
+          end: '2026-01-14T09:34:00',
+          reason: 'Grace Period',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-01-14T09:34:00',
+          end: '2026-01-14T09:39:00',
+          reason: 'Session End',
+        }),
+      ],
+    });
+
+    const todayTrend = insights.dailyFocusTrend.find((point) => point.dateKey === '2026-01-14');
+    const todayLane = insights.sessionLanes.find((lane) => lane.dateKey === '2026-01-14');
+
+    expect(insights.today.focusMinutes).toBeCloseTo(32, 5);
+    expect(insights.hourlyFocusMinutes[9]).toBeCloseTo(32, 5);
+    expect(insights.todayHourlyFocusMinutes[9]).toBeCloseTo(32, 5);
+    expect(insights.topCategory).toMatchObject({ name: 'Writing', minutes: 32 });
+    expect(todayTrend?.focusMinutes).toBeCloseTo(32, 5);
+    expect(todayLane?.totalFocusMinutes).toBeCloseTo(32, 5);
+    expect(todayLane?.sessions[0].durationMinutes).toBeCloseTo(37, 5);
+  });
+
   it('uses saved focus minutes for best hour and weekday stats', () => {
     const monday = '2026-01-05';
     const tuesday = '2026-01-06';

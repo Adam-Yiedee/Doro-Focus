@@ -1,9 +1,5 @@
 import { LogEntry, TimerMode } from '../types';
-
-const isPauseCreditedWorkReason = (reason: unknown) => {
-  const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
-  return normalized.startsWith('paused') || normalized.includes('pause credit');
-};
+import { isProductiveFocusLog } from './logClassification';
 
 const getLogStartMs = (entry: Pick<LogEntry, 'start'>) => {
   const startMs = Date.parse(entry.start);
@@ -34,9 +30,8 @@ export const getSessionTimerFocusSeconds = (
   if (!Number.isFinite(sessionStartMs)) return 0;
 
   return logs.reduce((totalSeconds, entry) => {
-    if (entry.type !== 'work') return totalSeconds;
+    if (!isProductiveFocusLog(entry)) return totalSeconds;
     if (entry.source === 'manual') return totalSeconds;
-    if (isPauseCreditedWorkReason(entry.reason)) return totalSeconds;
 
     const startMs = getLogStartMs(entry);
     const endMs = getLogEndMs(entry);

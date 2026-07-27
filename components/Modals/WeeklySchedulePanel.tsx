@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { BookOpen, CalendarPlus, Eye, X } from 'lucide-react';
 import { useTimer } from '../../context/TimerContext';
 import { Category, Task } from '../../types';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
@@ -77,7 +77,9 @@ const DRAG_DEAD_ZONE_RATIO = 0.34;
 const REORDER_MIN_INTERVAL_MS = 96;
 const FLIP_ANIMATION_DURATION_MS = 165;
 const FLIP_MAX_ITEMS = 120;
-const ADD_TASK_FORM_CLOSE_DURATION_MS = 260;
+const ADD_TASK_FORM_CLOSE_DURATION_MS = 420;
+const SCHEDULE_TASK_EDIT_CLOSE_DURATION_MS = 420;
+const SCHEDULE_TASK_EDIT_SETTLE_DURATION_MS = 220;
 const DEFAULT_SCHEDULE_LOOKAHEAD_DAYS = 3;
 const EXTENDED_SCHEDULE_LOOKAHEAD_DAYS = 21;
 const HISTORY_LOOKBACK_DAYS = 21;
@@ -163,11 +165,13 @@ const ScheduleTaskCard: React.FC<{
   pluralPomoUnitLabel,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
+  const [editCloseState, setEditCloseState] = useState<'save' | 'cancel' | null>(null);
   const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
   const [name, setName] = useState(task.name);
   const [estimated, setEstimated] = useState(task.estimated);
   const [color, setColor] = useState(task.color || PRESET_COLORS[0]);
   const [categoryId, setCategoryId] = useState<number | null>(task.categoryId ?? null);
+  const editCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCompleted = Boolean(task.checked);
 
@@ -182,6 +186,7 @@ const ScheduleTaskCard: React.FC<{
 
   useEffect(() => {
     return () => {
+      if (editCloseTimeoutRef.current) clearTimeout(editCloseTimeoutRef.current);
       if (settleTimeoutRef.current) clearTimeout(settleTimeoutRef.current);
     };
   }, []);
@@ -236,16 +241,36 @@ const ScheduleTaskCard: React.FC<{
   const entrySheenStyle = useMemo(() => ({
     background: `linear-gradient(112deg, transparent 0%, ${colorToRgba(displayColor, isLightTheme ? 0.16 : 0.2)} 28%, rgba(255,255,255,${isLightTheme ? '0.68' : '0.26'}) 48%, transparent 72%)`,
   }), [displayColor, isLightTheme]);
-  const exitEdit = () => {
-    setIsEditing(false);
-    setIsSettlingAfterEdit(true);
+  const startEditClose = (state: 'save' | 'cancel') => {
+    if (editCloseState) return;
+    setEditCloseState(state);
+    if (editCloseTimeoutRef.current) clearTimeout(editCloseTimeoutRef.current);
+    editCloseTimeoutRef.current = setTimeout(() => {
+      setIsEditing(false);
+      setEditCloseState(null);
+      setIsSettlingAfterEdit(true);
+      if (settleTimeoutRef.current) clearTimeout(settleTimeoutRef.current);
+      settleTimeoutRef.current = setTimeout(() => setIsSettlingAfterEdit(false), SCHEDULE_TASK_EDIT_SETTLE_DURATION_MS);
+    }, SCHEDULE_TASK_EDIT_CLOSE_DURATION_MS);
+  };
+
+  const startEdit = () => {
+    if (editCloseTimeoutRef.current) clearTimeout(editCloseTimeoutRef.current);
     if (settleTimeoutRef.current) clearTimeout(settleTimeoutRef.current);
-    settleTimeoutRef.current = setTimeout(() => setIsSettlingAfterEdit(false), 260);
+    setName(task.name);
+    setEstimated(task.estimated);
+    setColor(task.color || PRESET_COLORS[0]);
+    setCategoryId(task.categoryId ?? null);
+    setEditCloseState(null);
+    setIsSettlingAfterEdit(false);
+    setIsEditing(true);
   };
 
   if (isEditing) {
     return (
-      <div className="doro-soft-expand rounded-xl border border-white/15 bg-black/30 p-2.5">
+      <div className={`doro-weekly-task-editor doro-task-composer-shell rounded-xl border border-white/15 bg-black/30 p-2.5 ${
+        editCloseState ? 'doro-weekly-task-editor-close' : 'doro-weekly-task-editor-open'
+      }`}>
         <input
           autoFocus
           value={name}
@@ -294,7 +319,7 @@ const ScheduleTaskCard: React.FC<{
         <div className="mt-2 flex justify-end gap-1.5">
           <button
             type="button"
-            onClick={exitEdit}
+            onClick={() => startEditClose('cancel')}
             className="schedule-glass-button schedule-glass-button--ghost px-2.5 py-1 rounded-md border border-white/10 text-[10px] uppercase tracking-[0.14em] text-white/60 hover:text-white hover:bg-white/10 transition-colors"
           >
             Cancel
@@ -309,7 +334,7 @@ const ScheduleTaskCard: React.FC<{
                 color,
                 categoryId,
               });
-              exitEdit();
+              startEditClose('save');
             }}
             className="schedule-glass-button schedule-glass-button--primary px-2.5 py-1 rounded-md border border-teal-100/35 bg-teal-300/20 text-[10px] uppercase tracking-[0.14em] font-bold text-teal-50 hover:bg-teal-300/30 transition-colors"
           >
@@ -388,7 +413,7 @@ const ScheduleTaskCard: React.FC<{
       {!isCompleted && (
         <button
           type="button"
-          onClick={() => setIsEditing(true)}
+          onClick={startEdit}
           className="schedule-glass-button schedule-glass-button--icon schedule-task-edit-button absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center z-10"
           aria-label="Edit task"
         >
@@ -1129,20 +1154,161 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           animation: doro-soft-expand 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08);
           transform-origin: top center;
         }
+        @keyframes doro-task-composer-bloom {
+          0% {
+            opacity: 0;
+            transform: translate3d(-8%, -18%, 0) scale(0.84);
+            filter: blur(10px);
+          }
+          58% {
+            opacity: 0.72;
+            transform: translate3d(0, 0, 0) scale(1.05);
+            filter: blur(2px);
+          }
+          100% {
+            opacity: 0.42;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        @keyframes doro-task-composer-item-in {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 12px, 0) scale(0.965);
+            filter: blur(1.4px) saturate(0.9);
+          }
+          64% {
+            opacity: 1;
+            transform: translate3d(0, -1px, 0) scale(1.008);
+            filter: blur(0) saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doro-task-composer-item-out {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, 9px, 0) scale(0.972);
+            filter: blur(1.2px) saturate(0.92);
+          }
+        }
+        .doro-task-composer-shell {
+          position: relative;
+          isolation: isolate;
+          transform-origin: top center;
+          will-change: max-height, transform, opacity, filter, background-color, border-color, box-shadow;
+          transition:
+            background-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            border-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 560ms cubic-bezier(0.22, 1, 0.36, 1),
+            transform 560ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 520ms ease;
+        }
+        .doro-task-composer-shell::before {
+          content: '';
+          position: absolute;
+          inset: -42% -18% auto -18%;
+          z-index: 0;
+          height: 78%;
+          border-radius: 999px;
+          background:
+            radial-gradient(circle at 20% 28%, rgba(255, 255, 255, 0.2), transparent 45%),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0));
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(-8%, -18%, 0) scale(0.84);
+          transition:
+            opacity 460ms ease,
+            transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 520ms ease;
+        }
+        .doro-task-composer-shell > * {
+          position: relative;
+          z-index: 1;
+        }
+        .doro-weekly-task-create-open::before,
+        .doro-weekly-task-editor-open::before {
+          animation: doro-task-composer-bloom 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-task-composer-shell .doro-task-picker-row,
+        .doro-task-composer-shell .doro-task-color-swatch,
+        .doro-task-composer-shell .doro-task-category-chip,
+        .doro-task-composer-shell .doro-task-add-category-chip,
+        .doro-task-composer-shell .doro-task-create-estimate,
+        .doro-task-composer-shell .doro-task-create-actions > button,
+        .doro-task-composer-shell .doro-task-estimate-stepper,
+        .doro-task-composer-shell .schedule-glass-button {
+          backface-visibility: hidden;
+          transform-origin: center;
+          will-change: opacity, transform, filter;
+        }
+        .doro-task-picker-row {
+          --doro-task-composer-open-delay: 70ms;
+          --doro-task-composer-close-delay: 80ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(1) {
+          --doro-task-composer-open-delay: 105ms;
+          --doro-task-composer-close-delay: 115ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(2) {
+          --doro-task-composer-open-delay: 130ms;
+          --doro-task-composer-close-delay: 95ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(3) {
+          --doro-task-composer-open-delay: 155ms;
+          --doro-task-composer-close-delay: 75ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(4) {
+          --doro-task-composer-open-delay: 180ms;
+          --doro-task-composer-close-delay: 55ms;
+        }
+        .doro-task-picker-row .doro-task-color-swatch:nth-child(n+5) {
+          --doro-task-composer-open-delay: 205ms;
+          --doro-task-composer-close-delay: 35ms;
+        }
+        .doro-task-category-chip,
+        .doro-task-add-category-chip {
+          --doro-task-composer-open-delay: 190ms;
+          --doro-task-composer-close-delay: 55ms;
+        }
+        .doro-task-create-estimate {
+          --doro-task-composer-open-delay: 230ms;
+          --doro-task-composer-close-delay: 35ms;
+        }
+        .doro-task-create-actions > button:nth-child(1),
+        .doro-weekly-task-editor .schedule-glass-button:nth-child(1) {
+          --doro-task-composer-open-delay: 275ms;
+          --doro-task-composer-close-delay: 20ms;
+        }
+        .doro-task-create-actions > button:nth-child(2),
+        .doro-weekly-task-editor .schedule-glass-button:nth-child(2) {
+          --doro-task-composer-open-delay: 315ms;
+          --doro-task-composer-close-delay: 0ms;
+        }
         @keyframes doro-weekly-task-create-in {
           0% {
             max-height: 0;
             margin-top: 0;
             opacity: 0;
-            transform: translateY(8px) scale(0.985);
+            transform: translateY(10px) scale(0.982);
             border-color: rgba(255, 255, 255, 0);
+            filter: blur(1px) saturate(0.92);
           }
-          62% {
+          72% {
             max-height: 18rem;
             margin-top: 0.625rem;
             opacity: 1;
-            transform: translateY(-1px) scale(1.008);
+            transform: translateY(-1px) scale(1.006);
             border-color: rgba(255, 255, 255, 0.22);
+            filter: blur(0) saturate(1.04);
           }
           100% {
             max-height: 18rem;
@@ -1150,6 +1316,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             opacity: 1;
             transform: translateY(0) scale(1);
             border-color: rgba(255, 255, 255, 0.12);
+            filter: blur(0) saturate(1);
           }
         }
         @keyframes doro-weekly-task-create-out {
@@ -1158,23 +1325,97 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             margin-top: 0.625rem;
             opacity: 1;
             transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
           }
           100% {
             max-height: 0;
             margin-top: 0;
             opacity: 0;
-            transform: translateY(6px) scale(0.975);
+            transform: translateY(8px) scale(0.974);
+            filter: blur(1.2px) saturate(0.92);
           }
         }
         .doro-weekly-task-create {
           transform-origin: top center;
-          will-change: max-height, opacity, transform, margin;
+          will-change: max-height, opacity, transform, margin, filter;
         }
         .doro-weekly-task-create-open {
-          animation: doro-weekly-task-create-in 380ms cubic-bezier(0.18, 0.9, 0.32, 1.08) both;
+          animation: doro-weekly-task-create-in 540ms cubic-bezier(0.18, 0.9, 0.32, 1.08) both;
         }
         .doro-weekly-task-create-close {
           animation: doro-weekly-task-create-out ${ADD_TASK_FORM_CLOSE_DURATION_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+          pointer-events: none;
+        }
+        .doro-weekly-task-create-open .doro-task-picker-row,
+        .doro-weekly-task-create-open .doro-task-color-swatch,
+        .doro-weekly-task-create-open .doro-task-category-chip,
+        .doro-weekly-task-create-open .doro-task-add-category-chip,
+        .doro-weekly-task-create-open .doro-task-create-estimate,
+        .doro-weekly-task-create-open .doro-task-estimate-stepper,
+        .doro-weekly-task-create-open .doro-task-create-actions > button,
+        .doro-weekly-task-editor-open .doro-task-picker-row,
+        .doro-weekly-task-editor-open .doro-task-color-swatch,
+        .doro-weekly-task-editor-open .doro-task-category-chip,
+        .doro-weekly-task-editor-open .doro-task-add-category-chip,
+        .doro-weekly-task-editor-open .doro-task-estimate-stepper,
+        .doro-weekly-task-editor-open .schedule-glass-button {
+          animation: doro-task-composer-item-in 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation-delay: var(--doro-task-composer-open-delay, 120ms);
+        }
+        .doro-weekly-task-create-close .doro-task-picker-row,
+        .doro-weekly-task-create-close .doro-task-color-swatch,
+        .doro-weekly-task-create-close .doro-task-category-chip,
+        .doro-weekly-task-create-close .doro-task-add-category-chip,
+        .doro-weekly-task-create-close .doro-task-create-estimate,
+        .doro-weekly-task-create-close .doro-task-estimate-stepper,
+        .doro-weekly-task-create-close .doro-task-create-actions > button,
+        .doro-weekly-task-editor-close .doro-task-picker-row,
+        .doro-weekly-task-editor-close .doro-task-color-swatch,
+        .doro-weekly-task-editor-close .doro-task-category-chip,
+        .doro-weekly-task-editor-close .doro-task-add-category-chip,
+        .doro-weekly-task-editor-close .doro-task-estimate-stepper,
+        .doro-weekly-task-editor-close .schedule-glass-button {
+          animation: doro-task-composer-item-out 280ms cubic-bezier(0.4, 0, 0.2, 1) both;
+          animation-delay: var(--doro-task-composer-close-delay, 0ms);
+        }
+        @keyframes doro-weekly-task-editor-in {
+          0% {
+            opacity: 0;
+            transform: translateY(12px) scale(0.965);
+            filter: blur(1.4px) saturate(0.9);
+          }
+          66% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.006);
+            filter: blur(0) saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doro-weekly-task-editor-out {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(9px) scale(0.974);
+            filter: blur(1.2px) saturate(0.92);
+          }
+        }
+        .doro-weekly-task-editor {
+          transform-origin: top center;
+          will-change: opacity, transform, filter, background-color, border-color, box-shadow;
+        }
+        .doro-weekly-task-editor-open {
+          animation: doro-weekly-task-editor-in 540ms cubic-bezier(0.18, 0.9, 0.32, 1.08) both;
+        }
+        .doro-weekly-task-editor-close {
+          animation: doro-weekly-task-editor-out ${SCHEDULE_TASK_EDIT_CLOSE_DURATION_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
           pointer-events: none;
         }
         .schedule-close-btn {
@@ -1291,6 +1532,33 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .doro-edit-close-settle {
           animation: doro-edit-close-settle 280ms cubic-bezier(0.22, 1, 0.36, 1);
         }
+        .schedule-task-card {
+          will-change: transform, opacity, background-color, border-color, box-shadow;
+        }
+        .schedule-task-edit-button {
+          opacity: 0;
+          transform: translate3d(7px, -50%, 0) scale(0.88);
+          filter: blur(0.8px);
+          transition:
+            opacity 190ms ease,
+            transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 240ms ease,
+            background-color 180ms ease,
+            border-color 180ms ease,
+            color 180ms ease,
+            box-shadow 220ms ease;
+          will-change: opacity, transform, filter;
+        }
+        .schedule-task-card:hover .schedule-task-edit-button,
+        .schedule-task-card:focus-within .schedule-task-edit-button {
+          opacity: 1;
+          transform: translate3d(0, -50%, 0) scale(1);
+          filter: blur(0);
+        }
+        .schedule-task-edit-button:hover,
+        .schedule-task-edit-button:focus-visible {
+          box-shadow: 0 12px 22px -18px rgba(0, 0, 0, 0.72);
+        }
         @keyframes doro-lane-hit {
           0% {
             box-shadow: inset 0 0 0 0 rgba(255, 255, 255, 0);
@@ -1312,47 +1580,152 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           opacity: 0.36;
           transform: scale(0.985);
         }
-        .schedule-reveal-slot {
+        .schedule-header-action-row {
           display: flex;
           align-items: center;
-          min-height: 2.25rem;
-          flex: 0 1 32rem;
-          max-width: 32rem;
-          overflow: hidden;
-        }
-        .schedule-reveal-controls {
-          opacity: 0;
-          visibility: hidden;
-          transform: translateY(6px);
+          gap: 0.58rem;
           flex-wrap: nowrap;
-          white-space: nowrap;
-          transition:
-            opacity 220ms ease,
-            transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-            visibility 0s linear 220ms;
-          pointer-events: none;
+          min-width: 0;
         }
-        .schedule-header-group:hover .schedule-reveal-controls,
-        .schedule-header-group:focus-within .schedule-reveal-controls {
-          opacity: 1;
-          visibility: visible;
-          transform: translateY(0);
+        .schedule-header-action-row::before {
+          content: '';
+          display: block;
+          width: 1px;
+          height: 1.35rem;
+          margin-right: 0.18rem;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.1);
+        }
+        .schedule-header-icon-controls {
+          display: flex;
+          align-items: center;
+          gap: 0.34rem;
+          min-height: 2rem;
+          overflow: visible;
+        }
+        .schedule-header-icon-button {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 2rem;
+          height: 2rem;
+          min-width: 2rem;
+          padding: 0;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 0.62rem;
+          background: rgba(255, 255, 255, 0.045);
+          color: rgba(255, 255, 255, 0.64);
+          box-shadow: 0 10px 18px -18px rgba(0, 0, 0, 0.7);
           transition:
-            opacity 220ms ease,
-            transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-            visibility 0s linear 0s;
-          pointer-events: auto;
+            transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            background-color 180ms ease,
+            border-color 180ms ease,
+            color 180ms ease,
+            box-shadow 180ms ease;
+        }
+        .schedule-header-icon-button:hover,
+        .schedule-header-icon-button:focus-visible {
+          transform: translateY(-1px);
+          border-color: rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.105);
+          color: rgba(255, 255, 255, 0.96);
+          box-shadow: 0 16px 24px -18px rgba(0, 0, 0, 0.82);
+        }
+        .schedule-header-icon-button:active {
+          transform: translateY(0);
+        }
+        .schedule-header-icon-button.is-active {
+          border-color: rgba(255, 255, 255, 0.26);
+          background: rgba(255, 255, 255, 0.14);
+          color: rgba(255, 255, 255, 0.98);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.12),
+            0 16px 24px -18px rgba(0, 0, 0, 0.82);
+        }
+        .schedule-header-icon-button::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          bottom: calc(100% + 0.48rem);
+          left: 50%;
+          z-index: 60;
+          max-width: 11rem;
+          transform: translate3d(-50%, 4px, 0) scale(0.96);
+          border-radius: 0.58rem;
+          padding: 0.42rem 0.56rem;
+          opacity: 0;
+          pointer-events: none;
+          white-space: nowrap;
+          background: rgba(246, 248, 252, 0.96);
+          color: rgba(15, 23, 42, 0.95);
+          box-shadow: 0 14px 24px -18px rgba(0, 0, 0, 0.78);
+          font-size: 0.68rem;
+          font-weight: 800;
+          letter-spacing: 0;
+          line-height: 1;
+          text-transform: none;
+          transition: opacity 140ms ease, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .schedule-header-icon-button::before {
+          content: '';
+          position: absolute;
+          bottom: calc(100% + 0.23rem);
+          left: 50%;
+          z-index: 59;
+          height: 0.42rem;
+          width: 0.42rem;
+          opacity: 0;
+          pointer-events: none;
+          background: rgba(246, 248, 252, 0.96);
+          transform: translate3d(-50%, 4px, 0) rotate(45deg);
+          transition: opacity 140ms ease, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .schedule-header-icon-button:hover::after,
+        .schedule-header-icon-button:focus-visible::after,
+        .schedule-header-icon-button:hover::before,
+        .schedule-header-icon-button:focus-visible::before {
+          opacity: 1;
+          transform: translate3d(-50%, 0, 0) scale(1);
+        }
+        .schedule-header-icon-button:hover::before,
+        .schedule-header-icon-button:focus-visible::before {
+          transform: translate3d(-50%, 0, 0) rotate(45deg);
+        }
+        .doro-weekly-shell.theme-light .schedule-header-icon-button {
+          border-color: rgba(152, 176, 206, 0.44);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(232, 239, 249, 0.3));
+          color: #1c3f61;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.88),
+            0 18px 30px -24px rgba(78, 102, 138, 0.34);
+        }
+        .doro-weekly-shell.theme-light .schedule-header-icon-button:hover,
+        .doro-weekly-shell.theme-light .schedule-header-icon-button:focus-visible {
+          border-color: rgba(132, 164, 204, 0.58);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(235, 243, 251, 0.48));
+          color: #102a44;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.94),
+            0 20px 32px -24px rgba(68, 94, 134, 0.4);
+        }
+        .doro-weekly-shell.theme-light .schedule-header-icon-button.is-active {
+          border-color: rgba(117, 158, 214, 0.5);
+          background: linear-gradient(180deg, rgba(245, 250, 255, 0.84), rgba(214, 230, 249, 0.48));
+          color: #1c4d79;
+        }
+        .doro-weekly-shell.theme-light .schedule-header-icon-button::after,
+        .doro-weekly-shell.theme-light .schedule-header-icon-button::before {
+          background: rgba(15, 23, 42, 0.94);
+          color: white;
+          box-shadow: 0 12px 20px -18px rgba(15, 23, 42, 0.5);
+        }
+        .doro-weekly-shell.theme-light .schedule-header-action-row::before {
+          background: rgba(15, 23, 42, 0.12);
         }
         @media (hover: none) {
-          .schedule-reveal-slot {
-            flex-basis: auto;
-            max-width: none;
-          }
-          .schedule-reveal-controls {
-            opacity: 1;
-            visibility: visible;
-            transform: translateY(0);
-            pointer-events: auto;
+          .schedule-header-icon-button::after,
+          .schedule-header-icon-button::before {
+            display: none;
           }
         }
         @media (max-width: 767px) {
@@ -1370,34 +1743,30 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             font-size: 16px;
           }
           .schedule-header-group {
-            padding: 0.8rem 0.875rem !important;
+            padding: 0.75rem 0.875rem !important;
           }
           .schedule-header-group h2 {
             font-size: 1.18rem;
           }
-          .schedule-reveal-slot {
-            flex: 1 0 100%;
-            order: 3;
-            width: 100%;
-            max-width: 100%;
-            min-height: auto;
+          .schedule-header-title-row {
+            align-items: flex-start !important;
+            flex-direction: column;
+            gap: 0.42rem !important;
           }
-          .schedule-reveal-controls {
-            width: 100%;
+          .schedule-header-action-row {
+            gap: 0.5rem;
             flex-wrap: wrap;
-            gap: 0.45rem !important;
-            white-space: normal;
           }
-          .schedule-reveal-controls .schedule-glass-button {
-            flex: 1 1 calc(50% - 0.45rem);
-            min-height: 2.35rem;
-            padding: 0.55rem 0.6rem !important;
-            letter-spacing: 0.1em;
-            line-height: 1.1;
-            text-align: center;
+          .schedule-header-action-row::before {
+            display: none;
           }
-          .schedule-reveal-controls .schedule-glass-button:last-child {
-            flex-basis: 100%;
+          .schedule-header-icon-controls {
+            gap: 0.28rem;
+          }
+          .schedule-header-icon-button {
+            width: 1.95rem;
+            height: 1.95rem;
+            min-width: 1.95rem;
           }
           .schedule-glass-button--icon {
             min-width: 2.75rem;
@@ -1425,39 +1794,45 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
       >
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.08),transparent_46%),radial-gradient(circle_at_bottom_right,rgba(255,255,255,0.05),transparent_42%)] pointer-events-none" />
         <div className="relative h-full flex flex-col">
-          <div className="schedule-header-group px-4 md:px-6 py-3 border-b border-white/10 bg-black/20 backdrop-blur-xl">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <h2 className="shrink-0 text-[1.35rem] md:text-[1.5rem] font-bold text-white tracking-tight leading-none">Weekly Planner</h2>
-                  <div className="schedule-reveal-slot min-w-0">
-                    <div className="schedule-reveal-controls flex items-center gap-2 shrink min-w-0">
-                      <button
-                        type="button"
-                        onClick={() => setShowCompletedTasks(!showCompletedTasks)}
-                        className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${showCompletedTasks ? 'is-active border-white/25 bg-white/14 text-white' : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'}`}
-                        aria-label={showCompletedTasks ? 'Hide completed tasks' : 'Show completed tasks'}
-                      >
-                        {showCompletedTasks ? 'Hide Completed' : 'Show Completed'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowHistory(prev => !prev)}
-                        className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${showHistory ? 'is-active border-white/25 bg-white/14 text-white' : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'}`}
-                      >
-                        {showHistory ? 'Hide History' : 'See History'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setExtendSchedule(prev => !prev)}
-                        className={`schedule-glass-button schedule-glass-button--secondary px-2.5 py-1 rounded-lg border text-[10px] uppercase tracking-[0.14em] font-bold transition-colors ${extendSchedule ? 'is-active border-white/25 bg-white/14 text-white' : 'border-white/10 bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.1]'}`}
-                      >
-                        {extendSchedule ? 'Default Range' : 'Extend Schedule'}
-                      </button>
-                    </div>
+          <div className="schedule-header-group px-4 md:px-5 py-2.5 md:py-2 border-b border-white/10 bg-black/20 backdrop-blur-xl">
+            <div className="flex items-center justify-between gap-3">
+              <div className="schedule-header-title-row min-w-0 flex flex-1 flex-wrap items-center gap-x-4 gap-y-1.5">
+                <h2 className="shrink-0 text-[1.35rem] md:text-[1.45rem] font-bold text-white tracking-tight leading-none">Weekly Planner</h2>
+                <div className="schedule-header-action-row">
+                  <p className="text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
+                  <div className="schedule-header-icon-controls">
+                    <button
+                      type="button"
+                      onClick={() => setShowCompletedTasks(!showCompletedTasks)}
+                      className={`schedule-header-icon-button ${showCompletedTasks ? 'is-active' : ''}`}
+                      aria-label={showCompletedTasks ? 'Hide completed tasks' : 'Show completed tasks'}
+                      aria-pressed={showCompletedTasks}
+                      data-tooltip="Completed"
+                    >
+                      <Eye size={15} strokeWidth={2.15} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowHistory(prev => !prev)}
+                      className={`schedule-header-icon-button ${showHistory ? 'is-active' : ''}`}
+                      aria-label={showHistory ? 'Hide history' : 'Show history'}
+                      aria-pressed={showHistory}
+                      data-tooltip="History"
+                    >
+                      <BookOpen size={15} strokeWidth={2.15} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExtendSchedule(prev => !prev)}
+                      className={`schedule-header-icon-button ${extendSchedule ? 'is-active' : ''}`}
+                      aria-label={extendSchedule ? 'Return to default schedule range' : 'Extend schedule'}
+                      aria-pressed={extendSchedule}
+                      data-tooltip="Extend"
+                    >
+                      <CalendarPlus size={15} strokeWidth={2.15} aria-hidden="true" />
+                    </button>
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
               </div>
               <button
                 type="button"
@@ -1610,7 +1985,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                           event.preventDefault();
                           submitDayTask(day.key);
                         }}
-                        className={`doro-weekly-task-create relative z-20 overflow-hidden rounded-xl border bg-white/[0.055] shadow-[0_18px_42px_-28px_rgba(0,0,0,0.35)] backdrop-blur-xl ${
+                        className={`doro-weekly-task-create doro-task-composer-shell relative z-20 overflow-hidden rounded-xl border bg-white/[0.055] shadow-[0_18px_42px_-28px_rgba(0,0,0,0.35)] backdrop-blur-xl ${
                           isClosingAddForm ? 'doro-weekly-task-create-close' : 'doro-weekly-task-create-open'
                         }`}
                       >

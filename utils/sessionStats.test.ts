@@ -131,6 +131,54 @@ describe('buildEndSessionStats', () => {
     });
   });
 
+  it('counts grace time marked as working in the end-session focus totals', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:25:00.000Z',
+          duration: 25 * 60,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'grace',
+          start: '2026-07-18T09:25:00.000Z',
+          end: '2026-07-18T09:32:00.000Z',
+          duration: 7 * 60,
+          reason: 'Grace Period (Working)',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'grace',
+          start: '2026-07-18T09:32:00.000Z',
+          end: '2026-07-18T09:34:00.000Z',
+          duration: 2 * 60,
+          reason: 'Grace Period',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'break',
+          start: '2026-07-18T09:34:00.000Z',
+          end: '2026-07-18T09:39:00.000Z',
+          duration: 5 * 60,
+          reason: 'Session End',
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:39:00.000Z',
+      categories,
+      pomodoroCount: 1,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(32);
+    expect(stats.totalBreakMinutes).toBe(5);
+    expect(stats.pomosCompleted).toBe(1);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 32 });
+  });
+
   it('falls back to current compact timer pomos when no completion logs exist', () => {
     const stats = buildEndSessionStats({
       logs: [],
@@ -307,6 +355,51 @@ describe('buildEndSessionStats', () => {
 
     expect(stats.totalWorkMinutes).toBe(5);
     expect(stats.categoryStats).toEqual({ 'Deep Work': 5 });
+  });
+
+  it('does not count delayed-start countdown that happens before the session anchor', () => {
+    const stats = buildEndSessionStats({
+      logs: [],
+      sessionStartTime: '2026-07-18T09:10:00.000Z',
+      sessionEndTime: '2026-07-18T09:10:00.000Z',
+      categories,
+      pendingActivity: {
+        mode: 'break',
+        startMs: Date.parse('2026-07-18T09:00:00.000Z'),
+        endMs: Date.parse('2026-07-18T09:10:00.000Z'),
+        durationSeconds: 10 * 60,
+      },
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(0);
+    expect(stats.totalBreakMinutes).toBe(0);
+    expect(stats.pomosCompleted).toBe(0);
+  });
+
+  it('counts only post-target delayed-start activity as work when the boundary tick is missed', () => {
+    const stats = buildEndSessionStats({
+      logs: [],
+      sessionStartTime: '2026-07-18T09:10:00.000Z',
+      sessionEndTime: '2026-07-18T09:14:00.000Z',
+      categories,
+      pendingActivity: {
+        mode: 'work',
+        startMs: Date.parse('2026-07-18T09:00:00.000Z'),
+        endMs: Date.parse('2026-07-18T09:14:00.000Z'),
+        durationSeconds: 14 * 60,
+        categoryId: 1,
+      },
+      pomodoroCount: 0,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(4);
+    expect(stats.totalBreakMinutes).toBe(0);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 4 });
   });
 
   it('does not double count pending activity that is already logged as the session end', () => {

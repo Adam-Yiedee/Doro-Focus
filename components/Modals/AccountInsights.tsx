@@ -8,6 +8,7 @@ import {
   WEEKDAY_SHORT_LABELS,
 } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
+import { isProductiveFocusLog } from '../../utils/logClassification';
 import { formatPomodoroCount } from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 
@@ -188,14 +189,8 @@ const getLocalDateKey = (ms: number) => {
   return `${year}-${month}-${day}`;
 };
 
-const isPauseCreditedWorkLog = (entry: LogEntry) => {
-  if (entry.type !== 'work') return false;
-  const reason = (entry.reason || '').trim().toLowerCase();
-  return reason.startsWith('paused') || reason.includes('pause credit');
-};
-
 const normalizeProductiveFocusWindow = (entry: LogEntry) => {
-  if (entry.type !== 'work' || isPauseCreditedWorkLog(entry)) return null;
+  if (!isProductiveFocusLog(entry)) return null;
 
   return normalizeAccountLogWindow(entry);
 };
