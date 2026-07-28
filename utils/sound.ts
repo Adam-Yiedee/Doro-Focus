@@ -38,6 +38,7 @@ let focusSoundPreviewState: FocusSoundPreviewState | null = null;
 let sharedFocusAudioContext: AudioContext | null = null;
 let focusSoundRequestToken = 0;
 let focusSoundPreviewRequestToken = 0;
+let streakFireWhooshBuffer: AudioBuffer | null = null;
 let streakFireWhooshBufferPromise: Promise<AudioBuffer | null> | null = null;
 
 const getBrowserAudioContextConstructor = () => {
@@ -413,6 +414,7 @@ const playNoiseBurst = (
 };
 
 const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
+  if (streakFireWhooshBuffer) return Promise.resolve(streakFireWhooshBuffer);
   if (typeof fetch !== 'function') return Promise.resolve(null);
 
   if (!streakFireWhooshBufferPromise) {
@@ -421,6 +423,10 @@ const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
       .then((arrayBuffer) => (
         arrayBuffer ? ctx.decodeAudioData(arrayBuffer.slice(0)) : null
       ))
+      .then((buffer) => {
+        streakFireWhooshBuffer = buffer;
+        return buffer;
+      })
       .catch((error) => {
         console.error('Streak fire whoosh failed to load', error);
         streakFireWhooshBufferPromise = null;
@@ -431,16 +437,21 @@ const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
   return streakFireWhooshBufferPromise;
 };
 
-const playStreakFireWhoosh = async (
+const scheduleStreakFireWhoosh = (
   ctx: AudioContext,
   start: number,
-  preloadedBuffer?: AudioBuffer | null,
+  buffer: AudioBuffer | null,
+  maxLateSeconds = 0.18,
 ) => {
   try {
-    const buffer = preloadedBuffer ?? await getStreakFireWhooshBuffer(ctx);
     if (!buffer) return false;
 
+    const latestStart = start + maxLateSeconds;
+    if (ctx.currentTime > latestStart) return false;
+
     const safeStart = Math.max(start, ctx.currentTime + 0.025);
+    if (safeStart > latestStart) return false;
+
     const duration = Math.min(buffer.duration, 2.75);
     const source = ctx.createBufferSource();
     const gain = ctx.createGain();
@@ -459,7 +470,7 @@ const playStreakFireWhoosh = async (
     source.stop(safeStart + duration + 0.04);
     return true;
   } catch (error) {
-    console.error('Streak fire whoosh failed to play', error);
+    console.error('Streak fire whoosh failed to schedule', error);
     return false;
   }
 };
@@ -886,18 +897,23 @@ export const playFocusStreakMomentSound = async () => {
   try {
     const ctx = await resumeAudioContext();
     if (!ctx || ctx.state === 'suspended') return;
-    const whooshBuffer = await getStreakFireWhooshBuffer(ctx);
 
     const now = ctx.currentTime + 0.025;
+    const whooshStart = now + 0.62;
     const weekScale = [392.0, 493.88, 587.33, 659.25, 783.99, 880.0, 1046.5];
+    const didScheduleCachedFireWhoosh = scheduleStreakFireWhoosh(ctx, whooshStart, streakFireWhooshBuffer);
+    if (!didScheduleCachedFireWhoosh) {
+      void getStreakFireWhooshBuffer(ctx).then((buffer) => {
+        scheduleStreakFireWhoosh(ctx, whooshStart, buffer);
+      });
+    }
 
     playFocusStreakIntroPop(ctx, now);
     playSmoothTone(ctx, 'sine', 174.61, now + 0.08, 0.42, 0.01, 220.0);
     playSmoothTone(ctx, 'triangle', 329.63, now + 0.42, 0.78, 0.018, 493.88);
-    const didScheduleFireWhoosh = await playStreakFireWhoosh(ctx, now + 0.62, whooshBuffer);
-    playNoiseBurst(ctx, 'brown', now + 0.6, 0.86, didScheduleFireWhoosh ? 0.014 : 0.036, 560, 0.9);
-    playNoiseBurst(ctx, 'pink', now + 0.66, 0.7, didScheduleFireWhoosh ? 0.014 : 0.032, 1380, 1.25);
-    playNoiseBurst(ctx, 'white', now + 0.8, 0.36, didScheduleFireWhoosh ? 0.008 : 0.018, 3100, 2.4);
+    playNoiseBurst(ctx, 'brown', now + 0.6, 0.86, didScheduleCachedFireWhoosh ? 0.014 : 0.032, 560, 0.9);
+    playNoiseBurst(ctx, 'pink', now + 0.66, 0.7, didScheduleCachedFireWhoosh ? 0.014 : 0.028, 1380, 1.25);
+    playNoiseBurst(ctx, 'white', now + 0.8, 0.36, didScheduleCachedFireWhoosh ? 0.008 : 0.015, 3100, 2.4);
 
     playNoiseBurst(ctx, 'white', now + 1.34, 0.58, 0.012, 2500, 2.9);
     playSmoothTone(ctx, 'triangle', 261.63, now + 1.76, 0.42, 0.044, 196.0);

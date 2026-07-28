@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
   const startedSources: FakeBufferSourceNode[] = [];
   const stoppedSources: FakeBufferSourceNode[] = [];
+  const startedOscillators: FakeOscillatorNode[] = [];
   const gainRampValues: number[] = [];
   const contexts: FakeAudioContext[] = [];
   let pendingResume: (() => void) | null = null;
@@ -43,10 +44,12 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
 
   class FakeAudioBuffer {
     numberOfChannels: number;
+    duration = 1;
     private readonly channels: Float32Array[];
 
     constructor(channels: number, frames: number) {
       this.numberOfChannels = channels;
+      this.duration = frames / 44_100;
       this.channels = Array.from({ length: channels }, () => new Float32Array(frames));
     }
 
@@ -58,6 +61,7 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
   class FakeBufferSourceNode extends FakeAudioNode {
     buffer: FakeAudioBuffer | null = null;
     loop = false;
+    playbackRate = new FakeAudioParam();
 
     start() {
       startedSources.push(this);
@@ -66,6 +70,18 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
     stop() {
       stoppedSources.push(this);
     }
+  }
+
+  class FakeOscillatorNode extends FakeAudioNode {
+    type: OscillatorType = 'sine';
+    frequency = new FakeAudioParam();
+    detune = new FakeAudioParam();
+
+    start() {
+      startedOscillators.push(this);
+    }
+
+    stop() {}
   }
 
   class FakeGainNode extends FakeAudioNode {
@@ -111,12 +127,20 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
       return new FakeBufferSourceNode();
     }
 
+    createOscillator() {
+      return new FakeOscillatorNode();
+    }
+
     createGain() {
       return new FakeGainNode();
     }
 
     createBiquadFilter() {
       return new FakeBiquadFilterNode();
+    }
+
+    decodeAudioData(_buffer: ArrayBuffer) {
+      return Promise.resolve(new FakeAudioBuffer(1, 44_100));
     }
   }
 
@@ -128,6 +152,7 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
   return {
     contexts,
     startedSources,
+    startedOscillators,
     stoppedSources,
     gainRampValues,
     getResumeCalls: () => resumeCalls,
@@ -150,6 +175,7 @@ describe('focus sound engine', () => {
     try {
       vi.useRealTimers();
     } catch {}
+    vi.unstubAllGlobals();
     delete (globalThis as any).window;
   });
 
@@ -274,5 +300,43 @@ describe('focus sound engine', () => {
     await sound.startFocusSound('white-soft', 70);
 
     expect(fakeAudio.startedSources).toHaveLength(2);
+  });
+
+  it('starts the streak moment sound without waiting for the fire whoosh asset', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    const sound = await import('./sound');
+
+    const result = await Promise.race([
+      sound.playFocusStreakMomentSound().then(() => 'done'),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 25)),
+    ]);
+
+    expect(result).toBe('done');
+    expect(fakeAudio.startedSources.length).toBeGreaterThan(0);
+    expect(fakeAudio.startedOscillators.length).toBeGreaterThan(0);
+  });
+
+  it('does not play a stale streak fire whoosh after the visual moment has passed', async () => {
+    const fakeAudio = installFakeAudioContext();
+    type FakeFetchResponse = { ok: boolean; arrayBuffer: () => Promise<ArrayBuffer> };
+    let resolveFetch!: (response: FakeFetchResponse) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<FakeFetchResponse>((resolve) => {
+      resolveFetch = resolve;
+    })));
+    const sound = await import('./sound');
+
+    await sound.playFocusStreakMomentSound();
+    const scheduledBeforeWhooshLoaded = fakeAudio.startedSources.length;
+    fakeAudio.contexts[0].currentTime = 4;
+    resolveFetch({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    });
+    for (let i = 0; i < 6; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fakeAudio.startedSources).toHaveLength(scheduledBeforeWhooshLoaded);
   });
 });
