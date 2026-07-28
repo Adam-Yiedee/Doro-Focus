@@ -1,8 +1,8 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, Clock, Lock, Play, Timer as TimerIcon } from 'lucide-react';
+import { Check, Clock, HelpCircle, Lock, Play, Timer as TimerIcon, Volume2, VolumeX } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
-import type { TimerPreset, TimerSettings } from '../types';
+import type { MiniPomoAutoStartBlock, TimerPreset, TimerSettings } from '../types';
 import { getFocusTimerDisplaySeconds } from '../utils/focusTimerDisplay';
 import { TIMER_PRESETS } from '../utils/timerRuntime';
 
@@ -509,6 +509,8 @@ interface IdlePresetControlProps {
   topIconClass: string;
   onOpenChange: (isOpen: boolean) => void;
   onSelectPreset: (preset: IdlePresetMenuValue) => void;
+  onSelectMiniPomoBlock: (block: MiniPomoAutoStartBlock) => void;
+  onToggleMiniPomoAutoStartSound: () => void;
   onStartDelayedStart: (minutes: number) => void;
 }
 
@@ -530,6 +532,22 @@ const formatDelayedStartTime = (date: Date) => (
   date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 );
 
+const MINI_POMO_BLOCK_OPTIONS: Array<{ value: MiniPomoAutoStartBlock; label: string }> = [
+  { value: 1, label: '1 mini-pomo' },
+  { value: 2, label: '2 mini-pomo' },
+  { value: 3, label: '3 mini-pomo' },
+  { value: 4, label: '4 mini-pomo' },
+];
+
+type MiniPomoPopoutSide = 'right' | 'left' | 'below';
+
+const getMiniPomoAutoStartBlock = (settings: TimerSettings): MiniPomoAutoStartBlock => {
+  const value = settings.miniPomoAutoStartBlock;
+  return value === 1 || value === 2 || value === 3 || value === 4
+    ? value
+    : settings.twoInARowMode ? 2 : 1;
+};
+
 const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
   isRendered,
   isVisible,
@@ -539,13 +557,17 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
   topIconClass,
   onOpenChange,
   onSelectPreset,
+  onSelectMiniPomoBlock,
+  onToggleMiniPomoAutoStartSound,
   onStartDelayedStart,
 }) => {
   const controlRef = useRef<HTMLDivElement | null>(null);
+  const miniPomoBranchRef = useRef<HTMLDivElement | null>(null);
   const wasOpenRef = useRef(isOpen);
   const [, forceClosedSettledRender] = useState(0);
   const [menuView, setMenuView] = useState<IdlePresetMenuView>('choices');
   const [isMenuViewSettled, setIsMenuViewSettled] = useState(false);
+  const [miniPomoPopoutSide, setMiniPomoPopoutSide] = useState<MiniPomoPopoutSide>('right');
   const [delayedMinutes, setDelayedMinutes] = useState(5);
   const [previewNowMs, setPreviewNowMs] = useState(() => Date.now());
   const wasOpenOnPreviousRender = wasOpenRef.current;
@@ -610,6 +632,36 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
     return () => window.clearTimeout(timeoutId);
   }, [isOpen, menuView]);
 
+  useEffect(() => {
+    if (!isOpen || menuView !== 'timer') return undefined;
+
+    const updatePopoutSide = () => {
+      const branch = miniPomoBranchRef.current;
+      if (!branch) return;
+
+      const rect = branch.getBoundingClientRect();
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+      const popoutWidth = 224;
+      const gap = 18;
+      const margin = 12;
+      const fitsRight = viewportWidth - rect.right >= popoutWidth + gap + margin;
+      const fitsLeft = rect.left >= popoutWidth + gap + margin;
+
+      setMiniPomoPopoutSide(fitsRight ? 'right' : fitsLeft ? 'left' : 'below');
+    };
+
+    updatePopoutSide();
+    const settleTimeout = window.setTimeout(updatePopoutSide, 640);
+    window.addEventListener('resize', updatePopoutSide);
+    window.addEventListener('scroll', updatePopoutSide, true);
+
+    return () => {
+      window.clearTimeout(settleTimeout);
+      window.removeEventListener('resize', updatePopoutSide);
+      window.removeEventListener('scroll', updatePopoutSide, true);
+    };
+  }, [isOpen, menuView]);
+
   if (!isRendered) return null;
 
   const activePreset: IdlePresetMenuValue = (
@@ -617,6 +669,8 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
       ? settings.timerPreset
       : 'focus'
   );
+  const activeMiniPomoBlock = getMiniPomoAutoStartBlock(settings);
+  const isMiniPomoAutoStartSoundEnabled = settings.miniPomoAutoStartSoundEnabled !== false;
 
   const presetOptions: Array<{ value: IdlePresetMenuValue; label: string; detail: string; recommended?: boolean }> = [
     {
@@ -672,7 +726,7 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
       <div
         className={`
           doro-start-session-shell ${shellStateClass} ${shellViewClass} ${shellViewMotionClass}
-          relative overflow-hidden border transform-gpu
+          relative ${isOpen ? 'overflow-visible' : 'overflow-hidden'} border transform-gpu
           ${chromeButtonClass}
         `}
       >
@@ -752,7 +806,7 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
           >
             {presetOptions.map((option, index) => {
               const isActivePreset = activePreset === option.value;
-              return (
+              const optionButton = (
                 <button
                   key={option.value}
                   type="button"
@@ -793,6 +847,86 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
                     <Check size={12} strokeWidth={2.4} />
                   </span>
                 </button>
+              );
+
+              if (option.value !== 'compact') return optionButton;
+
+              return (
+                <div
+                  key={option.value}
+                  ref={miniPomoBranchRef}
+                  className={`doro-start-mini-pomo-branch is-popout-${miniPomoPopoutSide}`}
+                >
+                  {optionButton}
+                  <div className="doro-start-mini-pomo-popout" role="menu" aria-label="Mini Pomo auto-start sessions">
+                    <div className="doro-start-mini-pomo-popout-header">
+                      <span className="min-w-0 truncate">Auto-Start</span>
+                      <span className="doro-start-mini-pomo-header-actions">
+                        <span
+                          className="doro-start-mini-pomo-help-wrap"
+                          data-tooltip="Auto-start starts mini-pomos back-to-back so you can focus for longer periods of time."
+                        >
+                          <button
+                            type="button"
+                            aria-label="What is auto-start?"
+                            onClick={(event) => event.stopPropagation()}
+                            className="doro-start-mini-pomo-help-button"
+                          >
+                            <HelpCircle size={13} strokeWidth={2.4} aria-hidden="true" />
+                          </button>
+                        </span>
+                        <span className="doro-start-mini-pomo-sound-wrap" data-tooltip="Auto-start sound">
+                          <button
+                            type="button"
+                            aria-label={isMiniPomoAutoStartSoundEnabled ? 'Turn off auto-start sound' : 'Turn on auto-start sound'}
+                            aria-pressed={!isMiniPomoAutoStartSoundEnabled}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onToggleMiniPomoAutoStartSound();
+                            }}
+                            className={`doro-start-mini-pomo-sound-button ${isMiniPomoAutoStartSoundEnabled ? '' : 'is-off'}`}
+                          >
+                            {isMiniPomoAutoStartSoundEnabled ? (
+                              <Volume2 size={13} strokeWidth={2.3} aria-hidden="true" />
+                            ) : (
+                              <VolumeX size={13} strokeWidth={2.3} aria-hidden="true" />
+                            )}
+                          </button>
+                        </span>
+                      </span>
+                    </div>
+                    <div className="doro-start-mini-pomo-block-list">
+                      {MINI_POMO_BLOCK_OPTIONS.map((blockOption, blockIndex) => {
+                        const isActiveBlock = activeMiniPomoBlock === blockOption.value;
+                        return (
+                          <button
+                            key={blockOption.value}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={isActiveBlock}
+                            tabIndex={isOpen && menuView === 'timer' ? 0 : -1}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onSelectMiniPomoBlock(blockOption.value);
+                            }}
+                            className={`doro-start-mini-pomo-block-option ${isActiveBlock ? 'is-active' : ''}`}
+                            style={{
+                              ['--doro-mini-block-delay' as any]: `${135 + blockIndex * 62}ms`,
+                            }}
+                          >
+                            <span className="doro-start-mini-pomo-block-text">
+                              <span className="doro-start-mini-pomo-block-title">{blockOption.label}</span>
+                            </span>
+                            <span className="doro-start-mini-pomo-block-number">{blockOption.value * 15} minutes</span>
+                            <span className="doro-start-mini-pomo-block-check">
+                              <Check size={10} strokeWidth={2.5} />
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -996,13 +1130,33 @@ const TimerDisplay: React.FC = () => {
   }, [shouldShowIdlePresetControl]);
 
   const selectIdlePreset = (preset: IdlePresetMenuValue) => {
+    const compactAutoStartBlock = preset === 'compact' ? getMiniPomoAutoStartBlock(settings) : 1;
     updateSettings({
       ...settings,
       timerPreset: preset,
       ...TIMER_PRESETS[preset],
-      twoInARowMode: preset === 'compact' ? settings.twoInARowMode : false,
+      miniPomoAutoStartBlock: compactAutoStartBlock,
+      twoInARowMode: preset === 'compact' && compactAutoStartBlock > 1,
     });
     setIsIdlePresetMenuOpen(false);
+  };
+
+  const selectMiniPomoAutoStartBlock = (block: MiniPomoAutoStartBlock) => {
+    updateSettings({
+      ...settings,
+      timerPreset: 'compact',
+      ...TIMER_PRESETS.compact,
+      miniPomoAutoStartBlock: block,
+      twoInARowMode: block > 1,
+    });
+    setIsIdlePresetMenuOpen(false);
+  };
+
+  const toggleMiniPomoAutoStartSound = () => {
+    updateSettings({
+      ...settings,
+      miniPomoAutoStartSoundEnabled: settings.miniPomoAutoStartSoundEnabled === false,
+    });
   };
 
   const isLightTheme = settings.themeMode !== 'dark';
@@ -1208,7 +1362,16 @@ const TimerDisplay: React.FC = () => {
             filter 420ms ease;
           will-change: width, height, transform, opacity;
           backface-visibility: hidden;
-          contain: layout paint;
+          contain: layout;
+        }
+        .doro-start-session-shell.is-open {
+          contain: none;
+          overflow: visible;
+        }
+        .doro-start-session-shell.is-closed,
+        .doro-start-session-shell.is-closing,
+        .doro-start-session-shell.is-exiting {
+          overflow: hidden;
         }
         .doro-start-session-shell.is-closed {
           background-color: transparent;
@@ -1525,6 +1688,366 @@ const TimerDisplay: React.FC = () => {
           transform: perspective(520px) translate3d(0, 0, 1px) scale(0.996) rotateX(0.08deg);
           box-shadow: 0 14px 24px -23px rgba(0, 0, 0, 0.54);
         }
+        .doro-start-mini-pomo-branch {
+          position: relative;
+          width: 100%;
+          min-width: 0;
+        }
+        .doro-start-mini-pomo-branch::after {
+          content: '';
+          position: absolute;
+          pointer-events: auto;
+        }
+        .doro-start-mini-pomo-branch.is-popout-right::after {
+          top: -0.9rem;
+          bottom: -0.35rem;
+          left: 100%;
+          width: 1.18rem;
+        }
+        .doro-start-mini-pomo-branch.is-popout-left::after {
+          top: -0.9rem;
+          right: 100%;
+          bottom: -0.35rem;
+          width: 1.18rem;
+        }
+        .doro-start-mini-pomo-branch.is-popout-below::after {
+          top: 100%;
+          right: -0.2rem;
+          left: -0.2rem;
+          height: 0.62rem;
+        }
+        .doro-start-mini-pomo-popout {
+          position: absolute;
+          top: -0.9rem;
+          z-index: 12;
+          width: 14rem;
+          max-width: calc(100vw - 1.5rem);
+          padding: 0.58rem;
+          border-radius: 1rem;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          background:
+            radial-gradient(circle at 18% 0%, rgba(255,255,255,0.2), transparent 42%),
+            linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
+            rgba(214, 154, 168, 0.92);
+          box-shadow:
+            0 34px 72px -38px rgba(0, 0, 0, 0.82),
+            0 18px 34px -24px rgba(0, 0, 0, 0.62),
+            inset 0 1px 0 rgba(255, 255, 255, 0.2);
+          opacity: 0;
+          pointer-events: none;
+          filter: blur(1.6px) saturate(0.92);
+          transition:
+            opacity 260ms ease,
+            transform 500ms var(--doro-start-ease),
+            filter 300ms ease,
+            box-shadow 420ms ease,
+            border-color 420ms ease,
+            background-color 420ms ease;
+          will-change: opacity, transform, filter;
+          backdrop-filter: blur(22px) saturate(1.18);
+          -webkit-backdrop-filter: blur(22px) saturate(1.18);
+        }
+        .doro-start-mini-pomo-branch.is-popout-right .doro-start-mini-pomo-popout {
+          left: calc(100% + 1.08rem);
+          transform: translate3d(-10px, 7px, 0) scale(0.955);
+          transform-origin: left top;
+        }
+        .doro-start-mini-pomo-branch.is-popout-left .doro-start-mini-pomo-popout {
+          right: calc(100% + 1.08rem);
+          transform: translate3d(10px, 7px, 0) scale(0.955);
+          transform-origin: right top;
+        }
+        .doro-start-mini-pomo-branch.is-popout-below .doro-start-mini-pomo-popout {
+          top: calc(100% + 0.42rem);
+          right: 0;
+          left: 0;
+          width: 100%;
+          transform: translate3d(0, -8px, 0) scale(0.955);
+          transform-origin: top center;
+        }
+        .doro-start-mini-pomo-branch:hover .doro-start-mini-pomo-popout,
+        .doro-start-mini-pomo-branch:focus-within .doro-start-mini-pomo-popout {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0) saturate(1);
+        }
+        .doro-start-mini-pomo-popout-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          padding: 0 0.08rem 0.45rem;
+          color: rgba(255, 255, 255, 0.72);
+          font-size: 0.58rem;
+          font-weight: 900;
+          line-height: 1;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+        }
+        .doro-start-mini-pomo-header-actions {
+          display: inline-flex;
+          flex: 0 0 auto;
+          align-items: center;
+          gap: 0.32rem;
+        }
+        .doro-start-mini-pomo-help-wrap,
+        .doro-start-mini-pomo-sound-wrap {
+          position: relative;
+          display: inline-flex;
+          flex: 0 0 auto;
+        }
+        .doro-start-mini-pomo-sound-wrap::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          right: -0.15rem;
+          bottom: calc(100% + 0.45rem);
+          z-index: 3;
+          width: max-content;
+          max-width: 9rem;
+          padding: 0.34rem 0.48rem;
+          border-radius: 0.55rem;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(12, 12, 14, 0.92);
+          color: rgba(255,255,255,0.78);
+          box-shadow: 0 12px 22px -16px rgba(0,0,0,0.82);
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 4px, 0) scale(0.96);
+          transition:
+            opacity 150ms ease,
+            transform 260ms var(--doro-start-ease);
+          font-size: 0.52rem;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          text-transform: none;
+          white-space: nowrap;
+        }
+        .doro-start-mini-pomo-help-wrap::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          right: -0.15rem;
+          bottom: calc(100% + 0.45rem);
+          z-index: 4;
+          width: 12.75rem;
+          max-width: min(12.75rem, calc(100vw - 2rem));
+          padding: 0.7rem 0.78rem;
+          border-radius: 0.85rem;
+          border: 1px solid rgba(255,255,255,0.2);
+          background:
+            radial-gradient(circle at 18% 0%, rgba(255,255,255,0.18), transparent 42%),
+            linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
+            rgba(214,154,168,0.94);
+          color: rgba(255,255,255,0.82);
+          box-shadow:
+            0 26px 54px -34px rgba(0,0,0,0.82),
+            0 14px 26px -20px rgba(0,0,0,0.56),
+            inset 0 1px 0 rgba(255,255,255,0.18);
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 7px, 0) scale(0.955);
+          transform-origin: right bottom;
+          transition:
+            opacity 220ms ease,
+            transform 430ms var(--doro-start-ease),
+            filter 260ms ease;
+          font-size: 0.64rem;
+          font-weight: 800;
+          line-height: 1.32;
+          letter-spacing: 0.015em;
+          text-align: left;
+          text-transform: none;
+          white-space: normal;
+          filter: blur(0.7px) saturate(0.96);
+          backdrop-filter: blur(18px) saturate(1.12);
+          -webkit-backdrop-filter: blur(18px) saturate(1.12);
+        }
+        .doro-start-mini-pomo-sound-wrap:hover::after,
+        .doro-start-mini-pomo-sound-wrap:focus-within::after,
+        .doro-start-mini-pomo-help-wrap:hover::after,
+        .doro-start-mini-pomo-help-wrap:focus-within::after {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0) saturate(1);
+        }
+        .doro-start-mini-pomo-help-button,
+        .doro-start-mini-pomo-sound-button {
+          position: relative;
+          display: inline-flex;
+          width: 1.45rem;
+          height: 1.45rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 0.48rem;
+          border: 1px solid rgba(255,255,255,0.15);
+          background: rgba(255,255,255,0.09);
+          color: rgba(255,255,255,0.78);
+          transition:
+            transform 240ms var(--doro-start-ease),
+            background-color 220ms ease,
+            border-color 220ms ease,
+            color 220ms ease,
+            box-shadow 260ms ease;
+        }
+        .doro-start-mini-pomo-help-button:hover,
+        .doro-start-mini-pomo-help-button:focus-visible,
+        .doro-start-mini-pomo-sound-button:hover,
+        .doro-start-mini-pomo-sound-button:focus-visible {
+          border-color: rgba(255,255,255,0.28);
+          background: rgba(255,255,255,0.15);
+          color: rgba(255,255,255,0.92);
+          box-shadow: 0 12px 20px -16px rgba(0,0,0,0.78);
+          transform: translate3d(0, -1px, 0);
+          outline: none;
+        }
+        .doro-start-mini-pomo-sound-button.is-off {
+          color: rgba(255,255,255,0.48);
+          background: rgba(255,255,255,0.045);
+        }
+        .doro-start-mini-pomo-block-list {
+          display: grid;
+          gap: 0.38rem;
+        }
+        .doro-start-mini-pomo-block-option {
+          display: flex;
+          min-height: 2.45rem;
+          width: 100%;
+          align-items: center;
+          gap: 0.58rem;
+          border-radius: 0.72rem;
+          border: 1px solid rgba(255,255,255,0.16);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.065), rgba(255,255,255,0.022)),
+            rgba(0,0,0,0.26);
+          padding: 0.46rem 0.5rem;
+          color: rgba(255,255,255,0.86);
+          font-size: 0.62rem;
+          font-weight: 800;
+          line-height: 1;
+          opacity: 0;
+          transform: translate3d(0, 10px, 0) scale(0.96);
+          filter: blur(0.7px);
+          transition:
+            opacity 180ms ease,
+            transform 370ms var(--doro-start-ease),
+            filter 300ms ease,
+            background-color 280ms ease,
+            border-color 280ms ease,
+            color 260ms ease,
+            box-shadow 300ms ease;
+          transition-delay: 0ms;
+          will-change: transform, opacity, box-shadow, background-color;
+          backface-visibility: hidden;
+        }
+        .doro-start-mini-pomo-branch:hover .doro-start-mini-pomo-block-option,
+        .doro-start-mini-pomo-branch:focus-within .doro-start-mini-pomo-block-option {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+          transition-delay: var(--doro-mini-block-delay, 150ms);
+        }
+        .doro-start-mini-pomo-block-option:hover,
+        .doro-start-mini-pomo-block-option:focus-visible {
+          border-color: rgba(255,255,255,0.28);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.09), rgba(255,255,255,0.035)),
+            rgba(0,0,0,0.36);
+          color: #fff;
+          box-shadow:
+            0 14px 24px -20px rgba(0,0,0,0.66),
+            inset 0 1px 0 rgba(255,255,255,0.09);
+          transform: translate3d(0, -1px, 0) scale(1.003);
+          outline: none;
+        }
+        .doro-start-mini-pomo-branch:hover .doro-start-mini-pomo-block-option:hover,
+        .doro-start-mini-pomo-branch:focus-within .doro-start-mini-pomo-block-option:focus-visible {
+          opacity: 1;
+          border-color: rgba(255,255,255,0.28);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.09), rgba(255,255,255,0.035)),
+            rgba(0,0,0,0.36);
+          color: #fff;
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.6),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+          filter: brightness(1.018);
+          transform: translate3d(0, -1px, 0) scale(1.003);
+          transition-delay: 0ms;
+        }
+        .doro-start-mini-pomo-block-option:active,
+        .doro-start-mini-pomo-branch:hover .doro-start-mini-pomo-block-option:active,
+        .doro-start-mini-pomo-branch:focus-within .doro-start-mini-pomo-block-option:active {
+          transform: perspective(520px) translate3d(0, 0, 1px) scale(0.996) rotateX(0.08deg);
+          box-shadow: 0 14px 24px -23px rgba(0, 0, 0, 0.54);
+          filter: brightness(1);
+          transition-delay: 0ms;
+        }
+        .doro-start-mini-pomo-block-option.is-active {
+          border-color: rgba(255,255,255,0.24);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.075), rgba(255,255,255,0.025)),
+            rgba(0,0,0,0.36);
+          color: #fff;
+        }
+        .doro-start-mini-pomo-block-number {
+          display: inline-flex;
+          width: 4.45rem;
+          height: 1.45rem;
+          flex: 0 0 auto;
+          align-items: center;
+          justify-content: center;
+          border-radius: 0.46rem;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.075);
+          font-family: inherit;
+          font-size: 0.58rem;
+          font-weight: 900;
+          font-variant-numeric: tabular-nums;
+          line-height: 1;
+          letter-spacing: 0.045em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.82);
+        }
+        .doro-start-mini-pomo-block-text {
+          display: flex;
+          min-width: 0;
+          flex: 1 1 auto;
+          flex-direction: column;
+          text-align: left;
+        }
+        .doro-start-mini-pomo-block-title {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: rgba(255,255,255,0.92);
+          font-size: 0.68rem;
+          font-weight: 900;
+          line-height: 1;
+          letter-spacing: 0.015em;
+          text-transform: none;
+        }
+        .doro-start-mini-pomo-block-check {
+          display: inline-flex;
+          width: 1rem;
+          height: 1rem;
+          flex: 0 0 auto;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.08);
+          color: rgba(255,255,255,0);
+          transition:
+            color 220ms ease,
+            border-color 220ms ease,
+            background-color 220ms ease;
+        }
+        .doro-start-mini-pomo-block-option.is-active .doro-start-mini-pomo-block-check {
+          border-color: rgba(255,255,255,0.25);
+          background: rgba(255,255,255,0.16);
+          color: #fff;
+        }
         .doro-start-delayed-time,
         .doro-start-delay-slider-wrap,
         .doro-start-delayed-start-button {
@@ -1733,6 +2256,12 @@ const TimerDisplay: React.FC = () => {
           .doro-start-session-panel,
           .doro-start-session-choice,
           .doro-start-session-option,
+          .doro-start-mini-pomo-popout,
+          .doro-start-mini-pomo-block-option,
+          .doro-start-mini-pomo-help-button,
+          .doro-start-mini-pomo-help-wrap::after,
+          .doro-start-mini-pomo-sound-button,
+          .doro-start-mini-pomo-sound-wrap::after,
           .doro-start-delayed-time,
           .doro-start-delay-slider-wrap,
           .doro-start-delay-minutes-label,
@@ -1747,11 +2276,16 @@ const TimerDisplay: React.FC = () => {
           .doro-start-session-panel.is-active,
           .doro-start-choice-panel.is-active .doro-start-session-choice,
           .doro-start-session-shell.is-open.view-timer .doro-start-session-option,
+          .doro-start-mini-pomo-branch:hover .doro-start-mini-pomo-popout,
+          .doro-start-mini-pomo-branch:focus-within .doro-start-mini-pomo-popout,
+          .doro-start-mini-pomo-branch:hover .doro-start-mini-pomo-block-option,
+          .doro-start-mini-pomo-branch:focus-within .doro-start-mini-pomo-block-option,
           .doro-start-delayed-panel.is-active .doro-start-delayed-time,
           .doro-start-delayed-panel.is-active .doro-start-delay-slider-wrap,
           .doro-start-delayed-panel.is-active .doro-start-delayed-start-button {
             opacity: 1;
             transform: none;
+            filter: none;
           }
           .doro-start-session-shell.is-exiting {
             opacity: 0;
@@ -1865,6 +2399,8 @@ const TimerDisplay: React.FC = () => {
             topIconClass={topIconClass}
             onOpenChange={setIsIdlePresetMenuOpen}
             onSelectPreset={selectIdlePreset}
+            onSelectMiniPomoBlock={selectMiniPomoAutoStartBlock}
+            onToggleMiniPomoAutoStartSound={toggleMiniPomoAutoStartSound}
             onStartDelayedStart={startDelayedStart}
         />
         <TimerSquare 

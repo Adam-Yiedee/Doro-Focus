@@ -25,6 +25,11 @@ const FOCUS_FRIEND_REQUEST_LIMIT = 100;
 const FOCUS_FRIEND_INBOX_LIMIT = 50;
 const FOCUS_FRIEND_OFFLINE_AFTER_MS = 1000 * 60 * 60 * 12;
 const localDevStores = new Map();
+const DEBUG_ACCOUNT_CATEGORY_ID = 9201;
+const DEBUG_ACCOUNT_TASK_ID = 9301;
+const DEBUG_ACCOUNT_WORK_MINUTES = 25;
+const DEBUG_ACCOUNT_SHORT_BREAK_MINUTES = 5;
+const DEBUG_ACCOUNT_CLOSE_BREAK_MINUTES = 3;
 
 const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
   {
@@ -38,6 +43,14 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     workTime: 1420,
     pomodoroCount: 1,
     presence: 'focusing',
+    history: [
+      { dayOffset: 0, pomos: 1 },
+      { dayOffset: 1, pomos: 2 },
+      { dayOffset: 2, pomos: 2 },
+      { dayOffset: 3, pomos: 1 },
+      { dayOffset: 5, pomos: 3 },
+      { dayOffset: 6, pomos: 2 },
+    ],
   },
   {
     username: 'master2',
@@ -50,6 +63,15 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     workTime: 1180,
     pomodoroCount: 4,
     presence: 'focusing',
+    history: [
+      { dayOffset: 0, pomos: 4 },
+      { dayOffset: 1, pomos: 3 },
+      { dayOffset: 2, pomos: 4 },
+      { dayOffset: 3, pomos: 2 },
+      { dayOffset: 4, pomos: 3 },
+      { dayOffset: 5, pomos: 4 },
+      { dayOffset: 6, pomos: 2 },
+    ],
   },
   {
     username: 'master3',
@@ -62,6 +84,13 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     workTime: 960,
     pomodoroCount: 2,
     presence: 'focusing',
+    history: [
+      { dayOffset: 0, pomos: 2 },
+      { dayOffset: 1, pomos: 1 },
+      { dayOffset: 2, pomos: 2 },
+      { dayOffset: 4, pomos: 2 },
+      { dayOffset: 7, pomos: 1 },
+    ],
   },
   {
     username: 'master4',
@@ -74,6 +103,13 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     workTime: 720,
     pomodoroCount: 0,
     presence: 'idle',
+    history: [
+      { dayOffset: 1, pomos: 2 },
+      { dayOffset: 2, pomos: 1 },
+      { dayOffset: 4, pomos: 2 },
+      { dayOffset: 6, pomos: 1 },
+      { dayOffset: 9, pomos: 2 },
+    ],
   },
   {
     username: 'master5',
@@ -86,6 +122,13 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
     workTime: 540,
     pomodoroCount: 0,
     presence: 'offline',
+    history: [
+      { dayOffset: 3, pomos: 1 },
+      { dayOffset: 4, pomos: 2 },
+      { dayOffset: 6, pomos: 1 },
+      { dayOffset: 8, pomos: 2 },
+      { dayOffset: 11, pomos: 1 },
+    ],
   },
 ];
 
@@ -1172,6 +1215,108 @@ const upsertDebugFocusFriendUser = async (debugAccount) => {
   return patched;
 };
 
+const getDebugSessionStartMs = (updatedAtMs, dayOffset, historyIndex, sessionDurationMinutes) => {
+  const day = new Date(updatedAtMs);
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() - dayOffset);
+
+  const staggerMinutes = (historyIndex % 4) * 18;
+  const plannedStartMs = day.getTime() + ((8 * 60) + 30 + staggerMinutes) * 60_000;
+  if (dayOffset !== 0) return plannedStartMs;
+
+  const latestEndMs = updatedAtMs - (20 * 60_000);
+  const latestStartMs = latestEndMs - (sessionDurationMinutes * 60_000);
+  const earliestStartMs = day.getTime() + 5 * 60_000;
+  if (latestStartMs < earliestStartMs) return latestStartMs;
+  return Math.max(earliestStartMs, Math.min(plannedStartMs, latestStartMs));
+};
+
+const buildDebugAccountHistory = (debugAccount, updatedAtMs) => {
+  const historyPlan = Array.isArray(debugAccount.history) ? debugAccount.history : [];
+  const logs = [];
+  const pastSessions = [];
+
+  historyPlan.forEach((seed, historyIndex) => {
+    const pomoCount = toNonNegativeInt(seed?.pomos, 0);
+    if (pomoCount <= 0) return;
+
+    const dayOffset = toNonNegativeInt(seed?.dayOffset, historyIndex);
+    const totalWorkMinutes = pomoCount * DEBUG_ACCOUNT_WORK_MINUTES;
+    const totalBreakMinutes = Math.max(0, pomoCount - 1) * DEBUG_ACCOUNT_SHORT_BREAK_MINUTES
+      + DEBUG_ACCOUNT_CLOSE_BREAK_MINUTES;
+    const sessionDurationMinutes = totalWorkMinutes + totalBreakMinutes;
+    let cursorMs = getDebugSessionStartMs(updatedAtMs, dayOffset, historyIndex, sessionDurationMinutes);
+    const sessionStartIso = new Date(cursorMs).toISOString();
+
+    for (let blockIndex = 0; blockIndex < pomoCount; blockIndex += 1) {
+      const workStartMs = cursorMs;
+      const workEndMs = workStartMs + DEBUG_ACCOUNT_WORK_MINUTES * 60_000;
+      logs.push({
+        type: 'work',
+        start: new Date(workStartMs).toISOString(),
+        end: new Date(workEndMs).toISOString(),
+        duration: DEBUG_ACCOUNT_WORK_MINUTES * 60,
+        reason: 'Pomodoro Complete',
+        task: { id: DEBUG_ACCOUNT_TASK_ID, name: debugAccount.taskName },
+        color: debugAccount.categoryColor,
+        categoryId: DEBUG_ACCOUNT_CATEGORY_ID,
+        categoryName: debugAccount.categoryName,
+        categoryColor: debugAccount.categoryColor,
+        categoryIcon: debugAccount.categoryIcon || 'target',
+      });
+      cursorMs = workEndMs;
+
+      const breakMinutes = blockIndex < pomoCount - 1
+        ? DEBUG_ACCOUNT_SHORT_BREAK_MINUTES
+        : DEBUG_ACCOUNT_CLOSE_BREAK_MINUTES;
+      const breakStartMs = cursorMs;
+      const breakEndMs = breakStartMs + breakMinutes * 60_000;
+      logs.push({
+        type: 'break',
+        start: new Date(breakStartMs).toISOString(),
+        end: new Date(breakEndMs).toISOString(),
+        duration: breakMinutes * 60,
+        reason: blockIndex < pomoCount - 1 ? 'Recovery Time' : 'Session End',
+        color: debugAccount.categoryColor,
+        categoryId: DEBUG_ACCOUNT_CATEGORY_ID,
+        categoryName: debugAccount.categoryName,
+        categoryColor: debugAccount.categoryColor,
+        categoryIcon: debugAccount.categoryIcon || 'target',
+      });
+      cursorMs = breakEndMs;
+    }
+
+    pastSessions.push({
+      id: `debug-session-${debugAccount.username}-${dayOffset}-${historyIndex}`,
+      startTime: sessionStartIso,
+      endTime: new Date(cursorMs).toISOString(),
+      stats: {
+        totalWorkMinutes,
+        totalBreakMinutes,
+        pomosCompleted: pomoCount,
+        tasksCompleted: Math.max(1, Math.ceil(pomoCount / 2)),
+        categoryStats: {
+          [debugAccount.categoryName]: totalWorkMinutes,
+        },
+        categoryDetails: [
+          {
+            categoryId: DEBUG_ACCOUNT_CATEGORY_ID,
+            categoryName: debugAccount.categoryName,
+            categoryColor: debugAccount.categoryColor,
+            categoryIcon: debugAccount.categoryIcon || 'target',
+            minutes: totalWorkMinutes,
+          },
+        ],
+      },
+    });
+  });
+
+  logs.sort((left, right) => Date.parse(left.start) - Date.parse(right.start));
+  pastSessions.sort((left, right) => Date.parse(left.startTime) - Date.parse(right.startTime));
+
+  return { logs, pastSessions };
+};
+
 const buildDebugAccountData = (userRecord, debugAccount) => {
   const nowMs = Date.now();
   const isOffline = debugAccount.presence === 'offline';
@@ -1179,29 +1324,14 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
   const updatedAtMs = isOffline ? nowMs - FOCUS_FRIEND_OFFLINE_AFTER_MS - 60_000 : nowMs;
   const nowIso = new Date(updatedAtMs).toISOString();
   const publicUser = makeUserPublic(userRecord);
-  const completedPomos = Number.isFinite(Number(debugAccount.pomodoroCount))
-    ? Math.max(0, Number(debugAccount.pomodoroCount))
-    : 0;
-  const debugLogs = completedPomos > 0
-    ? [{
-        type: 'work',
-        start: new Date(updatedAtMs - (completedPomos * ACCOUNT_STATS_POMODORO_SECONDS * 1000)).toISOString(),
-        end: nowIso,
-        duration: completedPomos * ACCOUNT_STATS_POMODORO_SECONDS,
-        reason: 'Pomodoro Complete',
-        task: { id: 9301, name: debugAccount.taskName },
-        categoryId: 9201,
-        categoryName: debugAccount.categoryName,
-        categoryColor: debugAccount.categoryColor,
-        categoryIcon: debugAccount.categoryIcon || 'target',
-      }]
-    : [];
+  const { logs: debugLogs, pastSessions: debugPastSessions } = buildDebugAccountHistory(debugAccount, updatedAtMs);
   return sanitizeAccountPayload({
     ...buildDefaultAccountData(publicUser),
     userName: debugAccount.displayName,
+    pastSessions: debugPastSessions,
     categories: [
       {
-        id: 9201,
+        id: DEBUG_ACCOUNT_CATEGORY_ID,
         name: debugAccount.categoryName,
         color: debugAccount.categoryColor,
         icon: debugAccount.categoryIcon || 'target',
@@ -1209,13 +1339,13 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
     ],
     tasks: [
       {
-        id: 9301,
+        id: DEBUG_ACCOUNT_TASK_ID,
         name: debugAccount.taskName,
         estimated: 2,
         completed: 0,
         checked: false,
         selected: true,
-        categoryId: 9201,
+        categoryId: DEBUG_ACCOUNT_CATEGORY_ID,
         subtasks: [],
       },
     ],
@@ -1242,18 +1372,29 @@ const buildDebugAccountData = (userRecord, debugAccount) => {
   }, publicUser, { revision: 1, updatedAt: nowIso });
 };
 
-const isUntouchedDebugAccountData = (accountData, debugAccount) => (
+const isDebugAccountShell = (accountData, debugAccount) => (
   accountData
-  && accountData.revision === 1
   && accountData.userName === debugAccount.displayName
   && Array.isArray(accountData.tasks)
   && accountData.tasks.length === 1
-  && accountData.tasks[0]?.id === 9301
+  && accountData.tasks[0]?.id === DEBUG_ACCOUNT_TASK_ID
   && accountData.tasks[0]?.name === debugAccount.taskName
   && Array.isArray(accountData.categories)
   && accountData.categories.length === 1
-  && accountData.categories[0]?.id === 9201
+  && accountData.categories[0]?.id === DEBUG_ACCOUNT_CATEGORY_ID
   && accountData.categories[0]?.name === debugAccount.categoryName
+);
+
+const hasDebugAccountHistory = (accountData) => (
+  Array.isArray(accountData?.pastSessions)
+  && accountData.pastSessions.length > 0
+  && Array.isArray(accountData?.logs)
+  && accountData.logs.some((entry) => entry?.type === 'work')
+);
+
+const isUntouchedDebugAccountData = (accountData, debugAccount) => (
+  isDebugAccountShell(accountData, debugAccount)
+  && (accountData.revision === 1 || !hasDebugAccountHistory(accountData))
 );
 
 const ensureDebugAccountData = async (userRecord, debugAccount) => {

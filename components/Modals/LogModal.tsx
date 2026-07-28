@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Timer as TimerIcon, UserPlus, Users, X } from 'lucide-react';
+import { Bug, Check, ChevronDown, Flame, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Timer as TimerIcon, UserPlus, Users, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
@@ -16,6 +16,8 @@ import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import { isProductiveFocusLog } from '../../utils/logClassification';
 import {
   formatPomodoroCount,
+  getAccountStatsPomodoroEquivalent,
+  getAccountStatsSessionPomodoroEquivalent,
   getPomodoroEquivalentWeightForReason,
   MINI_POMODORO_COMPLETE_REASON,
   POMODORO_COMPLETE_REASON,
@@ -47,6 +49,8 @@ import {
   normalizeFocusFriendInviteUsername,
   removeFocusFriendInviteParamsFromCurrentUrl,
 } from '../../utils/focusFriendInvite';
+import { preserveAppOpenStreakWithEarnedStats, type AppOpenStreakSnapshot } from '../../utils/appOpenStreak';
+import { dispatchDeveloperPreview, type DeveloperPreviewAction } from '../../utils/developerPreview';
 
 interface LogModalProps {
   isOpen: boolean;
@@ -101,6 +105,63 @@ const buildGroupInviteUrl = (sessionId: string) => {
 const isAccountDataConflictMessage = (message: string | null | undefined) => {
   const normalized = message?.trim().toLowerCase() || '';
   return normalized.includes('account data') && normalized.includes('conflict');
+};
+
+const DEVELOPER_PREVIEW_ACTIONS: Array<{
+  action: DeveloperPreviewAction;
+  label: string;
+  detail: string;
+}> = [
+  {
+    action: 'focus-streak-notification',
+    label: 'Streak',
+    detail: 'Streak moment',
+  },
+  {
+    action: 'daily-welcome-notification',
+    label: 'Welcome',
+    detail: 'Daily welcome banner',
+  },
+  {
+    action: 'group-notification',
+    label: 'Group',
+    detail: 'Standard notification',
+  },
+  {
+    action: 'friend-notification',
+    label: 'Friend',
+    detail: 'Focus Friends action',
+  },
+  {
+    action: 'encouragement-notification',
+    label: 'Encourage',
+    detail: 'Heart banner',
+  },
+  {
+    action: 'grace-after-work',
+    label: 'Grace Work',
+    detail: 'After-work menu',
+  },
+  {
+    action: 'grace-after-break',
+    label: 'Grace Break',
+    detail: 'After-break menu',
+  },
+  {
+    action: 'long-grace',
+    label: 'Long Grace',
+    detail: 'Protection prompt',
+  },
+];
+
+const getCurrentAppOpenStreakSnapshot = (earnedStats?: User['lifetimeStats'] | null) => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    return preserveAppOpenStreakWithEarnedStats(window.localStorage, earnedStats);
+  } catch {
+    return null;
+  }
 };
 
 const ALARM_OPTIONS: Array<{ label: string; value: AlarmSound }> = [
@@ -310,7 +371,6 @@ const DEBUG_FOCUS_FRIEND_CREDENTIALS: Record<string, string> = {
   master4: 'master4',
   master5: 'master5',
 };
-const DEBUG_FOCUS_FRIEND_AUTH_HINT = 'master/master through master5/master5.';
 const CATEGORY_EDITOR_CLOSE_DURATION_MS = 220;
 const SETTINGS_PANEL_TRANSITION_MS = 240;
 const AUTO_START_SOUND_PANEL_EXIT_MS = 300;
@@ -636,6 +696,12 @@ const formatLogDurationCompact = (seconds: number) => {
   if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   if (minutes > 0) return `${minutes}m`;
   return `${remainingSeconds}s`;
+};
+
+const formatStreakDayPomoLabel = (pomos: number) => {
+  const safe = Number.isFinite(pomos) ? Math.max(0, pomos) : 0;
+  const unit = Math.abs(safe - 1) < 0.005 ? 'pomo' : 'pomos';
+  return `${formatPomodoroCount(safe)} ${unit}`;
 };
 
 const getLogDisplayReason = (entry: LogEntry) => {
@@ -1025,6 +1091,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [authLocalError, setAuthLocalError] = useState<string | null>(null);
   const [accountActionBusy, setAccountActionBusy] = useState<AccountAction>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
+  const [appOpenStreakSnapshot, setAppOpenStreakSnapshot] = useState<AppOpenStreakSnapshot | null>(() => getCurrentAppOpenStreakSnapshot());
+  const [developerToolsOpen, setDeveloperToolsOpen] = useState(false);
   const [focusFriendUsernameInput, setFocusFriendUsernameInput] = useState('');
   const [focusFriendBusyAction, setFocusFriendBusyAction] = useState<FocusFriendBusyAction>(null);
   const [focusFriendEncouragementOptions, setFocusFriendEncouragementOptions] = useState<Record<string, EncouragementPrompt[]>>({});
@@ -1057,6 +1125,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const focusFriendInviteAutoAddKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const developerPanelRef = useRef<HTMLDivElement | null>(null);
   const categorySettingsSectionRef = useRef<HTMLDivElement | null>(null);
   const settingsTabListRef = useRef<HTMLDivElement | null>(null);
   const settingsTabButtonRefsRef = useRef(new Map<TabButton, HTMLButtonElement>());
@@ -1108,6 +1177,35 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeCategories = useMemo(() => (
     Array.isArray(categories) ? categories.filter(isRenderableCategory) : []
   ), [categories]);
+  const focusStreakPomosByDateKey = useMemo(() => {
+    const totals = new Map<string, number>();
+    const productiveLogStartDateKeys = new Set<string>();
+
+    safeLogs.forEach((entry) => {
+      if (!isProductiveFocusLog(entry)) return;
+
+      const startKey = getDateKeyFromIso(entry.start);
+      if (startKey) productiveLogStartDateKeys.add(startKey);
+
+      const pomos = getAccountStatsPomodoroEquivalent(entry);
+      if (!Number.isFinite(pomos) || pomos <= 0) return;
+
+      const completionKey = getDateKeyFromIso(entry.end) || startKey;
+      if (!completionKey) return;
+      totals.set(completionKey, (totals.get(completionKey) || 0) + pomos);
+    });
+
+    safePastSessions.forEach((session) => {
+      const sessionDateKey = getDateKeyFromIso(session.startTime);
+      if (!sessionDateKey || productiveLogStartDateKeys.has(sessionDateKey)) return;
+
+      const pomos = getAccountStatsSessionPomodoroEquivalent(session);
+      if (!Number.isFinite(pomos) || pomos <= 0) return;
+      totals.set(sessionDateKey, (totals.get(sessionDateKey) || 0) + pomos);
+    });
+
+    return totals;
+  }, [safeLogs, safePastSessions]);
   const safeActiveCategories = useMemo(() => getActiveCategories(safeCategories), [safeCategories]);
   const safeActiveCategoryIds = useMemo(() => safeActiveCategories.map((category) => category.id), [safeActiveCategories]);
   const safeCategoryOrderKey = useMemo(() => safeActiveCategoryIds.join('|'), [safeActiveCategoryIds]);
@@ -1409,6 +1507,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || displayedTab !== 'account') return;
+    setAppOpenStreakSnapshot(getCurrentAppOpenStreakSnapshot(safeLifetimeStats));
+  }, [displayedTab, isOpen, safeLifetimeStats.bestStreak, safeLifetimeStats.currentStreak]);
+
+  useEffect(() => {
+    if (!isOpen || !developerToolsOpen) return;
+    const timeoutId = window.setTimeout(() => {
+      developerPanelRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    }, 80);
+    return () => window.clearTimeout(timeoutId);
+  }, [developerToolsOpen, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1932,16 +2043,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
     if (nextSettings.timerPreset !== 'compact') {
       nextSettings.twoInARowMode = false;
+      nextSettings.miniPomoAutoStartBlock = 1;
+    } else if ('twoInARowMode' in patch && !('miniPomoAutoStartBlock' in patch)) {
+      nextSettings.miniPomoAutoStartBlock = patch.twoInARowMode ? 2 : 1;
     }
+    nextSettings.twoInARowMode = nextSettings.timerPreset === 'compact' && nextSettings.miniPomoAutoStartBlock > 1;
 
     updateSettings(nextSettings);
   };
 
   const setTimerPreset = (timerPreset: Exclude<TimerPreset, 'custom'>) => {
+    const compactAutoStartBlock = settings.miniPomoAutoStartBlock || (settings.twoInARowMode ? 2 : 1);
     updateTimerSettings({
       timerPreset,
       ...TIMER_PRESETS[timerPreset],
-      twoInARowMode: timerPreset === 'compact' ? settings.twoInARowMode : false,
+      miniPomoAutoStartBlock: timerPreset === 'compact' ? compactAutoStartBlock : 1,
+      twoInARowMode: timerPreset === 'compact' ? compactAutoStartBlock > 1 : false,
     });
   };
 
@@ -3037,6 +3154,79 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     );
   };
 
+  const renderFocusStreakAccountPanel = (compact = false) => {
+    const snapshot = appOpenStreakSnapshot;
+    if (!snapshot) return null;
+
+    const panelStyle: React.CSSProperties = {
+      borderColor: isLightTheme ? 'rgba(148, 163, 184, 0.2)' : 'rgba(255, 255, 255, 0.18)',
+      background: isLightTheme
+        ? `linear-gradient(145deg, rgba(255,255,255,0.96), ${colorToRgba(PRESET_COLORS[3], 0.09)})`
+        : 'linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)), rgba(255,255,255,0.075)',
+      boxShadow: isLightTheme
+        ? '0 28px 58px -44px rgba(15, 23, 42, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.82)'
+        : '0 38px 82px -40px rgba(0,0,0,0.84), 0 18px 38px -22px rgba(0,0,0,0.64), inset 0 1px 0 rgba(255,255,255,0.16)',
+    };
+    const mutedTextClassName = isLightTheme ? 'text-slate-500' : 'text-white/50';
+    const strongTextClassName = isLightTheme ? 'text-slate-950' : 'text-white';
+
+    return (
+      <div
+        className={`doro-account-focus-streak-panel relative mx-auto w-full max-w-[40rem] overflow-visible rounded-[1.35rem] border ${
+          compact ? 'px-3.5 py-3' : 'px-4 py-3.5'
+        }`}
+        style={panelStyle}
+      >
+        <div className="pointer-events-none absolute inset-0 rounded-[inherit] opacity-70 bg-[radial-gradient(circle_at_10%_-18%,rgba(255,255,255,0.32),transparent_42%),radial-gradient(circle_at_90%_-28%,rgba(255,196,87,0.16),transparent_40%)]" />
+        <div className="relative flex min-w-0 flex-col items-center justify-center gap-3 text-center sm:flex-row sm:gap-7">
+          <div className="doro-account-focus-streak-summary">
+            <div className={`doro-account-focus-streak-summary-label ${mutedTextClassName}`}>
+              Focus Streak
+            </div>
+            <div className={`doro-account-focus-streak-summary-value ${strongTextClassName}`}>
+              {snapshot.currentStreak}
+            </div>
+          </div>
+
+          <div className="doro-account-focus-streak-week-strip" aria-label="Last seven days">
+            {snapshot.rollingDays.map((day) => {
+              const dayPomos = focusStreakPomosByDateKey.get(day.dateKey) || 0;
+              const dayPomoLabel = formatStreakDayPomoLabel(dayPomos);
+              const statusLabel = day.status === 'active'
+                ? 'active streak day'
+                : day.status === 'frozen'
+                  ? 'streak freeze day'
+                  : 'no streak day';
+
+              return (
+                <button
+                  key={day.dateKey}
+                  type="button"
+                  className={`doro-account-focus-streak-day ${isLightTheme ? 'is-light' : ''}`}
+                  aria-label={`${day.weekdayLabel}: ${statusLabel}, ${dayPomoLabel} completed`}
+                >
+                  <span className={`doro-account-focus-streak-day-pomo-chip ${isLightTheme ? 'is-light' : ''}`}>
+                    {dayPomoLabel}
+                  </span>
+                  <span className={`doro-account-focus-streak-day-label ${isLightTheme ? 'is-light' : ''}`}>
+                    {day.weekdayLabel}
+                  </span>
+                  <span
+                    className={`doro-account-focus-streak-day-circle ${day.status ? `is-${day.status}` : ''} ${isLightTheme ? 'is-light' : ''}`}
+                  >
+                    {day.status && (
+                      <Flame size={11} strokeWidth={2.35} fill="currentColor" aria-hidden="true" />
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderAccountLoggedIn = () => {
     if (!safeUser) return renderAccountSignedOut();
 
@@ -3059,6 +3249,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const totalTimeLabel = formatCompactHours(stats.totalSessionHours || 0);
     const manualFocusHoursLabel = formatCompactHours(stats.manualFocusHours || 0);
     const lastActiveLabel = formatDateKeyLabel(stats.lastActiveDate);
+    const accountFocusStreakCurrent = Math.max(appOpenStreakSnapshot?.currentStreak ?? 0, stats.currentStreak);
+    const accountFocusStreakBest = Math.max(appOpenStreakSnapshot?.bestStreak ?? 0, stats.bestStreak, accountFocusStreakCurrent);
     const profileName = safeUserName.trim();
     const profileNameLabel = profileName && profileName !== safeUser.username ? profileName : 'Matches username';
     const lastCloudCheckLabel = isPreviewAccount ? 'Local only' : formatTimestampDateTime(safeLastAccountSyncAt, 'Never');
@@ -3081,11 +3273,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       { label: 'Total Time', value: formatCompactHours(weekStats.totalSessionHours || 0), color: PRESET_COLORS[5] },
       { label: 'Pomodoros', value: formatPomodoroCount(weekStats.totalPomos), color: PRESET_COLORS[2] },
       { label: 'Sessions', value: `${weekStats.totalSessions}`, color: PRESET_COLORS[1] },
-      {
-        label: 'Current Streak',
-        value: `${weekStats.currentStreak}`,
-        color: PRESET_COLORS[3],
-      },
       {
         label: 'Active-Day Average',
         value: formatCompactHours(weekActiveDayAvgHours),
@@ -3110,12 +3297,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       { label: 'Sessions', value: `${stats.totalSessions}`, color: PRESET_COLORS[1] },
       {
         label: 'Current Streak',
-        value: `${stats.currentStreak}`,
+        value: `${accountFocusStreakCurrent}`,
         color: PRESET_COLORS[3],
       },
       {
         label: 'Best Streak',
-        value: `${stats.bestStreak}`,
+        value: `${accountFocusStreakBest}`,
         color: PRESET_COLORS[4],
       },
       {
@@ -3744,6 +3931,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
         )}
 
+        {renderFocusStreakAccountPanel()}
+
         <div
           className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
           style={accountOverviewSectionStyle}
@@ -3765,6 +3954,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
           </div>
         </div>
+
+        <AccountInsights
+          logs={safeLogs}
+          categories={safeCategories}
+          joinedAt={safeUser.joinedAt}
+          accentColor={accountPrimaryColor}
+          isLightTheme={isLightTheme}
+          showTodayStats={false}
+          placement="snapshot-charts"
+        />
 
         <div
           className="relative overflow-hidden rounded-[1.7rem] border p-5 md:p-6"
@@ -3807,6 +4006,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           accentColor={accountPrimaryColor}
           isLightTheme={isLightTheme}
           showTodayStats={false}
+          placement="remaining"
         />
 
         <div
@@ -4076,11 +4276,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const renderAccountSignedOut = () => {
     const authTitle = authMode === 'register' ? 'Create Account' : 'Sign In';
     const authDescription = authMode === 'register'
-      ? `Create an account to track statistics and save across devices. ${DEBUG_FOCUS_FRIEND_AUTH_HINT}`
-      : `Sign in to track statistics and save across devices. ${DEBUG_FOCUS_FRIEND_AUTH_HINT}`;
+      ? 'Create an account to track statistics and save across devices.'
+      : 'Sign in to track statistics and save across devices.';
 
     return (
-      <div className="p-4 md:p-8 min-h-[520px]">
+      <div className="p-4 md:p-8 min-h-[520px] space-y-5">
+        <div className="mx-auto max-w-md">
+          {renderFocusStreakAccountPanel(true)}
+        </div>
         <div className="mx-auto flex max-w-md flex-col justify-center rounded-[1.9rem] border border-white/10 bg-white/5 p-5 md:p-6">
           <div className="mb-6">
             <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/45">Account</div>
@@ -4153,7 +4356,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     ? 'Preview account password accepted.'
                     : isDebugFocusFriendAuth
                       ? 'Focus Friends account password accepted.'
-                      : `Use at least 8 characters. ${DEBUG_FOCUS_FRIEND_AUTH_HINT}`
+                      : 'Use at least 8 characters.'
                 )}
               </div>
             </div>
@@ -4758,7 +4961,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 label="Two-In-A-Row"
                 description="Auto-starts the second focus in each pair."
                 checked={settings.twoInARowMode}
-                onToggle={() => updateTimerSettings({ twoInARowMode: !settings.twoInARowMode })}
+                onToggle={() => {
+                  const nextEnabled = !settings.twoInARowMode;
+                  updateTimerSettings({
+                    twoInARowMode: nextEnabled,
+                    miniPomoAutoStartBlock: nextEnabled ? 2 : 1,
+                  });
+                }}
                 tone="quiet"
                 switchTone="neutral"
               />
@@ -5187,6 +5396,56 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               Reset App Data
             </button>
           )}
+          <div className="mt-3">
+            <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setDeveloperToolsOpen(prev => !prev)}
+              className={`doro-developer-toggle inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[9px] font-bold uppercase tracking-[0.14em] transition-all ${
+                developerToolsOpen
+                  ? 'border-white/18 bg-white/12 text-white'
+                  : 'border-white/8 bg-white/[0.035] text-white/42 hover:border-white/14 hover:bg-white/[0.06] hover:text-white/62'
+              }`}
+              aria-expanded={developerToolsOpen}
+            >
+              <Bug size={13} strokeWidth={2.2} aria-hidden="true" />
+              Developer
+            </button>
+            </div>
+
+            {developerToolsOpen && (
+              <div
+                ref={developerPanelRef}
+                className="doro-developer-panel mt-3 rounded-[1.15rem] border border-white/[0.08] bg-white/[0.035] p-3 shadow-[0_20px_44px_-34px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.045)]"
+              >
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {DEVELOPER_PREVIEW_ACTIONS.map((item, index) => (
+                    <button
+                      key={item.action}
+                      type="button"
+                      onClick={() => dispatchDeveloperPreview(item.action)}
+                      className="doro-developer-preview-btn rounded-xl border border-white/[0.085] bg-black/18 px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow,transform,color] duration-250 hover:-translate-y-[1px] hover:border-white/[0.16] hover:bg-white/[0.07] active:translate-y-0"
+                      style={{ animationDelay: `${index * 24}ms` }}
+                    >
+                      <div className="truncate text-[10px] font-black uppercase leading-none tracking-[0] text-white/78">
+                        {item.label}
+                      </div>
+                      <div className="mt-1 truncate text-[10px] font-semibold leading-tight text-white/38">
+                        {item.detail}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => dispatchDeveloperPreview('clear-previews')}
+                  className="mt-2 w-full rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.14em] text-white/46 transition-colors hover:bg-white/[0.07] hover:text-white/68"
+                >
+                  Clear Previews
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -5237,12 +5496,249 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           box-shadow: var(--doro-account-stat-rest-shadow);
           will-change: transform, opacity;
         }
+        .doro-account-focus-streak-panel {
+          animation: doro-account-stat-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+          will-change: transform, opacity;
+        }
+        .doro-account-focus-streak-summary {
+          display: grid;
+          min-width: 6.15rem;
+          align-content: center;
+          justify-items: center;
+          row-gap: 0.18rem;
+          text-align: center;
+        }
+        .doro-account-focus-streak-summary-label {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 0.58rem;
+          font-weight: 950;
+          line-height: 1;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .doro-account-focus-streak-summary-value {
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+          font-size: clamp(2rem, 5.2vw, 2.55rem);
+          font-weight: 950;
+          line-height: 0.82;
+          letter-spacing: 0;
+          font-variant-numeric: tabular-nums;
+          text-shadow: 0 12px 22px rgba(0, 0, 0, 0.34);
+        }
+        .doro-settings-shell.theme-light .doro-account-focus-streak-summary-value {
+          text-shadow: none;
+        }
         .doro-account-stat-card:hover {
           box-shadow: var(--doro-account-stat-hover-shadow);
         }
         .doro-account-stat-rail {
           animation: doro-account-stat-rail 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
           will-change: transform, opacity;
+        }
+        .doro-account-focus-streak-week-strip {
+          display: grid;
+          grid-template-columns: repeat(7, 2rem);
+          justify-content: center;
+          gap: 0.32rem;
+          width: max-content;
+          max-width: 100%;
+          min-width: 0;
+        }
+        .doro-account-focus-streak-day {
+          position: relative;
+          appearance: none;
+          border: 0;
+          background: transparent;
+          color: inherit;
+          font: inherit;
+          display: flex;
+          min-width: 0;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.25rem;
+          padding: 0.08rem 0;
+          cursor: default;
+          outline: none;
+          transform: translateY(0) scale(1);
+          transition:
+            transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 220ms ease;
+          will-change: transform;
+        }
+        .doro-account-focus-streak-day:hover,
+        .doro-account-focus-streak-day:focus-visible {
+          transform: translateY(-3px) scale(1.025);
+          filter: saturate(1.08);
+        }
+        .doro-account-focus-streak-day:focus-visible .doro-account-focus-streak-day-circle {
+          outline: 2px solid rgba(255, 255, 255, 0.42);
+          outline-offset: 3px;
+        }
+        .doro-account-focus-streak-day-label {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: clip;
+          white-space: nowrap;
+          font-size: 0.48rem;
+          font-weight: 900;
+          line-height: 1;
+          letter-spacing: 0;
+          color: rgba(255, 255, 255, 0.42);
+        }
+        .doro-account-focus-streak-day-label.is-light {
+          color: rgba(71, 85, 105, 0.58);
+        }
+        .doro-account-focus-streak-day-pomo-chip {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% + 0.36rem);
+          z-index: 4;
+          min-width: max-content;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.13);
+          background: rgba(15, 20, 29, 0.92);
+          padding: 0.24rem 0.46rem;
+          color: rgba(255, 255, 255, 0.86);
+          font-size: 0.58rem;
+          font-weight: 900;
+          line-height: 1;
+          letter-spacing: 0;
+          box-shadow:
+            0 16px 28px -20px rgba(0, 0, 0, 0.9),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12);
+          opacity: 0;
+          pointer-events: none;
+          transform: translateX(-50%) translateY(6px) scale(0.94);
+          transition:
+            opacity 180ms ease,
+            transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+          will-change: opacity, transform;
+        }
+        .doro-account-focus-streak-day-pomo-chip.is-light {
+          border-color: rgba(15, 23, 42, 0.1);
+          background: rgba(255, 255, 255, 0.96);
+          color: rgba(15, 23, 42, 0.78);
+          box-shadow:
+            0 16px 28px -20px rgba(15, 23, 42, 0.3),
+            inset 0 1px 0 rgba(255, 255, 255, 0.84);
+        }
+        .doro-account-focus-streak-day:hover .doro-account-focus-streak-day-pomo-chip,
+        .doro-account-focus-streak-day:focus-visible .doro-account-focus-streak-day-pomo-chip {
+          opacity: 1;
+          transform: translateX(-50%) translateY(0) scale(1);
+        }
+        .doro-account-focus-streak-day:first-child .doro-account-focus-streak-day-pomo-chip {
+          left: 0;
+          transform: translateX(0) translateY(6px) scale(0.94);
+        }
+        .doro-account-focus-streak-day:first-child:hover .doro-account-focus-streak-day-pomo-chip,
+        .doro-account-focus-streak-day:first-child:focus-visible .doro-account-focus-streak-day-pomo-chip {
+          transform: translateX(0) translateY(0) scale(1);
+        }
+        .doro-account-focus-streak-day:last-child .doro-account-focus-streak-day-pomo-chip {
+          left: auto;
+          right: 0;
+          transform: translateX(0) translateY(6px) scale(0.94);
+        }
+        .doro-account-focus-streak-day:last-child:hover .doro-account-focus-streak-day-pomo-chip,
+        .doro-account-focus-streak-day:last-child:focus-visible .doro-account-focus-streak-day-pomo-chip {
+          transform: translateX(0) translateY(0) scale(1);
+        }
+        .doro-account-focus-streak-day-circle {
+          display: inline-flex;
+          width: 1.24rem;
+          height: 1.24rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          background: rgba(0, 0, 0, 0.14);
+          color: rgba(255, 255, 255, 0.26);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.07),
+            0 8px 16px -14px rgba(0, 0, 0, 0.74);
+          transition:
+            border-color 180ms ease,
+            background-color 180ms ease,
+            box-shadow 220ms ease;
+        }
+        .doro-account-focus-streak-day-circle.is-light {
+          border-color: rgba(15, 23, 42, 0.13);
+          background: rgba(255, 255, 255, 0.7);
+          color: rgba(15, 23, 42, 0.3);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.8),
+            0 8px 16px -14px rgba(15, 23, 42, 0.3);
+        }
+        .doro-account-focus-streak-day-circle.is-active {
+          border-color: rgba(253, 230, 138, 0.46);
+          background: rgba(251, 191, 36, 0.2);
+          color: #fde68a;
+          box-shadow:
+            0 0 18px rgba(251, 191, 36, 0.18),
+            inset 0 1px 0 rgba(255, 255, 255, 0.18);
+        }
+        .doro-account-focus-streak-day-circle.is-active.is-light {
+          border-color: rgba(217, 119, 6, 0.3);
+          background: rgba(251, 191, 36, 0.18);
+          color: #d97706;
+        }
+        .doro-account-focus-streak-day-circle.is-frozen {
+          border-color: rgba(125, 211, 252, 0.52);
+          background: rgba(14, 165, 233, 0.18);
+          color: #7dd3fc;
+          box-shadow:
+            0 0 18px rgba(14, 165, 233, 0.2),
+            inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        }
+        .doro-account-focus-streak-day-circle.is-frozen.is-light {
+          border-color: rgba(2, 132, 199, 0.3);
+          background: rgba(14, 165, 233, 0.13);
+          color: #0284c7;
+        }
+        @keyframes doroDeveloperPanelIn {
+          0% {
+            opacity: 0;
+            transform: translateY(8px) scale(0.982);
+            filter: saturate(0.92);
+          }
+          64% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.004);
+            filter: saturate(1.04);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
+        }
+        @keyframes doroDeveloperPreviewButtonIn {
+          0% {
+            opacity: 0;
+            transform: translateY(6px) scale(0.98);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-developer-panel {
+          animation: doroDeveloperPanelIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-developer-preview-btn {
+          animation: doroDeveloperPreviewButtonIn 280ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+          box-shadow:
+            0 12px 24px -22px rgba(0,0,0,0.65),
+            inset 0 1px 0 rgba(255,255,255,0.035);
+        }
+        .doro-developer-preview-btn:hover {
+          box-shadow:
+            0 18px 30px -24px rgba(0,0,0,0.72),
+            inset 0 1px 0 rgba(255,255,255,0.055);
         }
         @keyframes doro-focus-friend-section-in {
           0% {
@@ -5630,6 +6126,31 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           color: rgba(255, 255, 255, 0.94);
         }
         @media (max-width: 640px) {
+          .doro-account-focus-streak-panel {
+            width: 100% !important;
+          }
+          .doro-account-focus-streak-summary {
+            min-width: 0;
+            justify-items: center;
+            text-align: center;
+          }
+          .doro-account-focus-streak-week-strip {
+            width: 100%;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            gap: 0.22rem;
+          }
+          .doro-account-focus-streak-day-label {
+            font-size: 0.42rem;
+          }
+          .doro-account-focus-streak-day-pomo-chip {
+            bottom: calc(100% + 0.28rem);
+            padding: 0.22rem 0.38rem;
+            font-size: 0.52rem;
+          }
+          .doro-account-focus-streak-day-circle {
+            width: 1.18rem;
+            height: 1.18rem;
+          }
           .doro-focus-friends-panel {
             padding: 0.9rem !important;
             border-radius: 1.25rem !important;
@@ -5802,6 +6323,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         @media (prefers-reduced-motion: reduce) {
           .doro-account-stat-card,
+          .doro-account-focus-streak-panel,
+          .doro-account-focus-streak-day,
+          .doro-account-focus-streak-day-pomo-chip,
           .doro-account-stat-rail,
           .doro-focus-friends-section,
           .doro-focus-friend-item,
@@ -5822,7 +6346,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           .doro-category-preview-icon,
           .doro-category-color-swatch,
           .doro-category-icon-option,
-          .doro-category-editor-footer {
+          .doro-category-editor-footer,
+          .doro-developer-panel,
+          .doro-developer-preview-btn {
             animation: none !important;
             transition: none !important;
           }

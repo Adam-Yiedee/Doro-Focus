@@ -6,6 +6,20 @@ import { LONG_GRACE_SESSION_TIMEOUT_MS } from '../../utils/timerRuntime';
 
 const LONG_GRACE_RESPONSE_WINDOW_MS = 30 * 1000;
 
+export interface GracePreviewConfig {
+  context: 'afterWork' | 'afterBreak';
+  graceTotal: number;
+  showOptions?: boolean;
+  showLongGracePrompt?: boolean;
+  statusMessage?: string;
+  isFollowingSharedGrace?: boolean;
+}
+
+interface GraceModalProps {
+  preview?: GracePreviewConfig | null;
+  onPreviewClose?: () => void;
+}
+
 const formatDuration = (seconds: number) => {
   const s = Math.floor(seconds);
   const m = Math.floor(s / 60);
@@ -105,7 +119,7 @@ const shuffleMessages = (messages: string[]) => {
   return next;
 };
 
-const GraceModal: React.FC = () => {
+const GraceModal: React.FC<GraceModalProps> = ({ preview = null, onPreviewClose }) => {
   const {
     graceOpen,
     graceTotal,
@@ -139,6 +153,14 @@ const GraceModal: React.FC = () => {
     awaitingInitialHostState: false,
   });
   const canResolveLongGraceLocally = !isFollowingSharedGrace;
+  const isPreview = Boolean(preview);
+  const effectiveGraceOpen = isPreview || graceOpen;
+  const effectiveGraceTotal = preview?.graceTotal ?? graceTotal;
+  const effectiveGraceContext = preview?.context ?? graceContext;
+  const effectiveShowOptions = preview?.showOptions ?? showOptions;
+  const effectiveShowLongGracePrompt = preview?.showLongGracePrompt ?? showLongGracePrompt;
+  const effectiveStatusMessage = preview?.statusMessage ?? statusMessage;
+  const effectiveIsFollowingSharedGrace = preview?.isFollowingSharedGrace ?? isFollowingSharedGrace;
 
   const consumeMessage = (isAfterWork: boolean) => {
     if (isAfterWork) {
@@ -208,6 +230,10 @@ const GraceModal: React.FC = () => {
   }, [graceTotal, graceOpen, showOptions]);
 
   const handleEndLongGraceSession = useCallback(() => {
+    if (isPreview) {
+      onPreviewClose?.();
+      return;
+    }
     if (hasAutoEndedLongGraceRef.current) return;
     hasAutoEndedLongGraceRef.current = true;
     setShowLongGracePrompt(false);
@@ -217,7 +243,7 @@ const GraceModal: React.FC = () => {
       effectiveEndMs: graceStartedAtMs ?? (Date.now() - Math.max(0, graceTotal) * 1000),
       showSummary: false,
     });
-  }, [endSession, graceStartedAtMs, graceTotal]);
+  }, [endSession, graceStartedAtMs, graceTotal, isPreview, onPreviewClose]);
 
   useEffect(() => {
     if (!graceOpen || !canResolveLongGraceLocally || hasKeptCurrentGraceOpen || hasAutoEndedLongGraceRef.current) return;
@@ -277,22 +303,35 @@ const GraceModal: React.FC = () => {
     return () => window.clearInterval(intervalId);
   }, [handleEndLongGraceSession, hasKeptCurrentGraceOpen, longGraceDeadlineMs, showLongGracePrompt]);
 
-  if (!graceOpen || (graceContext !== 'afterWork' && graceContext !== 'afterBreak')) return null;
-  if (isFollowingSharedGrace && isFollowerGraceDismissed) return null;
+  if (!effectiveGraceOpen || (effectiveGraceContext !== 'afterWork' && effectiveGraceContext !== 'afterBreak')) return null;
+  if (!isPreview && effectiveIsFollowingSharedGrace && isFollowerGraceDismissed) return null;
 
-  const isAfterWork = graceContext === 'afterWork';
+  const isAfterWork = effectiveGraceContext === 'afterWork';
+  const closePreview = () => onPreviewClose?.();
   
   const handleWasWorking = () => {
+    if (isPreview) {
+      closePreview();
+      return;
+    }
     const nextMode = isAfterWork ? 'break' : 'work';
-    resolveGrace(nextMode, { adjustBreakBalance: -(graceTotal / 5), logGraceAs: 'work' });
+    resolveGrace(nextMode, { adjustBreakBalance: -(effectiveGraceTotal / 5), logGraceAs: 'work' });
   };
 
   const handleWasResting = () => {
+    if (isPreview) {
+      closePreview();
+      return;
+    }
     const nextMode = isAfterWork ? 'break' : 'work';
-    resolveGrace(nextMode, { adjustBreakBalance: graceTotal, logGraceAs: 'break' });
+    resolveGrace(nextMode, { adjustBreakBalance: effectiveGraceTotal, logGraceAs: 'break' });
   };
   
   const handleNeutral = () => {
+      if (isPreview) {
+        closePreview();
+        return;
+      }
       const nextMode = isAfterWork ? 'break' : 'work';
       resolveGrace(nextMode, { logGraceAs: 'grace' });
   };
@@ -308,8 +347,8 @@ const GraceModal: React.FC = () => {
     setLongGraceCountdownMs(LONG_GRACE_RESPONSE_WINDOW_MS);
   };
 
-  const addToBankAmount = graceTotal / 5;
-  const deductFromBankAmount = graceTotal;
+  const addToBankAmount = effectiveGraceTotal / 5;
+  const deductFromBankAmount = effectiveGraceTotal;
   const graceHeaderTitleClassName = 'text-[2.65rem] leading-none md:text-[3.4rem] font-semibold tracking-tight text-white/95 drop-shadow-[0_18px_32px_rgba(0,0,0,0.35)]';
   const graceHeaderMessageClassName = 'mx-auto max-w-2xl text-base md:text-[1.15rem] leading-snug tracking-[-0.01em] text-white/60 font-medium';
 
@@ -332,11 +371,11 @@ const GraceModal: React.FC = () => {
              {isAfterWork ? "Session Complete" : "Break Complete"}
            </h2>
            <p className={graceHeaderMessageClassName}>
-              {statusMessage}
+              {effectiveStatusMessage}
            </p>
         </div>
 
-        {isFollowingSharedGrace ? (
+        {effectiveIsFollowingSharedGrace ? (
           <div className="w-full max-w-xl rounded-[1.8rem] border border-white/10 bg-white/8 backdrop-blur-2xl px-6 py-5 text-center shadow-[0_24px_60px_-36px_rgba(15,23,42,0.85)]">
             <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/45">
               Host Controlled Grace
@@ -362,17 +401,17 @@ const GraceModal: React.FC = () => {
               
               {/* Button: Work */}
               <button 
-                onClick={showOptions ? handleWasWorking : () => resolveGrace('work')} 
+              onClick={effectiveShowOptions ? handleWasWorking : () => (isPreview ? closePreview() : resolveGrace('work'))}
                 className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(248,113,113,0.2)] hover:shadow-[0_0_50px_-5px_rgba(248,113,113,0.4)]`}
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-red-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 
                 <div className="relative z-10 flex flex-col items-center text-center px-2">
                     <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">
-                       {showOptions ? "I WAS WORKING" : (isAfterWork ? "CONTINUE WORKING" : "START FOCUS")}
+                       {effectiveShowOptions ? "I WAS WORKING" : (isAfterWork ? "CONTINUE WORKING" : "START FOCUS")}
                     </span>
                     
-                    {showOptions ? (
+                    {effectiveShowOptions ? (
                       <span className="text-[10px] font-mono font-medium text-red-200/80 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         Add {formatDuration(addToBankAmount)}
                       </span>
@@ -384,17 +423,17 @@ const GraceModal: React.FC = () => {
 
               {/* Button: Rest */}
               <button 
-                onClick={showOptions ? handleWasResting : () => resolveGrace('break')} 
+                onClick={effectiveShowOptions ? handleWasResting : () => (isPreview ? closePreview() : resolveGrace('break'))}
                 className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(45,212,191,0.2)] hover:shadow-[0_0_50px_-5px_rgba(45,212,191,0.4)]`}
               >
                  <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
 
                 <div className="relative z-10 flex flex-col items-center text-center px-2">
                     <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">
-                       {showOptions ? "I WAS RESTING" : (isAfterWork ? "START BREAK" : "CONTINUE RESTING")}
+                       {effectiveShowOptions ? "I WAS RESTING" : (isAfterWork ? "START BREAK" : "CONTINUE RESTING")}
                     </span>
 
-                    {showOptions ? (
+                    {effectiveShowOptions ? (
                       <span className="text-[10px] font-mono font-medium text-teal-200/80 mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         Use {formatDuration(deductFromBankAmount)}
                       </span>
@@ -406,7 +445,7 @@ const GraceModal: React.FC = () => {
             </div>
 
             {/* Neutral Option */}
-            {showOptions && (
+            {effectiveShowOptions && (
                 <button 
                     onClick={handleNeutral}
                     className="text-[10px] font-bold uppercase tracking-widest text-white/30 hover:text-white transition-colors"
@@ -417,7 +456,7 @@ const GraceModal: React.FC = () => {
           </>
         )}
 
-        {showLongGracePrompt && (
+        {effectiveShowLongGracePrompt && (
           <div className="w-full max-w-xl rounded-[1.6rem] border border-amber-300/20 bg-white/8 backdrop-blur-2xl px-5 py-4 text-center shadow-[0_24px_60px_-36px_rgba(15,23,42,0.85)]">
             <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-100/70">
               Long Grace Detected

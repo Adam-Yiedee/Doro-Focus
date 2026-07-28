@@ -156,6 +156,43 @@ describe('getSummaryPomoComparison', () => {
     expect(getSummaryPomoDeltaLabel(result.previousDayDelta, result.previousDayTargetLabel)).toBe('Fewer Pomos Than Yesterday');
   });
 
+  it('compares the weekly average against the full summary day total, not just the current session', () => {
+    const result = getSummaryPomoComparison({
+      pastSessions: [
+        makeSession({
+          id: 'today-earlier',
+          startTime: '2026-07-20T10:00:00.000Z',
+          workMinutes: 75,
+          pomosCompleted: 3,
+        }),
+        makeSession({
+          id: 'yesterday',
+          startTime: '2026-07-19T10:00:00.000Z',
+          workMinutes: 50,
+          pomosCompleted: 2,
+        }),
+        makeSession({
+          id: 'two-days-ago',
+          startTime: '2026-07-18T10:00:00.000Z',
+          workMinutes: 150,
+          pomosCompleted: 6,
+        }),
+      ],
+      sessionStats: {
+        sessionStartTime: '2026-07-20T17:00:00.000Z',
+        sessionEndTime: '2026-07-20T17:25:00.000Z',
+        totalWorkMinutes: 25,
+        pomosCompleted: 1,
+      },
+      now: new Date('2026-07-20T18:00:00.000Z'),
+    });
+
+    expect(result.summaryDayPomos).toBe(4);
+    expect(result.weeklyAveragePomos).toBeCloseTo(8 / 7, 5);
+    expect(result.weeklyAverageDelta).toBeCloseTo(4 - (8 / 7), 5);
+    expect(getSummaryPomoDeltaLabel(result.weeklyAverageDelta, 'Average')).toBe('More Pomos Than Average');
+  });
+
   it('includes zero-pomo days in the previous seven-day average', () => {
     const result = getSummaryPomoComparison({
       pastSessions: [

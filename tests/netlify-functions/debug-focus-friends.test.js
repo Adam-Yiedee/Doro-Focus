@@ -98,9 +98,22 @@ describe('debug Focus Friends accounts', () => {
       return payload;
     }));
 
+    [masterPayload, master2Payload, ...extraDebugPayloads].forEach((payload) => {
+      expect(payload.accountData.logs.some((entry) => entry.type === 'work')).toBe(true);
+      expect(payload.accountData.logs.some((entry) => entry.type === 'break')).toBe(true);
+      expect(payload.accountData.pastSessions.length).toBeGreaterThan(0);
+      expect(payload.accountData.user.lifetimeStats).toMatchObject(payload.user.lifetimeStats);
+      expect(payload.user.lifetimeStats.totalFocusHours).toBeGreaterThan(0);
+      expect(payload.user.lifetimeStats.totalSessionHours).toBeGreaterThan(0);
+      expect(payload.user.lifetimeStats.totalPomos).toBeGreaterThan(0);
+      expect(payload.user.lifetimeStats.totalSessions).toBe(payload.accountData.pastSessions.length);
+      expect(payload.user.lifetimeStats.activeDays).toBeGreaterThan(0);
+    });
+
     const masterFriendsResponse = await focusFriendsHandler(makeAuthedRequest(masterPayload.token));
     expect(masterFriendsResponse.status).toBe(200);
     const masterFriends = await masterFriendsResponse.json();
+    expect(masterFriends.friends.every((friend) => friend.lifetimeStats.totalFocusHours > 0)).toBe(true);
     expect(masterFriends.friends).toMatchObject([
       {
         username: 'master2',
@@ -212,6 +225,41 @@ describe('debug Focus Friends accounts', () => {
       userName: 'Custom Master',
       revision: 8,
     });
+  });
+
+  it('upgrades old fixture-shaped debug accounts that were saved before stats were seeded', async () => {
+    await authLoginHandler(makeLoginRequest('master4', 'master4'));
+    const master4Record = await getUserByUsername('master4');
+    const oldFixtureData = await getAccountData(master4Record.id);
+    oldFixtureData.revision = 8;
+    oldFixtureData.logs = [];
+    oldFixtureData.pastSessions = [];
+    oldFixtureData.user = {
+      ...oldFixtureData.user,
+      lifetimeStats: {
+        totalFocusHours: 0,
+        totalSessionHours: 0,
+        manualFocusHours: 0,
+        totalSessions: 0,
+        totalPomos: 0,
+        activeDays: 0,
+        currentStreak: 0,
+        bestStreak: 0,
+        lastActiveDate: null,
+        categoryBreakdown: {},
+      },
+    };
+
+    const { saveAccountData } = await import('../../netlify/functions/_lib/account-store.js');
+    await saveAccountData(master4Record.id, oldFixtureData);
+
+    const repairedResponse = await authLoginHandler(makeLoginRequest('master4', 'master4'));
+    expect(repairedResponse.status).toBe(200);
+    const repairedPayload = await repairedResponse.json();
+    expect(repairedPayload.accountData.logs.some((entry) => entry.type === 'work')).toBe(true);
+    expect(repairedPayload.accountData.pastSessions.length).toBeGreaterThan(0);
+    expect(repairedPayload.user.lifetimeStats.totalFocusHours).toBeGreaterThan(0);
+    expect(repairedPayload.user.lifetimeStats.totalSessions).toBe(repairedPayload.accountData.pastSessions.length);
   });
 
   it('repairs untouched debug fixture presence without replacing customized data', async () => {

@@ -758,6 +758,23 @@ describe('behavior-locked transition math', () => {
     expect(shouldAutoStartTwoInARowFocus(5, compactTwoInARow)).toBe(true);
   });
 
+  it('supports compact mini-pomo auto-start blocks from one through four', () => {
+    const compactBase = { timerPreset: 'compact' as const, twoInARowMode: true };
+
+    expect(shouldAutoStartTwoInARowFocus(1, { ...compactBase, twoInARowMode: false, miniPomoAutoStartBlock: 1 })).toBe(false);
+    expect(shouldAutoStartTwoInARowFocus(1, { ...compactBase, miniPomoAutoStartBlock: 2 })).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(2, { ...compactBase, miniPomoAutoStartBlock: 2 })).toBe(false);
+
+    expect(shouldAutoStartTwoInARowFocus(1, { ...compactBase, miniPomoAutoStartBlock: 3 })).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(2, { ...compactBase, miniPomoAutoStartBlock: 3 })).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(3, { ...compactBase, miniPomoAutoStartBlock: 3 })).toBe(false);
+
+    expect(shouldAutoStartTwoInARowFocus(1, { ...compactBase, miniPomoAutoStartBlock: 4 })).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(2, { ...compactBase, miniPomoAutoStartBlock: 4 })).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(3, { ...compactBase, miniPomoAutoStartBlock: 4 })).toBe(true);
+    expect(shouldAutoStartTwoInARowFocus(4, { ...compactBase, miniPomoAutoStartBlock: 4 })).toBe(false);
+  });
+
   it('keeps two-in-a-row disabled outside the compact preset', () => {
     expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'classic', twoInARowMode: true })).toBe(false);
     expect(shouldAutoStartTwoInARowFocus(1, { timerPreset: 'compact', twoInARowMode: false })).toBe(false);

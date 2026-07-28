@@ -42,17 +42,25 @@ export const getMatchingTimerPreset = (
 
 export const shouldAutoStartTwoInARowFocus = (
   completedPomoCount: number,
-  settings: Pick<TimerSettings, 'timerPreset' | 'twoInARowMode'>,
+  settings: Pick<TimerSettings, 'timerPreset' | 'twoInARowMode'> & Partial<Pick<TimerSettings, 'miniPomoAutoStartBlock'>>,
 ) => {
   const safeCompletedPomoCount = Number.isFinite(completedPomoCount)
     ? Math.max(0, Math.floor(completedPomoCount))
     : 0;
+  const legacyBlockSize = settings.twoInARowMode ? 2 : 1;
+  const miniPomoBlockSize = (
+    settings.miniPomoAutoStartBlock === 2
+    || settings.miniPomoAutoStartBlock === 3
+    || settings.miniPomoAutoStartBlock === 4
+  )
+    ? settings.miniPomoAutoStartBlock
+    : legacyBlockSize;
 
   return (
     settings.timerPreset === 'compact'
-    && settings.twoInARowMode
+    && miniPomoBlockSize > 1
     && safeCompletedPomoCount > 0
-    && safeCompletedPomoCount % 2 === 1
+    && safeCompletedPomoCount % miniPomoBlockSize !== 0
   );
 };
 
@@ -503,7 +511,7 @@ export interface TaskFinishProjectionInput {
     | 'longBreakInterval'
     | 'timerPreset'
     | 'twoInARowMode'
-  >;
+  > & Partial<Pick<TimerSettings, 'miniPomoAutoStartBlock'>>;
 }
 
 export const getPomodoroCycleProgress = (

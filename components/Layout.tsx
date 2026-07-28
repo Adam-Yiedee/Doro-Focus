@@ -1,20 +1,28 @@
 
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Heart, X } from 'lucide-react';
+import { Check, Flame, Heart, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
 import AllPauseModal, { ResumeModal } from './Modals/AllPauseModal';
 import LogModal from './Modals/LogModal';
-import GraceModal from './Modals/GraceModal';
+import GraceModal, { type GracePreviewConfig } from './Modals/GraceModal';
 import TaskViewModal from './Modals/TaskViewModal';
 import WeeklySchedulePanel from './Modals/WeeklySchedulePanel';
 import SummaryView from './SummaryView';
+import StreakFlame from './StreakFlame';
 import { FocusFriendAction, Task } from '../types';
+import {
+  preserveAppOpenStreakWithEarnedStats,
+  recordAppOpenStreakWithEarnedStats,
+  type AppOpenStreakSnapshot,
+} from '../utils/appOpenStreak';
+import { DORO_DEVELOPER_PREVIEW_EVENT, type DeveloperPreviewEventDetail } from '../utils/developerPreview';
+import { DORO_DELAYED_START_SESSION_STARTED_EVENT } from '../utils/delayedStartEvents';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { getDailyWelcomeMessage } from '../utils/dailyWelcomeMessages';
-import { playCelebrationTrumpet, playEncouragementDing } from '../utils/sound';
+import { playCelebrationTrumpet, playEncouragementDing, playFocusStreakMomentSound, startPersistentAlarm } from '../utils/sound';
 import { getFocusFriendInviteUsernameFromCurrentUrl } from '../utils/focusFriendInvite';
 import { TIMER_ONLY_GROUP_SYNC_CONFIG } from '../utils/groupStudy';
 
@@ -29,8 +37,12 @@ type NotificationBannerItem = {
   focusFriendAction?: FocusFriendAction;
   status?: 'working' | 'success' | 'error';
   statusMessage?: string;
+  dismissOnClick?: boolean;
+  stopAlarmOnDismiss?: boolean;
+  persistUntilDismissed?: boolean;
 };
 type DailyWelcomeBanner = { id: string; message: string; exiting: boolean };
+type FocusStreakBanner = { id: string; snapshot: AppOpenStreakSnapshot; exiting: boolean };
 type CelebrationConfettiPiece = {
   id: string;
   left: number;
@@ -75,6 +87,9 @@ const DAILY_WELCOME_EXIT_MS = 680;
 const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + DAILY_WELCOME_EXIT_MS;
 const DAILY_WELCOME_SHOW_DELAY_MS = 1150;
 const DAILY_WELCOME_STORAGE_KEY = 'doro_daily_welcome_seen_date';
+const FOCUS_STREAK_VISIBLE_MS = 9200;
+const FOCUS_STREAK_EXIT_MS = 720;
+const FOCUS_STREAK_TOTAL_MS = FOCUS_STREAK_VISIBLE_MS + FOCUS_STREAK_EXIT_MS;
 const ALL_TASKS_CELEBRATION_DISMISS_MS = 360;
 const ALL_TASKS_CELEBRATION_BUFFER_MS = 280;
 const ALL_TASKS_CELEBRATION_COLORS = ['#FDE68A', '#FCA5A5', '#93C5FD', '#A7F3D0', '#C4B5FD', '#F9A8D4', '#FDBA74'];
@@ -308,6 +323,8 @@ const Layout: React.FC = () => {
   const [showLogModal, setShowLogModal] = useState(false);
   const [groupBanners, setGroupBanners] = useState<NotificationBannerItem[]>([]);
   const [dailyWelcomeBanner, setDailyWelcomeBanner] = useState<DailyWelcomeBanner | null>(null);
+  const [focusStreakBanner, setFocusStreakBanner] = useState<FocusStreakBanner | null>(null);
+  const [gracePreview, setGracePreview] = useState<GracePreviewConfig | null>(null);
   const [allTasksCelebration, setAllTasksCelebration] = useState<AllTasksCelebration | null>(null);
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
   const [notificationTimersActive, setNotificationTimersActive] = useState(areNotificationTimersActive);
@@ -326,12 +343,26 @@ const Layout: React.FC = () => {
     todayKey: null,
     message: null,
   });
+  const focusStreakTimersRef = useRef({
+    exit: createPausableTimeout(FOCUS_STREAK_VISIBLE_MS),
+    remove: createPausableTimeout(FOCUS_STREAK_TOTAL_MS),
+  });
+  const playedFocusStreakSoundIdsRef = useRef<Set<string>>(new Set());
   const allTasksCelebrationTimeoutRef = useRef<number | null>(null);
   const queuedAllTasksCelebrationIdRef = useRef<number | null>(null);
+  const didRecordAppOpenStreakRef = useRef(false);
   const previousOpenBoardTaskCountRef = useRef<number | null>(null);
   const previousTaskCheckedMapRef = useRef<Map<number, boolean>>(new Map());
   const didInitCelebrationRef = useRef(false);
   const previousGroupSessionIdRef = useRef<string | null>(null);
+  const selectedAlarmSoundRef = useRef(settings.alarmSound);
+  const delayedStartAlarmStopRef = useRef<(() => void) | null>(null);
+
+  const stopDelayedStartAlarm = () => {
+    const stopAlarm = delayedStartAlarmStopRef.current;
+    delayedStartAlarmStopRef.current = null;
+    stopAlarm?.();
+  };
 
   const clearBannerTimer = (id: string) => {
     const timers = bannerTimersRef.current[id];
@@ -351,6 +382,7 @@ const Layout: React.FC = () => {
   const clearAllBannerTimers = () => {
     Object.keys(bannerTimersRef.current).forEach(clearBannerTimer);
     Object.keys(bannerDismissTimeoutsRef.current).forEach(clearBannerDismissTimeout);
+    stopDelayedStartAlarm();
   };
 
   const clearDailyWelcomeTimers = () => {
@@ -359,11 +391,22 @@ const Layout: React.FC = () => {
     clearPausableTimeout(dailyWelcomeTimersRef.current.remove);
   };
 
+  const clearFocusStreakTimers = () => {
+    clearPausableTimeout(focusStreakTimersRef.current.exit);
+    clearPausableTimeout(focusStreakTimersRef.current.remove);
+  };
+
   const resetDailyWelcomeTimers = () => {
     clearDailyWelcomeTimers();
     dailyWelcomeTimersRef.current.show.remainingMs = DAILY_WELCOME_SHOW_DELAY_MS;
     dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
     dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
+  };
+
+  const resetFocusStreakTimers = () => {
+    clearFocusStreakTimers();
+    focusStreakTimersRef.current.exit.remainingMs = FOCUS_STREAK_VISIBLE_MS;
+    focusStreakTimersRef.current.remove.remainingMs = FOCUS_STREAK_TOTAL_MS;
   };
 
   const pauseAllNotificationTimers = () => {
@@ -374,6 +417,8 @@ const Layout: React.FC = () => {
     pausePausableTimeout(dailyWelcomeTimersRef.current.show);
     pausePausableTimeout(dailyWelcomeTimersRef.current.exit);
     pausePausableTimeout(dailyWelcomeTimersRef.current.remove);
+    pausePausableTimeout(focusStreakTimersRef.current.exit);
+    pausePausableTimeout(focusStreakTimersRef.current.remove);
   };
 
   const scheduleDailyWelcomeLifecycle = () => {
@@ -425,6 +470,38 @@ const Layout: React.FC = () => {
     });
   };
 
+  const scheduleFocusStreakLifecycle = () => {
+    if (!notificationTimersActive || !focusStreakBanner) return;
+    const bannerId = focusStreakBanner.id;
+
+    startPausableTimeout(focusStreakTimersRef.current.exit, () => {
+      setFocusStreakBanner((prev) => (
+        prev && prev.id === bannerId ? { ...prev, exiting: true } : prev
+      ));
+    });
+
+    startPausableTimeout(focusStreakTimersRef.current.remove, () => {
+      setFocusStreakBanner((prev) => (prev && prev.id === bannerId ? null : prev));
+      clearFocusStreakTimers();
+    });
+  };
+
+  const dismissFocusStreakBanner = () => {
+    setFocusStreakBanner((current) => {
+      if (!current || current.exiting) return current;
+      const closingId = current.id;
+
+      clearFocusStreakTimers();
+      focusStreakTimersRef.current.remove.remainingMs = FOCUS_STREAK_EXIT_MS;
+      startPausableTimeout(focusStreakTimersRef.current.remove, () => {
+        setFocusStreakBanner((latest) => (latest?.id === closingId ? null : latest));
+        clearFocusStreakTimers();
+      });
+
+      return { ...current, exiting: true };
+    });
+  };
+
   const scheduleBannerTimer = (id: string) => {
     if (!notificationTimersActive) return;
     const timers = bannerTimersRef.current[id];
@@ -445,6 +522,9 @@ const Layout: React.FC = () => {
   const dismissBanner = (id: string, exitStyle: NotificationBannerItem['exitStyle'] = 'pop') => {
     const currentBanner = groupBanners.find((item) => item.id === id);
     const exitMs = getBannerLifecycle(currentBanner?.tone || 'group').exitMs;
+    if (currentBanner?.stopAlarmOnDismiss) {
+      stopDelayedStartAlarm();
+    }
     clearBannerTimer(id);
     clearBannerDismissTimeout(id);
 
@@ -645,6 +725,41 @@ const Layout: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (didRecordAppOpenStreakRef.current) return;
+    didRecordAppOpenStreakRef.current = true;
+
+    try {
+      const snapshot = recordAppOpenStreakWithEarnedStats(window.localStorage, user?.lifetimeStats);
+      if (snapshot.openedToday) {
+        setFocusStreakBanner(null);
+        return;
+      }
+      resetFocusStreakTimers();
+      setFocusStreakBanner({
+        id: `focus-streak-${snapshot.todayDate}-${Date.now()}`,
+        snapshot,
+        exiting: false,
+      });
+    } catch {
+      setFocusStreakBanner(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user?.lifetimeStats) return;
+
+    try {
+      const snapshot = preserveAppOpenStreakWithEarnedStats(window.localStorage, user.lifetimeStats);
+      setFocusStreakBanner((current) => (
+        current ? { ...current, snapshot } : current
+      ));
+    } catch {
+      // Ignore storage failures; account stats remain the source of truth.
+    }
+  }, [user?.lifetimeStats?.bestStreak, user?.lifetimeStats?.currentStreak]);
+
+  useEffect(() => {
     const updateNotificationTimerState = () => {
       setNotificationTimersActive(areNotificationTimersActive());
     };
@@ -665,6 +780,7 @@ const Layout: React.FC = () => {
     if (notificationTimersActive) {
       Object.keys(bannerTimersRef.current).forEach(scheduleBannerTimer);
       scheduleDailyWelcomeLifecycle();
+      scheduleFocusStreakLifecycle();
       if (queuedAllTasksCelebrationIdRef.current !== null) {
         startAllTasksCelebration(queuedAllTasksCelebrationIdRef.current);
       }
@@ -672,7 +788,77 @@ const Layout: React.FC = () => {
     }
 
     pauseAllNotificationTimers();
-  }, [notificationTimersActive]);
+  }, [notificationTimersActive, user?.lifetimeStats?.bestStreak, user?.lifetimeStats?.currentStreak]);
+
+  useEffect(() => {
+    selectedAlarmSoundRef.current = settings.alarmSound;
+  }, [settings.alarmSound]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleDelayedStartSessionStarted = () => {
+      const id = `delayed-start-session-started-${Date.now()}`;
+      const banner: NotificationBannerItem = {
+        id,
+        actorName: '',
+        message: 'Session Started!',
+        title: 'Delayed Start',
+        tone: 'group',
+        exiting: false,
+        dismissOnClick: true,
+        stopAlarmOnDismiss: true,
+        persistUntilDismissed: true,
+      };
+
+      stopDelayedStartAlarm();
+      delayedStartAlarmStopRef.current = startPersistentAlarm(selectedAlarmSoundRef.current);
+
+      setGroupBanners((prev) => {
+        prev.forEach((item) => {
+          if (item.stopAlarmOnDismiss) {
+            clearBannerTimer(item.id);
+            clearBannerDismissTimeout(item.id);
+          }
+        });
+
+        const next = [
+          ...prev.filter((item) => !item.stopAlarmOnDismiss),
+          banner,
+        ];
+        const trimmed = next.slice(-3);
+        const visibleBannerIds = new Set(trimmed.map(item => item.id));
+        Object.keys(bannerTimersRef.current).forEach(timerId => {
+          if (!visibleBannerIds.has(timerId)) {
+            clearBannerTimer(timerId);
+          }
+        });
+        Object.keys(bannerDismissTimeoutsRef.current).forEach(timerId => {
+          if (!visibleBannerIds.has(timerId)) {
+            clearBannerDismissTimeout(timerId);
+          }
+        });
+        return trimmed;
+      });
+    };
+
+    window.addEventListener(DORO_DELAYED_START_SESSION_STARTED_EVENT, handleDelayedStartSessionStarted);
+    return () => {
+      window.removeEventListener(DORO_DELAYED_START_SESSION_STARTED_EVENT, handleDelayedStartSessionStarted);
+      stopDelayedStartAlarm();
+    };
+  }, []);
+
+  useEffect(() => {
+    scheduleFocusStreakLifecycle();
+  }, [focusStreakBanner?.id, notificationTimersActive]);
+
+  useEffect(() => {
+    if (!focusStreakBanner || focusStreakBanner.exiting || !notificationTimersActive) return;
+    if (playedFocusStreakSoundIdsRef.current.has(focusStreakBanner.id)) return;
+    playedFocusStreakSoundIdsRef.current.add(focusStreakBanner.id);
+    void playFocusStreakMomentSound();
+  }, [focusStreakBanner, notificationTimersActive]);
 
   useEffect(() => {
     if (previousGroupSessionIdRef.current !== groupSessionId) {
@@ -817,9 +1003,153 @@ const Layout: React.FC = () => {
   }, [focusFriendNotice, markFocusFriendActionRead, notificationTimersActive]);
 
   useEffect(() => {
+    const createDeveloperGroupBanner = (
+      tone: NotificationBannerItem['tone'],
+      title: string,
+      actorName: string,
+      message: string,
+    ) => {
+      const id = `developer-${tone}-${Date.now()}`;
+      clearBannerTimer(id);
+      clearBannerDismissTimeout(id);
+
+      const banner: NotificationBannerItem = {
+        id,
+        actorName,
+        message,
+        title,
+        tone,
+        exiting: false,
+      };
+
+      setGroupBanners(prev => {
+        const next = [...prev.filter(item => item.id !== id), banner];
+        const trimmed = next.slice(-3);
+        const visibleBannerIds = new Set(trimmed.map(item => item.id));
+        Object.keys(bannerTimersRef.current).forEach(timerId => {
+          if (timerId.startsWith('developer-') && !visibleBannerIds.has(timerId)) {
+            clearBannerTimer(timerId);
+          }
+        });
+        return trimmed;
+      });
+
+      const lifecycle = getBannerLifecycle(tone);
+      bannerTimersRef.current[id] = {
+        exit: createPausableTimeout(lifecycle.visibleMs),
+        remove: createPausableTimeout(lifecycle.totalMs),
+      };
+      scheduleBannerTimer(id);
+      if (tone === 'encouragement') void playEncouragementDing();
+    };
+
+    const showDeveloperDailyWelcome = () => {
+      const id = `developer-daily-${Date.now()}`;
+      clearDailyWelcomeTimers();
+      dailyWelcomeConfigRef.current = { bannerId: null, todayKey: null, message: null };
+      setDailyWelcomeBanner({
+        id,
+        message: 'Developer preview notification. The entrance, progress bar, and dismissal are live.',
+        exiting: false,
+      });
+
+      dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
+      dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
+      if (!notificationTimersActive) return;
+      startPausableTimeout(dailyWelcomeTimersRef.current.exit, () => {
+        setDailyWelcomeBanner(prev => (prev?.id === id ? { ...prev, exiting: true } : prev));
+      });
+      startPausableTimeout(dailyWelcomeTimersRef.current.remove, () => {
+        setDailyWelcomeBanner(prev => (prev?.id === id ? null : prev));
+        clearDailyWelcomeTimers();
+      });
+    };
+
+    const showDeveloperFocusStreak = () => {
+      if (typeof window === 'undefined') return;
+      const snapshot = preserveAppOpenStreakWithEarnedStats(window.localStorage, user?.lifetimeStats);
+      resetFocusStreakTimers();
+      setFocusStreakBanner({
+        id: `developer-focus-streak-${Date.now()}`,
+        snapshot,
+        exiting: false,
+      });
+    };
+
+    const clearDeveloperPreviews = () => {
+      Object.keys(bannerTimersRef.current).forEach(timerId => {
+        if (timerId.startsWith('developer-')) clearBannerTimer(timerId);
+      });
+      Object.keys(bannerDismissTimeoutsRef.current).forEach(timerId => {
+        if (timerId.startsWith('developer-')) clearBannerDismissTimeout(timerId);
+      });
+      setGroupBanners(prev => prev.filter(item => !item.id.startsWith('developer-')));
+      setDailyWelcomeBanner(prev => (prev?.id.startsWith('developer-') ? null : prev));
+      setFocusStreakBanner(prev => (prev?.id.startsWith('developer-') ? null : prev));
+      setGracePreview(null);
+    };
+
+    const handleDeveloperPreview = (event: Event) => {
+      const action = (event as CustomEvent<DeveloperPreviewEventDetail>).detail?.action;
+
+      switch (action) {
+        case 'focus-streak-notification':
+          showDeveloperFocusStreak();
+          break;
+        case 'daily-welcome-notification':
+          showDeveloperDailyWelcome();
+          break;
+        case 'group-notification':
+          createDeveloperGroupBanner('group', 'Developer Notice', 'Preview', 'opened a regular group-style notification.');
+          break;
+        case 'friend-notification':
+          createDeveloperGroupBanner('friend', 'Friend Action', 'Preview Friend', 'wants to join your focus session.');
+          break;
+        case 'encouragement-notification':
+          createDeveloperGroupBanner('encouragement', 'Encouragement', 'Preview Friend', 'This is the encouragement banner animation.');
+          break;
+        case 'grace-after-work':
+          setGracePreview({
+            context: 'afterWork',
+            graceTotal: 84,
+            showOptions: true,
+            statusMessage: 'Developer preview for the post-work grace menu.',
+          });
+          break;
+        case 'grace-after-break':
+          setGracePreview({
+            context: 'afterBreak',
+            graceTotal: 96,
+            showOptions: true,
+            statusMessage: 'Developer preview for the post-break grace menu.',
+          });
+          break;
+        case 'long-grace':
+          setGracePreview({
+            context: 'afterWork',
+            graceTotal: 3 * 60 * 60,
+            showOptions: true,
+            showLongGracePrompt: true,
+            statusMessage: 'Developer preview for long-grace session protection.',
+          });
+          break;
+        case 'clear-previews':
+          clearDeveloperPreviews();
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener(DORO_DEVELOPER_PREVIEW_EVENT, handleDeveloperPreview);
+    return () => window.removeEventListener(DORO_DEVELOPER_PREVIEW_EVENT, handleDeveloperPreview);
+  }, [notificationTimersActive]);
+
+  useEffect(() => {
     return () => {
       clearAllBannerTimers();
       clearDailyWelcomeTimers();
+      clearFocusStreakTimers();
       clearAllTasksCelebrationTimer();
     };
   }, []);
@@ -944,6 +1274,7 @@ const Layout: React.FC = () => {
       : 'inset 0 0 0 1px rgba(255,255,255,0.14), inset 0 1px 0 rgba(255,255,255,0.22)',
   }), [isLightTheme]);
   const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
+  const focusStreakSnapshot = focusStreakBanner?.snapshot || null;
 
   return (
     <div 
@@ -991,6 +1322,256 @@ const Layout: React.FC = () => {
             opacity: 0;
             transform: translateY(-24px) scale(0.94);
             filter: blur(8px) saturate(0.82);
+          }
+        }
+        @keyframes doroFocusStreakOverlayIn {
+          0% {
+            opacity: 0;
+            backdrop-filter: blur(0) saturate(1);
+            -webkit-backdrop-filter: blur(0) saturate(1);
+          }
+          100% {
+            opacity: 1;
+            backdrop-filter: blur(14px) saturate(1.08);
+            -webkit-backdrop-filter: blur(14px) saturate(1.08);
+          }
+        }
+        @keyframes doroFocusStreakOverlayOut {
+          0% {
+            opacity: 1;
+            backdrop-filter: blur(14px) saturate(1.08);
+            -webkit-backdrop-filter: blur(14px) saturate(1.08);
+          }
+          100% {
+            opacity: 0;
+            backdrop-filter: blur(0) saturate(1);
+            -webkit-backdrop-filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doroFocusStreakCardIn {
+          0% {
+            opacity: 0;
+            transform: translateY(30px) scale(0.9);
+            filter: blur(12px) saturate(0.86);
+          }
+          58% {
+            opacity: 1;
+            transform: translateY(-5px) scale(1.018);
+            filter: blur(0) saturate(1.08);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doroFocusStreakCardOut {
+          0% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+          36% {
+            opacity: 1;
+            transform: translateY(5px) scale(1.012);
+            filter: blur(0) saturate(1.1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(24px) scale(0.9);
+            filter: blur(14px) saturate(0.78);
+          }
+        }
+        @keyframes doroFocusStreakFireReveal {
+          0% {
+            opacity: 0;
+            transform: scale(1.01);
+            filter: blur(12px) saturate(0.94) contrast(0.94);
+          }
+          14% {
+            opacity: 0.92;
+            transform: scale(1.01);
+            filter: blur(0) saturate(1.08) contrast(0.98);
+          }
+          58% {
+            opacity: 0.96;
+            transform: scale(1.01);
+            filter: blur(0) saturate(1.16) contrast(1.02);
+          }
+          76% {
+            opacity: 0.84;
+            transform: scale(1.01);
+            filter: blur(0.6px) saturate(1.12) contrast(1);
+          }
+          90% {
+            opacity: 0.36;
+            transform: scale(1.01);
+            filter: blur(5px) saturate(1.02) contrast(0.94);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(1.01);
+            filter: blur(10px) saturate(0.92) contrast(0.9);
+          }
+        }
+        @keyframes doroFocusStreakNumberReveal {
+          0%,
+          18% {
+            opacity: 0;
+            transform: scale(0.9);
+            filter: blur(10px);
+            text-shadow:
+              0 2px 0 rgba(255,255,255,0.12),
+              0 13px 24px rgba(0,0,0,0.44);
+          }
+          68% {
+            opacity: 0.9;
+            transform: scale(0.918);
+            filter: blur(1.4px);
+            text-shadow:
+              0 2px 0 rgba(255,255,255,0.12),
+              0 13px 24px rgba(0,0,0,0.44);
+          }
+          100% {
+            opacity: 1;
+            transform: scale(0.92);
+            filter: none;
+            text-shadow:
+              0 2px 0 rgba(255,255,255,0.12),
+              0 13px 24px rgba(0,0,0,0.44);
+          }
+        }
+        @keyframes doroFocusStreakNumberShine {
+          0%,
+          12% {
+            opacity: 0;
+            background-position: 142% 50%;
+          }
+          22% {
+            opacity: 0.98;
+          }
+          64% {
+            opacity: 0.92;
+          }
+          100% {
+            opacity: 0;
+            background-position: -42% 50%;
+          }
+        }
+        @keyframes doroFocusStreakNumberSheenBreath {
+          0%,
+          100% {
+            opacity: 0;
+          }
+          46% {
+            opacity: 0.36;
+          }
+          58% {
+            opacity: 0.16;
+          }
+        }
+        @keyframes doroFocusStreakLabelIn {
+          0% {
+            opacity: 0;
+            transform: translateY(10px);
+            filter: blur(4px);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0);
+            filter: blur(0);
+          }
+        }
+        @keyframes doroFocusStreakGlowIn {
+          0% {
+            opacity: 0;
+            transform: scale(1);
+            filter: blur(20px);
+          }
+          100% {
+            opacity: 0.38;
+            transform: scale(1);
+            filter: blur(18px);
+          }
+        }
+        @keyframes doroFocusStreakWeekIn {
+          0% {
+            opacity: 0;
+            transform: translateY(26px) scale(0.72);
+            filter: blur(12px) saturate(0.82);
+          }
+          54% {
+            opacity: 1;
+            transform: translateY(-6px) scale(1.1);
+            filter: blur(0) saturate(1.16);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doroFocusStreakDayIn {
+          0% {
+            opacity: 0;
+            transform: translateY(18px) scale(0.48) rotate(-8deg);
+            filter: blur(8px) saturate(0.85);
+          }
+          64% {
+            opacity: 1;
+            transform: translateY(-5px) scale(1.18) rotate(3deg);
+            filter: blur(0) saturate(1.14);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0) saturate(1);
+          }
+        }
+        @keyframes doroFocusStreakTodayIgnite {
+          0% {
+            transform: scale(0.62);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.16),
+              0 0 0 rgba(251,191,36,0);
+          }
+          48% {
+            transform: scale(1.3);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.24),
+              0 0 34px rgba(251,191,36,0.68),
+              0 14px 26px rgba(0,0,0,0.42);
+          }
+          72% {
+            transform: scale(0.93);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.2),
+              0 0 17px rgba(251,191,36,0.42),
+              0 7px 15px rgba(0,0,0,0.28);
+          }
+          100% {
+            transform: scale(1);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.2),
+              0 0 14px rgba(251,191,36,0.38),
+              0 7px 15px rgba(0,0,0,0.26);
+          }
+        }
+        @keyframes doroFocusStreakTodayFlameIn {
+          0% {
+            opacity: 0;
+            transform: translateY(3px) scale(0.32) rotate(-10deg);
+            filter: blur(4px) brightness(1.5);
+          }
+          58% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.2) rotate(4deg);
+            filter: blur(0) brightness(1.18);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1) rotate(0deg);
+            filter: blur(0) brightness(1);
           }
         }
         @keyframes doroEncouragementBannerIn {
@@ -1173,8 +1754,254 @@ const Layout: React.FC = () => {
             0 0 18px rgba(255, 205, 213, 0.16);
         }
         .doro-daily-welcome-banner {
-          animation: doroDailyWelcomeIn 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+          animation: doroGroupBannerIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
           will-change: transform, opacity, filter;
+        }
+        .doro-focus-streak-overlay {
+          animation: doroFocusStreakOverlayIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          background: rgba(0, 0, 0, 0.42);
+          will-change: opacity, backdrop-filter;
+        }
+        .doro-focus-streak-overlay.is-exiting {
+          pointer-events: none;
+          animation: doroFocusStreakOverlayOut ${FOCUS_STREAK_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+        }
+        .doro-focus-streak-card {
+          width: min(78vw, 24rem);
+          aspect-ratio: 1 / 1;
+          animation: doroFocusStreakCardIn 620ms cubic-bezier(0.16, 0.92, 0.28, 1.08) both;
+          background:
+            radial-gradient(circle at 50% 16%, rgba(255,255,255,0.14), transparent 38%),
+            linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
+            rgba(255,255,255,0.075);
+          box-shadow:
+            0 44px 100px -42px rgba(0,0,0,0.94),
+            0 26px 52px -30px rgba(0,0,0,0.78),
+            inset 0 1px 0 rgba(255,255,255,0.16),
+            inset 0 -34px 68px rgba(0,0,0,0.11);
+          transform-origin: center;
+          will-change: transform, opacity, filter;
+        }
+        .doro-focus-streak-overlay.is-exiting .doro-focus-streak-card {
+          animation: doroFocusStreakCardOut ${FOCUS_STREAK_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+        }
+        .doro-focus-streak-card:not(.no-blur) {
+          backdrop-filter: blur(22px) saturate(1.18);
+          -webkit-backdrop-filter: blur(22px) saturate(1.18);
+        }
+        .doro-focus-streak-card::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          pointer-events: none;
+          box-shadow:
+            inset 0 0 0 1px rgba(255,255,255,0.12),
+            inset 0 0 58px rgba(255,255,255,0.045);
+        }
+        .doro-focus-streak-fire-field {
+          position: absolute;
+          inset: 0;
+          z-index: 36;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          border-radius: inherit;
+          opacity: 0;
+          animation: doroFocusStreakFireReveal 2200ms cubic-bezier(0.16, 1, 0.3, 1) 620ms both;
+          mix-blend-mode: normal;
+          pointer-events: none;
+          transform-origin: center;
+          will-change: opacity, transform, filter;
+        }
+        .doro-focus-streak-fire-field::after {
+          content: none;
+        }
+        .doro-focus-streak-fire {
+          position: relative;
+          z-index: 1;
+          width: 100%;
+          height: 100%;
+          transform: translate3d(0, 0, 0) scale(1.34);
+          transform-origin: center;
+          mix-blend-mode: screen;
+        }
+        .doro-focus-streak-fire svg {
+          display: block;
+          width: 100% !important;
+          height: 100% !important;
+          overflow: hidden;
+        }
+        .doro-focus-streak-label {
+          position: relative;
+          z-index: 40;
+          animation: doroFocusStreakLabelIn 520ms cubic-bezier(0.22, 1, 0.36, 1) 3060ms both;
+          text-shadow: 0 12px 22px rgba(0,0,0,0.46);
+        }
+        .doro-focus-streak-content {
+          width: min(100%, 19rem);
+          padding: 2.2rem 1.35rem 1.45rem;
+        }
+        .doro-focus-streak-number {
+          position: relative;
+          z-index: 10;
+          isolation: isolate;
+          overflow: visible;
+          animation:
+            doroFocusStreakNumberReveal 1120ms cubic-bezier(0.16, 1, 0.3, 1) 1360ms both;
+          color: rgba(238,244,250,0.94);
+          font-variant-numeric: tabular-nums;
+          transform-origin: center;
+          text-shadow:
+            0 2px 0 rgba(255,255,255,0.12),
+            0 13px 24px rgba(0,0,0,0.44);
+          will-change: transform, opacity, filter;
+        }
+        .doro-focus-streak-number-value {
+          position: relative;
+          z-index: 2;
+          display: block;
+          color: rgba(248,250,252,0.98);
+        }
+        .doro-focus-streak-number-shine,
+        .doro-focus-streak-number-shine-soft {
+          position: absolute;
+          inset: 0;
+          display: block;
+          pointer-events: none;
+          color: transparent;
+          -webkit-text-fill-color: transparent;
+          -webkit-background-clip: text;
+          background-clip: text;
+          background-repeat: no-repeat;
+          mix-blend-mode: screen;
+        }
+        .doro-focus-streak-number-shine {
+          z-index: 4;
+          opacity: 0;
+          background-image:
+            linear-gradient(
+              106deg,
+              rgba(255,255,255,0) 0%,
+              rgba(255,255,255,0) 36%,
+              rgba(255,255,255,0.18) 42%,
+              rgba(255,255,255,0.98) 48%,
+              rgba(255,246,203,0.96) 51%,
+              rgba(255,255,255,0.92) 54%,
+              rgba(255,255,255,0.16) 60%,
+              rgba(255,255,255,0) 68%,
+              rgba(255,255,255,0) 100%
+            );
+          background-size: 245% 100%;
+          background-position: 142% 50%;
+          filter: drop-shadow(0 0 0.45rem rgba(255,255,255,0.22));
+          animation: doroFocusStreakNumberShine 1480ms cubic-bezier(0.16, 1, 0.3, 1) 3020ms both;
+          will-change: background-position, opacity;
+        }
+        .doro-focus-streak-number-shine-soft {
+          opacity: 0;
+          z-index: 3;
+          background-image:
+            linear-gradient(
+              112deg,
+              rgba(255,255,255,0) 0%,
+              rgba(255,255,255,0) 34%,
+              rgba(255,255,255,0.3) 49%,
+              rgba(255,255,255,0) 64%,
+              rgba(255,255,255,0) 100%
+            );
+          background-size: 210% 100%;
+          background-position: 120% 50%;
+          animation:
+            doroFocusStreakNumberShine 1560ms cubic-bezier(0.18, 0.84, 0.24, 1) 2980ms both,
+            doroFocusStreakNumberSheenBreath 900ms ease-out 3200ms both;
+          will-change: background-position, opacity;
+        }
+        .doro-focus-streak-number::before {
+          content: none;
+        }
+        .doro-focus-streak-number::after {
+          content: none;
+        }
+        .doro-focus-streak-moment-week {
+          position: relative;
+          z-index: 40;
+          display: grid;
+          grid-template-columns: repeat(7, minmax(0, 1fr));
+          gap: 0.34rem;
+          width: min(100%, 18.25rem);
+          margin-top: -0.12rem;
+          animation: doroFocusStreakWeekIn 760ms cubic-bezier(0.16, 1, 0.3, 1) 3060ms both;
+          transform-origin: center;
+          will-change: transform, opacity, filter;
+        }
+        .doro-focus-streak-moment-day {
+          display: flex;
+          min-width: 0;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.26rem;
+          opacity: 0;
+          animation: doroFocusStreakDayIn 540ms cubic-bezier(0.16, 1, 0.3, 1) var(--doro-streak-day-delay, 3740ms) both;
+          transform-origin: center;
+          will-change: transform, opacity, filter;
+        }
+        .doro-focus-streak-moment-day-label {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: clip;
+          white-space: nowrap;
+          font-size: 0.49rem;
+          font-weight: 900;
+          line-height: 1;
+          letter-spacing: 0.09em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.52);
+          text-shadow: 0 7px 14px rgba(0,0,0,0.32);
+        }
+        .doro-focus-streak-moment-day-circle {
+          display: flex;
+          width: 1.72rem;
+          height: 1.72rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.2);
+          background: rgba(255,255,255,0.075);
+          color: rgba(255,255,255,0.44);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);
+          transform-origin: center;
+        }
+        .doro-focus-streak-moment-day-circle.is-active {
+          border-color: rgba(253,224,71,0.48);
+          background:
+            radial-gradient(circle at 50% 28%, rgba(255,255,255,0.25), transparent 42%),
+            linear-gradient(180deg, rgba(251,191,36,0.34), rgba(249,115,22,0.2));
+          color: #fde68a;
+        }
+        .doro-focus-streak-moment-day-circle.is-frozen {
+          border-color: rgba(147,197,253,0.5);
+          background:
+            radial-gradient(circle at 50% 26%, rgba(255,255,255,0.26), transparent 42%),
+            linear-gradient(180deg, rgba(96,165,250,0.36), rgba(59,130,246,0.2));
+          color: #bfdbfe;
+        }
+        .doro-focus-streak-moment-day-circle.is-today.is-active {
+          animation: doroFocusStreakTodayIgnite 760ms cubic-bezier(0.16, 1, 0.3, 1) 3820ms both;
+        }
+        .doro-focus-streak-moment-day-circle.is-today.is-active svg {
+          animation: doroFocusStreakTodayFlameIn 640ms cubic-bezier(0.16, 1, 0.3, 1) 3920ms both;
+        }
+        .doro-focus-streak-moment-day-circle svg {
+          width: 0.94rem;
+          height: 0.94rem;
+          fill: currentColor;
+          stroke-width: 2.45;
+          filter: drop-shadow(0 4px 7px rgba(0,0,0,0.28));
+        }
+        .doro-focus-streak-glow {
+          display: none;
         }
         .doro-daily-welcome-banner-exit {
           pointer-events: none;
@@ -1372,6 +2199,34 @@ const Layout: React.FC = () => {
             border-radius: 1rem !important;
             padding: 0.65rem 0.75rem !important;
           }
+          .doro-focus-streak-card {
+            width: min(86vw, 21rem);
+            border-radius: 1.55rem !important;
+          }
+          .doro-focus-streak-number {
+            font-size: clamp(5.5rem, 28vw, 8.25rem) !important;
+          }
+          .doro-focus-streak-content {
+            width: min(100%, 17.5rem);
+            padding: 1.85rem 1rem 1.25rem;
+          }
+          .doro-focus-streak-moment-week {
+            width: min(100%, 16.35rem);
+            gap: 0.24rem;
+            margin-top: -0.05rem;
+          }
+          .doro-focus-streak-moment-day-label {
+            font-size: 0.42rem;
+            letter-spacing: 0.07em;
+          }
+          .doro-focus-streak-moment-day-circle {
+            width: 1.48rem;
+            height: 1.48rem;
+          }
+          .doro-focus-streak-moment-day-circle svg {
+            width: 0.82rem;
+            height: 0.82rem;
+          }
           .doro-encouragement-banner {
             min-height: 2.55rem !important;
             padding: 0.56rem 0.68rem !important;
@@ -1486,7 +2341,23 @@ const Layout: React.FC = () => {
           .doro-encouragement-banner::before,
           .doro-encouragement-heart,
           .doro-daily-welcome-banner,
-          .doro-daily-welcome-banner-exit {
+          .doro-daily-welcome-banner-exit,
+          .doro-focus-streak-overlay,
+          .doro-focus-streak-card,
+          .doro-focus-streak-label,
+          .doro-focus-streak-number,
+          .doro-focus-streak-number-value,
+          .doro-focus-streak-number-shine,
+          .doro-focus-streak-number-shine-soft,
+          .doro-focus-streak-number::before,
+          .doro-focus-streak-number::after,
+          .doro-focus-streak-moment-week,
+          .doro-focus-streak-moment-day,
+          .doro-focus-streak-moment-day-circle.is-today.is-active,
+          .doro-focus-streak-moment-day-circle.is-today.is-active svg,
+          .doro-focus-streak-fire-field,
+          .doro-focus-streak-fire-field::after,
+          .doro-focus-streak-glow {
             animation: none !important;
           }
           .doro-encouragement-banner-fade,
@@ -1500,8 +2371,93 @@ const Layout: React.FC = () => {
             transform: translateY(-8px) scale(0.98) !important;
             filter: none !important;
           }
+          .doro-focus-streak-overlay.is-exiting {
+            opacity: 0 !important;
+            filter: none !important;
+          }
+          .doro-focus-streak-overlay.is-exiting .doro-focus-streak-card {
+            opacity: 0 !important;
+            transform: scale(0.98) !important;
+            filter: none !important;
+          }
+          .doro-focus-streak-number::before,
+          .doro-focus-streak-number::after {
+            opacity: 0 !important;
+          }
+          .doro-focus-streak-moment-week,
+          .doro-focus-streak-moment-day {
+            opacity: 1 !important;
+            transform: none !important;
+            filter: none !important;
+          }
         }
       `}</style>
+
+      {focusStreakBanner && focusStreakSnapshot && (
+        <div
+          className={`doro-focus-streak-overlay fixed inset-0 z-[82] flex items-center justify-center p-4 ${
+            focusStreakBanner.exiting ? 'is-exiting' : ''
+          }`}
+        >
+          <button
+            type="button"
+            key={focusStreakBanner.id}
+            onClick={dismissFocusStreakBanner}
+            aria-label={`Dismiss streak notification. Current streak ${focusStreakSnapshot.currentStreak}.`}
+            className={`doro-focus-streak-card relative isolate flex flex-col items-center justify-center overflow-hidden rounded-[1.8rem] border border-white/[0.16] text-center text-white outline-none transition-[border-color,box-shadow,transform] duration-300 hover:border-white/24 focus-visible:ring-2 focus-visible:ring-white/45 ${
+              settings.disableBlur ? 'no-blur bg-black/80' : ''
+            }`}
+          >
+            <div className="doro-focus-streak-glow pointer-events-none absolute inset-[17%] z-0 rounded-full" />
+            <div className="doro-focus-streak-fire-field">
+              <StreakFlame className="doro-focus-streak-fire" delayMs={680} />
+            </div>
+            <div className="doro-focus-streak-content relative flex flex-col items-center justify-center">
+              <div className="doro-focus-streak-label text-[0.78rem] font-black uppercase leading-none tracking-[0.24em] text-white/64">
+                Streak
+              </div>
+              <div
+                className="doro-focus-streak-number mt-1 font-mono text-[clamp(6.75rem,22vw,10.75rem)] font-black leading-none tracking-[0] text-white"
+                data-streak-value={focusStreakSnapshot.currentStreak}
+              >
+                <span className="doro-focus-streak-number-value">{focusStreakSnapshot.currentStreak}</span>
+                <span className="doro-focus-streak-number-shine-soft" aria-hidden="true">{focusStreakSnapshot.currentStreak}</span>
+                <span className="doro-focus-streak-number-shine" aria-hidden="true">{focusStreakSnapshot.currentStreak}</span>
+              </div>
+              <div className="doro-focus-streak-moment-week" aria-label="Last seven days of focus streak">
+                {focusStreakSnapshot.rollingDays.map((day, index) => {
+                  const isToday = day.dateKey === focusStreakSnapshot.todayDate;
+                  return (
+                    <div
+                      key={day.dateKey}
+                      className="doro-focus-streak-moment-day"
+                      style={{
+                        '--doro-streak-day-delay': `${3120 + index * 48}ms`,
+                      } as React.CSSProperties}
+                    >
+                      <span className="doro-focus-streak-moment-day-label">{day.weekdayLabel}</span>
+                      <span
+                        className={`doro-focus-streak-moment-day-circle ${
+                          day.status ? `is-${day.status}` : ''
+                        } ${isToday ? 'is-today' : ''}`}
+                        aria-label={`${day.weekdayLabel}: ${
+                          day.status === 'active'
+                            ? 'active streak day'
+                            : day.status === 'frozen'
+                              ? 'streak freeze'
+                              : 'no streak'
+                        }`}
+                      >
+                        {day.status && <Flame aria-hidden="true" />}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </button>
+        </div>
+      )}
 
       <div className="doro-notification-stack fixed top-4 left-1/2 -translate-x-1/2 z-[72] w-[min(92vw,42rem)] pointer-events-none flex flex-col gap-2">
         {dailyWelcomeBanner && (
@@ -1510,25 +2466,21 @@ const Layout: React.FC = () => {
             key={dailyWelcomeBanner.id}
             onClick={dismissDailyWelcomeBanner}
             aria-label="Dismiss welcome message"
-            className={`doro-daily-welcome-banner pointer-events-auto relative w-full overflow-hidden rounded-[1.7rem] border px-4 py-4 text-left shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-[border-color,box-shadow] duration-300 hover:border-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/45 ${
-              settings.disableBlur
-                ? 'border-white/18 bg-black/70'
-                : 'border-white/22 bg-[linear-gradient(160deg,rgba(255,245,247,0.18),rgba(255,255,255,0.07))] backdrop-blur-2xl'
-            } ${
+            className={`doro-daily-welcome-banner doro-group-banner doro-focus-friend-action-banner pointer-events-auto isolate relative w-full overflow-hidden rounded-2xl border px-4 py-3 text-left outline-none transition-all duration-500 focus-visible:ring-2 focus-visible:ring-white/45 ${
               dailyWelcomeBanner.exiting ? 'doro-daily-welcome-banner-exit' : ''
             }`}
           >
-            <div className="absolute inset-0 opacity-70 bg-[radial-gradient(circle_at_12%_-18%,rgba(255,255,255,0.34),transparent_44%)]" />
-            <div className="relative min-w-0 text-center">
-              <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
+            <div className="pointer-events-none absolute inset-0 opacity-60 bg-[radial-gradient(circle_at_12%_-12%,rgba(255,255,255,0.34),transparent_50%)]" />
+            <div className="doro-group-banner-content relative z-10 min-w-0 text-center">
+              <div className="doro-group-banner-title text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">
                 Welcome Back
               </div>
-              <div className="mt-1.5 text-sm leading-snug text-white/95">
+              <div className="doro-group-banner-message mt-1 text-sm leading-snug text-white/95">
                 {dailyWelcomeBanner.message}
               </div>
             </div>
             <div
-              className="doro-group-banner-progress absolute bottom-0 left-0 h-[2px] w-full bg-white/40"
+              className="doro-group-banner-progress pointer-events-none absolute bottom-0 left-0 z-10 h-[2px] w-full bg-white/40"
               style={{
                 animationDuration: `${DAILY_WELCOME_TOTAL_MS}ms`,
                 animationPlayState: notificationTimersActive ? 'running' : 'paused',
@@ -1544,7 +2496,14 @@ const Layout: React.FC = () => {
           } as React.CSSProperties;
           const isJoinRequestBanner = notice.focusFriendAction?.type === 'join-request' && !notice.focusFriendAction.readAt;
           const isFocusFriendBannerBusy = focusFriendJoinBusyId === notice.id;
-          const hasTimedProgress = !shouldHoldFocusFriendJoinBanner(notice.focusFriendAction);
+          const hasTimedProgress = !notice.persistUntilDismissed && !shouldHoldFocusFriendJoinBanner(notice.focusFriendAction);
+          const bannerMessage = notice.actorName.trim()
+            ? (
+                <>
+                  <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
+                </>
+              )
+            : notice.message;
           const focusFriendStatusClassName = notice.status === 'error'
             ? 'text-red-100/88'
             : notice.status === 'success'
@@ -1594,6 +2553,15 @@ const Layout: React.FC = () => {
           return (
             <div
               key={notice.id}
+              role={notice.dismissOnClick ? 'button' : undefined}
+              tabIndex={notice.dismissOnClick ? 0 : undefined}
+              onClick={notice.dismissOnClick ? () => dismissBanner(notice.id, 'pop') : undefined}
+              onKeyDown={notice.dismissOnClick ? (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                dismissBanner(notice.id, 'pop');
+              } : undefined}
+              aria-label={notice.dismissOnClick ? `Dismiss ${notice.title}: ${notice.message}` : undefined}
               className={`doro-group-banner pointer-events-auto isolate relative overflow-hidden rounded-2xl border px-4 py-3 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 ${
                 notice.tone === 'join'
                   ? 'border-emerald-200/40 bg-emerald-300/12'
@@ -1602,7 +2570,7 @@ const Layout: React.FC = () => {
                   : 'border-white/25 bg-white/10'
               } ${settings.disableBlur || notice.tone === 'friend' ? '' : 'backdrop-blur-2xl'} ${
                 notice.exiting ? 'opacity-0 -translate-y-2 scale-[0.985]' : 'opacity-100 translate-y-0 scale-100'
-              }`}
+              } ${notice.dismissOnClick ? 'cursor-pointer outline-none hover:-translate-y-[1px] hover:border-white/35 hover:bg-white/[0.13] focus-visible:ring-2 focus-visible:ring-white/45' : ''}`}
               style={{ animationDelay: `${i * 70}ms` }}
             >
               <div className="pointer-events-none absolute inset-0 opacity-60 bg-[radial-gradient(circle_at_12%_-12%,rgba(255,255,255,0.34),transparent_50%)]" />
@@ -1611,7 +2579,7 @@ const Layout: React.FC = () => {
                   {notice.title}
                 </div>
                 <div className="doro-group-banner-message mt-1 text-sm leading-snug text-white/95">
-                  <span className="font-bold">{notice.actorName}</span>{' '}{notice.message}
+                  {bannerMessage}
                 </div>
                 {notice.statusMessage && (
                   <div className={`doro-group-banner-status mt-2 text-[11px] font-semibold leading-tight ${focusFriendStatusClassName}`}>
@@ -1797,7 +2765,7 @@ const Layout: React.FC = () => {
       {/* Modals */}
       <AllPauseModal isOpen={showPauseModal} onClose={() => setShowPauseModal(false)} />
       <ResumeModal />
-      <GraceModal />
+      <GraceModal preview={gracePreview} onPreviewClose={() => setGracePreview(null)} />
       <LogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
       <TaskViewModal isOpen={isScheduleOpen} onClose={() => setScheduleOpen(false)} />
       <WeeklySchedulePanel isOpen={isWeeklyScheduleOpen} onClose={() => setWeeklyScheduleOpen(false)} />

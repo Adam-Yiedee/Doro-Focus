@@ -9,7 +9,13 @@ import {
 } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { isProductiveFocusLog } from '../../utils/logClassification';
-import { formatPomodoroCount } from '../../utils/pomodoroAccounting';
+import {
+  ACCOUNT_STATS_POMODORO_SECONDS,
+  formatPomodoroCount,
+  getAccountStatsPomodoroEquivalent,
+  getPomodoroEquivalentWeight,
+  isMiniPomodoroCompleteReason,
+} from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
 
 interface AccountInsightsProps {
@@ -19,11 +25,25 @@ interface AccountInsightsProps {
   accentColor: string;
   isLightTheme: boolean;
   showTodayStats?: boolean;
+  placement?: 'all' | 'snapshot-charts' | 'remaining';
 }
 
 type CategorySliceWithColor = { name: string; minutes: number; share: number; color: string };
 type AnalyticsRangeKey = 'week' | 'month' | 'year';
-type FocusWindow = { startMs: number; endMs: number; categoryName: string; categoryColor: string };
+type FocusWindow = {
+  startMs: number;
+  endMs: number;
+  categoryName: string;
+  categoryColor: string;
+  pomodoroEquivalent: number;
+  reasonCompletionWeight: number;
+  isMiniPomo: boolean;
+};
+type SessionClockCycle = {
+  index: number;
+  startMinutes: number;
+  endMinutes: number;
+};
 type SessionClockSegment = {
   startMinutes: number;
   endMinutes: number;
@@ -39,6 +59,9 @@ type SessionClockSession = {
   endMinutes: number;
   durationMinutes: number;
   segments: SessionClockSegment[];
+  cycleOverlays: SessionClockCycle[];
+  pomoDisplayValue: string;
+  pomoDisplayUnit: string;
   primaryColor: string;
 };
 type DailyCategoryBucket = {
@@ -66,13 +89,10 @@ const ANALYTICS_RANGE_OPTIONS: Array<[AnalyticsRangeKey, string]> = [
   ['month', 'Month'],
   ['year', 'Year'],
 ];
-const SESSION_CLOCK_AXIS_MARKS = [
-  { minutes: 0, label: '12a' },
-  { minutes: 360, label: '6a' },
-  { minutes: 720, label: '12p' },
-  { minutes: 1080, label: '6p' },
-  { minutes: 1440, label: '12a' },
-] as const;
+const SESSION_CLOCK_AXIS_MARK_COUNT = 5;
+const SESSION_CLOCK_AXIS_PADDING_MINUTES = 60;
+const SESSION_CLOCK_MIN_AXIS_RANGE_MINUTES = 4 * 60;
+const SESSION_CLOCK_NICE_AXIS_STEP_MINUTES = 4 * 60;
 const HEATMAP_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 const HEATMAP_FULL_COLOR_MINUTES = 360;
 const HEATMAP_SCALE_CAP_MINUTES = 720;
@@ -133,6 +153,17 @@ const formatClockMinutes = (minutes: number | null) => {
   const suffix = hour24 >= 12 ? 'PM' : 'AM';
   const hour12 = hour24 % 12 || 12;
   return `${hour12}:${mins.toString().padStart(2, '0')} ${suffix}`;
+};
+
+const formatSessionClockAxisLabel = (minutes: number) => {
+  const rounded = Math.round(minutes);
+  const normalized = ((rounded % 1440) + 1440) % 1440;
+  const hour24 = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  const suffix = hour24 >= 12 ? 'P' : 'A';
+  const hour12 = hour24 % 12 || 12;
+  if (mins === 0) return `${hour12}${suffix}`;
+  return `${hour12}:${mins.toString().padStart(2, '0')}${suffix}`;
 };
 
 const formatHourList = (hours: number[]) => {
@@ -348,7 +379,15 @@ const Card: React.FC<{
   );
 };
 
-const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joinedAt, accentColor, isLightTheme, showTodayStats = true }) => {
+const AccountInsights: React.FC<AccountInsightsProps> = ({
+  logs,
+  categories,
+  joinedAt,
+  accentColor,
+  isLightTheme,
+  showTodayStats = true,
+  placement = 'all',
+}) => {
   const insights = useMemo(() => computeAccountInsights({ logs, categories, joinedAt }), [categories, joinedAt, logs]);
   const categoryColors = useMemo(() => {
     const categoriesById = getCategoryMapById(categories);
@@ -382,6 +421,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
   const [hoveredHeatmapDateKey, setHoveredHeatmapDateKey] = useState<string | null>(null);
   const [selectedHeatmapDateKey, setSelectedHeatmapDateKey] = useState<string | null>(null);
   const [selectedSessionWeekStartMs, setSelectedSessionWeekStartMs] = useState<number | null>(null);
+  const heatmapScrollRef = useRef<HTMLDivElement | null>(null);
   const sessionClockTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const focusWindows = useMemo<FocusWindow[]>(() => {
@@ -396,6 +436,9 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           ...normalized,
           categoryName,
           categoryColor: resolvedCategory.color || categoryColors.get(categoryName) || entry.color || accentColor,
+          pomodoroEquivalent: getAccountStatsPomodoroEquivalent(entry),
+          reasonCompletionWeight: getPomodoroEquivalentWeight(entry),
+          isMiniPomo: isMiniPomodoroCompleteReason(entry.reason),
         };
       })
       .filter((window): window is FocusWindow => Boolean(window));
@@ -450,20 +493,78 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       const clippedEndMs = Math.min(Math.max(visualEndMs, clippedStartMs + 60_000), dayEndMs);
       const startMinutes = getMinutesOfDay(clippedStartMs);
       const endMinutes = clippedEndMs >= dayEndMs ? 1440 : getMinutesOfDay(clippedEndMs);
-      const segments = focusWindows
+      const sessionFocusWindows = focusWindows
         .map((window) => {
           const segmentStartMs = Math.max(window.startMs, clippedStartMs);
           const segmentEndMs = Math.min(window.endMs, clippedEndMs);
           if (segmentEndMs <= segmentStartMs) return null;
           return {
+            ...window,
+            segmentStartMs,
+            segmentEndMs,
             startMinutes: getMinutesOfDay(segmentStartMs),
             endMinutes: segmentEndMs >= dayEndMs ? 1440 : getMinutesOfDay(segmentEndMs),
-            categoryName: window.categoryName,
-            categoryColor: window.categoryColor,
           };
         })
-        .filter((segment): segment is SessionClockSegment => Boolean(segment))
+        .filter((window): window is FocusWindow & {
+          segmentStartMs: number;
+          segmentEndMs: number;
+          startMinutes: number;
+          endMinutes: number;
+        } => Boolean(window))
         .sort((left, right) => left.startMinutes - right.startMinutes);
+      const segments = sessionFocusWindows.map((window) => ({
+        startMinutes: window.startMinutes,
+        endMinutes: window.endMinutes,
+        categoryName: window.categoryName,
+        categoryColor: window.categoryColor,
+      }));
+      const totalPomoEquivalent = sessionFocusWindows.reduce(
+        (sum, window) => sum + Math.max(0, window.pomodoroEquivalent),
+        0,
+      );
+      const miniPomoCount = sessionFocusWindows.reduce(
+        (sum, window) => sum + (window.isMiniPomo && window.reasonCompletionWeight > 0 ? 1 : 0),
+        0,
+      );
+      const hasOnlyMiniPomos = miniPomoCount > 0 && sessionFocusWindows.every((window) => (
+        window.isMiniPomo || window.reasonCompletionWeight <= 0
+      ));
+      const pomoDisplayNumber = hasOnlyMiniPomos ? miniPomoCount : totalPomoEquivalent;
+      const pomoDisplayValue = formatPomodoroCount(pomoDisplayNumber);
+      const pomoDisplayUnit = hasOnlyMiniPomos
+        ? (miniPomoCount === 1 ? 'mini-pomo' : 'mini-pomos')
+        : (pomoDisplayNumber === 1 ? 'pomo' : 'pomos');
+      const cycleOverlays: SessionClockCycle[] = [];
+      let cycleIndex = 1;
+      sessionFocusWindows.forEach((window, windowIndex) => {
+        const nextFocusStartMs = sessionFocusWindows[windowIndex + 1]?.segmentStartMs;
+        const windowDurationMs = Math.max(0, window.segmentEndMs - window.segmentStartMs);
+        const cycleDurationMs = (window.isMiniPomo ? 15 * 60 : ACCOUNT_STATS_POMODORO_SECONDS) * 1000;
+        const cycleCount = window.reasonCompletionWeight > 0
+          ? 1
+          : Math.floor(windowDurationMs / cycleDurationMs);
+
+        for (let cycleOffset = 0; cycleOffset < cycleCount; cycleOffset += 1) {
+          const cycleStartMs = window.segmentStartMs + (cycleOffset * cycleDurationMs);
+          if (cycleStartMs >= window.segmentEndMs) break;
+
+          const focusCycleEndMs = Math.min(window.segmentEndMs, cycleStartMs + cycleDurationMs);
+          const isLastCycleForWindow = cycleOffset === cycleCount - 1;
+          const cycleEndMs = Math.min(
+            isLastCycleForWindow ? (nextFocusStartMs ?? clippedEndMs) : focusCycleEndMs,
+            clippedEndMs,
+          );
+
+          if (cycleEndMs <= cycleStartMs) continue;
+          cycleOverlays.push({
+            index: cycleIndex,
+            startMinutes: getMinutesOfDay(cycleStartMs),
+            endMinutes: cycleEndMs >= dayEndMs ? 1440 : getMinutesOfDay(cycleEndMs),
+          });
+          cycleIndex += 1;
+        }
+      });
       const primaryColor = segments.length > 0
         ? segments.reduce((best, segment) => (
           (segment.endMinutes - segment.startMinutes) > (best.endMinutes - best.startMinutes)
@@ -481,6 +582,9 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         endMinutes: Math.max(startMinutes + 1, endMinutes),
         durationMinutes: Math.max(1, session.totalDurationMinutes),
         segments,
+        cycleOverlays,
+        pomoDisplayValue,
+        pomoDisplayUnit,
         primaryColor,
       });
       sessionsByDay.set(dateKey, existing);
@@ -522,6 +626,45 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       };
     })
   ), [focusMinutesByDateKey, rollingSessionClockStartMs, sessionClockSessionsByDateKey]);
+  const sessionClockAxis = useMemo(() => {
+    const displayedSessions = displayedSessionLanes.flatMap((lane) => lane.sessions);
+    let minMinutes = 0;
+    let maxMinutes = 1440;
+
+    if (displayedSessions.length > 0) {
+      const earliestSessionMinute = Math.min(...displayedSessions.map((session) => session.startMinutes));
+      const latestSessionMinute = Math.max(...displayedSessions.map((session) => session.endMinutes));
+      const desiredMin = Math.max(0, Math.floor((earliestSessionMinute - SESSION_CLOCK_AXIS_PADDING_MINUTES) / 60) * 60);
+      const desiredMax = Math.min(1440, Math.ceil((latestSessionMinute + SESSION_CLOCK_AXIS_PADDING_MINUTES) / 60) * 60);
+      const rawRange = Math.max(SESSION_CLOCK_MIN_AXIS_RANGE_MINUTES, desiredMax - desiredMin);
+      const niceRange = Math.min(
+        1440,
+        Math.ceil(rawRange / SESSION_CLOCK_NICE_AXIS_STEP_MINUTES) * SESSION_CLOCK_NICE_AXIS_STEP_MINUTES,
+      );
+      minMinutes = Math.max(0, Math.min(desiredMin, 1440 - niceRange));
+      if (minMinutes + niceRange < desiredMax) {
+        minMinutes = Math.max(0, desiredMax - niceRange);
+      }
+      maxMinutes = Math.min(1440, minMinutes + niceRange);
+    }
+
+    const rangeMinutes = Math.max(1, maxMinutes - minMinutes);
+    const marks = Array.from({ length: SESSION_CLOCK_AXIS_MARK_COUNT }, (_, index) => {
+      const minutes = minMinutes + ((rangeMinutes * index) / (SESSION_CLOCK_AXIS_MARK_COUNT - 1));
+      return {
+        minutes,
+        label: formatSessionClockAxisLabel(minutes),
+        pct: clamp01((minutes - minMinutes) / rangeMinutes) * 100,
+      };
+    });
+
+    return {
+      minMinutes,
+      maxMinutes,
+      rangeMinutes,
+      marks,
+    };
+  }, [displayedSessionLanes]);
 
   useEffect(() => {
     setActiveCategoryName((current) => (
@@ -785,14 +928,42 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       };
     });
   }, [heatmapWeeks]);
+
+  useEffect(() => {
+    if (heatmapRange !== 'year') return;
+    const element = heatmapScrollRef.current;
+    if (!element) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      element.scrollLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [heatmapRange, heatmapWeeks.length]);
+
+  const handleHeatmapWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    const element = heatmapScrollRef.current;
+    if (heatmapRange !== 'year' || !element) return;
+    if (element.scrollWidth <= element.clientWidth + 1) return;
+
+    const dominantDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ? event.deltaX
+      : event.deltaY;
+    if (Math.abs(dominantDelta) < 0.5) return;
+
+    const maxScrollLeft = element.scrollWidth - element.clientWidth;
+    const scrollingLeft = dominantDelta < 0;
+    const atStart = element.scrollLeft <= 1;
+    const atEnd = element.scrollLeft >= maxScrollLeft - 1;
+
+    if ((scrollingLeft && atStart) || (!scrollingLeft && atEnd)) return;
+
+    event.preventDefault();
+    element.scrollLeft = Math.max(0, Math.min(maxScrollLeft, element.scrollLeft + dominantDelta));
+  };
+
   const rangeSummaryLabel = `${ANALYTICS_RANGE_LABELS[analyticsRange]} view`;
   const categoryLegendTotal = Math.max(1, categoryTrendLegend.reduce((sum, category) => sum + category.minutes, 0));
   const sessionWeekFocusTotal = displayedSessionLanes.reduce((sum, lane) => sum + lane.totalFocusMinutes, 0);
-  const sessionWeekTotalMinutes = displayedSessionLanes.reduce(
-    (sum, lane) => sum + lane.sessions.reduce((laneSum, session) => laneSum + session.durationMinutes, 0),
-    0,
-  );
-  const sessionClockActiveDayCount = displayedSessionLanes.filter((lane) => lane.totalFocusMinutes > 0).length;
   const sessionClockRangeLabel = formatWeekRangeLabel(rollingSessionClockStartMs);
 
   const activeSessionLane = displayedSessionLanes.find((lane) => lane.dateKey === hoveredSessionLaneKey)
@@ -808,6 +979,13 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           session: [...activeSessionLane.sessions].sort((left, right) => right.durationMinutes - left.durationMinutes)[0],
         }
       : null);
+  const selectedSessionSummary = selectedSessionEntry
+    ? {
+        timeRange: formatSessionRange(selectedSessionEntry.session.startMs, selectedSessionEntry.session.endMs),
+        totalTime: `${formatMinutesPrecise(selectedSessionEntry.session.durationMinutes)} total`,
+        pomos: `${selectedSessionEntry.session.pomoDisplayValue} ${selectedSessionEntry.session.pomoDisplayUnit}`,
+      }
+    : null;
   const bestWeekdayLabel = insights.mostProductiveWeekdays.weekdays.length > 0
     ? WEEKDAY_LABELS[insights.mostProductiveWeekdays.weekdays[0]]
     : 'Still forming';
@@ -1121,9 +1299,10 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
     lane: { dateKey: string },
     session: SessionClockSession,
     active: boolean,
+    showCycleOverlay: boolean,
   ) => {
-    const sessionStart = clamp01(session.startMinutes / 1440);
-    const sessionEnd = clamp01(session.endMinutes / 1440);
+    const sessionStart = clamp01((session.startMinutes - sessionClockAxis.minMinutes) / sessionClockAxis.rangeMinutes);
+    const sessionEnd = clamp01((session.endMinutes - sessionClockAxis.minMinutes) / sessionClockAxis.rangeMinutes);
     const sessionRangeMinutes = Math.max(1, session.endMinutes - session.startMinutes);
     const widthPct = Math.max((sessionEnd - sessionStart) * 100, 1.1);
 
@@ -1151,7 +1330,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           transform: active ? 'translateY(-1px) scaleY(1.04)' : 'translateY(0) scaleY(1)',
           opacity: active ? 1 : 0.9,
         }}
-        aria-label={`${formatDateKeyStamp(lane.dateKey)} ${formatSessionRange(session.startMs, session.endMs)} ${formatMinutesPrecise(session.durationMinutes)} total session time`}
+        aria-label={`${formatDateKeyStamp(lane.dateKey)} ${formatSessionRange(session.startMs, session.endMs)} ${formatMinutesPrecise(session.durationMinutes)} total session time ${session.pomoDisplayValue} ${session.pomoDisplayUnit}`}
       >
         <span
           aria-hidden="true"
@@ -1181,6 +1360,33 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             />
           );
         })}
+        {session.cycleOverlays.map((cycle) => {
+          const leftPct = clamp01((cycle.startMinutes - session.startMinutes) / sessionRangeMinutes) * 100;
+          const cycleWidthPct = Math.max(
+            (clamp01((cycle.endMinutes - session.startMinutes) / sessionRangeMinutes) * 100) - leftPct,
+            2.8,
+          );
+          return (
+            <span
+              key={`${session.id}-cycle-${cycle.index}`}
+              aria-hidden="true"
+              className="pointer-events-none absolute top-0 bottom-0 flex items-center justify-center rounded-[0.78rem] border border-white/18 bg-white/[0.16] text-[10px] font-black leading-none text-white/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_8px_18px_-16px_rgba(0,0,0,0.86)] backdrop-blur-[1px] transition-[opacity,transform,background-color,border-color] duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+              style={{
+                left: `${leftPct}%`,
+                width: `${Math.min(100 - leftPct, cycleWidthPct)}%`,
+                opacity: showCycleOverlay ? 1 : 0,
+                transform: showCycleOverlay ? 'translate3d(0, 0, 0)' : 'translate3d(0, 1px, 0)',
+                transformOrigin: 'center',
+                transitionDelay: showCycleOverlay ? `${Math.min(cycle.index - 1, 4) * 14}ms` : '0ms',
+                willChange: 'opacity, transform',
+                backfaceVisibility: 'hidden',
+                zIndex: 3,
+              }}
+            >
+              {cycle.index}
+            </span>
+          );
+        })}
         <span
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-10px_22px_rgba(0,0,0,0.08)]"
@@ -1194,30 +1400,34 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         className="rounded-[1.25rem] border px-4 py-4 md:px-5 md:py-5"
         style={getInsightInsetStyle(PRESET_COLORS[5])}
       >
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/6 pb-4">
-          <div className="min-w-0">
-            <div className="text-[1.1rem] font-semibold tracking-tight text-white">{sessionClockRangeLabel}</div>
-            <div className="mt-1.5 text-sm text-white/54">
-              {selectedSessionEntry
-                ? `${formatSessionRange(selectedSessionEntry!.session.startMs, selectedSessionEntry!.session.endMs)} - ${formatMinutesPrecise(selectedSessionEntry!.session.durationMinutes)} total`
-                : sessionWeekFocusTotal > 0
+        <div className="border-b border-white/6 pb-3">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="shrink-0 text-[1.1rem] font-semibold tracking-tight text-white">{sessionClockRangeLabel}</div>
+            {selectedSessionSummary ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-white/58 sm:justify-end">
+                <span className="min-w-0 rounded-full border border-white/8 bg-white/[0.035] px-2.5 py-1 font-medium text-white/70">
+                  {selectedSessionSummary.timeRange}
+                </span>
+                <span className="rounded-full border border-white/8 bg-white/[0.055] px-2.5 py-1 text-white/62">
+                  {selectedSessionSummary.totalTime}
+                </span>
+                <span
+                  className="rounded-full border px-2.5 py-1 font-semibold text-white/78 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]"
+                  style={{
+                    borderColor: rgba(PRESET_COLORS[2], 0.24),
+                    backgroundColor: rgba(PRESET_COLORS[2], 0.12),
+                  }}
+                >
+                  {selectedSessionSummary.pomos}
+                </span>
+              </div>
+            ) : (
+              <div className="text-sm text-white/54 sm:text-right">
+                {sessionWeekFocusTotal > 0
                   ? `${formatMinutesPrecise(sessionWeekFocusTotal)} focus in the last 7 days`
                   : 'No focus logged in the last 7 days'}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-right sm:flex sm:flex-wrap sm:justify-end">
-            <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
-              <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Focus</div>
-              <div className="mt-0.5 text-sm font-semibold text-white">{formatMinutesCompact(sessionWeekFocusTotal)}</div>
-            </div>
-            <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
-              <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Total</div>
-              <div className="mt-0.5 text-sm font-semibold text-white">{formatMinutesCompact(sessionWeekTotalMinutes)}</div>
-            </div>
-            <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.035] px-3 py-2">
-              <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/34">Active Days</div>
-              <div className="mt-0.5 text-sm font-semibold text-white">{sessionClockActiveDayCount}/7</div>
-            </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1226,18 +1436,17 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
             <div className="grid grid-cols-[3.2rem_minmax(0,1fr)] gap-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-white/32 sm:grid-cols-[4rem_minmax(0,1fr)] sm:gap-3 sm:text-[10px]">
               <div />
               <div className="relative h-5">
-                {SESSION_CLOCK_AXIS_MARKS.map((mark) => {
-                  const pct = clamp01(mark.minutes / 1440) * 100;
-                  const transform = mark.minutes === 0
+                {sessionClockAxis.marks.map((mark, index) => {
+                  const transform = index === 0
                     ? 'translateX(0)'
-                    : mark.minutes === 1440
+                    : index === sessionClockAxis.marks.length - 1
                       ? 'translateX(-100%)'
                       : 'translateX(-50%)';
                   return (
                     <div
-                      key={`session-axis-${mark.minutes}`}
-                      className={`absolute top-0 ${mark.minutes === 360 || mark.minutes === 1080 ? 'hidden sm:block' : ''}`}
-                      style={{ left: `${pct}%`, transform }}
+                      key={`session-axis-${index}-${Math.round(mark.minutes)}`}
+                      className="absolute top-0"
+                      style={{ left: `${mark.pct}%`, transform }}
                     >
                       {mark.label}
                     </div>
@@ -1263,8 +1472,8 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                       <span className="text-white/38">{new Date(lane.dateMs).getDate()}</span>
                     </button>
                     <div className={`relative h-11 overflow-hidden rounded-[1rem] border transition-[border-color,background-color] duration-200 sm:h-12 ${activeLane ? 'border-white/14 bg-white/[0.06]' : 'border-white/8 bg-white/[0.024]'}`}>
-                      {SESSION_CLOCK_AXIS_MARKS.slice(1, -1).map((mark) => (
-                        <div key={mark.minutes} className="absolute top-0 bottom-0 w-px bg-white/6" style={{ left: `${(mark.minutes / 1440) * 100}%` }} />
+                      {sessionClockAxis.marks.slice(1, -1).map((mark, index) => (
+                        <div key={`${index}-${Math.round(mark.minutes)}`} className="absolute top-0 bottom-0 w-px bg-white/6" style={{ left: `${mark.pct}%` }} />
                       ))}
                       {lane.sessions.length === 0 && (
                         <div className="absolute inset-0 flex items-center px-3 text-[10px] font-medium text-white/22 sm:text-[11px]">
@@ -1273,7 +1482,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                       )}
                       {lane.sessions.map((session) => {
                         const active = hoveredSessionId === session.id || (!hoveredSessionId && selectedSessionEntry?.session.id === session.id);
-                        return renderSessionClockBar(lane, session, active);
+                        return renderSessionClockBar(lane, session, active, hoveredSessionId === session.id);
                       })}
                     </div>
                   </div>
@@ -1331,6 +1540,8 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       </div>
     </Card>
   );
+  const showSnapshotCharts = placement !== 'remaining';
+  const showSupportingInsights = placement !== 'snapshot-charts';
 
   return (
     <div className="space-y-4">
@@ -1374,6 +1585,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
       )}
 
       <div className="flex flex-col gap-4">
+        {showSnapshotCharts && (
         <div className="order-1">
         <Card title="Focus Over Time" isLightTheme={isLightTheme}>
           <div className="rounded-[1.2rem] border border-white/8 bg-black/10 px-4 py-4 md:px-5">
@@ -1548,11 +1760,15 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           </div>
         </Card>
         </div>
+        )}
 
+        {showSupportingInsights && (
         <div className="order-4">
           {sessionClockCard}
         </div>
+        )}
 
+        {showSupportingInsights && (
         <div className="order-5">
         <Card title={rangeSummaryLabel} isLightTheme={isLightTheme}>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1631,7 +1847,9 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           )}
         </Card>
         </div>
+        )}
 
+        {showSnapshotCharts && (
         <div className="order-2">
         <Card title="Focus Heatmap" isLightTheme={isLightTheme}>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1653,27 +1871,36 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
           </div>
 
           <div className="mt-5 rounded-[1.2rem] border px-4 py-4 md:px-5" style={getInsightInsetStyle(PRESET_COLORS[2])}>
-            <div className="overflow-x-auto pb-2">
-              {heatmapRange === 'year' && heatmapWeeks.length > 0 && (
-                <div className="mb-2 inline-flex items-end gap-3">
-                  <div className="grid grid-rows-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-transparent">
-                    <div>Sun</div>
+            <div
+              ref={heatmapScrollRef}
+              onWheel={handleHeatmapWheel}
+              className="-mx-1 overflow-x-auto overflow-y-hidden px-1 pb-2"
+              style={{
+                overscrollBehaviorX: heatmapRange === 'year' ? 'contain' : 'auto',
+                touchAction: heatmapRange === 'year' ? 'pan-x pan-y' : 'auto',
+              }}
+            >
+              <div className="inline-block min-w-full align-top">
+                {heatmapRange === 'year' && heatmapWeeks.length > 0 && (
+                  <div className="mb-2 inline-flex items-end gap-3">
+                    <div className="grid grid-rows-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-transparent">
+                      <div>Sun</div>
+                    </div>
+                    <div className="flex" style={heatmapGapStyle}>
+                      {heatmapMonthMarkers.map((marker) => (
+                        <div key={`heatmap-month-${marker.weekIndex}`} className="relative h-4 w-3.5">
+                          {marker.label && (
+                            <span className="absolute left-0 top-0 whitespace-nowrap text-[9px] font-semibold uppercase tracking-[0.08em] text-white/32">
+                              {marker.label}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex gap-1.5">
-                    {heatmapMonthMarkers.map((marker) => (
-                      <div key={`heatmap-month-${marker.weekIndex}`} className="relative h-4 w-3.5">
-                        {marker.label && (
-                          <span className="absolute left-0 top-0 whitespace-nowrap text-[9px] font-semibold uppercase tracking-[0.08em] text-white/32">
-                            {marker.label}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                )}
 
-              <div className="inline-flex items-start gap-3">
+                <div className="inline-flex items-start gap-3">
                 <div className="grid grid-rows-7 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/32" style={heatmapGapStyle}>
                   {HEATMAP_WEEKDAY_LABELS.map((label) => (
                     <div key={label} className={`${heatmapLabelClass} flex items-center justify-end`}>
@@ -1741,14 +1968,18 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
                   ))}
                 </div>
               </div>
+              </div>
             </div>
           </div>
         </Card>
         </div>
+        )}
 
+        {showSupportingInsights && (
         <div className="order-3">
           {categoryShareCard}
         </div>
+        )}
 
         {false && (
         <Card title="Session Clock" subtitle="Swipe or step through each week." isLightTheme={isLightTheme}>
@@ -1899,8 +2130,6 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({ logs, categories, joi
         </Card>
         )}
       </div>
-
-      {focusProfileCard}
     </div>
   );
 };

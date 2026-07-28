@@ -1,5 +1,6 @@
 
 import { AlarmSound, FocusSound } from '../types';
+import streakFireWhooshUrl from '../assets/streak-fire-whoosh.mp3';
 
 type NoiseColor = 'white' | 'pink' | 'brown';
 type FocusSoundPreset = {
@@ -37,6 +38,7 @@ let focusSoundPreviewState: FocusSoundPreviewState | null = null;
 let sharedFocusAudioContext: AudioContext | null = null;
 let focusSoundRequestToken = 0;
 let focusSoundPreviewRequestToken = 0;
+let streakFireWhooshBufferPromise: Promise<AudioBuffer | null> | null = null;
 
 const getBrowserAudioContextConstructor = () => {
   if (typeof window === 'undefined') return null;
@@ -410,6 +412,64 @@ const playNoiseBurst = (
   source.stop(start + dur + 0.02);
 };
 
+const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
+  if (typeof fetch !== 'function') return Promise.resolve(null);
+
+  if (!streakFireWhooshBufferPromise) {
+    streakFireWhooshBufferPromise = fetch(streakFireWhooshUrl)
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((arrayBuffer) => (
+        arrayBuffer ? ctx.decodeAudioData(arrayBuffer.slice(0)) : null
+      ))
+      .catch((error) => {
+        console.error('Streak fire whoosh failed to load', error);
+        streakFireWhooshBufferPromise = null;
+        return null;
+      });
+  }
+
+  return streakFireWhooshBufferPromise;
+};
+
+const playStreakFireWhoosh = async (
+  ctx: AudioContext,
+  start: number,
+  preloadedBuffer?: AudioBuffer | null,
+) => {
+  try {
+    const buffer = preloadedBuffer ?? await getStreakFireWhooshBuffer(ctx);
+    if (!buffer) return false;
+
+    const safeStart = Math.max(start, ctx.currentTime + 0.025);
+    const duration = Math.min(buffer.duration, 2.75);
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+
+    source.buffer = buffer;
+    source.playbackRate.setValueAtTime(1.02, safeStart);
+
+    gain.gain.setValueAtTime(0.0001, safeStart);
+    gain.gain.linearRampToValueAtTime(1.65, safeStart + 0.035);
+    gain.gain.exponentialRampToValueAtTime(1.18, safeStart + Math.min(0.42, duration * 0.36));
+    gain.gain.exponentialRampToValueAtTime(0.001, safeStart + duration);
+
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(safeStart);
+    source.stop(safeStart + duration + 0.04);
+    return true;
+  } catch (error) {
+    console.error('Streak fire whoosh failed to play', error);
+    return false;
+  }
+};
+
+const playFocusStreakIntroPop = (ctx: AudioContext, start: number) => {
+  playNoiseBurst(ctx, 'pink', start, 0.14, 0.0046, 1850, 2.1);
+  playSmoothTone(ctx, 'sine', 196.0, start + 0.006, 0.22, 0.018, 246.94);
+  playSmoothTone(ctx, 'triangle', 493.88, start + 0.038, 0.2, 0.012, 659.25);
+};
+
 const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: number, gainVal: number) => {
   const masterGain = ctx.createGain();
   const lowpass = ctx.createBiquadFilter();
@@ -462,11 +522,16 @@ const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: n
   vibrato.stop(start + dur + 0.04);
 };
 
-export const playAlarm = async (soundType: AlarmSound) => {
+type AlarmPlaybackOptions = {
+    onContext?: (ctx: AudioContext) => void;
+};
+
+export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOptions) => {
     try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
         const ctx = new AudioCtx();
+        options?.onContext?.(ctx);
         if (ctx.state === 'suspended') try { await ctx.resume(); } catch {}
         const now = ctx.currentTime;
 
@@ -744,6 +809,42 @@ export const playAlarm = async (soundType: AlarmSound) => {
     } catch(e) { console.error(e); }
 };
 
+export const startPersistentAlarm = (soundType: AlarmSound, repeatMs = 3200) => {
+    if (typeof window === 'undefined') return () => {};
+
+    let stopped = false;
+    const activeContexts = new Set<AudioContext>();
+    const closeContext = (ctx: AudioContext) => {
+        activeContexts.delete(ctx);
+        if (ctx.state === 'closed') return;
+        if (typeof ctx.close !== 'function') return;
+        void ctx.close().catch(() => {});
+    };
+    const registerContext = (ctx: AudioContext) => {
+        if (stopped) {
+            closeContext(ctx);
+            return;
+        }
+
+        activeContexts.add(ctx);
+        window.setTimeout(() => closeContext(ctx), Math.max(4200, repeatMs + 1800));
+    };
+    const play = () => {
+        if (stopped) return;
+        void playAlarm(soundType, { onContext: registerContext });
+    };
+
+    play();
+    const intervalId = window.setInterval(play, Math.max(900, repeatMs));
+
+    return () => {
+        stopped = true;
+        window.clearInterval(intervalId);
+        activeContexts.forEach(closeContext);
+        activeContexts.clear();
+    };
+};
+
 export const playBell = () => playAlarm('bell'); // Fallback/Default
 
 export const playCelebrationTrumpet = async () => {
@@ -778,6 +879,56 @@ export const playEncouragementDing = async () => {
     playNoiseBurst(ctx, 'pink', now + 0.012, 0.11, 0.0048, 2200, 2.6);
   } catch (e) {
     console.error('Encouragement ding failed', e);
+  }
+};
+
+export const playFocusStreakMomentSound = async () => {
+  try {
+    const ctx = await resumeAudioContext();
+    if (!ctx || ctx.state === 'suspended') return;
+    const whooshBuffer = await getStreakFireWhooshBuffer(ctx);
+
+    const now = ctx.currentTime + 0.025;
+    const weekScale = [392.0, 493.88, 587.33, 659.25, 783.99, 880.0, 1046.5];
+
+    playFocusStreakIntroPop(ctx, now);
+    playSmoothTone(ctx, 'sine', 174.61, now + 0.08, 0.42, 0.01, 220.0);
+    playSmoothTone(ctx, 'triangle', 329.63, now + 0.42, 0.78, 0.018, 493.88);
+    const didScheduleFireWhoosh = await playStreakFireWhoosh(ctx, now + 0.62, whooshBuffer);
+    playNoiseBurst(ctx, 'brown', now + 0.6, 0.86, didScheduleFireWhoosh ? 0.014 : 0.036, 560, 0.9);
+    playNoiseBurst(ctx, 'pink', now + 0.66, 0.7, didScheduleFireWhoosh ? 0.014 : 0.032, 1380, 1.25);
+    playNoiseBurst(ctx, 'white', now + 0.8, 0.36, didScheduleFireWhoosh ? 0.008 : 0.018, 3100, 2.4);
+
+    playNoiseBurst(ctx, 'white', now + 1.34, 0.58, 0.012, 2500, 2.9);
+    playSmoothTone(ctx, 'triangle', 261.63, now + 1.76, 0.42, 0.044, 196.0);
+    [
+      { freq: 523.25, offset: 1.86, gain: 0.028 },
+      { freq: 659.25, offset: 1.94, gain: 0.024 },
+      { freq: 783.99, offset: 2.02, gain: 0.021 },
+    ].forEach((note) => {
+      playSmoothTone(ctx, 'sine', note.freq, now + note.offset, 0.72, note.gain, note.freq * 1.012);
+    });
+
+    playNoiseBurst(ctx, 'pink', now + 2.68, 0.18, 0.005, 1650, 2.1);
+    playSmoothTone(ctx, 'triangle', 987.77, now + 3.04, 0.32, 0.016, 1174.66);
+    [1567.98, 1975.53, 2637.02].forEach((freq, index) => {
+      playSmoothTone(ctx, 'sine', freq, now + 3.24 + (index * 0.07), 0.34, 0.012 - (index * 0.002), freq * 1.018);
+    });
+    playNoiseBurst(ctx, 'white', now + 3.26, 0.2, 0.004, 4200, 4);
+
+    weekScale.forEach((freq, index) => {
+      const start = now + 3.72 + (index * 0.07);
+      playSmoothTone(ctx, index % 2 === 0 ? 'triangle' : 'sine', freq, start, 0.26, 0.017, freq * 1.055);
+      playNoiseBurst(ctx, 'pink', start + 0.01, 0.075, 0.0028, 1250 + (index * 180), 2.4);
+    });
+
+    const ignite = now + 4.54;
+    playNoiseBurst(ctx, 'white', ignite, 0.28, 0.009, 3200, 3.2);
+    playSmoothTone(ctx, 'triangle', 783.99, ignite + 0.02, 0.48, 0.03, 987.77);
+    playSmoothTone(ctx, 'sine', 1318.51, ignite + 0.1, 0.56, 0.018, 1567.98);
+    playSmoothTone(ctx, 'sine', 2093.0, ignite + 0.18, 0.46, 0.011, 1975.53);
+  } catch (e) {
+    console.error('Focus streak moment sound failed', e);
   }
 };
 

@@ -69,6 +69,7 @@ export type AlarmSound =
   | 'comet';
 export type FocusSound = 'off' | 'white-soft' | 'white-bright' | 'pink-soft' | 'pink-air' | 'brown-deep' | 'brown-warm' | 'green-calm';
 export type TimerPreset = 'classic' | 'compact' | 'focus' | 'custom';
+export type MiniPomoAutoStartBlock = 1 | 2 | 3 | 4;
 
 export interface TimerSettings {
   timerPreset: TimerPreset;
@@ -77,6 +78,8 @@ export interface TimerSettings {
   longBreakDuration: number;
   longBreakInterval: number; // Pomodoros before a long break
   twoInARowMode: boolean;
+  miniPomoAutoStartBlock: MiniPomoAutoStartBlock;
+  miniPomoAutoStartSoundEnabled: boolean;
   disableBlur: boolean;
   alarmSound: AlarmSound;
   twoInARowStartSound: AlarmSound;
@@ -176,7 +179,7 @@ export interface TimerSpectatorState {
   activeCategoryIcon?: string;
   activeColor?: string;
   projectedFinishEndMs?: number | null;
-  settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval' | 'timerPreset' | 'twoInARowMode'>;
+  settings: Pick<TimerSettings, 'workDuration' | 'shortBreakDuration' | 'longBreakDuration' | 'longBreakInterval' | 'timerPreset' | 'twoInARowMode'> & Partial<Pick<TimerSettings, 'miniPomoAutoStartBlock'>>;
   runtime: TimerRuntimeSnapshot | null;
   updatedAtMs: number;
 }

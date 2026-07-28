@@ -181,6 +181,7 @@ export const getSpectatorSettingsFallback = (): TimerSpectatorState['settings'] 
   longBreakInterval: 4,
   timerPreset: 'classic',
   twoInARowMode: false,
+  miniPomoAutoStartBlock: 1,
 });
 
 export const pickTimerSpectatorSettings = (

@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.0",
+    "lottie-web": "^5.12.2",
     "lucide-react": "^0.344.0",
     "peerjs": "^1.5.2",
     "pureimage": "^0.4.20",

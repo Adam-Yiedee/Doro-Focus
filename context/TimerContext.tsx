@@ -22,6 +22,7 @@ import {
   FocusFriendsState,
 } from '../types';
 import { playAlarm, playSwitch, resumeAudioContext, startFocusSound, stopFocusSound } from '../utils/sound';
+import { dispatchDelayedStartSessionStarted } from '../utils/delayedStartEvents';
 import Peer, { DataConnection } from 'peerjs';
 import {
   GraceContext,
@@ -308,6 +309,8 @@ const DEFAULT_SETTINGS: TimerSettings = {
   longBreakDuration: 900,
   longBreakInterval: 4, 
   twoInARowMode: false,
+  miniPomoAutoStartBlock: 1,
+  miniPomoAutoStartSoundEnabled: true,
   disableBlur: true,
   alarmSound: 'bell',
   twoInARowStartSound: 'chime',
@@ -326,14 +329,28 @@ const normalizeAlarmSound = (sound: unknown): AlarmSound => {
   return validSounds.includes(sound as AlarmSound) ? sound as AlarmSound : 'bell';
 };
 
+const normalizeMiniPomoAutoStartBlock = (value: unknown, fallback: 1 | 2 | 3 | 4 = 1): 1 | 2 | 3 | 4 => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  const safeValue = Math.floor(value);
+  return safeValue === 1 || safeValue === 2 || safeValue === 3 || safeValue === 4
+    ? safeValue
+    : fallback;
+};
+
 const normalizeSettings = (settings?: Partial<TimerSettings> | null): TimerSettings => {
   const source = settings || {};
+  const fallbackMiniPomoBlock = source.twoInARowMode ? 2 : 1;
   const nextSettings: TimerSettings = {
     ...DEFAULT_SETTINGS,
     ...source,
   };
   nextSettings.alarmSound = normalizeAlarmSound(source.alarmSound);
   nextSettings.twoInARowStartSound = normalizeAlarmSound(source.twoInARowStartSound);
+  nextSettings.miniPomoAutoStartBlock = normalizeMiniPomoAutoStartBlock(
+    source.miniPomoAutoStartBlock,
+    fallbackMiniPomoBlock,
+  );
+  nextSettings.miniPomoAutoStartSoundEnabled = source.miniPomoAutoStartSoundEnabled !== false;
   const hasExplicitPreset = Object.prototype.hasOwnProperty.call(source, 'timerPreset');
   const presetIsValid = (
     nextSettings.timerPreset === 'classic'
@@ -348,6 +365,9 @@ const normalizeSettings = (settings?: Partial<TimerSettings> | null): TimerSetti
 
   if (nextSettings.timerPreset !== 'compact') {
     nextSettings.twoInARowMode = false;
+    nextSettings.miniPomoAutoStartBlock = 1;
+  } else {
+    nextSettings.twoInARowMode = nextSettings.miniPomoAutoStartBlock > 1;
   }
 
   return nextSettings;
@@ -4189,6 +4209,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         delayedStartTargetTime: null,
         scheduleStartTime: nextScheduleStartTime,
       });
+      dispatchDelayedStartSessionStarted();
       return;
     }
     const isFocusTimerPreset = settings.timerPreset === 'focus';
@@ -4285,7 +4306,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const shouldAutoStartNextFocus = shouldAutoStartTwoInARowFocus(completion.nextPomoCount, settings);
     const isFocusTimerPreset = settings.timerPreset === 'focus';
     const shouldStartNextFocus = shouldAutoStartNextFocus || lockedTimerMode === 'work' || isFocusTimerPreset;
-    if (!isFocusTimerPreset) {
+    if (!isFocusTimerPreset && (!shouldAutoStartNextFocus || settings.miniPomoAutoStartSoundEnabled)) {
       playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound);
     }
     const nextWorkTime = shouldStartNextFocus ? settings.workDuration : 0;

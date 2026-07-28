@@ -1,9 +1,9 @@
 
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { BarChart3, CalendarDays, CheckCircle2, Clock3, Coffee, ListChecks, RotateCcw, TrendingUp, Trophy, X } from 'lucide-react';
+import { ArrowDown, BarChart3, CalendarDays, CheckCircle2, Clock3, Coffee, ListChecks, RotateCcw, TrendingUp, Trophy, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
-import { getSessionPomoDisplay } from '../utils/pomodoroAccounting';
+import { formatPomodoroCount, getSessionPomoDisplay } from '../utils/pomodoroAccounting';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, PASTEL_SWATCHES, getMutedSurfaceColor } from '../utils/palette';
 import { playCelebrationTrumpet, playSummaryCountSound, playSummaryDistributionSound, playSummaryStatPop } from '../utils/sound';
 import {
@@ -22,6 +22,17 @@ type SummaryConfettiPiece = {
   driftX: number;
   fallY: number;
   rotateDeg: number;
+  durationMs: number;
+  delayMs: number;
+};
+
+type SummaryFireworkBurst = {
+  id: number;
+  left: number;
+  top: number;
+  size: number;
+  sparkCount: number;
+  rotationDeg: number;
   durationMs: number;
   delayMs: number;
 };
@@ -69,22 +80,35 @@ const summaryStatSoundGuards = new Map<string, number>();
 const summaryDistributionSoundGuards = new Map<string, number>();
 
 const buildSummaryConfettiPieces = (seed: number): SummaryConfettiPiece[] => (
-  Array.from({ length: 58 }, (_, index) => {
+  Array.from({ length: 86 }, (_, index) => {
     const shape: SummaryConfettiPiece['shape'] = index % 9 === 0 ? 'streamer' : index % 4 === 0 ? 'circle' : 'tile';
     return {
       id: index,
       left: ((index * 13.7) + (seed % 29)) % 100,
-      top: -12 - ((index * 7) % 24),
+      top: -14 - ((index * 7) % 30),
       size: shape === 'streamer' ? 16 + (index % 4) * 3 : 6 + (index % 5),
       color: SUMMARY_CONFETTI_COLORS[index % SUMMARY_CONFETTI_COLORS.length],
       shape,
-      driftX: ((index % 2 === 0 ? 1 : -1) * (42 + ((index * 19 + seed) % 132))),
-      fallY: 112 + ((index * 11) % 28),
+      driftX: ((index % 2 === 0 ? 1 : -1) * (36 + ((index * 19 + seed) % 148))),
+      fallY: 114 + ((index * 11) % 30),
       rotateDeg: (index % 2 === 0 ? 1 : -1) * (220 + ((index * 47) % 520)),
-      durationMs: 1900 + ((index * 67) % 1500),
-      delayMs: (index % 13) * 42,
+      durationMs: 2100 + ((index * 67) % 1900),
+      delayMs: (index % 17) * 38,
     };
   })
+);
+
+const buildSummaryFireworkBursts = (seed: number): SummaryFireworkBurst[] => (
+  Array.from({ length: 7 }, (_, index) => ({
+    id: index,
+    left: 12 + (((index * 17) + (seed % 23)) % 76),
+    top: 10 + (((index * 19) + (seed % 17)) % 54),
+    size: 72 + ((index * 13) % 46),
+    sparkCount: 12 + (index % 3) * 2,
+    rotationDeg: ((index * 29) + (seed % 41)) % 360,
+    durationMs: 1180 + ((index * 97) % 460),
+    delayMs: 170 + (index * 260) + ((seed + index * 31) % 90),
+  }))
 );
 
 const summaryRgba = (color: string, alpha: number) => {
@@ -276,7 +300,9 @@ const SummaryDistributionSoundCue: React.FC<{
 
 const SummaryView: React.FC = () => {
   const { showSummary, sessionStats, closeSummary, activeMode, activeColor, pastSessions } = useTimer();
-  const confettiPieces = useMemo(() => buildSummaryConfettiPieces(Date.now()), [showSummary]);
+  const celebrationSeed = useMemo(() => Date.now(), [showSummary]);
+  const confettiPieces = useMemo(() => buildSummaryConfettiPieces(celebrationSeed), [celebrationSeed]);
+  const fireworkBursts = useMemo(() => buildSummaryFireworkBursts(celebrationSeed), [celebrationSeed]);
   const [activeSummaryCategoryName, setActiveSummaryCategoryName] = useState<string | null>(null);
   const [isSummaryCategoryChartHovered, setIsSummaryCategoryChartHovered] = useState(false);
 
@@ -306,9 +332,12 @@ const SummaryView: React.FC = () => {
   };
   const pomoDisplay = getSessionPomoDisplay(sessionStats);
   const {
+    summaryDayPomos,
     previousDayDelta,
+    previousDayPomos,
     previousDayTargetLabel,
     weeklyComparisonDays,
+    weeklyAveragePomos,
     weeklyAverageDelta,
   } = getSummaryPomoComparison({ pastSessions, sessionStats });
 
@@ -320,14 +349,16 @@ const SummaryView: React.FC = () => {
     {
       label: getSummaryPomoDeltaLabel(previousDayDelta, previousDayTargetLabel),
       value: formatSummaryDeltaValue(previousDayDelta),
+      helper: `Today total ${formatPomodoroCount(summaryDayPomos)} vs ${formatPomodoroCount(previousDayPomos)}`,
       accent: SUMMARY_STAT_COLORS[4],
       icon: CalendarDays,
     },
     {
       label: getSummaryPomoDeltaLabel(weeklyAverageDelta, 'Average'),
       value: weeklyComparisonDays.length > 0 ? formatSummaryDeltaValue(weeklyAverageDelta) : '0',
+      helper: `Today total ${formatPomodoroCount(summaryDayPomos)} vs avg ${formatPomodoroCount(weeklyAveragePomos)}`,
       accent: SUMMARY_STAT_COLORS[5],
-      icon: TrendingUp,
+      icon: weeklyAverageDelta < -0.05 ? ArrowDown : TrendingUp,
     },
   ];
   let nextSummaryStatDelayMs = SUMMARY_FIRST_STAT_DELAY_MS;
@@ -416,6 +447,44 @@ const SummaryView: React.FC = () => {
                 ['--doro-summary-confetti-delay' as any]: `${piece.delayMs}ms`,
               }}
             />
+          ))}
+          {fireworkBursts.map((burst) => (
+            <span
+              key={`summary-firework-${burst.id}`}
+              className="doro-summary-firework absolute"
+              style={{
+                left: `${burst.left}%`,
+                top: `${burst.top}%`,
+                ['--doro-summary-firework-size' as any]: `${burst.size}px`,
+                ['--doro-summary-firework-duration' as any]: `${burst.durationMs}ms`,
+                ['--doro-summary-firework-delay' as any]: `${burst.delayMs}ms`,
+                ['--doro-summary-firework-rotation' as any]: `${burst.rotationDeg}deg`,
+              }}
+            >
+              {Array.from({ length: burst.sparkCount }, (_, sparkIndex) => {
+                const color = SUMMARY_CONFETTI_COLORS[(burst.id + sparkIndex) % SUMMARY_CONFETTI_COLORS.length];
+                const angle = (360 / burst.sparkCount) * sparkIndex;
+                const distance = burst.size * (0.42 + ((sparkIndex % 4) * 0.09));
+                const sparkSize = 4 + (sparkIndex % 3);
+
+                return (
+                  <span
+                    key={`summary-firework-${burst.id}-spark-${sparkIndex}`}
+                    className="doro-summary-firework-spark absolute"
+                    style={{
+                      width: `${sparkSize}px`,
+                      height: `${sparkSize}px`,
+                      backgroundColor: color,
+                      ['--doro-summary-firework-angle' as any]: `${angle}deg`,
+                      ['--doro-summary-firework-distance' as any]: `${distance}px`,
+                      ['--doro-summary-firework-color' as any]: color,
+                      ['--doro-summary-firework-duration' as any]: `${burst.durationMs}ms`,
+                      ['--doro-summary-firework-delay' as any]: `${burst.delayMs}ms`,
+                    }}
+                  />
+                );
+              })}
+            </span>
           ))}
         </div>
         <style>{`
@@ -548,11 +617,54 @@ const SummaryView: React.FC = () => {
               transform: translate3d(var(--doro-summary-confetti-drift, 0px), var(--doro-summary-confetti-fall, 118vh), 0) rotate(var(--doro-summary-confetti-rotate, 360deg)) scale(0.82);
             }
           }
+          @keyframes doroSummaryFireworkRing {
+            0%,
+            14% {
+              opacity: 0;
+              transform: translate(-50%, -50%) scale(0.12);
+              filter: blur(2px);
+            }
+            24% {
+              opacity: 0.9;
+              transform: translate(-50%, -50%) scale(0.42);
+              filter: blur(0);
+            }
+            72% {
+              opacity: 0.42;
+            }
+            100% {
+              opacity: 0;
+              transform: translate(-50%, -50%) scale(1.08);
+              filter: blur(4px);
+            }
+          }
+          @keyframes doroSummaryFireworkSpark {
+            0%,
+            14% {
+              opacity: 0;
+              transform: rotate(var(--doro-summary-firework-angle, 0deg)) translate3d(0, 0, 0) scale(0.24);
+              filter: blur(1.4px) saturate(0.92);
+            }
+            22% {
+              opacity: 1;
+              filter: blur(0) saturate(1.22);
+            }
+            70% {
+              opacity: 0.88;
+              filter: blur(0) saturate(1.08);
+            }
+            100% {
+              opacity: 0;
+              transform: rotate(var(--doro-summary-firework-angle, 0deg)) translate3d(var(--doro-summary-firework-distance, 42px), 0, 0) scale(0.12);
+              filter: blur(2px) saturate(0.8);
+            }
+          }
           .doro-summary-confetti-piece {
             border-radius: 2px;
             opacity: 0;
             filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.18));
             animation: doroSummaryConfettiFall var(--doro-summary-confetti-duration, 2400ms) cubic-bezier(0.2, 0.76, 0.34, 1) var(--doro-summary-confetti-delay, 0ms) both;
+            will-change: transform, opacity;
           }
           .doro-summary-confetti-piece.is-circle {
             border-radius: 999px;
@@ -560,8 +672,48 @@ const SummaryView: React.FC = () => {
           .doro-summary-confetti-piece.is-streamer {
             border-radius: 999px;
           }
+          .doro-summary-firework {
+            width: 1px;
+            height: 1px;
+            transform: rotate(var(--doro-summary-firework-rotation, 0deg));
+            transform-origin: center;
+            will-change: transform;
+          }
+          .doro-summary-firework::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: var(--doro-summary-firework-size, 84px);
+            height: var(--doro-summary-firework-size, 84px);
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background:
+              radial-gradient(circle, rgba(255,255,255,0.34) 0 2px, transparent 3px),
+              radial-gradient(circle, rgba(253,230,138,0.18), transparent 58%);
+            box-shadow:
+              0 0 32px rgba(255, 255, 255, 0.1),
+              0 0 44px rgba(253, 230, 138, 0.12);
+            opacity: 0;
+            animation: doroSummaryFireworkRing var(--doro-summary-firework-duration, 1280ms) cubic-bezier(0.16, 1, 0.3, 1) var(--doro-summary-firework-delay, 0ms) both;
+          }
+          .doro-summary-firework-spark {
+            left: 0;
+            top: 0;
+            border-radius: 999px;
+            box-shadow:
+              0 0 12px var(--doro-summary-firework-color, rgba(255,255,255,0.8)),
+              0 0 22px var(--doro-summary-firework-color, rgba(255,255,255,0.42));
+            opacity: 0;
+            transform-origin: center;
+            animation: doroSummaryFireworkSpark var(--doro-summary-firework-duration, 1280ms) cubic-bezier(0.16, 1, 0.3, 1) var(--doro-summary-firework-delay, 0ms) both;
+            will-change: transform, opacity, filter;
+          }
           @media (prefers-reduced-motion: reduce) {
             .doro-summary-confetti-piece,
+            .doro-summary-firework,
+            .doro-summary-firework::before,
+            .doro-summary-firework-spark,
             .doro-summary-raised-card,
             .doro-summary-surface-in,
             .doro-summary-panel-in,

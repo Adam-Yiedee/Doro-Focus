@@ -1583,18 +1583,25 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .schedule-header-action-row {
           display: flex;
           align-items: center;
-          gap: 0.58rem;
+          gap: 0.52rem;
           flex-wrap: nowrap;
           min-width: 0;
         }
-        .schedule-header-action-row::before {
-          content: '';
+        .schedule-header-date-divider {
           display: block;
           width: 1px;
-          height: 1.35rem;
-          margin-right: 0.18rem;
+          height: 1.3rem;
+          flex: 0 0 1px;
           border-radius: 999px;
-          background: rgba(255, 255, 255, 0.1);
+          background: linear-gradient(
+            180deg,
+            transparent,
+            rgba(255, 255, 255, 0.18),
+            transparent
+          );
+        }
+        .schedule-header-date-label {
+          min-width: max-content;
         }
         .schedule-header-icon-controls {
           display: flex;
@@ -1646,11 +1653,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .schedule-header-icon-button::after {
           content: attr(data-tooltip);
           position: absolute;
-          bottom: calc(100% + 0.48rem);
+          top: calc(100% + 0.48rem);
           left: 50%;
           z-index: 60;
           max-width: 11rem;
-          transform: translate3d(-50%, 4px, 0) scale(0.96);
+          transform: translate3d(-50%, -3px, 0) scale(0.96);
           border-radius: 0.58rem;
           padding: 0.42rem 0.56rem;
           opacity: 0;
@@ -1669,7 +1676,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .schedule-header-icon-button::before {
           content: '';
           position: absolute;
-          bottom: calc(100% + 0.23rem);
+          top: calc(100% + 0.25rem);
           left: 50%;
           z-index: 59;
           height: 0.42rem;
@@ -1677,8 +1684,16 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           opacity: 0;
           pointer-events: none;
           background: rgba(246, 248, 252, 0.96);
-          transform: translate3d(-50%, 4px, 0) rotate(45deg);
+          transform: translate3d(-50%, -3px, 0) rotate(45deg);
           transition: opacity 140ms ease, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .schedule-header-icon-button:first-child::after {
+          left: 0;
+          transform: translate3d(0, -3px, 0) scale(0.96);
+          transform-origin: top left;
+        }
+        .schedule-header-icon-button:first-child::before {
+          left: 0.85rem;
         }
         .schedule-header-icon-button:hover::after,
         .schedule-header-icon-button:focus-visible::after,
@@ -1686,6 +1701,10 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
         .schedule-header-icon-button:focus-visible::before {
           opacity: 1;
           transform: translate3d(-50%, 0, 0) scale(1);
+        }
+        .schedule-header-icon-button:first-child:hover::after,
+        .schedule-header-icon-button:first-child:focus-visible::after {
+          transform: translate3d(0, 0, 0) scale(1);
         }
         .schedule-header-icon-button:hover::before,
         .schedule-header-icon-button:focus-visible::before {
@@ -1719,8 +1738,13 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
           color: white;
           box-shadow: 0 12px 20px -18px rgba(15, 23, 42, 0.5);
         }
-        .doro-weekly-shell.theme-light .schedule-header-action-row::before {
-          background: rgba(15, 23, 42, 0.12);
+        .doro-weekly-shell.theme-light .schedule-header-date-divider {
+          background: linear-gradient(
+            180deg,
+            transparent,
+            rgba(15, 23, 42, 0.18),
+            transparent
+          );
         }
         @media (hover: none) {
           .schedule-header-icon-button::after,
@@ -1757,11 +1781,11 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
             gap: 0.5rem;
             flex-wrap: wrap;
           }
-          .schedule-header-action-row::before {
-            display: none;
-          }
           .schedule-header-icon-controls {
             gap: 0.28rem;
+          }
+          .schedule-header-date-divider {
+            height: 1.2rem;
           }
           .schedule-header-icon-button {
             width: 1.95rem;
@@ -1799,7 +1823,6 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
               <div className="schedule-header-title-row min-w-0 flex flex-1 flex-wrap items-center gap-x-4 gap-y-1.5">
                 <h2 className="shrink-0 text-[1.35rem] md:text-[1.45rem] font-bold text-white tracking-tight leading-none">Weekly Planner</h2>
                 <div className="schedule-header-action-row">
-                  <p className="text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
                   <div className="schedule-header-icon-controls">
                     <button
                       type="button"
@@ -1832,6 +1855,8 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                       <CalendarPlus size={15} strokeWidth={2.15} aria-hidden="true" />
                     </button>
                   </div>
+                  <span className="schedule-header-date-divider" aria-hidden="true" />
+                  <p className="schedule-header-date-label text-xs text-white/55 font-mono">{visibleRangeLabel}</p>
                 </div>
               </div>
               <button
