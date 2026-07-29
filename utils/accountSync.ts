@@ -28,6 +28,15 @@ export const selectLocalPayloadForAccountSync = <T extends PayloadLike>(
   return options.livePayload ?? null;
 };
 
+export const getStableLocalUpdatedAtForAccountRefresh = (
+  cachedPayload?: PayloadLike | null,
+  remotePayload?: PayloadLike | null,
+): string | undefined => {
+  if (typeof cachedPayload?.updatedAt === 'string') return cachedPayload.updatedAt;
+  if (typeof remotePayload?.updatedAt === 'string') return remotePayload.updatedAt;
+  return undefined;
+};
+
 export const shouldApplyAccountSyncSnapshot = (
   syncVersionAtStart: number,
   currentSyncVersion: number,

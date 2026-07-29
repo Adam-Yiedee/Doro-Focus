@@ -15,6 +15,39 @@ const formatTime = (seconds: number) => {
   return `${sign}${m}:${s.toString().padStart(2, '0')}`;
 };
 
+export const getBreakSquareDisplayOptions = ({
+  isFocusTimerPreset,
+  isDelayedStartCountdown,
+}: {
+  isFocusTimerPreset: boolean;
+  isDelayedStartCountdown: boolean;
+}) => {
+  if (!isFocusTimerPreset) {
+    return {
+      displayValue: undefined,
+      displayVariant: 'time' as const,
+      hideLabel: false,
+      hideLiquid: false,
+    };
+  }
+
+  if (isDelayedStartCountdown) {
+    return {
+      displayValue: undefined,
+      displayVariant: 'time' as const,
+      hideLabel: false,
+      hideLiquid: false,
+    };
+  }
+
+  return {
+    displayValue: 'Break',
+    displayVariant: 'word' as const,
+    hideLabel: true,
+    hideLiquid: true,
+  };
+};
+
 const clampPercent = (value: number, max: number = 1) => Math.max(0, Math.min(max, value));
 const clampUnit = (value: number) => Math.max(-1, Math.min(1, value));
 
@@ -1116,6 +1149,11 @@ const TimerDisplay: React.FC = () => {
     if (Number.isNaN(delayedStartDate.getTime())) return undefined;
     return `Begin At ${formatDelayedStartTime(delayedStartDate)}`;
   })();
+  const isDelayedStartCountdown = Boolean(delayedStartBeginLabel);
+  const breakSquareDisplayOptions = getBreakSquareDisplayOptions({
+    isFocusTimerPreset,
+    isDelayedStartCountdown,
+  });
 
   useEffect(() => {
     if (shouldShowIdlePresetControl) {
@@ -2416,10 +2454,10 @@ const TimerDisplay: React.FC = () => {
             maxTime={settings.longBreakDuration}
             activeMode={activeMode} 
             label={delayedStartBeginLabel}
-            displayValue={isFocusTimerPreset ? 'Break' : undefined}
-            displayVariant={isFocusTimerPreset ? 'word' : 'time'}
-            hideLabel={isFocusTimerPreset}
-            hideLiquid={isFocusTimerPreset}
+            displayValue={breakSquareDisplayOptions.displayValue}
+            displayVariant={breakSquareDisplayOptions.displayVariant}
+            hideLabel={breakSquareDisplayOptions.hideLabel}
+            hideLiquid={breakSquareDisplayOptions.hideLiquid}
             isIdle={isIdle} 
             isLocked={!isFocusTimerPreset && lockedTimerMode === 'break'}
             disableBlur={settings.disableBlur}

@@ -172,6 +172,50 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 60 });
   });
 
+  it('uses archived compact session totals when same-day mini-pomo logs undercount the session', () => {
+    const sessionStartMs = Date.parse('2026-03-12T09:00:00.000Z');
+    const logs: LogEntry[] = Array.from({ length: 15 }, (_, index) => {
+      const start = new Date(sessionStartMs + index * 15 * 60_000);
+      const end = new Date(start.getTime() + 15 * 60_000);
+      return makeLog({
+        start: start.toISOString(),
+        end: end.toISOString(),
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 2,
+      });
+    });
+    const sessions: SessionRecord[] = [
+      {
+        id: 'compact-session-16',
+        startTime: '2026-03-12T09:00:00.000Z',
+        endTime: '2026-03-12T13:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 8,
+          miniPomosCompleted: 16,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+          categoryDetails: [
+            {
+              categoryId: 2,
+              categoryName: 'Study',
+              categoryColor: '#4FAE9B',
+              categoryIcon: 'book',
+              minutes: 240,
+            },
+          ],
+        },
+      },
+    ];
+
+    const stats = calculateLifetimeStatsFromData(sessions, logs, categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(4, 5);
+    expect(stats.totalPomos).toBeCloseTo(9.6, 5);
+    expect(stats.categoryBreakdown).toEqual({ Study: 240 });
+  });
+
   it('keeps account pomodoros aligned with productive work minutes from mixed mini-pomo logs', () => {
     const stats = calculateLifetimeStatsFromData([], [
       makeLog({

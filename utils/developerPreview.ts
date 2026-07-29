@@ -9,6 +9,10 @@ export type DeveloperPreviewAction =
   | 'grace-after-work'
   | 'grace-after-break'
   | 'long-grace'
+  | 'group-timer-sync'
+  | 'group-goal-everyone'
+  | 'group-goal-pooled'
+  | 'group-goal-complete'
   | 'clear-previews';
 
 export interface DeveloperPreviewEventDetail {

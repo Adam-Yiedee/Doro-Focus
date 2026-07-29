@@ -193,6 +193,17 @@ describe('focus-friends function', () => {
       action: 'approve-join-request',
       actionId: joinRequestId,
       sessionId: 'room99',
+      groupStudy: {
+        mode: 'shared-goal',
+        createdAt: 456,
+        goal: {
+          type: 'everyone-live',
+          unit: 'pomodoro',
+          target: 4,
+          expectedParticipants: 2,
+          invitedUsernames: ['alice'],
+        },
+      },
     }));
     expect(approvalResponse.status).toBe(200);
     const bobAfterApproval = await approvalResponse.json();
@@ -215,6 +226,17 @@ describe('focus-friends function', () => {
       fromUsername: 'bob',
       message: 'approved your join request.',
       sessionId: 'ROOM99',
+      groupStudy: {
+        mode: 'shared-goal',
+        createdAt: 456,
+        goal: {
+          type: 'everyone-live',
+          unit: 'pomodoro',
+          target: 4,
+          expectedParticipants: 2,
+          invitedUsernames: ['alice'],
+        },
+      },
       readAt: null,
     });
 
@@ -251,6 +273,7 @@ describe('focus-friends function', () => {
       fromUsername: 'bob',
       message: 'Join my session.',
       sessionId: 'ROOM42',
+      groupStudy: null,
       readAt: null,
     });
 
@@ -262,7 +285,7 @@ describe('focus-friends function', () => {
     const alice = await createUser('Alice', 'password123');
     const bob = await createUser('Bob', 'password123');
     const aliceToken = await createSession(alice);
-    await createSession(bob);
+    const bobToken = await createSession(bob);
 
     const selfResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
       action: 'send-request',
@@ -288,12 +311,59 @@ describe('focus-friends function', () => {
     }));
     expect(unknownReadResponse.status).toBe(404);
 
+    const selfInviteResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
+      action: 'send-join-invite',
+      username: 'alice',
+      sessionId: 'room42',
+    }));
+    expect(selfInviteResponse.status).toBe(400);
+
+    const unknownInviteResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
+      action: 'send-join-invite',
+      username: 'nobody-here',
+      sessionId: 'room42',
+    }));
+    expect(unknownInviteResponse.status).toBe(404);
+
+    const groupStudy = {
+      mode: 'shared-goal',
+      createdAt: 123,
+      goal: {
+        type: 'pooled-total',
+        unit: 'mini-pomo',
+        target: 12,
+        expectedParticipants: 3,
+        invitedUsernames: ['Bob', 'bob', 'bad name', 'Casey'],
+      },
+    };
+
     const nonFriendInviteResponse = await focusFriendsHandler(makeAuthedRequest(aliceToken, 'POST', {
       action: 'send-join-invite',
       username: 'bob',
       sessionId: 'room42',
+      groupStudy,
     }));
-    expect(nonFriendInviteResponse.status).toBe(403);
+    expect(nonFriendInviteResponse.status).toBe(200);
+
+    const bobInviteResponse = await focusFriendsHandler(makeAuthedRequest(bobToken));
+    const bobInvite = await bobInviteResponse.json();
+    expect(bobInvite.inbox[0]).toMatchObject({
+      type: 'join-invite',
+      fromUsername: 'alice',
+      toUsername: 'bob',
+      sessionId: 'ROOM42',
+      groupStudy: {
+        mode: 'shared-goal',
+        createdAt: 123,
+        goal: {
+          type: 'pooled-total',
+          unit: 'mini-pomo',
+          target: 12,
+          expectedParticipants: 3,
+          invitedUsernames: ['bob', 'casey'],
+        },
+      },
+    });
   });
 
   it('declines Focus Friend join requests without sending an invite', async () => {

@@ -5,6 +5,7 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
   const stoppedSources: FakeBufferSourceNode[] = [];
   const startedOscillators: FakeOscillatorNode[] = [];
   const gainRampValues: number[] = [];
+  const gainNodes: FakeGainNode[] = [];
   const contexts: FakeAudioContext[] = [];
   let pendingResume: (() => void) | null = null;
   let resumeCalls = 0;
@@ -62,12 +63,16 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
     buffer: FakeAudioBuffer | null = null;
     loop = false;
     playbackRate = new FakeAudioParam();
+    startedAt: number | null = null;
+    stoppedAt: number | null = null;
 
-    start() {
+    start(when?: number) {
+      this.startedAt = typeof when === 'number' ? when : null;
       startedSources.push(this);
     }
 
-    stop() {
+    stop(when?: number) {
+      this.stoppedAt = typeof when === 'number' ? when : null;
       stoppedSources.push(this);
     }
   }
@@ -86,6 +91,11 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
 
   class FakeGainNode extends FakeAudioNode {
     gain = new FakeAudioParam();
+
+    constructor() {
+      super();
+      gainNodes.push(this);
+    }
   }
 
   class FakeBiquadFilterNode extends FakeAudioNode {
@@ -155,6 +165,7 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
     startedOscillators,
     stoppedSources,
     gainRampValues,
+    gainNodes,
     getResumeCalls: () => resumeCalls,
     resolveResume: () => pendingResume?.(),
   };
@@ -283,6 +294,15 @@ describe('focus sound engine', () => {
     expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBe(0);
   });
 
+  it('applies alarm volume through a master output gain', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const sound = await import('./sound');
+
+    await sound.playAlarm('pop', { volume: 25 });
+
+    expect(fakeAudio.gainNodes[0].gain.value).toBeCloseTo(0.25, 5);
+  });
+
   it('previews a focus sound without replacing the active focus loop', async () => {
     vi.useFakeTimers();
     const fakeAudio = installFakeAudioContext();
@@ -338,5 +358,273 @@ describe('focus sound engine', () => {
     }
 
     expect(fakeAudio.startedSources).toHaveLength(scheduledBeforeWhooshLoaded);
+  });
+
+  it('maps streak day slots from low pitch up to the original sample pitch', async () => {
+    const sound = await import('./sound');
+
+    expect(sound.getFocusStreakDayNotePlaybackRate(0)).toBeCloseTo(Math.pow(2, -6 / 12), 5);
+    expect(sound.getFocusStreakDayNotePlaybackRate(6)).toBe(1);
+  });
+
+  it('builds streak day sample notes only for streak slots', async () => {
+    const sound = await import('./sound');
+    const notes = sound.getFocusStreakMomentDayNotes([
+      { status: 'active' },
+      { status: null },
+      { status: 'active' },
+    ]);
+
+    expect(notes.map(note => note.index)).toEqual([0, 2]);
+    expect(notes[0].playbackRate).toBeCloseTo(sound.getFocusStreakDayNotePlaybackRate(0), 5);
+    expect(notes[1].playbackRate).toBeCloseTo(sound.getFocusStreakDayNotePlaybackRate(2), 5);
+  });
+
+  it('preloads the small notification and interaction samples before the visual moment needs them', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const sound = await import('./sound');
+
+    await sound.preloadFocusStreakMomentSounds();
+    await sound.preloadFocusStreakMomentSounds();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('plays the timer switch tap sample at normal pitch by default', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playSwitch();
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fakeAudio.startedSources).toHaveLength(1);
+    expect(fakeAudio.startedSources[0].playbackRate.value).toBe(1);
+    expect(fakeAudio.startedOscillators).toHaveLength(0);
+  });
+
+  it('plays the timer switch tap sample much lower for break bank switches', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playSwitch('break-bank');
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fakeAudio.startedSources).toHaveLength(1);
+    expect(fakeAudio.startedSources[0].playbackRate.value).toBeCloseTo(0.52, 5);
+    expect(fakeAudio.startedOscillators).toHaveLength(0);
+  });
+
+  it('plays the default notification pop sample from the preload cache', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const sound = await import('./sound');
+
+    await sound.preloadNotificationSounds();
+    fetchMock.mockClear();
+
+    await sound.playDefaultNotificationSound();
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fakeAudio.startedSources).toHaveLength(1);
+    expect(fakeAudio.startedSources[0].playbackRate.value).toBe(1);
+  });
+
+  it('plays the default notification pop sample right when the streak moment appears', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const sound = await import('./sound');
+
+    await sound.preloadFocusStreakMomentSounds();
+    fetchMock.mockClear();
+
+    await sound.playFocusStreakMomentSound();
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    const appearanceSource = fakeAudio.startedSources.find(source => (
+      Math.abs(source.playbackRate.value - 1) < 0.00001
+    ));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(appearanceSource?.startedAt).toBeCloseTo(0.025, 5);
+    expect(fakeAudio.startedOscillators).toHaveLength(0);
+  });
+
+  it('uses the preloaded streak day pop sample when the moment starts', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const sound = await import('./sound');
+
+    await sound.preloadFocusStreakMomentSounds();
+    fetchMock.mockClear();
+
+    await sound.playFocusStreakMomentSound([{ status: 'active' }]);
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fakeAudio.startedSources.some(source => (
+      Math.abs(source.playbackRate.value - sound.getFocusStreakDayNotePlaybackRate(0)) < 0.00001
+    ))).toBe(true);
+  });
+
+  it('plays the success fanfare only when the streak increased', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+    const hasFanfareSource = () => fakeAudio.startedSources.some(source => (
+      Math.abs(source.playbackRate.value - 1) < 0.00001
+    ));
+
+    await sound.playFocusStreakMomentSound([], { streakIncreased: false });
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(hasFanfareSource()).toBe(false);
+
+    await sound.playFocusStreakMomentSound([], { streakIncreased: true });
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(hasFanfareSource()).toBe(true);
+  });
+
+  it('starts the streak success fanfare one second earlier after the flame', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playFocusStreakMomentSound([], { streakIncreased: true });
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    const fanfareSource = fakeAudio.startedSources.find(source => (
+      Math.abs(source.playbackRate.value - 1) < 0.00001
+    ));
+
+    expect(fanfareSource?.startedAt).toBeCloseTo(2.465, 5);
+  });
+
+  it('uses a louder streak flame sample gain', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playFocusStreakMomentSound();
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fakeAudio.gainRampValues).toContain(3.75);
+    expect(fakeAudio.gainRampValues).toContain(2.8);
+  });
+
+  it('uses a much louder streak day blip gain so it cuts through the fanfare', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playFocusStreakMomentSound([{ status: 'active' }], { streakIncreased: true });
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fakeAudio.gainRampValues).toContain(1.85);
+  });
+
+  it('keeps the streak moment soundscape to the intended sound families', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playFocusStreakMomentSound([
+      { status: 'active' },
+      { status: 'active' },
+    ], { streakIncreased: true });
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(fakeAudio.startedSources).toHaveLength(5);
+    expect(fakeAudio.startedOscillators).toHaveLength(0);
+  });
+
+  it('plays the streak day pop sample for each streak slot and skips empty days', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    })));
+    const sound = await import('./sound');
+
+    await sound.playFocusStreakMomentSound([
+      { status: 'active' },
+      { status: null },
+      { status: 'active' },
+    ]);
+    for (let index = 0; index < 40; index += 1) {
+      await Promise.resolve();
+    }
+
+    const startedPlaybackRates = fakeAudio.startedSources.map(source => source.playbackRate.value);
+    const streakNoteRates = startedPlaybackRates.filter(rate => rate > 0.6 && rate < 1);
+    const hasCloseRate = (expected: number) => (
+      streakNoteRates.some(rate => Math.abs(rate - expected) < 0.00001)
+    );
+
+    expect(streakNoteRates).toHaveLength(2);
+    expect(hasCloseRate(sound.getFocusStreakDayNotePlaybackRate(0))).toBe(true);
+    expect(hasCloseRate(sound.getFocusStreakDayNotePlaybackRate(2))).toBe(true);
   });
 });

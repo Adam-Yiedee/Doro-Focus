@@ -3,11 +3,21 @@ import { describe, expect, it } from 'vitest';
 import {
   buildHostMemberList,
   DEFAULT_GROUP_SYNC_CONFIG,
+  getGroupGoalActiveSeconds,
+  getGroupGoalCompletedSecondsFromLogs,
+  getGroupGoalProgressValue,
+  getGroupSyncConfigForSession,
+  getPooledGoalPerPersonTarget,
+  getPooledGroupGoalProgressValue,
   GROUP_MEMBER_FALLBACK_NAME,
   intersectSyncConfig,
   mergeClientMembers,
+  normalizeGroupGoalProgressPayload,
+  normalizeGroupInviteUsernames,
+  normalizeGroupSessionConfig,
   normalizeGroupMembersPayload,
   normalizeSyncConfig,
+  NO_GROUP_SYNC_CONFIG,
   pruneLivePeerConnections,
   removePeerConnectionInstance,
   resolveRemoteSyncConfig,
@@ -41,6 +51,145 @@ describe('groupStudy helpers', () => {
       syncHistory: false,
       syncSettings: true,
     });
+  });
+
+  it('normalizes group session metadata and keeps legacy sessions timer-sync', () => {
+    expect(normalizeGroupSessionConfig(undefined).mode).toBe('timer-sync');
+    expect(getGroupSyncConfigForSession(normalizeGroupSessionConfig(undefined))).toEqual(DEFAULT_GROUP_SYNC_CONFIG);
+
+    const sharedGoal = normalizeGroupSessionConfig({
+      mode: 'shared-goal',
+      goal: {
+        type: 'pooled-total',
+        unit: 'mini-pomo',
+        target: 12,
+        expectedParticipants: 3,
+        invitedUsernames: [' Alice ', 'bob', 'alice', 'no spaces'],
+      },
+      createdAt: 123,
+    });
+
+    expect(sharedGoal).toEqual({
+      mode: 'shared-goal',
+      createdAt: 123,
+      goal: {
+        type: 'pooled-total',
+        unit: 'mini-pomo',
+        target: 12,
+        expectedParticipants: 3,
+        invitedUsernames: ['alice', 'bob'],
+      },
+    });
+    expect(getGroupSyncConfigForSession(sharedGoal)).toEqual(NO_GROUP_SYNC_CONFIG);
+  });
+
+  it('deduplicates typed invite usernames conservatively', () => {
+    expect(normalizeGroupInviteUsernames([' Ada ', 'ada', 'Grace.Hopper', 'bad name', '', 'Linus-1'])).toEqual([
+      'ada',
+      'grace.hopper',
+      'linus-1',
+    ]);
+  });
+
+  it('converts exact focused seconds into configured goal units', () => {
+    expect(getGroupGoalProgressValue(25 * 60, 'pomodoro')).toBe(1);
+    expect(getGroupGoalProgressValue(15 * 60, 'mini-pomo')).toBe(1);
+    expect(getGroupGoalProgressValue(25 * 60, 'mini-pomo')).toBeCloseTo(5 / 3, 5);
+    expect(getGroupGoalProgressValue(15 * 60, 'pomodoro')).toBeCloseTo(0.6, 5);
+  });
+
+  it('counts only timer productive work after joining, plus live active work', () => {
+    const joinedAtMs = Date.parse('2026-07-29T10:00:00.000Z');
+    const nowMs = Date.parse('2026-07-29T10:45:00.000Z');
+
+    expect(getGroupGoalCompletedSecondsFromLogs([
+      {
+        type: 'work',
+        start: '2026-07-29T09:50:00.000Z',
+        end: '2026-07-29T10:10:00.000Z',
+        duration: 20 * 60,
+        reason: 'Session End',
+      },
+      {
+        type: 'work',
+        start: '2026-07-29T10:10:00.000Z',
+        end: '2026-07-29T10:20:00.000Z',
+        duration: 10 * 60,
+        reason: 'Manual',
+        source: 'manual',
+      },
+      {
+        type: 'break',
+        start: '2026-07-29T10:20:00.000Z',
+        end: '2026-07-29T10:25:00.000Z',
+        duration: 5 * 60,
+        reason: 'Break',
+      },
+      {
+        type: 'work',
+        start: '2026-07-29T10:25:00.000Z',
+        end: '2026-07-29T10:35:00.000Z',
+        duration: 10 * 60,
+        reason: 'Task/Category Switch',
+      },
+    ], joinedAtMs, nowMs)).toBe(20 * 60);
+
+    expect(getGroupGoalActiveSeconds({
+      activeMode: 'work',
+      timerStarted: true,
+      isIdle: false,
+      allPauseActive: false,
+      graceOpen: false,
+      activityStartIso: '2026-07-29T10:30:00.000Z',
+      joinedAtMs,
+      nowMs,
+    })).toBe(15 * 60);
+  });
+
+  it('calculates pooled per-person estimates and aggregated progress', () => {
+    expect(getPooledGoalPerPersonTarget({
+      target: 12,
+      expectedParticipants: 3,
+    })).toBe(4);
+
+    expect(getPooledGroupGoalProgressValue([
+      {
+        memberId: 'host',
+        name: 'Host',
+        isHost: true,
+        completedSeconds: 25 * 60,
+        activeSeconds: 0,
+        totalSeconds: 25 * 60,
+        updatedAt: 100,
+      },
+      {
+        memberId: 'guest',
+        name: 'Guest',
+        isHost: false,
+        completedSeconds: 10 * 60,
+        activeSeconds: 5 * 60,
+        totalSeconds: 15 * 60,
+        updatedAt: 100,
+      },
+    ], 'pomodoro')).toBeCloseTo(1.6, 5);
+  });
+
+  it('normalizes progress payloads by newest member update', () => {
+    expect(normalizeGroupGoalProgressPayload([
+      { memberId: 'a', name: 'A', completedSeconds: 60, activeSeconds: 0, totalSeconds: 60, updatedAt: 1 },
+      { memberId: 'a', name: 'A newer', completedSeconds: 120, activeSeconds: 0, totalSeconds: 120, updatedAt: 2 },
+      { name: 'missing id' },
+    ])).toEqual([
+      {
+        memberId: 'a',
+        name: 'A newer',
+        isHost: false,
+        completedSeconds: 120,
+        activeSeconds: 0,
+        totalSeconds: 120,
+        updatedAt: 2,
+      },
+    ]);
   });
 
   it('intersects host and client sync configs conservatively', () => {

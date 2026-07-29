@@ -82,6 +82,7 @@ export interface TimerSettings {
   miniPomoAutoStartSoundEnabled: boolean;
   disableBlur: boolean;
   alarmSound: AlarmSound;
+  alarmSoundVolume: number;
   twoInARowStartSound: AlarmSound;
   focusSound: FocusSound;
   focusSoundVolume: number;
@@ -211,6 +212,7 @@ export interface FocusFriendAction {
   toUsername: string;
   message: string;
   sessionId?: string | null;
+  groupStudy?: GroupSessionConfig | null;
   createdAt: string;
   readAt?: string | null;
 }
@@ -250,6 +252,34 @@ export interface GroupSyncConfig {
   syncSchedule: boolean; // Future schedule only
   syncHistory: boolean;  // Full history sync
   syncSettings: boolean;
+}
+
+export type GroupSessionMode = 'timer-sync' | 'shared-goal';
+export type GroupGoalType = 'everyone-live' | 'pooled-total';
+export type GroupGoalUnit = 'pomodoro' | 'mini-pomo';
+
+export interface GroupStudyGoal {
+  type: GroupGoalType;
+  unit: GroupGoalUnit;
+  target: number;
+  expectedParticipants: number;
+  invitedUsernames: string[];
+}
+
+export interface GroupSessionConfig {
+  mode: GroupSessionMode;
+  goal?: GroupStudyGoal | null;
+  createdAt: number;
+}
+
+export interface GroupGoalProgress {
+  memberId: string;
+  name: string;
+  isHost: boolean;
+  completedSeconds: number;
+  activeSeconds: number;
+  totalSeconds: number;
+  updatedAt: number;
 }
 
 export interface GroupMember {

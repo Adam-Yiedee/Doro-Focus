@@ -68,10 +68,10 @@ export default async (request) => {
         await createFocusFriendAction(session.userRecord, body.username, 'join-request', body.message, body.sessionId);
         break;
       case 'send-join-invite':
-        await createFocusFriendAction(session.userRecord, body.username, 'join-invite', body.message, body.sessionId);
+        await createFocusFriendAction(session.userRecord, body.username, 'join-invite', body.message, body.sessionId, body.groupStudy);
         break;
       case 'approve-join-request':
-        await approveFocusFriendJoinRequest(session.userRecord, body.actionId, body.sessionId);
+        await approveFocusFriendJoinRequest(session.userRecord, body.actionId, body.sessionId, body.groupStudy);
         break;
       case 'decline-join-request':
         await declineFocusFriendJoinRequest(session.userRecord, body.actionId);

@@ -208,6 +208,31 @@ describe('debug Focus Friends accounts', () => {
     });
   });
 
+  it('seeds master2 with a two-week streak from generated activity', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-29T17:00:00.000Z'));
+
+    try {
+      const response = await authLoginHandler(makeLoginRequest('master2', 'master2'));
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+
+      expect(payload.accountData.pastSessions).toHaveLength(14);
+      expect(payload.accountData.user.lifetimeStats).toMatchObject({
+        activeDays: 14,
+        currentStreak: 14,
+        bestStreak: 14,
+      });
+      expect(payload.user.lifetimeStats).toMatchObject({
+        activeDays: 14,
+        currentStreak: 14,
+        bestStreak: 14,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not replace existing debug account data while repairing credentials and friendship', async () => {
     await authLoginHandler(makeLoginRequest('master', 'master'));
     const masterRecord = await getUserByUsername('master');

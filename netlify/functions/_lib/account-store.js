@@ -71,6 +71,13 @@ const DEBUG_FOCUS_FRIEND_ACCOUNTS = [
       { dayOffset: 4, pomos: 3 },
       { dayOffset: 5, pomos: 4 },
       { dayOffset: 6, pomos: 2 },
+      { dayOffset: 7, pomos: 3 },
+      { dayOffset: 8, pomos: 4 },
+      { dayOffset: 9, pomos: 2 },
+      { dayOffset: 10, pomos: 3 },
+      { dayOffset: 11, pomos: 4 },
+      { dayOffset: 12, pomos: 3 },
+      { dayOffset: 13, pomos: 2 },
     ],
   },
   {
@@ -141,6 +148,7 @@ const DEFAULT_SETTINGS = {
   twoInARowMode: false,
   disableBlur: true,
   alarmSound: 'bell',
+  alarmSoundVolume: 100,
   twoInARowStartSound: 'chime',
   focusSound: 'off',
   focusSoundVolume: 100,
@@ -806,6 +814,53 @@ const normalizeFocusFriendRequestRecord = (value) => {
   };
 };
 
+const normalizeGroupInviteUsername = (value) => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || !/^[a-z0-9_.-]+$/.test(normalized)) return null;
+  return normalized.slice(0, 32);
+};
+
+const normalizeGroupInviteUsernames = (value) => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  value.forEach((item) => {
+    const username = normalizeGroupInviteUsername(item);
+    if (username) seen.add(username);
+  });
+  return Array.from(seen);
+};
+
+const normalizeGroupStudyInvite = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  const mode = value.mode === 'shared-goal' ? 'shared-goal' : 'timer-sync';
+  const createdAt = Number.isFinite(Number(value.createdAt)) ? Math.max(0, Number(value.createdAt)) : Date.now();
+  if (mode !== 'shared-goal') {
+    return { mode: 'timer-sync', goal: null, createdAt };
+  }
+
+  const sourceGoal = value.goal && typeof value.goal === 'object' ? value.goal : {};
+  const invitedUsernames = normalizeGroupInviteUsernames(sourceGoal.invitedUsernames);
+  const target = Number.isFinite(Number(sourceGoal.target))
+    ? Math.max(1, Math.min(999, Math.round(Number(sourceGoal.target))))
+    : 1;
+  const expectedParticipants = Number.isFinite(Number(sourceGoal.expectedParticipants))
+    ? Math.max(1, Math.min(100, Math.floor(Number(sourceGoal.expectedParticipants))))
+    : Math.max(1, invitedUsernames.length + 1);
+
+  return {
+    mode,
+    goal: {
+      type: sourceGoal.type === 'pooled-total' ? 'pooled-total' : 'everyone-live',
+      unit: sourceGoal.unit === 'mini-pomo' ? 'mini-pomo' : 'pomodoro',
+      target,
+      expectedParticipants,
+      invitedUsernames,
+    },
+    createdAt,
+  };
+};
+
 const normalizeFocusFriendActionRecord = (value) => {
   if (!value || typeof value !== 'object') return null;
   if (!value.id || !value.fromUserId || !value.toUserId || !value.fromUsername || !value.toUsername) return null;
@@ -830,6 +885,7 @@ const normalizeFocusFriendActionRecord = (value) => {
     sessionId: typeof value.sessionId === 'string' && value.sessionId.trim()
       ? value.sessionId.trim().toUpperCase().slice(0, 64)
       : null,
+    groupStudy: normalizeGroupStudyInvite(value.groupStudy),
     createdAt: cleanString(value.createdAt, new Date().toISOString()),
     readAt,
   };
@@ -997,6 +1053,7 @@ const toPublicFocusFriendAction = (action) => ({
   toUsername: action.toUsername,
   message: action.message,
   sessionId: action.sessionId || null,
+  groupStudy: action.groupStudy || null,
   createdAt: action.createdAt,
   readAt: action.readAt || null,
 });
@@ -1746,7 +1803,7 @@ export const removeFocusFriend = async (currentUserRecord, targetUsername) => {
   ]);
 };
 
-export const createFocusFriendAction = async (fromUserRecord, targetUsername, type, rawMessage, sessionId = null) => {
+export const createFocusFriendAction = async (fromUserRecord, targetUsername, type, rawMessage, sessionId = null, groupStudy = null) => {
   const targetUserRecord = await getUserByUsername(normalizeUsername(targetUsername));
   if (!targetUserRecord) {
     const error = new Error('Focus Friend not found.');
@@ -1763,17 +1820,17 @@ export const createFocusFriendAction = async (fromUserRecord, targetUsername, ty
     getFocusFriendsData(targetUserRecord.id),
     getCurrentAccountDisplayName(fromUserRecord),
   ]);
-  if (!areFocusFriends(fromData, targetUserRecord.id)) {
-    const error = new Error('You can only message Focus Friends.');
-    error.status = 403;
-    throw error;
-  }
-
   const actionType = type === 'join-request'
     ? 'join-request'
     : type === 'join-invite'
       ? 'join-invite'
       : 'encouragement';
+  if (actionType !== 'join-invite' && !areFocusFriends(fromData, targetUserRecord.id)) {
+    const error = new Error('You can only message Focus Friends.');
+    error.status = 403;
+    throw error;
+  }
+
   const normalizedSessionId = typeof sessionId === 'string' && sessionId.trim()
     ? sessionId.trim().toUpperCase().slice(0, 64)
     : null;
@@ -1802,6 +1859,7 @@ export const createFocusFriendAction = async (fromUserRecord, targetUsername, ty
     toUsername: targetUserRecord.username,
     message,
     sessionId: normalizedSessionId,
+    groupStudy: actionType === 'join-invite' ? normalizeGroupStudyInvite(groupStudy) : null,
     createdAt: new Date().toISOString(),
     readAt: null,
   };
@@ -1822,7 +1880,7 @@ const getFocusFriendJoinRequestForUser = (data, actionId) => {
   return action;
 };
 
-export const approveFocusFriendJoinRequest = async (currentUserRecord, actionId, sessionId) => {
+export const approveFocusFriendJoinRequest = async (currentUserRecord, actionId, sessionId, groupStudy = null) => {
   const normalizedSessionId = typeof sessionId === 'string' && sessionId.trim()
     ? sessionId.trim().toUpperCase().slice(0, 64)
     : null;
@@ -1867,6 +1925,7 @@ export const approveFocusFriendJoinRequest = async (currentUserRecord, actionId,
     toUsername: requesterRecord.username,
     message: 'approved your join request.',
     sessionId: normalizedSessionId,
+    groupStudy: normalizeGroupStudyInvite(groupStudy),
     createdAt: now,
     readAt: null,
   };

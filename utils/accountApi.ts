@@ -1,4 +1,4 @@
-import { FocusFriendsState, TimerSpectatorState, User } from '../types';
+import { FocusFriendsState, GroupSessionConfig, TimerSpectatorState, User } from '../types';
 
 const ACCOUNT_API_BASE = import.meta.env.VITE_ACCOUNT_API_BASE || '/.netlify/functions';
 const ACCOUNT_API_TIMEOUT_MS = 12_000;
@@ -181,20 +181,20 @@ export const requestFocusFriendJoin = async (token: string, username: string, me
   return payload as FocusFriendsState;
 };
 
-export const sendFocusFriendJoinInvite = async (token: string, username: string, sessionId: string, message?: string): Promise<FocusFriendsState> => {
+export const sendFocusFriendJoinInvite = async (token: string, username: string, sessionId: string, message?: string, groupStudy?: GroupSessionConfig | null): Promise<FocusFriendsState> => {
   const payload = await callAccountApi('focus-friends', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action: 'send-join-invite', username, sessionId, message }),
+    body: JSON.stringify({ action: 'send-join-invite', username, sessionId, message, groupStudy }),
   });
   return payload as FocusFriendsState;
 };
 
-export const approveFocusFriendJoinRequest = async (token: string, actionId: string, sessionId: string): Promise<FocusFriendsState> => {
+export const approveFocusFriendJoinRequest = async (token: string, actionId: string, sessionId: string, groupStudy?: GroupSessionConfig | null): Promise<FocusFriendsState> => {
   const payload = await callAccountApi('focus-friends', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action: 'approve-join-request', actionId, sessionId }),
+    body: JSON.stringify({ action: 'approve-join-request', actionId, sessionId, groupStudy }),
   });
   return payload as FocusFriendsState;
 };

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from './accountSync';
+import {
+  getStableLocalUpdatedAtForAccountRefresh,
+  selectLocalPayloadForAccountSync,
+  shouldApplyAccountSyncSnapshot,
+} from './accountSync';
 
 describe('selectLocalPayloadForAccountSync', () => {
   it('prefers live payload for the active signed-in user over stale cache', () => {
@@ -59,5 +63,21 @@ describe('shouldApplyAccountSyncSnapshot', () => {
 
   it('rejects a cloud save response that started before newer local changes', () => {
     expect(shouldApplyAccountSyncSnapshot(4, 5)).toBe(false);
+  });
+});
+
+describe('getStableLocalUpdatedAtForAccountRefresh', () => {
+  it('uses the cached timestamp during passive cloud refresh comparisons', () => {
+    expect(getStableLocalUpdatedAtForAccountRefresh(
+      { updatedAt: '2026-03-15T10:00:00.000Z' },
+      { updatedAt: '2026-03-15T10:05:00.000Z' },
+    )).toBe('2026-03-15T10:00:00.000Z');
+  });
+
+  it('falls back to the remote timestamp instead of creating a new local dirty stamp', () => {
+    expect(getStableLocalUpdatedAtForAccountRefresh(
+      {},
+      { updatedAt: '2026-03-15T10:05:00.000Z' },
+    )).toBe('2026-03-15T10:05:00.000Z');
   });
 });

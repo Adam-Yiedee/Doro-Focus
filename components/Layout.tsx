@@ -1,7 +1,7 @@
 
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Flame, Heart, X } from 'lucide-react';
+import { Check, Flame, Heart, Users, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
@@ -12,7 +12,7 @@ import TaskViewModal from './Modals/TaskViewModal';
 import WeeklySchedulePanel from './Modals/WeeklySchedulePanel';
 import SummaryView from './SummaryView';
 import StreakFlame from './StreakFlame';
-import { FocusFriendAction, Task } from '../types';
+import { FocusFriendAction, GroupGoalProgress, GroupGoalUnit, GroupMember, GroupSessionConfig, Task } from '../types';
 import {
   preserveAppOpenStreakWithEarnedStats,
   recordAppOpenStreakWithEarnedStats,
@@ -22,9 +22,24 @@ import { DORO_DEVELOPER_PREVIEW_EVENT, type DeveloperPreviewEventDetail } from '
 import { DORO_DELAYED_START_SESSION_STARTED_EVENT } from '../utils/delayedStartEvents';
 import { DEFAULT_BREAK_SURFACE, DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { getDailyWelcomeMessage } from '../utils/dailyWelcomeMessages';
-import { playCelebrationTrumpet, playEncouragementDing, playFocusStreakMomentSound, startPersistentAlarm } from '../utils/sound';
+import {
+  playCelebrationTrumpet,
+  playDefaultNotificationSound,
+  playEncouragementDing,
+  playFocusStreakMomentSound,
+  preloadNotificationSounds,
+  startPersistentAlarm,
+} from '../utils/sound';
 import { getFocusFriendInviteUsernameFromCurrentUrl } from '../utils/focusFriendInvite';
-import { TIMER_ONLY_GROUP_SYNC_CONFIG } from '../utils/groupStudy';
+import {
+  getGroupGoalProgressPercent,
+  getGroupGoalProgressValue,
+  getGroupSyncConfigForSession,
+  getPooledGroupGoalProgressValue,
+  normalizeGroupSessionConfig,
+  TIMER_SYNC_GROUP_SESSION_CONFIG,
+} from '../utils/groupStudy';
+import { formatPomodoroCount } from '../utils/pomodoroAccounting';
 
 type NotificationBannerItem = {
   id: string;
@@ -293,6 +308,135 @@ const shouldHoldFocusFriendJoinBanner = (action: FocusFriendAction | undefined) 
   action?.type === 'join-request' || action?.type === 'join-invite'
 );
 
+type DeveloperGroupPreview = {
+  sessionConfig: GroupSessionConfig;
+  progress: GroupGoalProgress[];
+  members?: GroupMember[];
+  warning?: string | null;
+};
+
+const getGroupGoalUnitLabel = (unit: GroupGoalUnit, value: number) => {
+  if (unit === 'mini-pomo') return value === 1 ? 'Mini-Pomo' : 'Mini-Pomos';
+  return value === 1 ? 'Pomodoro' : 'Pomodoros';
+};
+
+const GroupStudyGoalPanel: React.FC<{
+  sessionConfig: GroupSessionConfig;
+  progress: GroupGoalProgress[];
+  members?: GroupMember[];
+  warning?: string | null;
+  isPreview?: boolean;
+}> = ({ sessionConfig, progress, members = [], warning, isPreview = false }) => {
+  const normalizedConfig = normalizeGroupSessionConfig(sessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
+  const goal = normalizedConfig.goal;
+
+  if (normalizedConfig.mode !== 'shared-goal' || !goal) {
+    const sortedMembers = [...members]
+      .filter(member => typeof member.name === 'string' && member.name.trim())
+      .sort((a, b) => Number(b.isHost) - Number(a.isHost) || a.name.localeCompare(b.name));
+    const memberCount = sortedMembers.length;
+    const memberSummary = memberCount === 0
+      ? 'Waiting for study partners'
+      : memberCount === 1
+        ? 'Just you for now'
+        : `${memberCount} people in this session`;
+
+    return (
+      <aside className="doro-group-goal-panel w-full max-w-[21rem] shrink-0 rounded-[1.25rem] border p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/42">{isPreview ? 'Preview' : 'Group Study'}</div>
+            <div className="mt-1 text-sm font-bold text-white/90">Studying with...</div>
+            <div className="mt-1 text-xs font-semibold leading-relaxed text-white/48">{memberSummary}</div>
+          </div>
+          <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
+            <Users size={16} strokeWidth={2.2} />
+          </div>
+        </div>
+
+        {sortedMembers.length > 0 && (
+          <div className="mt-4 space-y-2">
+            {sortedMembers.map(member => (
+              <div key={member.id} className="doro-group-goal-row rounded-[0.85rem] border px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 truncate text-xs font-bold text-white/78">{member.name}{member.isHost ? ' (Host)' : ''}</div>
+                  <div className="h-2 w-2 shrink-0 rounded-full bg-white/55" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </aside>
+    );
+  }
+
+  const unitLabel = getGroupGoalUnitLabel(goal.unit, goal.target);
+  const isPooled = goal.type === 'pooled-total';
+  const pooledValue = getPooledGroupGoalProgressValue(progress, goal.unit);
+  const totalValue = isPooled ? pooledValue : 0;
+  const headlineValue = isPooled
+    ? totalValue
+    : Math.max(0, ...progress.map(item => getGroupGoalProgressValue(item.totalSeconds, goal.unit)));
+  const headlinePercent = getGroupGoalProgressPercent(isPooled ? totalValue : headlineValue, goal.target);
+  const sortedProgress = [...progress].sort((a, b) => Number(b.isHost) - Number(a.isHost) || b.totalSeconds - a.totalSeconds);
+
+  return (
+    <aside className="doro-group-goal-panel w-full max-w-[21rem] shrink-0 rounded-[1.25rem] border p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/42">{isPreview ? 'Preview Goal' : 'Group Goal'}</div>
+          <div className="mt-1 text-sm font-bold text-white/90">{isPooled ? 'Pooled Total' : 'Everyone Live'}</div>
+          <div className="mt-1 text-xs font-semibold leading-relaxed text-white/48">
+            {formatPomodoroCount(goal.target)} {unitLabel}{isPooled ? ` across ${goal.expectedParticipants} people` : ' each'}
+          </div>
+        </div>
+        <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
+          <Users size={16} strokeWidth={2.2} />
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className="flex items-end justify-between gap-3">
+          <div className="text-3xl font-black leading-none text-white">{formatPomodoroCount(headlineValue)}</div>
+          <div className="pb-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/42">
+            / {formatPomodoroCount(goal.target)}
+          </div>
+        </div>
+        <div className="doro-group-goal-rail mt-3 h-2 overflow-hidden rounded-full border">
+          <div
+            className="h-full rounded-full bg-white/72 transition-[width] duration-500"
+            style={{ width: `${headlinePercent}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {sortedProgress.map(item => {
+          const value = getGroupGoalProgressValue(item.totalSeconds, goal.unit);
+          const rowPercent = getGroupGoalProgressPercent(value, isPooled ? Math.max(goal.target, pooledValue || goal.target) : goal.target);
+          return (
+            <div key={item.memberId} className="doro-group-goal-row rounded-[0.85rem] border px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 truncate text-xs font-bold text-white/78">{item.name}{item.isHost ? ' (Host)' : ''}</div>
+                <div className="shrink-0 text-[11px] font-black tabular-nums text-white/72">{formatPomodoroCount(value)}</div>
+              </div>
+              <div className="doro-group-goal-rail mt-1.5 h-1.5 overflow-hidden rounded-full border">
+                <div className="h-full rounded-full bg-white/45 transition-[width] duration-500" style={{ width: `${rowPercent}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {warning && (
+        <div className="doro-group-goal-note mt-3 rounded-[0.85rem] border px-3 py-2 text-[11px] font-semibold leading-relaxed text-white/76">
+          {warning}
+        </div>
+      )}
+    </aside>
+  );
+};
+
 const Layout: React.FC = () => {
   const {
     activeMode,
@@ -309,6 +453,10 @@ const Layout: React.FC = () => {
     setWeeklyScheduleOpen,
     groupNotice,
     groupSessionId,
+    groupSessionConfig,
+    groupGoalProgress,
+    groupGoalPresetWarning,
+    members,
     guestTimerLockNotice,
     focusFriendNotice,
     createGroupSession,
@@ -325,6 +473,7 @@ const Layout: React.FC = () => {
   const [dailyWelcomeBanner, setDailyWelcomeBanner] = useState<DailyWelcomeBanner | null>(null);
   const [focusStreakBanner, setFocusStreakBanner] = useState<FocusStreakBanner | null>(null);
   const [gracePreview, setGracePreview] = useState<GracePreviewConfig | null>(null);
+  const [developerGroupPreview, setDeveloperGroupPreview] = useState<DeveloperGroupPreview | null>(null);
   const [allTasksCelebration, setAllTasksCelebration] = useState<AllTasksCelebration | null>(null);
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
   const [notificationTimersActive, setNotificationTimersActive] = useState(areNotificationTimersActive);
@@ -333,6 +482,9 @@ const Layout: React.FC = () => {
   const bannerDismissTimeoutsRef = useRef<Record<string, number>>({});
   const renderedGroupNoticeIdsRef = useRef<Set<string>>(new Set());
   const renderedFocusFriendNoticeIdsRef = useRef<Set<string>>(new Set());
+  const playedDefaultNotificationSoundIdsRef = useRef<Set<string>>(new Set());
+  const dailyWelcomeBannerRef = useRef<DailyWelcomeBanner | null>(null);
+  const focusStreakBannerRef = useRef<FocusStreakBanner | null>(null);
   const dailyWelcomeTimersRef = useRef({
     show: createPausableTimeout(DAILY_WELCOME_SHOW_DELAY_MS),
     exit: createPausableTimeout(DAILY_WELCOME_VISIBLE_MS),
@@ -356,6 +508,7 @@ const Layout: React.FC = () => {
   const didInitCelebrationRef = useRef(false);
   const previousGroupSessionIdRef = useRef<string | null>(null);
   const selectedAlarmSoundRef = useRef(settings.alarmSound);
+  const selectedAlarmSoundVolumeRef = useRef(settings.alarmSoundVolume);
   const delayedStartAlarmStopRef = useRef<(() => void) | null>(null);
 
   const stopDelayedStartAlarm = () => {
@@ -423,6 +576,7 @@ const Layout: React.FC = () => {
 
   const scheduleDailyWelcomeLifecycle = () => {
     if (!notificationTimersActive) return;
+    if (focusStreakBannerRef.current) return;
     const { bannerId, todayKey, message } = dailyWelcomeConfigRef.current;
     if (!bannerId || !todayKey || !message) return;
 
@@ -577,15 +731,18 @@ const Layout: React.FC = () => {
     updateFocusFriendBannerStatus(bannerId, 'working', 'Opening your focus session...');
 
     try {
+      let sessionConfig = normalizeGroupSessionConfig(groupSessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
       let sessionId = getSafeFocusFriendSessionId(groupSessionId);
       if (!sessionId) {
+        sessionConfig = { ...TIMER_SYNC_GROUP_SESSION_CONFIG, createdAt: Date.now() };
         sessionId = await createGroupSession(
           getFocusFriendJoinerName(action.toUsername),
-          TIMER_ONLY_GROUP_SYNC_CONFIG,
+          getGroupSyncConfigForSession(sessionConfig),
+          sessionConfig,
         );
       }
 
-      const result = await approveFocusFriendJoinRequest(action.id, sessionId);
+      const result = await approveFocusFriendJoinRequest(action.id, sessionId, sessionConfig);
       if (!result.ok) throw new Error(result.error || 'Could not approve join request.');
       updateFocusFriendBannerStatus(bannerId, 'success', 'Allowed. Joining them now.');
       scheduleFocusFriendBannerDismiss(bannerId);
@@ -632,11 +789,13 @@ const Layout: React.FC = () => {
     updateFocusFriendBannerStatus(bannerId, 'working', 'Joining focus session...');
 
     try {
+      const sessionConfig = normalizeGroupSessionConfig(action.groupStudy, TIMER_SYNC_GROUP_SESSION_CONFIG);
       if (getSafeFocusFriendSessionId(groupSessionId) !== sessionId) {
         await joinGroupSession(
           sessionId,
           getFocusFriendJoinerName(action.toUsername),
-          TIMER_ONLY_GROUP_SYNC_CONFIG,
+          getGroupSyncConfigForSession(sessionConfig),
+          sessionConfig,
         );
       }
       if (!action.readAt) {
@@ -757,7 +916,15 @@ const Layout: React.FC = () => {
     } catch {
       // Ignore storage failures; account stats remain the source of truth.
     }
-  }, [user?.lifetimeStats?.bestStreak, user?.lifetimeStats?.currentStreak]);
+  }, [user?.lifetimeStats?.bestStreak, user?.lifetimeStats?.currentStreak, user?.lifetimeStats?.lastActiveDate]);
+
+  useEffect(() => {
+    dailyWelcomeBannerRef.current = dailyWelcomeBanner;
+  }, [dailyWelcomeBanner]);
+
+  useEffect(() => {
+    focusStreakBannerRef.current = focusStreakBanner;
+  }, [focusStreakBanner]);
 
   useEffect(() => {
     const updateNotificationTimerState = () => {
@@ -792,7 +959,8 @@ const Layout: React.FC = () => {
 
   useEffect(() => {
     selectedAlarmSoundRef.current = settings.alarmSound;
-  }, [settings.alarmSound]);
+    selectedAlarmSoundVolumeRef.current = settings.alarmSoundVolume;
+  }, [settings.alarmSound, settings.alarmSoundVolume]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -812,7 +980,11 @@ const Layout: React.FC = () => {
       };
 
       stopDelayedStartAlarm();
-      delayedStartAlarmStopRef.current = startPersistentAlarm(selectedAlarmSoundRef.current);
+      delayedStartAlarmStopRef.current = startPersistentAlarm(
+        selectedAlarmSoundRef.current,
+        3200,
+        selectedAlarmSoundVolumeRef.current,
+      );
 
       setGroupBanners((prev) => {
         prev.forEach((item) => {
@@ -850,6 +1022,51 @@ const Layout: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    void preloadNotificationSounds();
+  }, []);
+
+  useEffect(() => {
+    if (focusStreakBanner) {
+      if (!dailyWelcomeBannerRef.current) {
+        clearDailyWelcomeTimers();
+        dailyWelcomeTimersRef.current.show.remainingMs = 0;
+        dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
+        dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
+      }
+      return;
+    }
+
+    scheduleDailyWelcomeLifecycle();
+  }, [focusStreakBanner?.id, focusStreakBanner?.exiting, notificationTimersActive]);
+
+  useEffect(() => {
+    if (!notificationTimersActive) return;
+
+    const visibleNotificationIds = [
+      ...(dailyWelcomeBanner && !dailyWelcomeBanner.exiting ? [`daily:${dailyWelcomeBanner.id}`] : []),
+      ...groupBanners
+        .filter((banner) => !banner.exiting)
+        .map((banner) => `banner:${banner.id}`),
+    ];
+    const playedIds = playedDefaultNotificationSoundIdsRef.current;
+
+    visibleNotificationIds.forEach((id) => {
+      if (playedIds.has(id)) return;
+      playedIds.add(id);
+      void playDefaultNotificationSound();
+    });
+
+    if (playedIds.size > 80) {
+      const visibleIds = new Set(visibleNotificationIds);
+      Array.from(playedIds).forEach((id) => {
+        if (!visibleIds.has(id) && playedIds.size > 60) {
+          playedIds.delete(id);
+        }
+      });
+    }
+  }, [dailyWelcomeBanner?.id, dailyWelcomeBanner?.exiting, groupBanners, notificationTimersActive]);
+
+  useEffect(() => {
     scheduleFocusStreakLifecycle();
   }, [focusStreakBanner?.id, notificationTimersActive]);
 
@@ -857,7 +1074,9 @@ const Layout: React.FC = () => {
     if (!focusStreakBanner || focusStreakBanner.exiting || !notificationTimersActive) return;
     if (playedFocusStreakSoundIdsRef.current.has(focusStreakBanner.id)) return;
     playedFocusStreakSoundIdsRef.current.add(focusStreakBanner.id);
-    void playFocusStreakMomentSound();
+    void playFocusStreakMomentSound(focusStreakBanner.snapshot.rollingDays, {
+      streakIncreased: !focusStreakBanner.snapshot.streakBroken,
+    });
   }, [focusStreakBanner, notificationTimersActive]);
 
   useEffect(() => {
@@ -1076,6 +1295,123 @@ const Layout: React.FC = () => {
       });
     };
 
+    const createDeveloperGroupPreview = (kind: 'timer-sync' | 'everyone' | 'pooled' | 'complete') => {
+      const now = Date.now();
+      const makeProgress = (
+        unit: GroupGoalUnit,
+        rows: Array<{ id: string; name: string; isHost?: boolean; value: number }>,
+      ): GroupGoalProgress[] => {
+        const unitSeconds = unit === 'mini-pomo' ? 15 * 60 : 25 * 60;
+        return rows.map((row, index) => {
+          const totalSeconds = Math.max(0, Math.round(row.value * unitSeconds));
+          return {
+            memberId: row.id,
+            name: row.name,
+            isHost: Boolean(row.isHost),
+            completedSeconds: totalSeconds,
+            activeSeconds: 0,
+            totalSeconds,
+            updatedAt: now - index * 1200,
+          };
+        });
+      };
+      const makeMembers = (rows: Array<{ id: string; name: string; isHost?: boolean }>): GroupMember[] => (
+        rows.map(row => ({
+          id: row.id,
+          name: row.name,
+          isHost: Boolean(row.isHost),
+        }))
+      );
+      const localName = user?.username || userName || 'You';
+      const timerSyncMembers = makeMembers([
+        { id: 'developer-host', name: localName, isHost: true },
+        { id: 'developer-mira', name: 'Mira' },
+        { id: 'developer-sam', name: 'Sam' },
+      ]);
+
+      if (kind === 'timer-sync') {
+        setDeveloperGroupPreview({
+          sessionConfig: { ...TIMER_SYNC_GROUP_SESSION_CONFIG, createdAt: now },
+          members: timerSyncMembers,
+          progress: [],
+        });
+        return;
+      }
+
+      if (kind === 'everyone') {
+        setDeveloperGroupPreview({
+          sessionConfig: {
+            mode: 'shared-goal',
+            createdAt: now,
+            goal: {
+              type: 'everyone-live',
+              unit: 'pomodoro',
+              target: 4,
+              expectedParticipants: 3,
+              invitedUsernames: ['mira', 'sam'],
+            },
+          },
+          progress: makeProgress('pomodoro', [
+            { id: 'developer-host', name: localName, isHost: true, value: 1.4 },
+            { id: 'developer-mira', name: 'Mira', value: 1 },
+            { id: 'developer-sam', name: 'Sam', value: 0.5 },
+          ]),
+          members: timerSyncMembers,
+          warning: 'Preview warning: this goal was set up for the Classic preset.',
+        });
+        return;
+      }
+
+      if (kind === 'pooled') {
+        setDeveloperGroupPreview({
+          sessionConfig: {
+            mode: 'shared-goal',
+            createdAt: now,
+            goal: {
+              type: 'pooled-total',
+              unit: 'pomodoro',
+              target: 10,
+              expectedParticipants: 4,
+              invitedUsernames: ['mira', 'sam', 'lee'],
+            },
+          },
+          progress: makeProgress('pomodoro', [
+            { id: 'developer-host', name: localName, isHost: true, value: 2.2 },
+            { id: 'developer-mira', name: 'Mira', value: 1.8 },
+            { id: 'developer-sam', name: 'Sam', value: 1.25 },
+            { id: 'developer-lee', name: 'Lee', value: 0.75 },
+          ]),
+          members: makeMembers([
+            { id: 'developer-host', name: localName, isHost: true },
+            { id: 'developer-mira', name: 'Mira' },
+            { id: 'developer-sam', name: 'Sam' },
+            { id: 'developer-lee', name: 'Lee' },
+          ]),
+        });
+        return;
+      }
+
+      setDeveloperGroupPreview({
+        sessionConfig: {
+          mode: 'shared-goal',
+          createdAt: now,
+          goal: {
+            type: 'pooled-total',
+            unit: 'mini-pomo',
+            target: 8,
+            expectedParticipants: 3,
+            invitedUsernames: ['mira', 'sam'],
+          },
+        },
+        progress: makeProgress('mini-pomo', [
+          { id: 'developer-host', name: localName, isHost: true, value: 3.5 },
+          { id: 'developer-mira', name: 'Mira', value: 2.5 },
+          { id: 'developer-sam', name: 'Sam', value: 2.25 },
+        ]),
+        members: timerSyncMembers,
+      });
+    };
+
     const clearDeveloperPreviews = () => {
       Object.keys(bannerTimersRef.current).forEach(timerId => {
         if (timerId.startsWith('developer-')) clearBannerTimer(timerId);
@@ -1087,6 +1423,7 @@ const Layout: React.FC = () => {
       setDailyWelcomeBanner(prev => (prev?.id.startsWith('developer-') ? null : prev));
       setFocusStreakBanner(prev => (prev?.id.startsWith('developer-') ? null : prev));
       setGracePreview(null);
+      setDeveloperGroupPreview(null);
     };
 
     const handleDeveloperPreview = (event: Event) => {
@@ -1132,6 +1469,18 @@ const Layout: React.FC = () => {
             showLongGracePrompt: true,
             statusMessage: 'Developer preview for long-grace session protection.',
           });
+          break;
+        case 'group-timer-sync':
+          createDeveloperGroupPreview('timer-sync');
+          break;
+        case 'group-goal-everyone':
+          createDeveloperGroupPreview('everyone');
+          break;
+        case 'group-goal-pooled':
+          createDeveloperGroupPreview('pooled');
+          break;
+        case 'group-goal-complete':
+          createDeveloperGroupPreview('complete');
           break;
         case 'clear-previews':
           clearDeveloperPreviews();
@@ -1275,6 +1624,20 @@ const Layout: React.FC = () => {
   }), [isLightTheme]);
   const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
   const focusStreakSnapshot = focusStreakBanner?.snapshot || null;
+  const groupStudyPanel = developerGroupPreview
+    ? {
+      ...developerGroupPreview,
+      isPreview: true,
+    }
+    : groupSessionId
+      ? {
+        sessionConfig: groupSessionConfig,
+        progress: groupGoalProgress,
+        members,
+        warning: groupGoalPresetWarning,
+        isPreview: false,
+      }
+      : null;
 
   return (
     <div 
@@ -1282,6 +1645,54 @@ const Layout: React.FC = () => {
       style={containerStyle}
     >
       <style>{`
+        .doro-group-goal-panel {
+          --doro-group-goal-ease: cubic-bezier(0.16, 1, 0.3, 1);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
+            rgba(255,255,255,0.075);
+          border-color: rgba(255, 255, 255, 0.18);
+          box-shadow:
+            0 38px 82px -40px rgba(0,0,0,0.84),
+            0 18px 38px -22px rgba(0,0,0,0.64),
+            inset 0 1px 0 rgba(255,255,255,0.16);
+          transform: translateZ(0);
+          backface-visibility: hidden;
+        }
+        .doro-group-goal-icon,
+        .doro-group-goal-row,
+        .doro-group-goal-note {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)),
+            rgba(0, 0, 0, 0.24);
+          border-color: rgba(255, 255, 255, 0.16);
+          box-shadow: 0 14px 26px -24px rgba(0, 0, 0, 0.54);
+        }
+        .doro-group-goal-row {
+          transition:
+            transform 370ms var(--doro-group-goal-ease),
+            background-color 280ms ease,
+            border-color 280ms ease,
+            box-shadow 300ms ease,
+            filter 280ms ease;
+          will-change: transform, box-shadow, background-color;
+          backface-visibility: hidden;
+        }
+        .doro-group-goal-row:hover {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.095), rgba(255,255,255,0.035)),
+            rgba(0, 0, 0, 0.3);
+          border-color: rgba(255, 255, 255, 0.28);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.6),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+          transform: translate3d(0, -1px, 0) scale(1.003);
+          filter: brightness(1.018);
+        }
+        .doro-group-goal-rail {
+          background: rgba(0, 0, 0, 0.24);
+          border-color: rgba(255, 255, 255, 0.12);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
         @keyframes doroGroupBannerIn {
           0% { opacity: 0; transform: translateY(-14px) scale(0.98); }
           100% { opacity: 1; transform: translateY(0) scale(1); }
@@ -2750,7 +3161,18 @@ const Layout: React.FC = () => {
             <div className="doro-main-surface-inner relative flex flex-col gap-12">
               {/* Timer Section */}
               <div className="doro-timer-section w-full flex justify-center animate-slide-up py-6 md:py-8">
-                <TimerDisplay />
+                <div className="flex w-full flex-col items-center justify-center gap-4 xl:flex-row xl:items-center">
+                  <TimerDisplay />
+                  {groupStudyPanel && (
+                    <GroupStudyGoalPanel
+                      sessionConfig={groupStudyPanel.sessionConfig}
+                      progress={groupStudyPanel.progress}
+                      members={groupStudyPanel.members}
+                      warning={groupStudyPanel.warning}
+                      isPreview={groupStudyPanel.isPreview}
+                    />
+                  )}
+                </div>
               </div>
 
               {/* Tasks Section */}

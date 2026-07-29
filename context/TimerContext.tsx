@@ -13,6 +13,8 @@ import {
   GroupEventPayload,
   GroupNotice,
   GuestTimerLockNotice,
+  GroupGoalProgress,
+  GroupSessionConfig,
   User,
   SessionRecord,
   TimerRuntimePhase,
@@ -26,6 +28,7 @@ import { dispatchDelayedStartSessionStarted } from '../utils/delayedStartEvents'
 import Peer, { DataConnection } from 'peerjs';
 import {
   GraceContext,
+  TIMER_PRESETS,
   TIMER_RUNTIME_VERSION,
   computeWorkCompletion,
   createRuntimeSnapshot,
@@ -72,9 +75,15 @@ import {
 import {
   buildHostMemberList,
   DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_SYNC_CONFIG,
+  getGroupGoalActiveSeconds,
+  getGroupGoalCompletedSecondsFromLogs,
+  getGroupSyncConfigForSession,
   GROUP_MEMBER_FALLBACK_NAME,
   intersectSyncConfig,
+  normalizeGroupGoalProgress,
+  normalizeGroupGoalProgressPayload,
   mergeClientMembers,
+  normalizeGroupSessionConfig,
   normalizeGroupMembersPayload,
   normalizeSyncConfig,
   pruneLivePeerConnections,
@@ -87,12 +96,14 @@ import {
   shouldCreateReplacementPeerConnection,
   shouldFollowHostTimerSync,
   shouldRefreshMembersAfterPeerCleanup,
+  TIMER_SYNC_GROUP_SESSION_CONFIG,
+  upsertGroupGoalProgress,
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
 import { buildCategorySnapshot } from '../utils/categoryTracking';
 import { isActiveCategory } from '../utils/categoryVisibility';
 import { getAccountStatsPomodoroEquivalent, getCompletionReasonForSettings } from '../utils/pomodoroAccounting';
-import { selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from '../utils/accountSync';
+import { getStableLocalUpdatedAtForAccountRefresh, selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from '../utils/accountSync';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
 import { pickTimerSpectatorSettings } from '../utils/timerShare';
@@ -203,6 +214,9 @@ interface TimerContextType {
   peerError: string | null;
   hostSyncConfig: GroupSyncConfig;
   clientSyncConfig: GroupSyncConfig; // What the joiner chooses to accept
+  groupSessionConfig: GroupSessionConfig;
+  groupGoalProgress: GroupGoalProgress[];
+  groupGoalPresetWarning: string | null;
   pendingJoinId: string | null;
   pendingMenuAction: PendingMenuAction | null;
   groupNotice: GroupNotice | null;
@@ -230,8 +244,8 @@ interface TimerContextType {
   removeFocusFriend: (username: string) => Promise<AuthResult>;
   sendFocusFriendEncouragement: (username: string, message: string) => Promise<AuthResult>;
   requestFocusFriendJoin: (username: string, message?: string) => Promise<AuthResult>;
-  sendFocusFriendJoinInvite: (username: string, sessionId: string, message?: string) => Promise<AuthResult>;
-  approveFocusFriendJoinRequest: (actionId: string, sessionId: string) => Promise<AuthResult>;
+  sendFocusFriendJoinInvite: (username: string, sessionId: string, message?: string, groupStudy?: GroupSessionConfig | null) => Promise<AuthResult>;
+  approveFocusFriendJoinRequest: (actionId: string, sessionId: string, groupStudy?: GroupSessionConfig | null) => Promise<AuthResult>;
   declineFocusFriendJoinRequest: (actionId: string) => Promise<AuthResult>;
   markFocusFriendActionRead: (actionId: string) => Promise<AuthResult>;
   
@@ -253,8 +267,8 @@ interface TimerContextType {
   hardReset: () => void;
   
   // Group Actions
-  createGroupSession: (name: string, config: GroupSyncConfig) => Promise<string>;
-  joinGroupSession: (id: string, name: string, config: GroupSyncConfig) => Promise<void>;
+  createGroupSession: (name: string, config: GroupSyncConfig, sessionConfig?: GroupSessionConfig | null) => Promise<string>;
+  joinGroupSession: (id: string, name: string, config: GroupSyncConfig, sessionConfig?: GroupSessionConfig | null) => Promise<void>;
   leaveGroupSession: () => void;
   updateHostSyncConfig: (config: GroupSyncConfig) => void;
   updateClientSyncConfig: (config: GroupSyncConfig) => void;
@@ -313,6 +327,7 @@ const DEFAULT_SETTINGS: TimerSettings = {
   miniPomoAutoStartSoundEnabled: true,
   disableBlur: true,
   alarmSound: 'bell',
+  alarmSoundVolume: 100,
   twoInARowStartSound: 'chime',
   focusSound: 'off',
   focusSoundVolume: 100,
@@ -337,6 +352,11 @@ const normalizeMiniPomoAutoStartBlock = (value: unknown, fallback: 1 | 2 | 3 | 4
     : fallback;
 };
 
+const normalizeVolumePercent = (value: unknown, fallback = 100) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(value)));
+};
+
 const normalizeSettings = (settings?: Partial<TimerSettings> | null): TimerSettings => {
   const source = settings || {};
   const fallbackMiniPomoBlock = source.twoInARowMode ? 2 : 1;
@@ -345,6 +365,8 @@ const normalizeSettings = (settings?: Partial<TimerSettings> | null): TimerSetti
     ...source,
   };
   nextSettings.alarmSound = normalizeAlarmSound(source.alarmSound);
+  nextSettings.alarmSoundVolume = normalizeVolumePercent(source.alarmSoundVolume);
+  nextSettings.focusSoundVolume = normalizeVolumePercent(source.focusSoundVolume);
   nextSettings.twoInARowStartSound = normalizeAlarmSound(source.twoInARowStartSound);
   nextSettings.miniPomoAutoStartBlock = normalizeMiniPomoAutoStartBlock(
     source.miniPomoAutoStartBlock,
@@ -537,6 +559,7 @@ const normalizeTaskSelection = (
   options?: {
     preferredSelectedId?: number | null;
     selectFirstAvailableIfNoSelection?: boolean;
+    preserveSelectedCompleted?: boolean;
     todayKey?: string;
   },
 ): Task[] => {
@@ -545,6 +568,7 @@ const normalizeTaskSelection = (
     ? options.preferredSelectedId
     : undefined;
   let selectedCount = 0;
+  let firstSelectedCompletedId: number | null = null;
   let firstSelectedSelectableId: number | null = null;
   let firstSelectableId: number | null = null;
   let preferredIsSelectable = false;
@@ -555,6 +579,9 @@ const normalizeTaskSelection = (
       if (selectable && firstSelectableId === null) firstSelectableId = task.id;
       if (task.selected) {
         selectedCount += 1;
+        if (task.checked && firstSelectedCompletedId === null && !isDeferredTaskFromToday(task, todayKey)) {
+          firstSelectedCompletedId = task.id;
+        }
         if (selectable && firstSelectedSelectableId === null) firstSelectedSelectableId = task.id;
       }
       if (preferredSelectedId !== undefined && task.id === preferredSelectedId && selectable) {
@@ -570,7 +597,9 @@ const normalizeTaskSelection = (
   if (preferredSelectedId !== undefined) {
     targetSelectedId = preferredIsSelectable ? preferredSelectedId : null;
   } else if (selectedCount > 0) {
-    targetSelectedId = firstSelectedSelectableId ?? firstSelectableId;
+    targetSelectedId = firstSelectedSelectableId
+      ?? (options?.preserveSelectedCompleted ? firstSelectedCompletedId : null)
+      ?? firstSelectableId;
   } else if (options?.selectFirstAvailableIfNoSelection) {
     targetSelectedId = firstSelectableId;
   }
@@ -599,6 +628,7 @@ const normalizeTaskState = (
   options?: {
     preferredSelectedId?: number | null;
     selectFirstAvailableIfNoSelection?: boolean;
+    preserveSelectedCompleted?: boolean;
     todayKey?: string;
   },
 ): Task[] => normalizeTaskSelection(normalizeTaskIds(tasks), options);
@@ -743,6 +773,22 @@ const findActiveContext = (tasks: Task[], parentColor?: string, parentCategoryId
   }
   return { task: null, color: undefined, categoryId: null };
 };
+
+const getActiveTrackingContextKey = (tasks: Task[]) => {
+  const context = findActiveContext(tasks);
+  const taskId = typeof context.task?.id === 'number' && Number.isFinite(context.task.id)
+    ? context.task.id
+    : null;
+  const categoryId = typeof context.categoryId === 'number' && Number.isFinite(context.categoryId)
+    ? context.categoryId
+    : null;
+
+  return `${taskId ?? 'none'}|${categoryId ?? 'none'}`;
+};
+
+const hasActiveTrackingContextChanged = (previousTasks: Task[], nextTasks: Task[]) => (
+  getActiveTrackingContextKey(previousTasks) !== getActiveTrackingContextKey(nextTasks)
+);
 
 const incrementCompletedInTree = (tasks: Task[], id: number): Task[] => {
   return tasks.map(t => {
@@ -1173,12 +1219,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [members, setMembers] = useState<GroupMember[]>([]);
   const [hostSyncConfig, setHostSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const [clientSyncConfig, setClientSyncConfig] = useState<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const [groupSessionConfig, setGroupSessionConfig] = useState<GroupSessionConfig>(TIMER_SYNC_GROUP_SESSION_CONFIG);
+  const [groupGoalProgress, setGroupGoalProgress] = useState<GroupGoalProgress[]>([]);
   const [pendingJoinId, setPendingJoinId] = useState<string | null>(null);
   const [pendingMenuAction, setPendingMenuAction] = useState<PendingMenuAction | null>(null);
   const [groupNotice, setGroupNotice] = useState<GroupNotice | null>(null);
   const [guestTimerLockNotice, setGuestTimerLockNotice] = useState<GuestTimerLockNotice | null>(null);
   const hostSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
   const clientSyncConfigRef = useRef<GroupSyncConfig>(DEFAULT_SYNC_CONFIG);
+  const groupSessionConfigRef = useRef<GroupSessionConfig>(TIMER_SYNC_GROUP_SESSION_CONFIG);
+  const groupGoalProgressRef = useRef<GroupGoalProgress[]>([]);
+  const groupGoalJoinedAtMsRef = useRef<number>(Date.now());
+  const lastGroupGoalProgressBroadcastRef = useRef(0);
   const groupSessionIdRef = useRef<string | null>(null);
   const userNameRef = useRef<string>('');
   const isHostRef = useRef(false);
@@ -1260,6 +1312,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   userNameRef.current = userName;
   isHostRef.current = isHost;
   logsRef.current = logs;
+  groupSessionConfigRef.current = groupSessionConfig;
+  groupGoalProgressRef.current = groupGoalProgress;
   delayedStartTargetTimeRef.current = delayedStartTargetTime;
   currentGroupStateRef.current = {
     settings,
@@ -1287,6 +1341,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     graceContext,
     graceTotal,
     userName,
+    groupSessionConfig,
+    groupGoalProgress,
   };
 
   useEffect(() => {
@@ -1984,12 +2040,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     runFocusFriendMutation((token) => apiRequestFocusFriendJoin(token, username, message, null))
   ), [runFocusFriendMutation]);
 
-  const sendFocusFriendJoinInvite = useCallback((username: string, sessionId: string, message?: string) => (
-    runFocusFriendMutation((token) => apiSendFocusFriendJoinInvite(token, username, sessionId, message))
+  const sendFocusFriendJoinInvite = useCallback((username: string, sessionId: string, message?: string, groupStudy?: GroupSessionConfig | null) => (
+    runFocusFriendMutation((token) => apiSendFocusFriendJoinInvite(token, username, sessionId, message, groupStudy))
   ), [runFocusFriendMutation]);
 
-  const approveFocusFriendJoinRequest = useCallback((actionId: string, sessionId: string) => (
-    runFocusFriendMutation((token) => apiApproveFocusFriendJoinRequest(token, actionId, sessionId))
+  const approveFocusFriendJoinRequest = useCallback((actionId: string, sessionId: string, groupStudy?: GroupSessionConfig | null) => (
+    runFocusFriendMutation((token) => apiApproveFocusFriendJoinRequest(token, actionId, sessionId, groupStudy))
   ), [runFocusFriendMutation]);
 
   const declineFocusFriendJoinRequest = useCallback((actionId: string) => (
@@ -2411,8 +2467,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const cloudUser = remote.user;
           const localCacheKey = getUserKey(cloudUser.username);
           const cachedLocalRaw: TimerPersistencePayload = JSON.parse(localStorage.getItem(localCacheKey) || '{}');
+          const stableLocalUpdatedAt = getStableLocalUpdatedAtForAccountRefresh(cachedLocalRaw, remote.accountData);
           const liveLocalRaw = buildPersistencePayload({
-            updatedAt: new Date().toISOString(),
+            updatedAt: stableLocalUpdatedAt,
             userOverride: user.username === cloudUser.username
               ? { ...user, username: cloudUser.username, joinedAt: user.joinedAt || cloudUser.joinedAt }
               : user,
@@ -3062,6 +3119,43 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGuestTimerLockNotice(null);
   }, [groupSessionId, isHost, hostSyncConfig.syncTimers, clientSyncConfig.syncTimers, isFollowingHostTimerSync]);
 
+  const getGroupGoalExpectedPreset = (config: GroupSessionConfig) => {
+    if (config.mode !== 'shared-goal' || !config.goal) return null;
+    return config.goal.unit === 'mini-pomo' ? 'compact' : 'classic';
+  };
+
+  const applyGroupGoalPreset = useCallback((config: GroupSessionConfig) => {
+    const expectedPreset = getGroupGoalExpectedPreset(config);
+    if (!expectedPreset) return;
+    const presetSettings = TIMER_PRESETS[expectedPreset];
+    setSettings(prev => {
+      const compactBlock = expectedPreset === 'compact'
+        ? (prev.miniPomoAutoStartBlock || (prev.twoInARowMode ? 2 : 1))
+        : 1;
+      return normalizeSettings({
+        ...prev,
+        ...presetSettings,
+        timerPreset: expectedPreset,
+        miniPomoAutoStartBlock: compactBlock,
+        twoInARowMode: expectedPreset === 'compact' && compactBlock > 1,
+      });
+    });
+    if (!timerStarted && activeModeRef.current === 'work') {
+      setWorkTime(presetSettings.workDuration);
+      if (!allPauseActive && !graceOpen) {
+        anchorRuntimePhase('idle', { phaseStartWorkTime: presetSettings.workDuration });
+      }
+    }
+  }, [allPauseActive, anchorRuntimePhase, graceOpen, timerStarted]);
+
+  const expectedGroupGoalPreset = getGroupGoalExpectedPreset(groupSessionConfig);
+  const groupGoalPresetWarning = groupSessionId
+    && groupSessionConfig.mode === 'shared-goal'
+    && expectedGroupGoalPreset
+    && settings.timerPreset !== expectedGroupGoalPreset
+      ? `This group goal started in ${expectedGroupGoalPreset === 'compact' ? 'Mini-Pomos' : 'Pomodoros'}, but progress is still counted from exact focused minutes.`
+      : null;
+
   const getCurrentState = useCallback(() => {
     return {
        ...currentGroupStateRef.current,
@@ -3238,6 +3332,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!config.syncSchedule) { delete filteredState.scheduleBreaks; delete filteredState.scheduleStartTime; delete filteredState.sessionStartTime; delete filteredState.delayedStartTargetTime; }
       if (!config.syncSettings) { delete filteredState.settings; }
       filteredState.hostConfig = hostSyncConfigRef.current;
+      filteredState.groupSessionConfig = groupSessionConfigRef.current;
+      filteredState.groupGoalProgress = groupGoalProgressRef.current;
       return filteredState;
   }, []);
 
@@ -3257,6 +3353,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         remoteHostConfig,
         clientSyncConfig: clientSyncConfigRef.current,
       });
+      if (remote.groupSessionConfig) {
+          const normalizedSessionConfig = normalizeGroupSessionConfig(remote.groupSessionConfig, groupSessionConfigRef.current);
+          groupSessionConfigRef.current = normalizedSessionConfig;
+          setGroupSessionConfig(normalizedSessionConfig);
+          if (!isHostRef.current) applyGroupGoalPreset(normalizedSessionConfig);
+      }
+      if (Array.isArray(remote.groupGoalProgress)) {
+          const normalizedProgress = normalizeGroupGoalProgressPayload(remote.groupGoalProgress);
+          groupGoalProgressRef.current = normalizedProgress;
+          setGroupGoalProgress(normalizedProgress);
+      }
       const incomingSettings = mode === 'full' && config.syncSettings && remote.settings
         ? normalizeSettings(remote.settings)
         : null;
@@ -3336,7 +3443,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         isRemoteUpdate.current = false;
         remoteUpdateClearTimeoutRef.current = null;
       }, 120);
-  }, []);
+  }, [applyGroupGoalPreset]);
 
   const broadcastState = useCallback((excludeConnId?: string) => {
       if (!shouldBroadcastGroupState({
@@ -3364,7 +3471,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
      if(!groupSessionId || isRemoteUpdate.current) return;
      const t = setTimeout(() => { broadcastState(); }, 80);
      return () => clearTimeout(t);
-  }, [tasks, settings, activeMode, timerStarted, isIdle, lockedTimerMode, lockedTimerStartedAtMs, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, delayedStartTargetTime, focusTimerDisplayOffsetSeconds, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, isHost]);
+  }, [tasks, settings, activeMode, timerStarted, isIdle, lockedTimerMode, lockedTimerStartedAtMs, workTime, breakTime, scheduleBreaks, scheduleStartTime, sessionStartTime, delayedStartTargetTime, focusTimerDisplayOffsetSeconds, pomodoroCount, allPauseActive, allPauseTime, allPauseReason, allPauseStartTime, graceOpen, graceContext, graceTotal, groupSessionId, broadcastState, hostSyncConfig, clientSyncConfig, groupSessionConfig, groupGoalProgress, isHost]);
 
   const updateMembersList = useCallback(() => {
       if (!isHostRef.current) return;
@@ -3394,8 +3501,66 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return hostName;
   }, [rememberMemberName]);
 
-  const createGroupSession = async (name: string, config: GroupSyncConfig): Promise<string> => {
-      const normalizedConfig = normalizeSyncConfig(config, hostSyncConfigRef.current);
+  const publishLocalGroupGoalProgress = useCallback(() => {
+      const sessionConfig = groupSessionConfigRef.current;
+      if (!groupSessionIdRef.current || sessionConfig.mode !== 'shared-goal' || !sessionConfig.goal) return;
+      const nowMs = Date.now();
+      const memberId = localPeerIdRef.current || (isHostRef.current ? groupSessionIdRef.current : null) || 'local';
+      const memberName = sanitizeGroupMemberName(userNameRef.current, isHostRef.current ? 'Host' : GROUP_MEMBER_FALLBACK_NAME);
+      const completedSeconds = getGroupGoalCompletedSecondsFromLogs(
+        logsRef.current,
+        groupGoalJoinedAtMsRef.current,
+        nowMs,
+      );
+      const activeSeconds = getGroupGoalActiveSeconds({
+        activeMode: activeModeRef.current,
+        timerStarted,
+        isIdle,
+        allPauseActive,
+        graceOpen,
+        activityStartIso: currentActivityStartRef.current?.toISOString() || null,
+        joinedAtMs: groupGoalJoinedAtMsRef.current,
+        nowMs,
+      });
+      const progress: GroupGoalProgress = {
+        memberId,
+        name: memberName,
+        isHost: isHostRef.current,
+        completedSeconds,
+        activeSeconds,
+        totalSeconds: completedSeconds + activeSeconds,
+        updatedAt: nowMs,
+      };
+
+      setGroupGoalProgress(prev => {
+        const next = upsertGroupGoalProgress(prev, progress, nowMs);
+        groupGoalProgressRef.current = next;
+        return next;
+      });
+
+      if (!isHostRef.current) {
+        const hostConn = groupSessionIdRef.current
+          ? pruneConnections().find(conn => conn.open && conn.peer === groupSessionIdRef.current)
+          : null;
+        if (hostConn?.open && nowMs - lastGroupGoalProgressBroadcastRef.current > 900) {
+          lastGroupGoalProgressBroadcastRef.current = nowMs;
+          hostConn.send({ type: 'GROUP_PROGRESS_UPDATE', progress });
+        }
+      }
+  }, [allPauseActive, graceOpen, isIdle, pruneConnections, timerStarted]);
+
+  useEffect(() => {
+      if (!groupSessionId || groupSessionConfig.mode !== 'shared-goal') return;
+      publishLocalGroupGoalProgress();
+      const interval = setInterval(publishLocalGroupGoalProgress, 1000);
+      return () => clearInterval(interval);
+  }, [groupSessionConfig, groupSessionId, publishLocalGroupGoalProgress]);
+
+  const createGroupSession = async (name: string, config: GroupSyncConfig, sessionConfig?: GroupSessionConfig | null): Promise<string> => {
+      const normalizedSessionConfig = normalizeGroupSessionConfig(sessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
+      const normalizedConfig = normalizedSessionConfig.mode === 'shared-goal'
+        ? getGroupSyncConfigForSession(normalizedSessionConfig)
+        : normalizeSyncConfig(config, hostSyncConfigRef.current);
       if (groupSessionIdRef.current || peerRef.current || connectionsRef.current.length > 0) {
           leaveGroupSession();
       }
@@ -3405,6 +3570,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setUserName(name);
       hostSyncConfigRef.current = normalizedConfig;
       setHostSyncConfig(normalizedConfig);
+      groupSessionConfigRef.current = normalizedSessionConfig;
+      setGroupSessionConfig(normalizedSessionConfig);
+      groupGoalProgressRef.current = [];
+      setGroupGoalProgress([]);
+      groupGoalJoinedAtMsRef.current = Date.now();
+      applyGroupGoalPreset(normalizedSessionConfig);
       lastClientTimerBroadcastSignatureRef.current = null;
       clientReadyForBroadcastRef.current = true;
       memberNamesRef.current = {};
@@ -3589,6 +3760,23 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         }
                         return;
                     }
+                    if (data.type === 'GROUP_PROGRESS_UPDATE') {
+                        const progress = normalizeGroupGoalProgress(data.progress);
+                        if (progress) {
+                          setGroupGoalProgress(prev => {
+                            const next = upsertGroupGoalProgress(prev, {
+                              ...progress,
+                              memberId: conn.peer,
+                              name: rememberMemberName(conn.peer, progress.name),
+                              isHost: false,
+                            });
+                            groupGoalProgressRef.current = next;
+                            return next;
+                          });
+                          window.setTimeout(() => broadcastState(), 0);
+                        }
+                        return;
+                    }
                     if (data.type === 'STATE_REQUEST') {
                         if (conn.open) {
                           conn.send({ type: 'STATE_UPDATE', state: buildFilteredGroupState(getCurrentState(), hostSyncConfigRef.current) });
@@ -3653,10 +3841,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
   };
 
-  const joinGroupSession = async (hostId: string, name: string, config: GroupSyncConfig): Promise<void> => {
+  const joinGroupSession = async (hostId: string, name: string, config: GroupSyncConfig, sessionConfig?: GroupSessionConfig | null): Promise<void> => {
       const sessionId = hostId.trim().toUpperCase();
       if (!sessionId) throw new Error('Session ID is required.');
-      const normalizedConfig = normalizeSyncConfig(config, clientSyncConfigRef.current);
+      const normalizedSessionConfig = normalizeGroupSessionConfig(sessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
+      const normalizedConfig = normalizedSessionConfig.mode === 'shared-goal'
+        ? getGroupSyncConfigForSession(normalizedSessionConfig)
+        : normalizeSyncConfig(config, clientSyncConfigRef.current);
       if (groupSessionIdRef.current || peerRef.current || connectionsRef.current.length > 0) {
           leaveGroupSession();
       }
@@ -3667,6 +3858,12 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setUserName(name);
       clientSyncConfigRef.current = normalizedConfig;
       setClientSyncConfig(normalizedConfig);
+      groupSessionConfigRef.current = normalizedSessionConfig;
+      setGroupSessionConfig(normalizedSessionConfig);
+      groupGoalProgressRef.current = [];
+      setGroupGoalProgress([]);
+      groupGoalJoinedAtMsRef.current = Date.now();
+      applyGroupGoalPreset(normalizedSessionConfig);
       lastClientTimerBroadcastSignatureRef.current = null;
       clientReadyForBroadcastRef.current = false;
       memberNamesRef.current = {};
@@ -3775,6 +3972,11 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 clientReadyForBroadcastRef.current = true;
                 upsertClientMembers(sessionId, undefined, localPeerId, localName);
                 applyRemoteState(data.state, 'timer-only');
+              }
+              else if (data.type === 'GROUP_PROGRESS') {
+                const normalizedProgress = normalizeGroupGoalProgressPayload(data.progress);
+                groupGoalProgressRef.current = normalizedProgress;
+                setGroupGoalProgress(normalizedProgress);
               }
               else if (data.type === 'MEMBERS_UPDATE') {
                 const normalizedMembers = normalizeGroupMembersPayload(data.members);
@@ -3922,17 +4124,22 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       announcedPeerIdsRef.current = new Set();
       seenGroupEventIdsRef.current = new Set();
       spectatorEncouragementLastAtRef.current = {};
+      groupGoalProgressRef.current = [];
+      groupGoalJoinedAtMsRef.current = Date.now();
       clientReadyForBroadcastRef.current = true;
       setGroupNotice(null);
       setGuestTimerLockNotice(null);
       setGroupSessionId(null);
       setIsHost(false);
       setMembers([]);
+      setGroupGoalProgress([]);
       if (!options?.preserveConfigs) {
         hostSyncConfigRef.current = DEFAULT_SYNC_CONFIG;
         clientSyncConfigRef.current = DEFAULT_SYNC_CONFIG;
+        groupSessionConfigRef.current = TIMER_SYNC_GROUP_SESSION_CONFIG;
         setHostSyncConfig(DEFAULT_SYNC_CONFIG);
         setClientSyncConfig(DEFAULT_SYNC_CONFIG);
+        setGroupSessionConfig(TIMER_SYNC_GROUP_SESSION_CONFIG);
       }
       if (options?.reason) setPeerError(options.reason);
       else setPeerError(null);
@@ -3992,6 +4199,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const activeContext = findActiveContext(tasks);
   const activeTask = activeContext.task;
   const activeColor = activeContext.color;
+  const activeCategoryId = typeof activeContext.categoryId === 'number' && Number.isFinite(activeContext.categoryId)
+    ? activeContext.categoryId
+    : null;
 
   const prependLogEntry = useCallback((entry: LogEntry) => {
     setLogs(prev => {
@@ -4004,16 +4214,68 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
-    const categorySnapshot = buildCategorySnapshot(categories, selectedTask?.categoryId ?? null);
+    const effectiveCategoryId = typeof currentContext.categoryId === 'number' && Number.isFinite(currentContext.categoryId)
+      ? currentContext.categoryId
+      : selectedTask?.categoryId ?? null;
+    const categorySnapshot = buildCategorySnapshot(categories, effectiveCategoryId);
     const entry: LogEntry = {
       type, start: start.toISOString(), end: new Date().toISOString(),
       duration, reason, task: selectedTask ? { id: selectedTask.id, name: selectedTask.name } : null,
       color: currentContext.color,
-      categoryId: selectedTask ? selectedTask.categoryId : null,
+      categoryId: selectedTask ? effectiveCategoryId : null,
       ...categorySnapshot,
     };
     prependLogEntry(entry);
   }, [categories, prependLogEntry, tasks]);
+
+  const flushActiveWorkContextSegment = useCallback((reason = 'Task/Category Switch') => {
+    if (!timerStarted || isIdle || activeMode !== 'work' || allPauseActive || graceOpen) return;
+
+    const activeStart = currentActivityStartRef.current;
+    if (!activeStart) return;
+
+    const nowMs = Date.now();
+    const activeStartMs = activeStart.getTime();
+    if (!Number.isFinite(activeStartMs)) return;
+
+    const durationSeconds = (nowMs - activeStartMs) / 1000;
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0.5) return;
+
+    const runtime = runtimeRef.current;
+    const derived = deriveRuntimeValues(runtime, nowMs);
+    const nextWorkTime = runtime.phase === 'running-work'
+      ? derived.workTime
+      : Math.max(0, workTime - durationSeconds);
+    if (nextWorkTime <= 0.5) return;
+
+    logActivity('work', activeStart, durationSeconds, reason);
+
+    const nextActivityStart = new Date(nowMs);
+    currentActivityStartRef.current = nextActivityStart;
+    lastTickRef.current = nowMs;
+    setWorkTime(nextWorkTime);
+    setBreakTime(derived.breakTime);
+    anchorRuntimePhase('running-work', {
+      phaseStartWorkTime: nextWorkTime,
+      phaseStartBreakTime: derived.breakTime,
+      activityStartIso: nextActivityStart.toISOString(),
+      activeMode: 'work',
+      timerStarted: true,
+      isIdle: false,
+      graceOpen: false,
+      graceContext: null,
+      graceTotal: 0,
+    });
+  }, [
+    activeMode,
+    allPauseActive,
+    anchorRuntimePhase,
+    graceOpen,
+    isIdle,
+    logActivity,
+    timerStarted,
+    workTime,
+  ]);
 
   useEffect(() => {
     const checkedTaskIds = getCheckedTaskIdSet(tasks);
@@ -4225,7 +4487,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       currentActivityStartRef.current = null;
     }
     if (!isFocusTimerPreset) {
-      playAlarm(settings.alarmSound);
+      playAlarm(settings.alarmSound, { volume: settings.alarmSoundVolume });
     }
     const roundedDebtMinutes = Math.max(0, Math.ceil(overflowSeconds / 60));
     if (lockedTimerMode === 'break' || isFocusTimerPreset) {
@@ -4287,7 +4549,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       graceContext: 'afterBreak',
       graceTotal: Math.max(0, overflowSeconds),
     });
-  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, settings.timerPreset, settings.workDuration, showTimerTabTitleNotification, workTime]);
+  }, [anchorRuntimePhase, graceOpen, lockedTimerMode, logActivity, sendNotification, settings.alarmSound, settings.alarmSoundVolume, settings.timerPreset, settings.workDuration, showTimerTabTitleNotification, workTime]);
 
   const handleWorkLoopComplete = useCallback((initialGraceSeconds: number = 0) => {
     if (isProcessingRef.current) return;
@@ -4307,7 +4569,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const isFocusTimerPreset = settings.timerPreset === 'focus';
     const shouldStartNextFocus = shouldAutoStartNextFocus || lockedTimerMode === 'work' || isFocusTimerPreset;
     if (!isFocusTimerPreset && (!shouldAutoStartNextFocus || settings.miniPomoAutoStartSoundEnabled)) {
-      playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound);
+      playAlarm(shouldAutoStartNextFocus ? settings.twoInARowStartSound : settings.alarmSound, {
+        volume: settings.alarmSoundVolume,
+      });
     }
     const nextWorkTime = shouldStartNextFocus ? settings.workDuration : 0;
 
@@ -4336,7 +4600,13 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const selected = findSelectedTask(prevTasks);
         if (!selected) return prevTasks;
         const todayKey = getDateKey(new Date());
-        if (selected.checked || isDeferredTaskFromToday(selected, todayKey)) {
+        if (selected.checked) {
+            return normalizeTaskState(prevTasks, {
+                selectFirstAvailableIfNoSelection: true,
+                preserveSelectedCompleted: true,
+            });
+        }
+        if (isDeferredTaskFromToday(selected, todayKey)) {
             return normalizeTaskState(prevTasks, { selectFirstAvailableIfNoSelection: true });
         }
         
@@ -4350,7 +4620,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
              }
         }
         
-        return normalizeTaskState(updatedTasks, { selectFirstAvailableIfNoSelection: true });
+        return normalizeTaskState(updatedTasks, {
+            selectFirstAvailableIfNoSelection: true,
+            preserveSelectedCompleted: Boolean(updatedSelected?.checked),
+        });
     });
 
     if (!isFocusTimerPreset) {
@@ -4563,7 +4836,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const boundedPendingEndMs = pendingWindow.endMs;
       const boundedPendingDurationSeconds = (boundedPendingEndMs - boundedPendingStartMs) / 1000;
       if (Number.isFinite(boundedPendingDurationSeconds) && boundedPendingDurationSeconds > 0.5) {
-        const pendingActiveCategoryId = activeTask?.categoryId;
+        const pendingActiveCategoryId = activeCategoryId;
         const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
         const pendingActiveStartIso = new Date(boundedPendingStartMs).toISOString();
         const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
@@ -4727,6 +5000,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       focusTimerDisplayOffsetSeconds: carryFocusSeconds,
     });
   }, [
+    activeCategoryId,
     activeColor,
     activeMode,
     activeTask,
@@ -5289,7 +5563,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       : ensureSessionStarted(currentActivityStartRef.current || switchStartedAt);
     const shouldClearTimerLock = lockedTimerMode !== null && lockedTimerMode !== targetMode;
-    playSwitch();
+    playSwitch(targetMode === 'break' ? 'break-bank' : 'default');
     if (!isIdle && currentActivityStartRef.current && !isDelayedStartCountdown) {
         const duration = (Date.now() - currentActivityStartRef.current.getTime()) / 1000;
         logActivity(activeMode, currentActivityStartRef.current, duration, 'Switch');
@@ -5391,7 +5665,6 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const activeDuration = (pauseStart - activeStart.getTime()) / 1000;
       if (Number.isFinite(activeDuration) && activeDuration > 0.5) {
         const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
-        const activeCategoryId = activeTask?.categoryId ?? null;
         const activeCategorySnapshot = buildCategorySnapshot(categories, activeCategoryId);
         const pauseEntry: LogEntry = {
           type: pausedActiveMode,
@@ -5558,9 +5831,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       workOverride: nextWorkTime,
       breakOverride: nextBreakTime,
       forceActivityStart: now,
-      playSound: true,
+      playSound: false,
       forceStart: true,
     });
+    playSwitch(nextMode === 'break' ? 'break-bank' : 'default');
     emitLocalGroupEvent('grace-resolved', { mode: nextMode });
     setTimeout(() => { isResolvingGraceRef.current = false; }, 300);
   };
@@ -5673,7 +5947,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         pendingActivity = null;
         sessionEndEntry = null;
       } else {
-        const pendingActiveCategoryId = activeTask?.categoryId;
+        const pendingActiveCategoryId = activeCategoryId;
         const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
         const pendingActiveStartIso = new Date(boundedPendingStartMs).toISOString();
         const pendingActiveEndIso = new Date(boundedPendingEndMs).toISOString();
@@ -5847,6 +6121,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     setShowSummary(options?.showSummary !== false);
   }, [
+    activeCategoryId,
     activeColor,
     activeMode,
     activeTask,
@@ -5972,6 +6247,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return normalizeTaskState(addTaskToTree(prev, parentId, createNewTask()));
       });
     } else {
+      if (!deferred && !hasSelectedSelectableTask(tasks)) {
+        flushActiveWorkContextSegment();
+      }
       setTasks(prev => {
         lastTaskIdSeed = Math.max(lastTaskIdSeed, getMaxTaskId(prev));
         const newTask = createNewTask();
@@ -5995,6 +6273,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         selected: false, categoryId, subtasks: taskProps.subtasks || [], isExpanded: true, color: taskProps.color,
         isFuture: taskProps.isFuture, scheduledStart: taskProps.scheduledStart, scheduledDate: taskProps.scheduledDate
       };
+      if (!deferred && !hasSelectedSelectableTask(tasks)) {
+        flushActiveWorkContextSegment();
+      }
       setTasks(prev => {
         const shouldSelectNewTask = !deferred && !hasSelectedSelectableTask(prev);
         return normalizeTaskState([...prev, newTask], {
@@ -6020,16 +6301,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const updateTask = (task: Task) => {
     markAccountSyncDirty();
     const nextTask = task.selected && isDeferredTaskFromToday(task) ? { ...task, selected: false } : task;
-    setTasks(prev => normalizeTaskState(updateTaskInTree(prev, nextTask)));
+    const preserveSelectedCompleted = Boolean(nextTask.selected && nextTask.checked);
+    const normalizeOptions = preserveSelectedCompleted
+      ? { preserveSelectedCompleted: true }
+      : undefined;
+    const nextTasksForContext = normalizeTaskState(updateTaskInTree(tasks, nextTask), normalizeOptions);
+    if (hasActiveTrackingContextChanged(tasks, nextTasksForContext)) {
+      flushActiveWorkContextSegment();
+    }
+    setTasks(prev => normalizeTaskState(updateTaskInTree(prev, nextTask), normalizeOptions));
   };
   const deleteTask = (id: number) => {
     markAccountSyncDirty();
+    const nextTasksForContext = normalizeTaskState(deleteTaskInTree(tasks, id), { selectFirstAvailableIfNoSelection: true });
+    if (hasActiveTrackingContextChanged(tasks, nextTasksForContext)) {
+      flushActiveWorkContextSegment();
+    }
     setTasks(prev => normalizeTaskState(deleteTaskInTree(prev, id), { selectFirstAvailableIfNoSelection: true }));
   };
   const selectTask = (id: number) => {
     const currentTarget = findTask(tasks, id);
     if (!currentTarget || currentTarget.selected || !isSelectableTask(currentTarget)) return;
     markAccountSyncDirty();
+    flushActiveWorkContextSegment();
     setTasks(prev => {
       const target = findTask(prev, id);
       if (!target || target.selected || !isSelectableTask(target)) return prev;
@@ -6152,6 +6446,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
   const deleteCategory = (id: number) => {
     markAccountSyncDirty();
+    const nextTasksForContext = normalizeTaskState(clearCategoryFromTasks(tasks, id));
+    if (hasActiveTrackingContextChanged(tasks, nextTasksForContext)) {
+      flushActiveWorkContextSegment();
+    }
     setCategories(prev => prev.filter(c => c.id !== id));
     setTasks(prev => normalizeTaskState(clearCategoryFromTasks(prev, id)));
     if (selectedCategoryId === id) setSelectedCategoryId(null);
@@ -6208,7 +6506,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       focusTimerDisplayOffsetSeconds,
       isScheduleOpen, setScheduleOpen, isWeeklyScheduleOpen, setWeeklyScheduleOpen, showCompletedTasks, setShowCompletedTasks,
       activeTask, activeColor, showSummary, sessionStats,
-      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
+      groupSessionId, userName, isHost, peerError, members, hostSyncConfig, clientSyncConfig, groupSessionConfig, groupGoalProgress, groupGoalPresetWarning, pendingJoinId, pendingMenuAction, groupNotice, guestTimerLockNotice,
       accountSyncState, accountSyncError, lastAccountSyncAt, isPreviewAccount, focusFriends, focusFriendsLoading, focusFriendsError, focusFriendNotice,
       login, logout, register, syncAccountNow, refreshAccountFromCloud,
       refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendInvite, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, approveFocusFriendJoinRequest, declineFocusFriendJoinRequest, markFocusFriendActionRead,

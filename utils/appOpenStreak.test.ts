@@ -134,7 +134,7 @@ describe('app open streak accounting', () => {
 
     const snapshot = recordAppOpenStreakWithEarnedStats(
       storage,
-      { currentStreak: 8, bestStreak: 11 },
+      { currentStreak: 8, bestStreak: 11, lastActiveDate: '2026-07-28' },
       localTime(2026, 6, 28),
     );
     const stored = JSON.parse(storage.getItem(APP_OPEN_STREAK_STORAGE_KEY) ?? '{}');
@@ -142,8 +142,43 @@ describe('app open streak accounting', () => {
     expect(snapshot.currentStreak).toBe(8);
     expect(snapshot.bestStreak).toBe(11);
     expect(snapshot.historyByDate['2026-07-28']).toBe('active');
+    expect(snapshot.rollingDays.every((day) => day.status === 'active')).toBe(true);
     expect(stored.currentStreak).toBe(8);
     expect(stored.bestStreak).toBe(11);
+  });
+
+  it('repairs missing rolling history for an already-preserved earned streak', () => {
+    const storage = createMemoryStorage();
+    storage.setItem(APP_OPEN_STREAK_STORAGE_KEY, JSON.stringify({
+      currentStreak: 14,
+      bestStreak: 14,
+      lastOpenDate: '2026-07-29',
+      freezeUsageByWeek: {},
+      historyByDate: {
+        '2026-07-29': 'active',
+      },
+    }));
+
+    const snapshot = preserveAppOpenStreakWithEarnedStats(
+      storage,
+      { currentStreak: 14, bestStreak: 14, lastActiveDate: '2026-07-29' },
+      localTime(2026, 6, 29),
+    );
+    const stored = JSON.parse(storage.getItem(APP_OPEN_STREAK_STORAGE_KEY) ?? '{}');
+
+    expect(snapshot.currentStreak).toBe(14);
+    expect(snapshot.bestStreak).toBe(14);
+    expect(snapshot.rollingDays.map((day) => day.status)).toEqual([
+      'active',
+      'active',
+      'active',
+      'active',
+      'active',
+      'active',
+      'active',
+    ]);
+    expect(stored.historyByDate['2026-07-23']).toBe('active');
+    expect(stored.historyByDate['2026-07-29']).toBe('active');
   });
 
   it('repairs a lower local app-open streak without downgrading earned streaks', () => {

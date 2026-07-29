@@ -76,78 +76,125 @@ export const calculateLifetimeStatsFromData = (
   const safeSessions = Array.isArray(sessions) ? sessions : [];
   const safeLogs = Array.isArray(currentLogs) ? currentLogs : [];
   const safeCategories = Array.isArray(categories) ? categories : [];
+  const categoryMap = getCategoryMapById(safeCategories);
 
   const productiveLogs = safeLogs.filter((entry) => {
     if (!isProductiveFocusLog(entry)) return false;
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
     return true;
   });
-  const completedPomodoroWeightFromLogs = productiveLogs.reduce(
-    (acc, entry) => acc + getAccountStatsPomodoroEquivalent(entry),
-    0,
-  );
-
-  const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
-  const manualWorkSecondsFromLogs = productiveLogs.reduce(
-    (acc, entry) => acc + (isManualFocusLog(entry) ? Math.max(0, entry.duration) : 0),
-    0,
-  );
   const timerSessionDurationLogs = safeLogs.filter((entry) => {
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
     return isTimerSessionDurationLog(entry);
   });
-  const sessionSecondsFromLogs = timerSessionDurationLogs.reduce(
-    (acc, entry) => acc + Math.max(0, entry.duration),
-    0,
-  );
-  const workHoursFromLogs = workSecondsFromLogs / 3600;
-  const productiveLogDateKeys = new Set<string>();
-  productiveLogs.forEach((entry) => {
-    if (isManualFocusLog(entry)) return;
-    const key = getLocalDateKeyFromIso(entry.start);
-    if (key) productiveLogDateKeys.add(key);
-  });
-  const timerSessionLogDateKeys = new Set<string>();
-  timerSessionDurationLogs.forEach((entry) => {
-    const key = getLocalDateKeyFromIso(entry.start);
-    if (key) timerSessionLogDateKeys.add(key);
-  });
 
-  const fallbackSessions = safeSessions.filter((session) => {
-    const sessionDateKey = getLocalDateKeyFromIso(session.startTime);
-    return !sessionDateKey || !productiveLogDateKeys.has(sessionDateKey);
-  });
-  const totalTimeFallbackSessions = safeSessions.filter((session) => {
-    const sessionDateKey = getLocalDateKeyFromIso(session.startTime);
-    return !sessionDateKey || !timerSessionLogDateKeys.has(sessionDateKey);
+  type DayTotals = {
+    focusMinutes: number;
+    sessionMinutes: number;
+    pomos: number;
+    categoryBreakdown: Record<string, number>;
+    canOverrideLogDay: boolean;
+  };
+
+  const createDayTotals = (): DayTotals => ({
+    focusMinutes: 0,
+    sessionMinutes: 0,
+    pomos: 0,
+    categoryBreakdown: {},
+    canOverrideLogDay: false,
   });
 
-  const workMinutesFromFallbackSessions = fallbackSessions.reduce(
-    (acc, session) => acc + getSessionWorkMinutes(session),
-    0,
-  );
-  const totalFocusHours = workHoursFromLogs + (workMinutesFromFallbackSessions / 60);
-  const totalSessionMinutesFromFallbackSessions = totalTimeFallbackSessions.reduce(
-    (acc, session) => acc + getSessionTotalMinutes(session),
-    0,
-  );
-  const totalSessionHours = (sessionSecondsFromLogs / 3600) + (totalSessionMinutesFromFallbackSessions / 60);
+  const getDayTotals = (map: Map<string, DayTotals>, key: string) => {
+    const existing = map.get(key);
+    if (existing) return existing;
+    const created = createDayTotals();
+    map.set(key, created);
+    return created;
+  };
 
-  const totalPomosFromFallbackSessions = fallbackSessions.reduce(
-    (acc, session) => acc + getAccountStatsSessionPomodoroEquivalent(session),
-    0,
+  const addCategoryMinutes = (
+    breakdown: Record<string, number>,
+    name: string,
+    minutes: number,
+  ) => {
+    const safeMinutes = Number(minutes);
+    if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
+    const key = name || 'Uncategorized';
+    breakdown[key] = (breakdown[key] || 0) + safeMinutes;
+  };
+
+  const addBreakdown = (
+    target: Record<string, number>,
+    source: Record<string, number>,
+  ) => {
+    Object.entries(source).forEach(([name, minutes]) => {
+      addCategoryMinutes(target, name, minutes);
+    });
+  };
+
+  const getCategoryMinutesTotal = (breakdown: Record<string, number>) => (
+    Object.values(breakdown).reduce((total, minutes) => {
+      const safeMinutes = Number(minutes);
+      return total + (Number.isFinite(safeMinutes) && safeMinutes > 0 ? safeMinutes : 0);
+    }, 0)
   );
 
-  const categoryMap = getCategoryMapById(safeCategories);
+  const ensureCategoryCoverage = (totals: DayTotals) => {
+    const untrackedMinutes = totals.focusMinutes - getCategoryMinutesTotal(totals.categoryBreakdown);
+    if (untrackedMinutes > 0.01) {
+      addCategoryMinutes(totals.categoryBreakdown, 'Uncategorized', untrackedMinutes);
+    }
+  };
 
-  const categoryBreakdown: Record<string, number> = {};
+  const timerLogDays = new Map<string, DayTotals>();
+  const sessionDays = new Map<string, DayTotals>();
+  const manualCategoryBreakdown: Record<string, number> = {};
+  const undatedTimerTotals = createDayTotals();
+  const productiveDates = new Set<string>();
+  let manualWorkSecondsFromLogs = 0;
+  let manualPomosFromLogs = 0;
+
   productiveLogs.forEach((entry) => {
     const minutes = Math.max(0, entry.duration / 60);
     if (minutes <= 0) return;
-    const key = resolveLogEntryCategory(entry, categoryMap).name || 'Uncategorized';
-    categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
+    const pomos = getAccountStatsPomodoroEquivalent(entry);
+    const categoryName = resolveLogEntryCategory(entry, categoryMap).name || 'Uncategorized';
+    const dateKey = getLocalDateKeyFromIso(entry.start);
+
+    if (isManualFocusLog(entry)) {
+      manualWorkSecondsFromLogs += Math.max(0, entry.duration);
+      manualPomosFromLogs += pomos;
+      addCategoryMinutes(manualCategoryBreakdown, categoryName, minutes);
+      if (dateKey) productiveDates.add(dateKey);
+      return;
+    }
+
+    const totals = dateKey ? getDayTotals(timerLogDays, dateKey) : undatedTimerTotals;
+    totals.focusMinutes += minutes;
+    totals.pomos += pomos;
+    addCategoryMinutes(totals.categoryBreakdown, categoryName, minutes);
+    if (dateKey) productiveDates.add(dateKey);
   });
-  fallbackSessions.forEach((session) => {
+
+  timerSessionDurationLogs.forEach((entry) => {
+    const minutes = Math.max(0, entry.duration / 60);
+    if (minutes <= 0) return;
+    const dateKey = getLocalDateKeyFromIso(entry.start);
+    const totals = dateKey ? getDayTotals(timerLogDays, dateKey) : undatedTimerTotals;
+    totals.sessionMinutes += minutes;
+  });
+
+  safeSessions.forEach((session, index) => {
+    const dateKey = getLocalDateKeyFromIso(session.startTime) || `__session_${index}`;
+    const totals = getDayTotals(sessionDays, dateKey);
+    totals.focusMinutes += getSessionWorkMinutes(session);
+    totals.sessionMinutes += getSessionTotalMinutes(session);
+    totals.pomos += getAccountStatsSessionPomodoroEquivalent(session);
+    const miniPomosCompleted = Number(session.stats?.miniPomosCompleted || 0);
+    if (Number.isFinite(miniPomosCompleted) && miniPomosCompleted > 0) {
+      totals.canOverrideLogDay = true;
+    }
+
     const categoryDetails = Array.isArray(session.stats?.categoryDetails)
       ? session.stats.categoryDetails
       : [];
@@ -157,29 +204,75 @@ export const calculateLifetimeStatsFromData = (
         const safeMinutes = Number(safeDetail.minutes);
         if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
         const key = resolveLogEntryCategory(safeDetail, categoryMap).name || 'Uncategorized';
-        categoryBreakdown[key] = (categoryBreakdown[key] || 0) + safeMinutes;
+        addCategoryMinutes(totals.categoryBreakdown, key, safeMinutes);
       });
-      return;
+    } else if (session.stats?.categoryStats) {
+      Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
+        addCategoryMinutes(totals.categoryBreakdown, name, Number(minutes));
+      });
     }
-    if (!session.stats?.categoryStats) return;
-    Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
-      const safeMinutes = Number(minutes);
-      if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
-      categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
-    });
+
+    if (!dateKey.startsWith('__') && totals.focusMinutes > 0) {
+      productiveDates.add(dateKey);
+    }
   });
 
-  const productiveDates = new Set<string>();
-  productiveLogs.forEach((entry) => {
-    const key = getLocalDateKeyFromIso(entry.start);
-    if (key) productiveDates.add(key);
+  ensureCategoryCoverage(undatedTimerTotals);
+  const categoryBreakdown: Record<string, number> = {};
+  addBreakdown(categoryBreakdown, manualCategoryBreakdown);
+  addBreakdown(categoryBreakdown, undatedTimerTotals.categoryBreakdown);
+
+  let reconciledFocusMinutes = manualWorkSecondsFromLogs / 60 + undatedTimerTotals.focusMinutes;
+  let reconciledSessionMinutes = undatedTimerTotals.sessionMinutes;
+  let reconciledPomos = manualPomosFromLogs + undatedTimerTotals.pomos;
+
+  const datedKeys = new Set<string>([
+    ...Array.from(timerLogDays.keys()),
+    ...Array.from(sessionDays.keys()),
+  ]);
+
+  datedKeys.forEach((dateKey) => {
+    const timerTotals = timerLogDays.get(dateKey) || createDayTotals();
+    const sessionTotals = sessionDays.get(dateKey) || createDayTotals();
+    ensureCategoryCoverage(timerTotals);
+    ensureCategoryCoverage(sessionTotals);
+
+    const hasTimerFocus = timerTotals.focusMinutes > 0.01;
+    const hasTimerSession = timerTotals.sessionMinutes > 0.01;
+    const canUseSessionOverLogs = !hasTimerFocus || sessionTotals.canOverrideLogDay;
+    const shouldUseSessionFocus = (
+      sessionTotals.focusMinutes > timerTotals.focusMinutes + 0.01
+      && canUseSessionOverLogs
+    );
+    const chosenFocusTotals = shouldUseSessionFocus ? sessionTotals : timerTotals;
+    const reconciledDayFocusMinutes = shouldUseSessionFocus
+      ? sessionTotals.focusMinutes
+      : timerTotals.focusMinutes;
+    const reconciledDaySessionMinutes = (
+      sessionTotals.sessionMinutes > timerTotals.sessionMinutes + 0.01
+      && (!hasTimerSession || sessionTotals.canOverrideLogDay)
+    )
+      ? sessionTotals.sessionMinutes
+      : timerTotals.sessionMinutes;
+    const reconciledDayPomos = (
+      sessionTotals.pomos > timerTotals.pomos + 0.0001
+      && canUseSessionOverLogs
+    )
+      ? sessionTotals.pomos
+      : timerTotals.pomos;
+
+    reconciledFocusMinutes += reconciledDayFocusMinutes;
+    reconciledSessionMinutes += reconciledDaySessionMinutes;
+    reconciledPomos += reconciledDayPomos;
+    addBreakdown(categoryBreakdown, chosenFocusTotals.categoryBreakdown);
+
+    if (!dateKey.startsWith('__') && reconciledDayFocusMinutes > 0) {
+      productiveDates.add(dateKey);
+    }
   });
-  fallbackSessions.forEach((session) => {
-    const minutes = getSessionWorkMinutes(session);
-    if (minutes <= 0) return;
-    const key = getLocalDateKeyFromIso(session.startTime);
-    if (key) productiveDates.add(key);
-  });
+
+  const totalFocusHours = reconciledFocusMinutes / 60;
+  const totalSessionHours = reconciledSessionMinutes / 60;
 
   const sortedDates = Array.from(productiveDates).sort();
   const activeDays = sortedDates.length;
@@ -217,7 +310,7 @@ export const calculateLifetimeStatsFromData = (
     totalSessionHours,
     manualFocusHours: manualWorkSecondsFromLogs / 3600,
     totalSessions: safeSessions.length,
-    totalPomos: completedPomodoroWeightFromLogs + totalPomosFromFallbackSessions,
+    totalPomos: reconciledPomos,
     activeDays,
     currentStreak,
     bestStreak,

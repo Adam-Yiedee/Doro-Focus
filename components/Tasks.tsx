@@ -24,6 +24,10 @@ const hasSelectedTaskInSubtree = (task: Task): boolean => {
   return task.subtasks.some(hasSelectedTaskInSubtree);
 };
 
+export const shouldShowTaskWhenCompletedTasksAreHidden = (task: Task, showCompletedTasks: boolean): boolean => (
+  showCompletedTasks || !task.checked || hasSelectedTaskInSubtree(task)
+);
+
 const formatFinishTime = (date: Date) => {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 };
@@ -90,7 +94,6 @@ interface TaskItemProps {
   depth?: number;
   isSectionActive: boolean;
   showCompletedTasks: boolean;
-  keepSelectedCompletedVisible: boolean;
   isEntering?: boolean;
   draggingTaskId?: number | null;
   dropHint?: DragInsertPosition | null;
@@ -105,7 +108,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
   depth = 0,
   isSectionActive,
   showCompletedTasks,
-  keepSelectedCompletedVisible,
   isEntering = false,
   draggingTaskId = null,
   dropHint = null,
@@ -269,7 +271,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const activeCategories = useMemo(() => getActiveCategories(categories), [categories]);
   const isTopLevel = depth === 0;
   const isNestedTask = !isTopLevel;
-  const isVisibleInList = showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task));
+  const isVisibleInList = shouldShowTaskWhenCompletedTasksAreHidden(task, showCompletedTasks);
   const isDraggedTask = isTopLevel && draggingTaskId === task.id;
   const editPickerRowClass = isNestedTask
     ? 'doro-task-picker-row flex flex-col gap-2 overflow-hidden py-1 sm:flex-row sm:items-center sm:pl-1'
@@ -696,7 +698,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
                   depth={depth + 1}
                   isSectionActive={isSectionActive}
                   showCompletedTasks={showCompletedTasks}
-                  keepSelectedCompletedVisible={keepSelectedCompletedVisible}
                 />
               ))}
             </div>
@@ -763,14 +764,10 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     !t.isFuture
     && (!t.scheduledDate || t.scheduledDate <= todayKey)
   );
-  const keepSelectedCompletedVisible = useMemo(
-    () => filteredTasks.some(task => !task.checked),
-    [filteredTasks]
-  );
   const visibleTasks = useMemo(
     () => filteredTasks
-      .filter(task => showCompletedTasks || !task.checked || (keepSelectedCompletedVisible && hasSelectedTaskInSubtree(task))),
-    [filteredTasks, keepSelectedCompletedVisible, showCompletedTasks]
+      .filter(task => shouldShowTaskWhenCompletedTasksAreHidden(task, showCompletedTasks)),
+    [filteredTasks, showCompletedTasks]
   );
   const visibleTaskIds = useMemo(
     () => visibleTasks.map(task => task.id),
@@ -2278,7 +2275,6 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
               task={task}
               isSectionActive={isSectionActive}
               showCompletedTasks={showCompletedTasks}
-              keepSelectedCompletedVisible={keepSelectedCompletedVisible}
               isEntering={enteringTaskIds.includes(task.id)}
               draggingTaskId={draggingTaskId}
               dropHint={draggingTaskId && hoverTarget?.taskId === task.id && draggingTaskId !== task.id ? hoverTarget.position : null}

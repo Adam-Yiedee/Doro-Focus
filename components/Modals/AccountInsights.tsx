@@ -10,13 +10,13 @@ import {
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { isProductiveFocusLog } from '../../utils/logClassification';
 import {
-  ACCOUNT_STATS_POMODORO_SECONDS,
   formatPomodoroCount,
   getAccountStatsPomodoroEquivalent,
   getPomodoroEquivalentWeight,
   isMiniPomodoroCompleteReason,
 } from '../../utils/pomodoroAccounting';
 import { PASTEL_SWATCHES as PRESET_COLORS } from '../../utils/palette';
+import { buildSessionClockCycleOverlayWindows } from '../../utils/sessionClock';
 
 interface AccountInsightsProps {
   logs: LogEntry[];
@@ -38,6 +38,10 @@ type FocusWindow = {
   pomodoroEquivalent: number;
   reasonCompletionWeight: number;
   isMiniPomo: boolean;
+};
+type BreakWindow = {
+  startMs: number;
+  endMs: number;
 };
 type SessionClockCycle = {
   index: number;
@@ -443,6 +447,15 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
       })
       .filter((window): window is FocusWindow => Boolean(window));
   }, [accentColor, categories, categoryColors, logs]);
+  const breakWindows = useMemo<BreakWindow[]>(() => (
+    logs
+      .map((entry) => {
+        if (entry.type !== 'break') return null;
+        const normalized = normalizeAccountLogWindow(entry);
+        return normalized ? { startMs: normalized.startMs, endMs: normalized.endMs } : null;
+      })
+      .filter((window): window is BreakWindow => Boolean(window))
+  ), [logs]);
 
   const rollingDailyCategoryBuckets = useMemo<DailyCategoryBucket[]>(() => {
     const todayStartMs = startOfLocalDay(Date.now());
@@ -513,6 +526,22 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
           endMinutes: number;
         } => Boolean(window))
         .sort((left, right) => left.startMinutes - right.startMinutes);
+      const sessionBreakWindows = breakWindows
+        .map((window) => {
+          const segmentStartMs = Math.max(window.startMs, clippedStartMs);
+          const segmentEndMs = Math.min(window.endMs, clippedEndMs);
+          if (segmentEndMs <= segmentStartMs) return null;
+          return {
+            ...window,
+            segmentStartMs,
+            segmentEndMs,
+          };
+        })
+        .filter((window): window is BreakWindow & {
+          segmentStartMs: number;
+          segmentEndMs: number;
+        } => Boolean(window))
+        .sort((left, right) => left.segmentStartMs - right.segmentStartMs);
       const segments = sessionFocusWindows.map((window) => ({
         startMinutes: window.startMinutes,
         endMinutes: window.endMinutes,
@@ -535,36 +564,16 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
       const pomoDisplayUnit = hasOnlyMiniPomos
         ? (miniPomoCount === 1 ? 'mini-pomo' : 'mini-pomos')
         : (pomoDisplayNumber === 1 ? 'pomo' : 'pomos');
-      const cycleOverlays: SessionClockCycle[] = [];
-      let cycleIndex = 1;
-      sessionFocusWindows.forEach((window, windowIndex) => {
-        const nextFocusStartMs = sessionFocusWindows[windowIndex + 1]?.segmentStartMs;
-        const windowDurationMs = Math.max(0, window.segmentEndMs - window.segmentStartMs);
-        const cycleDurationMs = (window.isMiniPomo ? 15 * 60 : ACCOUNT_STATS_POMODORO_SECONDS) * 1000;
-        const cycleCount = window.reasonCompletionWeight > 0
-          ? 1
-          : Math.floor(windowDurationMs / cycleDurationMs);
-
-        for (let cycleOffset = 0; cycleOffset < cycleCount; cycleOffset += 1) {
-          const cycleStartMs = window.segmentStartMs + (cycleOffset * cycleDurationMs);
-          if (cycleStartMs >= window.segmentEndMs) break;
-
-          const focusCycleEndMs = Math.min(window.segmentEndMs, cycleStartMs + cycleDurationMs);
-          const isLastCycleForWindow = cycleOffset === cycleCount - 1;
-          const cycleEndMs = Math.min(
-            isLastCycleForWindow ? (nextFocusStartMs ?? clippedEndMs) : focusCycleEndMs,
-            clippedEndMs,
-          );
-
-          if (cycleEndMs <= cycleStartMs) continue;
-          cycleOverlays.push({
-            index: cycleIndex,
-            startMinutes: getMinutesOfDay(cycleStartMs),
-            endMinutes: cycleEndMs >= dayEndMs ? 1440 : getMinutesOfDay(cycleEndMs),
-          });
-          cycleIndex += 1;
-        }
-      });
+      const cycleOverlays: SessionClockCycle[] = buildSessionClockCycleOverlayWindows({
+        focusWindows: sessionFocusWindows,
+        breakWindows: sessionBreakWindows,
+        sessionStartMs: clippedStartMs,
+        sessionEndMs: clippedEndMs,
+      }).map((cycle) => ({
+        index: cycle.index,
+        startMinutes: getMinutesOfDay(cycle.startMs),
+        endMinutes: cycle.endMs >= dayEndMs ? 1440 : getMinutesOfDay(cycle.endMs),
+      }));
       const primaryColor = segments.length > 0
         ? segments.reduce((best, segment) => (
           (segment.endMinutes - segment.startMinutes) > (best.endMinutes - best.startMinutes)
@@ -592,7 +601,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
 
     sessionsByDay.forEach((sessions) => sessions.sort((left, right) => left.startMs - right.startMs));
     return sessionsByDay;
-  }, [accentColor, focusWindows, insights.sessions]);
+  }, [accentColor, breakWindows, focusWindows, insights.sessions]);
   const sessionClockWeekStarts = useMemo(() => {
     const currentWeekStartMs = startOfLocalWeek(Date.now());
     const earliestSessionStartMs = insights.sessions.reduce((earliest, session) => (

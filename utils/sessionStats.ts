@@ -342,13 +342,6 @@ export const buildEndSessionStats = ({
     addSessionCategoryMinutes(pendingActivity, pendingWorkSeconds / 60);
   }
 
-  const categoryDetails = Array.from(categoryDetailsByKey.values());
-  const categoryStats = categoryDetails.reduce<Record<string, number>>((acc, detail) => {
-    const key = detail.categoryName || 'Uncategorized';
-    acc[key] = (acc[key] || 0) + detail.minutes;
-    return acc;
-  }, {});
-
   const loggedCompletionStats = getPomodoroCompletionStatsFromLogs(
     getCompletionLogsInsideSession(workLogs, sessionStartMs, sessionEndMs),
   );
@@ -361,13 +354,18 @@ export const buildEndSessionStats = ({
     const availableWorkSeconds = loggedAndPendingWorkMinutes * 60;
     return (safePomodoroCount * requiredSecondsPerTimerCount) <= (availableWorkSeconds + 1);
   })();
-  const boundedTimerPomosCompleted = canUseTimerPomodoroCount ? timerPomosCompleted : 0;
+  const canRepairFromPresetTimerCount = (
+    settings.timerPreset === 'compact'
+    && safePomodoroCount > loggedCompletionStats.completedLogs
+  );
+  const shouldUseTimerPomodoroCount = canUseTimerPomodoroCount || canRepairFromPresetTimerCount;
+  const boundedTimerPomosCompleted = shouldUseTimerPomodoroCount ? timerPomosCompleted : 0;
   const pomosCompleted = Math.max(
     loggedCompletionStats.standardPomosCompleted,
     boundedTimerPomosCompleted,
   );
   const miniPomosCompleted = settings.timerPreset === 'compact'
-    ? Math.max(loggedCompletionStats.miniPomosCompleted || 0, canUseTimerPomodoroCount ? safePomodoroCount : 0)
+    ? Math.max(loggedCompletionStats.miniPomosCompleted || 0, shouldUseTimerPomodoroCount ? safePomodoroCount : 0)
     : loggedCompletionStats.miniPomosCompleted;
   const presetWorkDuration = settings.timerPreset !== 'custom'
     ? TIMER_PRESETS[settings.timerPreset].workDuration
@@ -375,10 +373,36 @@ export const buildEndSessionStats = ({
   const safeWorkDurationSeconds = typeof settings.workDuration === 'number' && Number.isFinite(settings.workDuration) && settings.workDuration > 0
     ? settings.workDuration
     : presetWorkDuration;
-  const fallbackCompletedWorkMinutes = loggedCompletionStats.completedLogs === 0 && canUseTimerPomodoroCount
+  const timerCountWorkMinutes = safePomodoroCount > 0
     ? (safePomodoroCount * safeWorkDurationSeconds) / 60
     : 0;
-  const totalWorkMinutes = Math.max(loggedAndPendingWorkMinutes, fallbackCompletedWorkMinutes);
+  const completedTimerWorkFloorMinutes = settings.timerPreset === 'compact'
+    ? timerCountWorkMinutes
+    : 0;
+  const fallbackCompletedWorkMinutes = loggedCompletionStats.completedLogs === 0 && canUseTimerPomodoroCount
+    ? timerCountWorkMinutes
+    : 0;
+  const totalWorkMinutes = Math.max(
+    loggedAndPendingWorkMinutes,
+    fallbackCompletedWorkMinutes,
+    completedTimerWorkFloorMinutes,
+  );
+
+  const trackedCategoryMinutes = Array.from(categoryDetailsByKey.values()).reduce(
+    (total, detail) => total + detail.minutes,
+    0,
+  );
+  const untrackedCompletedMinutes = totalWorkMinutes - trackedCategoryMinutes;
+  if (untrackedCompletedMinutes > 0.01) {
+    addSessionCategoryMinutes({ categoryId: null, categoryName: 'Uncategorized' }, untrackedCompletedMinutes);
+  }
+
+  const categoryDetails = Array.from(categoryDetailsByKey.values());
+  const categoryStats = categoryDetails.reduce<Record<string, number>>((acc, detail) => {
+    const key = detail.categoryName || 'Uncategorized';
+    acc[key] = (acc[key] || 0) + detail.minutes;
+    return acc;
+  }, {});
 
   return {
     totalWorkMinutes,

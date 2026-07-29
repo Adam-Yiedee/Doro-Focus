@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { Bug, Check, ChevronDown, Flame, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Timer as TimerIcon, UserPlus, Users, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
-import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupMember, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
+import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupGoalType, GroupGoalUnit, GroupMember, GroupSessionConfig, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
 import { CATEGORY_ICON_OPTIONS, CATEGORY_ICONS, getIcon } from '../../utils/icons';
 import { computeAccountInsights } from '../../utils/accountInsights';
@@ -10,7 +10,11 @@ import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categor
 import { getActiveCategories } from '../../utils/categoryVisibility';
 import {
   DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_GROUP_CONFIG,
+  getGroupSyncConfigForSession,
+  normalizeGroupInviteUsername,
+  normalizeGroupSessionConfig,
   TIMER_ONLY_GROUP_SYNC_CONFIG,
+  TIMER_SYNC_GROUP_SESSION_CONFIG,
 } from '../../utils/groupStudy';
 import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import { isProductiveFocusLog } from '../../utils/logClassification';
@@ -64,6 +68,16 @@ type SyncKey = keyof GroupSyncConfig;
 type AccountAction = 'sync' | 'refresh' | null;
 type FocusFriendsPage = 'friends' | 'add';
 type FocusFriendEncouragementMenuPlacement = 'down' | 'up';
+type SettingsSectionId = 'alarmSound' | 'focusSound' | 'timerMode' | 'categories' | 'appearance' | 'manualFocus';
+type SettingsDropdownSectionOptions = {
+  className?: string;
+  titleClassName?: string;
+  subtitle?: string;
+  summary?: string;
+  bodyClassName?: string;
+  headerAction?: React.ReactNode;
+  sectionRef?: React.Ref<HTMLDivElement>;
+};
 type FocusFriendEncouragementConfirmation = {
   username: string;
   message: string;
@@ -151,6 +165,26 @@ const DEVELOPER_PREVIEW_ACTIONS: Array<{
     action: 'long-grace',
     label: 'Long Grace',
     detail: 'Protection prompt',
+  },
+  {
+    action: 'group-timer-sync',
+    label: 'Timer Sync',
+    detail: 'Mock group session',
+  },
+  {
+    action: 'group-goal-everyone',
+    label: 'Goal Live',
+    detail: 'Everyone progress',
+  },
+  {
+    action: 'group-goal-pooled',
+    label: 'Goal Pool',
+    detail: 'Pooled progress',
+  },
+  {
+    action: 'group-goal-complete',
+    label: 'Goal Done',
+    detail: 'Completed goal',
   },
 ];
 
@@ -257,11 +291,25 @@ const FOCUS_FRIEND_JOIN_FOLLOWUP_WINDOW_MS = 45_000;
 const DAY_MS = 86_400_000;
 const ROLLING_WEEK_DAYS = 7;
 
-const TIMER_PRESET_OPTIONS: Array<{ label: string; value: Exclude<TimerPreset, 'custom'>; detail: string }> = [
+const TIMER_PRESET_OPTIONS: Array<{ label: string; value: TimerPreset; detail: string }> = [
   { label: 'Classic', value: 'classic', detail: '25 / 5 / 15' },
   { label: 'Mini-Pomos', value: 'compact', detail: '15 / 3 / 9' },
   { label: 'Focus Timer', value: 'focus', detail: 'Count Up' },
+  { label: 'Custom', value: 'custom', detail: 'Set Below' },
 ];
+
+const DEFAULT_SETTINGS_SECTION_OPEN_STATE: Record<SettingsSectionId, boolean> = {
+  alarmSound: false,
+  focusSound: false,
+  timerMode: false,
+  categories: false,
+  appearance: false,
+  manualFocus: false,
+};
+
+const getSettingsDropdownItemStyle = (index: number): React.CSSProperties => ({
+  '--doro-settings-item-index': index,
+} as React.CSSProperties);
 
 const MAX_VALID_DATE_MS = 8.64e15;
 
@@ -1056,6 +1104,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     declineFocusFriendRequest,
     sendFocusFriendEncouragement,
     requestFocusFriendJoin,
+    sendFocusFriendJoinInvite,
     approveFocusFriendJoinRequest,
     declineFocusFriendJoinRequest,
     markFocusFriendActionRead,
@@ -1066,6 +1115,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     peerError,
     hostSyncConfig,
     clientSyncConfig,
+    groupSessionConfig,
+    groupGoalPresetWarning,
     createGroupSession,
     joinGroupSession,
     leaveGroupSession,
@@ -1118,10 +1169,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [groupSyncControlsOpen, setGroupSyncControlsOpen] = useState(false);
   const [hostDraftConfig, setHostDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
   const [joinDraftConfig, setJoinDraftConfig] = useState<GroupSyncConfig>(DEFAULT_GROUP_CONFIG);
+  const [hostDraftSessionMode, setHostDraftSessionMode] = useState<GroupSessionConfig['mode']>('timer-sync');
+  const [hostDraftGoalType, setHostDraftGoalType] = useState<GroupGoalType>('everyone-live');
+  const [hostDraftGoalUnit, setHostDraftGoalUnit] = useState<GroupGoalUnit>('pomodoro');
+  const [hostDraftGoalTarget, setHostDraftGoalTarget] = useState('4');
+  const [hostDraftInviteInput, setHostDraftInviteInput] = useState('');
+  const [hostDraftInvites, setHostDraftInvites] = useState<string[]>([]);
   const [inviteSessionId, setInviteSessionId] = useState('');
+  const [inviteSessionConfig, setInviteSessionConfig] = useState<GroupSessionConfig | null>(null);
   const [timerShareBusy, setTimerShareBusy] = useState(false);
   const [timerShareMessage, setTimerShareMessage] = useState<string | null>(null);
+  const [groupMorphHeight, setGroupMorphHeight] = useState<number | null>(null);
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
+  const groupMorphPanelRefs = useRef<Record<GroupFlow, HTMLDivElement | null>>({
+    menu: null,
+    host: null,
+    join: null,
+  });
   const inviteAutoJoinKeyRef = useRef<string | null>(null);
   const focusFriendInviteAutoAddKeyRef = useRef<string | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -1154,6 +1218,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [showAutoStartSoundPanel, setShowAutoStartSoundPanel] = useState(settings.twoInARowMode);
   const [autoStartSoundPanelExiting, setAutoStartSoundPanelExiting] = useState(false);
   const [isFocusSoundPreviewing, setIsFocusSoundPreviewing] = useState(false);
+  const [settingsSectionOpen, setSettingsSectionOpen] = useState<Record<SettingsSectionId, boolean>>(() => ({
+    ...DEFAULT_SETTINGS_SECTION_OPEN_STATE,
+  }));
   const categoryEditorTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStartSoundPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusSoundPreviewTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1253,6 +1320,59 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const safeClientSyncConfig = useMemo(() => getSafeSyncConfig(clientSyncConfig), [clientSyncConfig]);
   const safeGroupSessionId = useMemo(() => getSafeSessionId(groupSessionId), [groupSessionId]);
   const safeUserName = useMemo(() => getSafeText(userName), [userName]);
+  useLayoutEffect(() => {
+    if (!isOpen || groupBusy || safeGroupSessionId) {
+      setGroupMorphHeight(null);
+      return undefined;
+    }
+
+    const panel = groupMorphPanelRefs.current[groupFlow];
+    if (!panel) return undefined;
+
+    let frameId = 0;
+    const updateHeight = () => {
+      frameId = 0;
+      const nextHeight = Math.ceil(panel.scrollHeight + 24);
+      setGroupMorphHeight(prev => (
+        prev !== null && Math.abs(prev - nextHeight) < 1 ? prev : nextHeight
+      ));
+    };
+    const scheduleUpdate = () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(updateHeight);
+    };
+
+    scheduleUpdate();
+
+    const observer = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(scheduleUpdate)
+      : null;
+    observer?.observe(panel);
+    window.addEventListener('resize', scheduleUpdate);
+
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      observer?.disconnect();
+      window.removeEventListener('resize', scheduleUpdate);
+    };
+  }, [
+    groupBusy,
+    groupFlow,
+    groupName,
+    groupSessionInput,
+    hostDraftGoalTarget,
+    hostDraftGoalType,
+    hostDraftGoalUnit,
+    hostDraftInviteInput,
+    hostDraftInvites.length,
+    hostDraftSessionMode,
+    inviteSessionConfig,
+    inviteSessionId,
+    isOpen,
+    safeGroupSessionId,
+    timerShareMessage,
+    timerShareBusy,
+  ]);
   const categoriesById = useMemo(() => getCategoryMapById(safeCategories), [safeCategories]);
   const orderedLogs = useMemo(() => {
     return [...safeLogs]
@@ -1336,10 +1456,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setIsFocusSoundPreviewing(false);
   }, [clearFocusSoundPreviewTimer]);
 
+  const toggleSettingsSection = useCallback((sectionId: SettingsSectionId) => {
+    setSettingsSectionOpen(prev => ({
+      ...prev,
+      [sectionId]: !(prev[sectionId] ?? false),
+    }));
+  }, []);
+
+  const setGroupMorphPanelRef = useCallback((flow: GroupFlow) => (
+    node: HTMLDivElement | null,
+  ) => {
+    groupMorphPanelRefs.current[flow] = node;
+  }, []);
+
   useEffect(() => {
     if (!isFocusSoundPreviewing) return;
 
-    if (!isOpen || displayedTab !== 'settings' || settings.focusSound === 'off') {
+    if (!isOpen || displayedTab !== 'settings' || settings.focusSound === 'off' || settingsSectionOpen.focusSound === false) {
       stopSettingsFocusSoundPreview();
       return;
     }
@@ -1362,6 +1495,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     isOpen,
     settings.focusSound,
     settings.focusSoundVolume,
+    settingsSectionOpen.focusSound,
     stopSettingsFocusSoundPreview,
   ]);
 
@@ -1921,6 +2055,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setGroupFlow('join');
       setGroupSessionInput(normalizedPendingJoinId);
       setInviteSessionId(normalizedPendingJoinId);
+      setInviteSessionConfig(null);
       setGroupLocalError(null);
       setPendingJoinId(null);
     }
@@ -1942,6 +2077,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
     setHostDraftConfig({ ...DEFAULT_GROUP_CONFIG });
     setJoinDraftConfig({ ...DEFAULT_GROUP_CONFIG });
+    setHostDraftSessionMode('timer-sync');
+    setHostDraftGoalType('everyone-live');
+    setHostDraftGoalUnit('pomodoro');
+    setHostDraftGoalTarget('4');
+    setHostDraftInviteInput('');
+    setHostDraftInvites([]);
   }, [isOpen, safeUser?.username, safeUserName, safeGroupSessionId, safeHostSyncConfig, safeClientSyncConfig]);
 
   const clearFocusFriendEncouragementConfirmationTimer = useCallback(() => {
@@ -2052,7 +2193,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     updateSettings(nextSettings);
   };
 
-  const setTimerPreset = (timerPreset: Exclude<TimerPreset, 'custom'>) => {
+  const setTimerPreset = (timerPreset: TimerPreset) => {
+    if (timerPreset === 'custom') {
+      updateTimerSettings({
+        timerPreset: 'custom',
+        miniPomoAutoStartBlock: 1,
+        twoInARowMode: false,
+      });
+      return;
+    }
+
     const compactAutoStartBlock = settings.miniPomoAutoStartBlock || (settings.twoInARowMode ? 2 : 1);
     updateTimerSettings({
       timerPreset,
@@ -2069,15 +2219,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const parsed = Number(rawMinutes);
     if (!Number.isFinite(parsed)) return;
     const seconds = clampInt(parsed, 1, 999) * 60;
-    if (field === 'workDuration') updateTimerSettings({ workDuration: seconds });
-    if (field === 'shortBreakDuration') updateTimerSettings({ shortBreakDuration: seconds });
-    if (field === 'longBreakDuration') updateTimerSettings({ longBreakDuration: seconds });
+    if (field === 'workDuration') updateTimerSettings({ timerPreset: 'custom', workDuration: seconds });
+    if (field === 'shortBreakDuration') updateTimerSettings({ timerPreset: 'custom', shortBreakDuration: seconds });
+    if (field === 'longBreakDuration') updateTimerSettings({ timerPreset: 'custom', longBreakDuration: seconds });
   };
 
   const setLongBreakInterval = (rawValue: string) => {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed)) return;
-    updateTimerSettings({ longBreakInterval: clampInt(parsed, 1, 24) });
+    updateTimerSettings({ timerPreset: 'custom', longBreakInterval: clampInt(parsed, 1, 24) });
   };
 
   const handleManualFocusLog = () => {
@@ -2550,14 +2700,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       async () => {
         try {
           let sessionId = safeGroupSessionId;
+          let approvalSessionConfig = groupSessionConfig;
           if (!sessionId) {
             const shareName = groupName.trim() || safeUser?.username || safeUserName || 'Host';
             setGroupName(shareName);
             setHostDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
-            sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG);
+            approvalSessionConfig = { ...TIMER_SYNC_GROUP_SESSION_CONFIG, createdAt: Date.now() };
+            sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG, approvalSessionConfig);
           }
 
-          return approveFocusFriendJoinRequest(action.id, sessionId);
+          return approveFocusFriendJoinRequest(action.id, sessionId, approvalSessionConfig);
         } catch (error) {
           return {
             ok: false,
@@ -2597,17 +2749,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       `open-invite:${action.id}`,
       async () => {
         const joinName = groupName.trim() || safeUser?.username || safeUserName || action.toUsername || 'Focus Friend';
+        const normalizedInviteConfig = normalizeGroupSessionConfig(action.groupStudy, TIMER_SYNC_GROUP_SESSION_CONFIG);
         setGroupSessionInput(sessionId);
         setInviteSessionId(sessionId);
+        setInviteSessionConfig(normalizedInviteConfig);
         setGroupFlow('join');
         setGroupName(joinName);
-        setJoinDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
+        setJoinDraftConfig(getGroupSyncConfigForSession(normalizedInviteConfig));
         setGroupLocalError(null);
         syncDisplayedTabImmediately('group');
         setGroupBusy(true);
         try {
           if (safeGroupSessionId !== sessionId) {
-            await joinGroupSession(sessionId, joinName, TIMER_ONLY_GROUP_SYNC_CONFIG);
+            await joinGroupSession(sessionId, joinName, getGroupSyncConfigForSession(normalizedInviteConfig), normalizedInviteConfig);
           }
           setPendingJoinId(null);
           if (!action.readAt) {
@@ -2650,6 +2804,80 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     updateClientSyncConfig({ ...safeClientSyncConfig, [key]: !safeClientSyncConfig[key] });
   };
 
+  const addHostDraftInvite = () => {
+    const normalized = normalizeGroupInviteUsername(hostDraftInviteInput);
+    if (!normalized) {
+      setGroupLocalError('Enter a valid Doro username to invite.');
+      return;
+    }
+    setHostDraftInvites(prev => prev.includes(normalized) ? prev : [...prev, normalized]);
+    setHostDraftInviteInput('');
+    setGroupLocalError(null);
+  };
+
+  const removeHostDraftInvite = (username: string) => {
+    setHostDraftInvites(prev => prev.filter(item => item !== username));
+  };
+
+  const buildHostDraftSessionConfig = (): { config: GroupSessionConfig; error: string | null } => {
+    if (hostDraftSessionMode === 'timer-sync') {
+      return {
+        config: {
+          ...TIMER_SYNC_GROUP_SESSION_CONFIG,
+          createdAt: Date.now(),
+        },
+        error: null,
+      };
+    }
+
+    const target = Number(hostDraftGoalTarget);
+    if (!Number.isFinite(target) || target <= 0) {
+      return {
+        config: TIMER_SYNC_GROUP_SESSION_CONFIG,
+        error: 'Enter a shared goal greater than zero.',
+      };
+    }
+
+    const normalizedConfig = normalizeGroupSessionConfig({
+      mode: 'shared-goal',
+      goal: {
+        type: hostDraftGoalType,
+        unit: hostDraftGoalUnit,
+        target: Math.round(target),
+        expectedParticipants: Math.max(1, hostDraftInvites.length + 1),
+        invitedUsernames: hostDraftInvites,
+      },
+      createdAt: Date.now(),
+    });
+
+    return { config: normalizedConfig, error: null };
+  };
+
+  const sendHostDraftGroupInvites = async (sessionId: string, sessionConfig: GroupSessionConfig) => {
+    if (hostDraftInvites.length === 0) return;
+    if (!safeUser || isPreviewAccount) {
+      setGroupLocalError('Session started, but account invites need a syncing Doro account.');
+      return;
+    }
+
+    const failed: string[] = [];
+    for (const username of hostDraftInvites) {
+      const result = await sendFocusFriendJoinInvite(
+        username,
+        sessionId,
+        sessionConfig.mode === 'shared-goal' ? 'sent you a group study goal invite.' : 'sent you a group study invite.',
+        sessionConfig,
+      );
+      if (!result.ok) failed.push(username);
+    }
+
+    if (failed.length > 0) {
+      setGroupLocalError(`Session started, but invites failed for ${failed.join(', ')}.`);
+      return;
+    }
+    setAccountMessage('Group study invites sent.');
+  };
+
   const handleCreateGroup = async () => {
     if (groupBusy) return;
     const name = groupName.trim();
@@ -2657,10 +2885,17 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       setGroupLocalError('Enter your name before creating a session.');
       return;
     }
+    const { config: sessionConfig, error } = buildHostDraftSessionConfig();
+    if (error) {
+      setGroupLocalError(error);
+      return;
+    }
+    const syncConfig = getGroupSyncConfigForSession(sessionConfig);
     setGroupBusy(true);
     setGroupLocalError(null);
     try {
-      await createGroupSession(name, hostDraftConfig);
+      const sessionId = await createGroupSession(name, syncConfig, sessionConfig);
+      await sendHostDraftGroupInvites(sessionId, sessionConfig);
     } catch (error) {
       setGroupLocalError(error instanceof Error ? error.message : 'Failed to create session.');
     } finally {
@@ -2713,7 +2948,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         const shareName = groupName.trim() || safeUser?.username || safeUserName || 'Host';
         setGroupName(shareName);
         setHostDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
-        sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG);
+        sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG, {
+          ...TIMER_SYNC_GROUP_SESSION_CONFIG,
+          createdAt: Date.now(),
+        });
       }
 
       const link = buildCurrentTimerShareUrl(sessionId);
@@ -2741,14 +2979,17 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     setGroupBusy(true);
     setGroupLocalError(null);
     try {
-      await joinGroupSession(sessionId, name, joinDraftConfig);
+      const sessionConfig = inviteSessionId === sessionId && inviteSessionConfig
+        ? inviteSessionConfig
+        : TIMER_SYNC_GROUP_SESSION_CONFIG;
+      await joinGroupSession(sessionId, name, getGroupSyncConfigForSession(sessionConfig), sessionConfig);
       setPendingJoinId(null);
     } catch (error) {
       setGroupLocalError(error instanceof Error ? error.message : 'Failed to join session.');
     } finally {
       setGroupBusy(false);
     }
-  }, [groupBusy, groupName, groupSessionInput, joinDraftConfig, joinGroupSession, setPendingJoinId]);
+  }, [groupBusy, groupName, groupSessionInput, inviteSessionConfig, inviteSessionId, joinGroupSession, setPendingJoinId]);
 
   useEffect(() => {
     if (!isOpen || groupBusy || groupSessionId || groupFlow !== 'join') return;
@@ -4402,31 +4643,36 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const hostControls = safeHostSyncConfig;
     const clientControls = safeClientSyncConfig;
     const timerSharePrimaryLabel = timerShareMessage === 'copied' ? 'Timer Copied' : 'Timer Link';
-    const groupShellClass = 'rounded-[1.45rem] border border-white/[0.08] bg-white/[0.035] p-4 shadow-[0_24px_54px_-42px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.045)] md:p-5';
-    const groupInsetClass = 'rounded-lg border border-white/[0.09] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]';
-    const groupSectionLabelClass = 'text-[10px] font-bold uppercase tracking-[0.15em] text-white/36';
-    const groupActionButtonClass = 'group relative flex min-h-[4.65rem] w-full items-center overflow-hidden rounded-lg border border-white/[0.11] bg-white/[0.045] px-3.5 py-3 text-left shadow-[0_20px_42px_-34px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.045)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.075] hover:shadow-[0_28px_52px_-36px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.055)] active:translate-y-0 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0 disabled:hover:scale-100';
-    const groupActionLabelClass = 'text-[10px] font-bold uppercase leading-none tracking-[0.14em] text-white/82 transition-colors group-hover:text-white';
-    const groupActionDetailClass = 'mt-1.5 text-[10px] font-semibold leading-snug text-white/40 transition-colors group-hover:text-white/54';
-    const groupActionIconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.09] bg-white/[0.045] text-white/58 transition-[transform,background-color,color] duration-300 group-hover:-translate-y-0.5 group-hover:bg-white/[0.08] group-hover:text-white/86';
+    const groupShellClass = 'doro-group-study-shell rounded-[1.25rem] border p-3 md:p-3';
+    const groupInsetClass = 'doro-group-study-inset rounded-[0.85rem] border';
+    const groupSectionLabelClass = 'text-[10px] font-black uppercase tracking-[0.16em] text-white/42';
+    const groupActionButtonClass = 'doro-group-study-choice group relative flex min-h-[3.2rem] w-full items-center justify-between gap-3 overflow-hidden rounded-[0.85rem] border px-3 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0 disabled:hover:scale-100';
+    const groupActionLabelClass = 'text-[10px] font-black uppercase leading-none tracking-[0.14em] text-white/88 transition-colors group-hover:text-white';
+    const groupActionDetailClass = 'mt-1 text-[10px] font-semibold leading-snug text-white/42 transition-colors group-hover:text-white/58';
+    const groupActionIconClass = 'doro-group-study-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-[0.72rem] border text-white/70 transition-[background-color,color,border-color,box-shadow] duration-300 ease-out group-hover:text-white/90';
     const renderGroupActionButton = ({
       label,
       detail,
       onClick,
       disabled = false,
       icon,
+      className = '',
+      style,
     }: {
       label: string;
       detail?: string;
       onClick: () => void;
       disabled?: boolean;
       icon: React.ReactNode;
+      className?: string;
+      style?: React.CSSProperties;
     }) => (
       <button
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className={groupActionButtonClass}
+        className={`${groupActionButtonClass} ${className}`}
+        style={style}
       >
         <div className="relative z-10 flex h-full w-full items-start justify-between gap-3">
           <div className="min-w-0">
@@ -4443,14 +4689,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       disabled: timerShareBusy,
       icon: <Share2 size={15} strokeWidth={2.1} aria-hidden="true" />,
     });
-    const groupUtilityButtonClass = 'inline-flex min-h-[3.35rem] w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-[0.12em] transition-[background-color,border-color,box-shadow,color,transform] duration-200 hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0';
-    const groupUtilityPrimaryClass = `${groupUtilityButtonClass} border-blue-400/18 bg-blue-500/[0.09] text-blue-200 hover:bg-blue-500/[0.14] hover:text-blue-100`;
-    const groupUtilityNeutralClass = `${groupUtilityButtonClass} border-white/10 bg-white/[0.04] text-white/72 hover:bg-white/[0.08] hover:text-white`;
+    const groupUtilityButtonClass = 'doro-group-study-option inline-flex min-h-[3rem] w-full items-center justify-center gap-2 rounded-[0.85rem] border px-3 py-2 text-center text-[10px] font-black uppercase tracking-[0.12em] text-white/78 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0';
+    const groupUtilityPrimaryClass = `${groupUtilityButtonClass} is-emphasis`;
+    const groupUtilityNeutralClass = groupUtilityButtonClass;
     const timerShareErrorPanel = timerShareMessage && timerShareMessage !== 'copied' ? (
       <div className={`px-3 py-2 text-center text-[11px] font-semibold leading-relaxed text-red-100/82 ${groupInsetClass}`}>
         {timerShareMessage}
       </div>
     ) : null;
+    const groupMorphViewClass = groupFlow === 'host'
+      ? (hostDraftSessionMode === 'shared-goal' ? 'view-host-goal' : 'view-host-timer')
+      : groupFlow === 'join'
+        ? (inviteSessionId && inviteSessionId === groupSessionInput ? 'view-join-invite' : 'view-join')
+        : 'view-menu';
+    const groupMorphStyle = groupMorphHeight
+      ? ({ height: groupMorphHeight } as React.CSSProperties)
+      : undefined;
 
     if (groupBusy) {
       return (
@@ -4462,7 +4716,20 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
 
     if (safeGroupSessionId) {
-      const groupSyncLabel = isHost ? 'Sync Controls' : 'Accepted Sync';
+      const activeGroupSessionConfig = normalizeGroupSessionConfig(groupSessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
+      const activeGoal = activeGroupSessionConfig.goal;
+      const activeGoalUnitLabel = activeGoal?.unit === 'mini-pomo'
+        ? (activeGoal.target === 1 ? 'Mini-Pomo' : 'Mini-Pomos')
+        : (activeGoal?.target === 1 ? 'Pomodoro' : 'Pomodoros');
+      const activeSessionTitle = activeGroupSessionConfig.mode === 'shared-goal'
+        ? (activeGoal?.type === 'pooled-total' ? 'Shared Goal: Pooled Total' : 'Shared Goal: Everyone Live')
+        : 'Timer Sync';
+      const activeSessionDetail = activeGroupSessionConfig.mode === 'shared-goal' && activeGoal
+        ? `${formatPomodoroCount(activeGoal.target)} ${activeGoalUnitLabel}`
+        : 'The host controls the shared timer.';
+      const pooledPerPerson = activeGoal?.type === 'pooled-total'
+        ? activeGoal.target / Math.max(1, activeGoal.expectedParticipants)
+        : null;
       return (
         <div className="p-4 md:p-8 min-h-[520px]">
           <div className="max-w-xl mx-auto space-y-4">
@@ -4533,13 +4800,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   {safeMembers.map(member => (
                     <div
                       key={member.id}
-                      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                        member.isHost
-                          ? 'border-blue-400/18 bg-blue-500/[0.09] text-blue-100/90'
-                          : 'border-white/[0.08] bg-white/[0.035] text-white/80'
-                      }`}
+                      className={`doro-group-study-option flex items-center gap-2 rounded-[0.85rem] border px-3 py-2 text-sm ${member.isHost ? 'is-selected' : ''}`}
                     >
-                      <div className={`h-2 w-2 rounded-full ${member.isHost ? 'bg-blue-300' : 'bg-white/45'}`} />
+                      <div className={`h-2 w-2 rounded-full ${member.isHost ? 'bg-white/80' : 'bg-white/45'}`} />
                       <span className="font-semibold tracking-tight">{member.name}{member.isHost ? ' (Host)' : ''}</span>
                     </div>
                   ))}
@@ -4550,49 +4813,54 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             {timerShareErrorPanel}
 
             <div className={`${groupShellClass} space-y-3`}>
-              <button
-                type="button"
-                onClick={() => setGroupSyncControlsOpen(prev => !prev)}
-                className="group flex w-full items-center justify-between gap-3 rounded-lg border border-white/[0.08] bg-white/[0.035] px-3.5 py-3 text-left transition-[background-color,border-color,transform] duration-200 hover:-translate-y-[1px] hover:border-white/[0.14] hover:bg-white/[0.065] active:translate-y-0"
-                aria-expanded={groupSyncControlsOpen}
-              >
-                <span className={groupSectionLabelClass}>{groupSyncLabel}</span>
-                <span className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.13em] text-white/42 transition-colors group-hover:text-white/68">
-                  {groupSyncControlsOpen ? 'Hide' : 'Show'}
-                  <ChevronDown
-                    size={14}
-                    strokeWidth={2.2}
-                    aria-hidden="true"
-                    className={`transition-transform duration-200 ${groupSyncControlsOpen ? 'rotate-180' : ''}`}
-                  />
-                </span>
-              </button>
-
-              {groupSyncControlsOpen && (
-                <div className="space-y-3 pt-1">
-                  {isHost ? (
-                    <>
-                      <ToggleRow label="Sync Timers" checked={hostControls.syncTimers} onToggle={() => toggleLiveHostSync('syncTimers')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Sync Tasks" checked={hostControls.syncTasks} onToggle={() => toggleLiveHostSync('syncTasks')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Sync Schedule" checked={hostControls.syncSchedule} onToggle={() => toggleLiveHostSync('syncSchedule')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Sync History" checked={hostControls.syncHistory} onToggle={() => toggleLiveHostSync('syncHistory')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Sync Settings" checked={hostControls.syncSettings} onToggle={() => toggleLiveHostSync('syncSettings')} tone="quiet" switchTone="neutral" />
-                    </>
-                  ) : (
-                    <>
-                      <ToggleRow label="Timer Sync" checked={clientControls.syncTimers} onToggle={() => toggleLiveClientSync('syncTimers')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Task Sync" checked={clientControls.syncTasks} onToggle={() => toggleLiveClientSync('syncTasks')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Schedule Sync" checked={clientControls.syncSchedule} onToggle={() => toggleLiveClientSync('syncSchedule')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="History Sync" checked={clientControls.syncHistory} onToggle={() => toggleLiveClientSync('syncHistory')} tone="quiet" switchTone="neutral" />
-                      <ToggleRow label="Settings Sync" checked={clientControls.syncSettings} onToggle={() => toggleLiveClientSync('syncSettings')} tone="quiet" switchTone="neutral" />
-                    </>
-                  )}
+              <div className="flex items-center justify-between gap-3">
+                <div className={groupSectionLabelClass}>Session Type</div>
+                <div className="doro-group-study-pill rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.13em] text-white/58">
+                  {isHost ? 'Hosting' : 'Joined'}
                 </div>
-              )}
+              </div>
+              <div className={`px-4 py-4 ${groupInsetClass}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold tracking-tight text-white/90">{activeSessionTitle}</div>
+                    <div className="mt-1 text-xs leading-relaxed text-white/48">{activeSessionDetail}</div>
+                  </div>
+                  <div className="doro-group-study-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-[0.72rem] border text-white/72">
+                    {activeGroupSessionConfig.mode === 'shared-goal' ? (
+                      <Users size={16} strokeWidth={2.2} aria-hidden="true" />
+                    ) : (
+                      <TimerIcon size={16} strokeWidth={2.2} aria-hidden="true" />
+                    )}
+                  </div>
+                </div>
+                {activeGoal && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    <div className="doro-group-study-stat rounded-[0.85rem] border px-3 py-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.13em] text-white/34">Mode</div>
+                      <div className="mt-1 text-xs font-semibold text-white/78">{activeGoal.type === 'pooled-total' ? 'Pooled' : 'Everyone'}</div>
+                    </div>
+                    <div className="doro-group-study-stat rounded-[0.85rem] border px-3 py-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.13em] text-white/34">People</div>
+                      <div className="mt-1 text-xs font-semibold text-white/78">{activeGoal.expectedParticipants}</div>
+                    </div>
+                    <div className="doro-group-study-stat rounded-[0.85rem] border px-3 py-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.13em] text-white/34">Each</div>
+                      <div className="mt-1 text-xs font-semibold text-white/78">
+                        {pooledPerPerson !== null ? formatPomodoroCount(pooledPerPerson) : formatPomodoroCount(activeGoal.target)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {groupGoalPresetWarning && (
+                  <div className="doro-group-study-note mt-3 rounded-[0.85rem] border px-3 py-2 text-[11px] font-semibold leading-relaxed text-white/76">
+                    {groupGoalPresetWarning}
+                  </div>
+                )}
+              </div>
             </div>
 
             {groupError && (
-              <div className="rounded-[1rem] border border-red-500/26 bg-red-500/10 px-4 py-3 text-xs text-red-200">
+              <div className="doro-group-study-error rounded-[0.85rem] border px-4 py-3 text-xs font-semibold">
                 {groupError}
               </div>
             )}
@@ -4605,9 +4873,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 setTimerShareMessage(null);
                 inviteAutoJoinKeyRef.current = null;
                 setInviteSessionId('');
+                setInviteSessionConfig(null);
                 setGroupFlow('menu');
               }}
-              className="w-full rounded-lg border border-red-400/20 bg-red-500/[0.055] py-3 text-xs font-semibold uppercase tracking-[0.16em] text-red-100/80 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:border-red-300/24 hover:bg-red-500/[0.1] hover:text-red-100"
+              className="doro-group-study-danger w-full rounded-[0.85rem] border py-3 text-xs font-black uppercase tracking-[0.16em]"
             >
               Leave Session
             </button>
@@ -4624,7 +4893,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           </div>
 
           {groupError && (
-            <div className="rounded-lg border border-red-500/26 bg-red-500/10 px-4 py-3 text-xs font-semibold text-red-100/86">
+            <div className="doro-group-study-error rounded-[0.85rem] border px-4 py-3 text-xs font-semibold">
               {groupError}
             </div>
           )}
@@ -4643,7 +4912,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 }
               }}
               placeholder="Enter your name"
-              className="w-full rounded-lg border border-white/[0.09] bg-white/[0.045] px-4 py-3 text-center font-semibold text-white outline-none transition-[border-color,background-color] duration-200 placeholder:text-white/26 focus:border-white/[0.18] focus:bg-white/[0.065]"
+              className="doro-group-study-input w-full rounded-[0.85rem] border px-4 py-3 text-center font-semibold text-white outline-none placeholder:text-white/26"
             />
             {inviteSessionId && groupFlow === 'join' && (
               <div className="mt-2 text-center text-[11px] text-emerald-100/75">
@@ -4655,8 +4924,15 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             )}
           </div>
 
-          {groupFlow === 'menu' && (
-            <div className={groupShellClass}>
+          <div
+            className={`doro-group-study-morph-shell ${groupShellClass} ${groupMorphViewClass}`}
+            style={groupMorphStyle}
+          >
+            <div
+              ref={setGroupMorphPanelRef('menu')}
+              className={`doro-group-study-flow-panel ${groupFlow === 'menu' ? 'is-active' : ''}`}
+              aria-hidden={groupFlow !== 'menu'}
+            >
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 {renderGroupActionButton({
                   label: 'Host Session',
@@ -4664,6 +4940,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   onClick: () => setGroupFlow('host'),
                   disabled: !groupName.trim(),
                   icon: <Plus size={15} strokeWidth={2.1} aria-hidden="true" />,
+                  className: 'doro-group-study-stagger',
+                  style: { '--doro-group-study-delay': '90ms' } as React.CSSProperties,
                 })}
                 {renderGroupActionButton({
                   label: 'Join Session',
@@ -4671,25 +4949,43 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   onClick: () => setGroupFlow('join'),
                   disabled: !groupName.trim(),
                   icon: <LogIn size={15} strokeWidth={2.1} aria-hidden="true" />,
+                  className: 'doro-group-study-stagger',
+                  style: { '--doro-group-study-delay': '145ms' } as React.CSSProperties,
                 })}
-                <div className="sm:col-span-2">
+                <div
+                  className="doro-group-study-stagger sm:col-span-2"
+                  style={{ '--doro-group-study-delay': '200ms' } as React.CSSProperties}
+                >
                   {timerShareButton}
                 </div>
               </div>
+
+              {timerShareErrorPanel && (
+                <div
+                  className="doro-group-study-stagger mt-2.5"
+                  style={{ '--doro-group-study-delay': '255ms' } as React.CSSProperties}
+                >
+                  {timerShareErrorPanel}
+                </div>
+              )}
             </div>
-          )}
 
-          {groupFlow === 'menu' && timerShareErrorPanel}
-
-          {groupFlow === 'host' && (
-            <div className={`${groupShellClass} space-y-3`}>
-              <div className="flex items-center justify-between">
-                <div className={groupSectionLabelClass}>Host Sync</div>
+            <div
+              ref={setGroupMorphPanelRef('host')}
+              className={`doro-group-study-flow-panel space-y-3 ${groupFlow === 'host' ? 'is-active' : ''}`}
+              aria-hidden={groupFlow !== 'host'}
+            >
+              <div
+                className="doro-group-study-stagger flex items-center justify-between"
+                style={{ '--doro-group-study-delay': '80ms' } as React.CSSProperties}
+              >
+                <div className={groupSectionLabelClass}>Host Session</div>
                 <button
                   type="button"
                   onClick={() => {
                     inviteAutoJoinKeyRef.current = null;
                     setInviteSessionId('');
+                    setInviteSessionConfig(null);
                     setGroupFlow('menu');
                   }}
                   className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/42 transition-colors hover:text-white"
@@ -4697,30 +4993,150 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   Back
                 </button>
               </div>
-              <ToggleRow label="Sync Timers" checked={hostDraftConfig.syncTimers} onToggle={() => toggleHostDraftSync('syncTimers')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Sync Tasks" checked={hostDraftConfig.syncTasks} onToggle={() => toggleHostDraftSync('syncTasks')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Sync Schedule" checked={hostDraftConfig.syncSchedule} onToggle={() => toggleHostDraftSync('syncSchedule')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Sync History" checked={hostDraftConfig.syncHistory} onToggle={() => toggleHostDraftSync('syncHistory')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Sync Settings" checked={hostDraftConfig.syncSettings} onToggle={() => toggleHostDraftSync('syncSettings')} tone="quiet" switchTone="neutral" />
+
+              <div
+                className="doro-group-study-stagger grid grid-cols-2 gap-2"
+                style={{ '--doro-group-study-delay': '135ms' } as React.CSSProperties}
+              >
+                <button
+                  type="button"
+                  onClick={() => setHostDraftSessionMode('timer-sync')}
+                  className={`${groupUtilityButtonClass} ${hostDraftSessionMode === 'timer-sync' ? 'is-selected' : ''}`}
+                >
+                  <TimerIcon size={13} strokeWidth={2.2} aria-hidden="true" />
+                  Timer Sync
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHostDraftSessionMode('shared-goal')}
+                  className={`${groupUtilityButtonClass} ${hostDraftSessionMode === 'shared-goal' ? 'is-selected' : ''}`}
+                >
+                  <Users size={13} strokeWidth={2.2} aria-hidden="true" />
+                  Shared Goal
+                </button>
+              </div>
+
+              {hostDraftSessionMode === 'shared-goal' && (
+                <div
+                  className={`doro-group-study-stagger space-y-3 px-4 py-4 ${groupInsetClass}`}
+                  style={{ '--doro-group-study-delay': '70ms' } as React.CSSProperties}
+                >
+                  <div className={groupSectionLabelClass}>Goal</div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(8.8rem,auto)]">
+                    <input
+                      type="number"
+                      min={1}
+                      max={999}
+                      step={1}
+                      value={hostDraftGoalTarget}
+                      onChange={event => setHostDraftGoalTarget(event.target.value)}
+                      placeholder="4"
+                      aria-label="Goal amount"
+                      className="doro-group-study-input w-full rounded-[0.85rem] border px-4 py-3 text-center font-semibold text-white outline-none placeholder:text-white/26"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['pomodoro', 'mini-pomo'] as GroupGoalUnit[]).map(unit => (
+                        <button
+                          key={unit}
+                          type="button"
+                          onClick={() => setHostDraftGoalUnit(unit)}
+                          className={`${groupUtilityButtonClass} ${hostDraftGoalUnit === unit ? 'is-selected' : ''}`}
+                        >
+                          {unit === 'mini-pomo' ? 'Mini' : 'Pomo'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className={groupSectionLabelClass}>Progress</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['everyone-live', 'pooled-total'] as GroupGoalType[]).map(type => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => setHostDraftGoalType(type)}
+                        className={`${groupUtilityButtonClass} ${hostDraftGoalType === type ? 'is-selected' : ''}`}
+                      >
+                        {type === 'pooled-total' ? 'Group Total' : 'Each Person'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {hostDraftGoalType === 'pooled-total' && (
+                    <div className="doro-group-study-note rounded-[0.85rem] border px-3 py-2 text-[11px] font-semibold leading-relaxed text-white/72">
+                      {formatPomodoroCount(Number(hostDraftGoalTarget || 0) || 0)} total across {hostDraftInvites.length + 1} people, about {formatPomodoroCount((Number(hostDraftGoalTarget || 0) || 0) / Math.max(1, hostDraftInvites.length + 1))} each.
+                    </div>
+                  )}
+
+                  <div className="space-y-2 pt-1">
+                    <div className={groupSectionLabelClass}>Invites</div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={hostDraftInviteInput}
+                        onChange={event => setHostDraftInviteInput(event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            addHostDraftInvite();
+                          }
+                        }}
+                        placeholder="Username"
+                        className="doro-group-study-input min-w-0 flex-1 rounded-[0.85rem] border px-3 py-2 text-sm font-semibold text-white outline-none placeholder:text-white/26"
+                      />
+                      <button
+                        type="button"
+                        onClick={addHostDraftInvite}
+                        className="doro-group-study-option rounded-[0.85rem] border px-3 text-[10px] font-black uppercase tracking-[0.12em] text-white/76"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {hostDraftInvites.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {hostDraftInvites.map(username => (
+                          <button
+                            key={username}
+                            type="button"
+                            onClick={() => removeHostDraftInvite(username)}
+                            className="doro-group-study-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold text-white/70"
+                          >
+                            @{username}
+                            <X size={12} strokeWidth={2.2} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <button
                 type="button"
                 onClick={handleCreateGroup}
-                className="w-full rounded-lg border border-white/[0.12] bg-white/[0.08] py-3 text-xs font-bold uppercase tracking-[0.14em] text-white/86 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:border-white/[0.18] hover:bg-white/[0.12] hover:text-white"
+                className="doro-group-study-primary doro-group-study-stagger w-full rounded-[0.85rem] border py-3 text-xs font-black uppercase tracking-[0.14em] text-white"
+                style={{ '--doro-group-study-delay': hostDraftSessionMode === 'shared-goal' ? '110ms' : '150ms' } as React.CSSProperties}
               >
-                Start Session
+                {hostDraftSessionMode === 'shared-goal' ? 'Start Shared Goal' : 'Start Timer Sync'}
               </button>
             </div>
-          )}
 
-          {groupFlow === 'join' && (
-            <div className={`${groupShellClass} space-y-3`}>
-              <div className="flex items-center justify-between">
+            <div
+              ref={setGroupMorphPanelRef('join')}
+              className={`doro-group-study-flow-panel space-y-3 ${groupFlow === 'join' ? 'is-active' : ''}`}
+              aria-hidden={groupFlow !== 'join'}
+            >
+              <div
+                className="doro-group-study-stagger flex items-center justify-between"
+                style={{ '--doro-group-study-delay': '80ms' } as React.CSSProperties}
+              >
                 <div className={groupSectionLabelClass}>Join Session</div>
                 <button
                   type="button"
                   onClick={() => {
                     inviteAutoJoinKeyRef.current = null;
                     setInviteSessionId('');
+                    setInviteSessionConfig(null);
                     setGroupFlow('menu');
                   }}
                   className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/42 transition-colors hover:text-white"
@@ -4730,8 +5146,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               {inviteSessionId && inviteSessionId === groupSessionInput && (
-                <div className="rounded-lg border border-emerald-400/18 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-100/86">
-                  Invite loaded from QR link. Enter your name and join.
+                <div
+                  className="doro-group-study-note doro-group-study-stagger rounded-[0.85rem] border px-4 py-3 text-xs text-white/80"
+                  style={{ '--doro-group-study-delay': '135ms' } as React.CSSProperties}
+                >
+                  {inviteSessionConfig?.mode === 'shared-goal' && inviteSessionConfig.goal
+                    ? `Invite loaded: ${formatPomodoroCount(inviteSessionConfig.goal.target)} ${inviteSessionConfig.goal.unit === 'mini-pomo' ? 'mini-pomos' : 'pomodoros'} ${inviteSessionConfig.goal.type === 'pooled-total' ? 'pooled total' : 'each'}.`
+                    : 'Invite loaded. Enter your name and join.'}
                 </div>
               )}
 
@@ -4746,30 +5167,107 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   }
                 }}
                 placeholder="Session ID"
-                className="w-full rounded-lg border border-white/[0.09] bg-white/[0.045] px-4 py-3 text-center font-mono font-semibold tracking-[0.2em] text-white outline-none transition-[border-color,background-color] duration-200 placeholder:text-white/26 focus:border-white/[0.18] focus:bg-white/[0.065]"
+                className="doro-group-study-input doro-group-study-stagger w-full rounded-[0.85rem] border px-4 py-3 text-center font-mono font-semibold tracking-[0.2em] text-white outline-none placeholder:text-white/26"
+                style={{ '--doro-group-study-delay': inviteSessionId && inviteSessionId === groupSessionInput ? '190ms' : '135ms' } as React.CSSProperties}
               />
-
-              <ToggleRow label="Timer Sync" checked={joinDraftConfig.syncTimers} onToggle={() => toggleJoinDraftSync('syncTimers')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Task Sync" checked={joinDraftConfig.syncTasks} onToggle={() => toggleJoinDraftSync('syncTasks')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Schedule Sync" checked={joinDraftConfig.syncSchedule} onToggle={() => toggleJoinDraftSync('syncSchedule')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="History Sync" checked={joinDraftConfig.syncHistory} onToggle={() => toggleJoinDraftSync('syncHistory')} tone="quiet" switchTone="neutral" />
-              <ToggleRow label="Settings Sync" checked={joinDraftConfig.syncSettings} onToggle={() => toggleJoinDraftSync('syncSettings')} tone="quiet" switchTone="neutral" />
 
               <button
                 type="button"
                 onClick={handleJoinGroup}
-                className="w-full rounded-lg border border-white/[0.12] bg-white/[0.08] py-3 text-xs font-bold uppercase tracking-[0.14em] text-white/86 transition-[background-color,border-color,color,transform] duration-200 hover:-translate-y-[1px] hover:border-white/[0.18] hover:bg-white/[0.12] hover:text-white"
+                className="doro-group-study-primary doro-group-study-stagger w-full rounded-[0.85rem] border py-3 text-xs font-black uppercase tracking-[0.14em] text-white"
+                style={{ '--doro-group-study-delay': inviteSessionId && inviteSessionId === groupSessionInput ? '245ms' : '190ms' } as React.CSSProperties}
               >
                 {inviteSessionId && inviteSessionId === groupSessionInput ? 'Join Invite' : 'Connect'}
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSettingsDropdownSection = (
+    sectionId: SettingsSectionId,
+    title: string,
+    children: React.ReactNode,
+    options: SettingsDropdownSectionOptions = {},
+  ) => {
+    const isExpanded = settingsSectionOpen[sectionId] === true;
+    const panelId = `doro-settings-section-${sectionId}`;
+    const chevronIcon = (
+      <ChevronDown
+        size={16}
+        strokeWidth={2.4}
+        aria-hidden="true"
+        className="doro-settings-dropdown-chevron"
+      />
+    );
+
+    return (
+      <div
+        ref={options.sectionRef}
+        className={`doro-settings-dropdown-section ${isExpanded ? 'is-open' : 'is-closed'} ${options.className ?? ''}`}
+      >
+        <div className="doro-settings-dropdown-header-row">
+          <button
+            type="button"
+            onClick={() => toggleSettingsSection(sectionId)}
+            className="doro-settings-dropdown-trigger"
+            aria-expanded={isExpanded}
+            aria-controls={panelId}
+          >
+            <span className="min-w-0 text-left">
+              <span className={options.titleClassName ?? 'block text-[10px] uppercase tracking-[0.14em] font-bold text-white/40'}>
+                {title}
+              </span>
+              {options.subtitle && (
+                <span className="mt-1 block truncate text-xs font-semibold tracking-[0] text-white/45">
+                  {options.subtitle}
+                </span>
+              )}
+            </span>
+            <span className="doro-settings-dropdown-right">
+              {options.summary && (
+                <span className="doro-settings-dropdown-summary">
+                  {options.summary}
+                </span>
+              )}
+              {!options.headerAction && chevronIcon}
+            </span>
+          </button>
+          {options.headerAction && (
+            <div className="doro-settings-dropdown-action">
+              {options.headerAction}
+            </div>
           )}
+          {options.headerAction && (
+            <button
+              type="button"
+              onClick={() => toggleSettingsSection(sectionId)}
+              className="doro-settings-dropdown-chevron-trigger"
+              aria-expanded={isExpanded}
+              aria-controls={panelId}
+              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${title}`}
+            >
+              {chevronIcon}
+            </button>
+          )}
+        </div>
+        <div
+          id={panelId}
+          className="doro-settings-dropdown-panel"
+          aria-hidden={!isExpanded}
+        >
+          <div className={`doro-settings-dropdown-content ${options.bodyClassName ?? 'space-y-4'}`}>
+            {children}
+          </div>
         </div>
       </div>
     );
   };
 
   const renderSettingsTab = () => {
+    const alarmSoundVolumePercent = clampInt(Math.round(settings.alarmSoundVolume ?? 100), 0, 100);
     const focusSoundVolumePercent = clampInt(Math.round(settings.focusSoundVolume ?? 100), 0, 100);
     const focusSoundSliderFill = settings.themeMode === 'light'
       ? 'rgba(15, 23, 42, 0.72)'
@@ -4777,168 +5275,191 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const focusSoundSliderTrack = settings.themeMode === 'light'
       ? 'rgba(15, 23, 42, 0.12)'
       : 'rgba(255, 255, 255, 0.08)';
+    const alarmSoundSliderProgressWidth = `${alarmSoundVolumePercent}%`;
     const focusSoundSliderProgressWidth = `${focusSoundVolumePercent}%`;
     const activeTimerPreset = settings.timerPreset === 'classic' || settings.timerPreset === 'compact' || settings.timerPreset === 'focus'
       ? settings.timerPreset
       : 'custom';
     const isCompactTimerPreset = activeTimerPreset === 'compact';
+    const isCustomTimerPreset = activeTimerPreset === 'custom';
+    const selectedAlarmSoundLabel = ALARM_OPTIONS.find(option => option.value === settings.alarmSound)?.label ?? 'Bell';
+    const selectedFocusSoundLabel = FOCUS_SOUND_OPTIONS.find(option => option.value === settings.focusSound)?.label ?? 'Off';
+    const selectedTimerModeLabel = TIMER_PRESET_OPTIONS.find(option => option.value === activeTimerPreset)?.label ?? 'Custom';
+    const selectedAppearanceLabel = settings.themeMode === 'dark' ? 'Dark' : 'Light (Beta)';
 
     return (
-      <div className="settings-panel-content p-4 pt-8 pb-12 md:px-8 md:pt-10 md:pb-14 space-y-8 md:space-y-10 max-w-2xl mx-auto">
+      <div className="settings-panel-content p-4 pt-8 pb-12 md:px-8 md:pt-10 md:pb-14 space-y-4 md:space-y-5 max-w-2xl mx-auto">
         <div>
           <h3 className={modalPanelTitleClass}>Settings</h3>
         </div>
 
-        <div className="space-y-4">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Alarm Sound</div>
-          <div className="settings-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
-            {ALARM_OPTIONS.map(option => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  updateTimerSettings({ alarmSound: option.value });
-                  void playAlarm(option.value);
-                }}
-                className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
-                  settings.alarmSound === option.value
-                    ? 'bg-white/20 border-white/30 text-white'
-                    : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-4 pt-8 md:pt-9 border-t border-white/[0.08]">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Focus Sound</div>
-          <div className="settings-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
-            {FOCUS_SOUND_OPTIONS.map(option => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => updateTimerSettings({ focusSound: option.value })}
-                className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
-                  settings.focusSound === option.value
-                    ? 'bg-white/20 border-white/30 text-white'
-                    : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <div className="rounded-[1rem] border border-white/[0.08] bg-white/[0.045] px-4 py-3.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Volume</div>
-              <div className="text-[11px] font-semibold text-white/55">{focusSoundVolumePercent}%</div>
+        {renderSettingsDropdownSection('alarmSound', 'Alarm Sound', (
+          <>
+            <div className="settings-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
+              {ALARM_OPTIONS.map((option, index) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    updateTimerSettings({ alarmSound: option.value });
+                    void playAlarm(option.value, { volume: alarmSoundVolumePercent });
+                  }}
+                  className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                    settings.alarmSound === option.value
+                      ? 'bg-white/20 border-white/30 text-white'
+                      : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                  }`}
+                  style={getSettingsDropdownItemStyle(index)}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
-            <div className="mt-3 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleFocusSoundPreviewToggle}
-                disabled={settings.focusSound === 'off'}
-                className={`doro-focus-preview-btn ${isFocusSoundPreviewing ? 'is-playing' : ''}`}
-                aria-label={isFocusSoundPreviewing ? 'Stop focus sound preview' : 'Play focus sound preview'}
-                title={settings.focusSound === 'off' ? 'Choose a focus sound to preview' : (isFocusSoundPreviewing ? 'Stop preview' : 'Play preview')}
-              >
-                {isFocusSoundPreviewing ? (
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
-                  </svg>
-                ) : (
+            <div
+              className="doro-settings-stagger-item rounded-[1rem] border border-white/[0.08] bg-white/[0.045] px-4 py-3.5"
+              style={getSettingsDropdownItemStyle(ALARM_OPTIONS.length)}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Volume</div>
+                <div className="text-[11px] font-semibold text-white/55">{alarmSoundVolumePercent}%</div>
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void playAlarm(settings.alarmSound, { volume: alarmSoundVolumePercent })}
+                  className="doro-focus-preview-btn"
+                  aria-label="Preview alarm sound"
+                  title="Preview alarm sound"
+                >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <path d="M8 5.5v13l10-6.5-10-6.5Z" />
                   </svg>
-                )}
-              </button>
-              <div className="doro-focus-sound-slider-shell flex-1 min-w-0">
-                <div
-                  className="doro-focus-sound-slider-track"
-                  style={{
-                    backgroundColor: focusSoundSliderTrack,
-                    borderColor: isLightTheme ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.08)',
-                    boxShadow: isLightTheme
-                      ? 'inset 0 1px 0 rgba(255, 255, 255, 0.62)'
-                      : 'inset 0 1px 1px rgba(255, 255, 255, 0.04)',
-                  }}
-                >
+                </button>
+                <div className="doro-focus-sound-slider-shell flex-1 min-w-0">
                   <div
-                    className="doro-focus-sound-slider-fill"
+                    className="doro-focus-sound-slider-track"
                     style={{
-                      width: focusSoundSliderProgressWidth,
-                      backgroundColor: focusSoundSliderFill,
+                      backgroundColor: focusSoundSliderTrack,
+                      borderColor: isLightTheme ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.08)',
+                      boxShadow: isLightTheme
+                        ? 'inset 0 1px 0 rgba(255, 255, 255, 0.62)'
+                        : 'inset 0 1px 1px rgba(255, 255, 255, 0.04)',
                     }}
+                  >
+                    <div
+                      className="doro-focus-sound-slider-fill"
+                      style={{
+                        width: alarmSoundSliderProgressWidth,
+                        backgroundColor: focusSoundSliderFill,
+                      }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={alarmSoundVolumePercent}
+                    onChange={event => updateTimerSettings({ alarmSoundVolume: clampInt(Number(event.target.value), 0, 100) })}
+                    className="doro-focus-sound-slider"
+                    aria-label="Alarm sound volume"
                   />
                 </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={focusSoundVolumePercent}
-                  onChange={event => updateTimerSettings({ focusSoundVolume: clampInt(Number(event.target.value), 0, 100) })}
-                  className="doro-focus-sound-slider"
-                  aria-label="Focus sound volume"
-                />
               </div>
             </div>
-          </div>
-        </div>
+          </>
+        ), {
+          summary: selectedAlarmSoundLabel,
+        })}
 
-        <div className="space-y-5 pt-8 md:pt-9 border-t border-white/[0.08]">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Timer Settings</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Work (min)</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={Math.round(settings.workDuration / 60)}
-                onChange={event => setDurationFromMinutes('workDuration', event.target.value)}
-              />
+        {renderSettingsDropdownSection('focusSound', 'Focus Sound', (
+          <>
+            <div className="settings-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
+              {FOCUS_SOUND_OPTIONS.map((option, index) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => updateTimerSettings({ focusSound: option.value })}
+                  className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                    settings.focusSound === option.value
+                      ? 'bg-white/20 border-white/30 text-white'
+                      : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                  }`}
+                  style={getSettingsDropdownItemStyle(index)}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Short Break</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={Math.round(settings.shortBreakDuration / 60)}
-                onChange={event => setDurationFromMinutes('shortBreakDuration', event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={Math.round(settings.longBreakDuration / 60)}
-                onChange={event => setDurationFromMinutes('longBreakDuration', event.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break Every</label>
-              <input
-                type="number"
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
-                value={settings.longBreakInterval}
-                onChange={event => setLongBreakInterval(event.target.value)}
-              />
-            </div>
-          </div>
-          <div className="space-y-3 pt-1">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Timer Mode</div>
-              {activeTimerPreset === 'custom' && (
-                <div className="rounded-full border border-white/[0.08] bg-white/[0.045] px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-white/45">
-                  Custom
+            <div
+              className="doro-settings-stagger-item rounded-[1rem] border border-white/[0.08] bg-white/[0.045] px-4 py-3.5"
+              style={getSettingsDropdownItemStyle(FOCUS_SOUND_OPTIONS.length)}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Volume</div>
+                <div className="text-[11px] font-semibold text-white/55">{focusSoundVolumePercent}%</div>
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleFocusSoundPreviewToggle}
+                  disabled={settings.focusSound === 'off'}
+                  className={`doro-focus-preview-btn ${isFocusSoundPreviewing ? 'is-playing' : ''}`}
+                  aria-label={isFocusSoundPreviewing ? 'Stop focus sound preview' : 'Play focus sound preview'}
+                  title={settings.focusSound === 'off' ? 'Choose a focus sound to preview' : (isFocusSoundPreviewing ? 'Stop preview' : 'Play preview')}
+                >
+                  {isFocusSoundPreviewing ? (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <rect x="6" y="6" width="12" height="12" rx="2" />
+                    </svg>
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M8 5.5v13l10-6.5-10-6.5Z" />
+                    </svg>
+                  )}
+                </button>
+                <div className="doro-focus-sound-slider-shell flex-1 min-w-0">
+                  <div
+                    className="doro-focus-sound-slider-track"
+                    style={{
+                      backgroundColor: focusSoundSliderTrack,
+                      borderColor: isLightTheme ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.08)',
+                      boxShadow: isLightTheme
+                        ? 'inset 0 1px 0 rgba(255, 255, 255, 0.62)'
+                        : 'inset 0 1px 1px rgba(255, 255, 255, 0.04)',
+                    }}
+                  >
+                    <div
+                      className="doro-focus-sound-slider-fill"
+                      style={{
+                        width: focusSoundSliderProgressWidth,
+                        backgroundColor: focusSoundSliderFill,
+                      }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={focusSoundVolumePercent}
+                    onChange={event => updateTimerSettings({ focusSoundVolume: clampInt(Number(event.target.value), 0, 100) })}
+                    className="doro-focus-sound-slider"
+                    aria-label="Focus sound volume"
+                  />
                 </div>
-              )}
+              </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              {TIMER_PRESET_OPTIONS.map(option => (
+          </>
+        ), {
+          className: 'pt-4 md:pt-5 border-t border-white/[0.08]',
+          summary: selectedFocusSoundLabel,
+        })}
+
+        {renderSettingsDropdownSection('timerMode', 'Timer Mode', (
+          <>
+            <div className="doro-settings-preset-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
+              {TIMER_PRESET_OPTIONS.map((option, index) => (
                 <button
                   key={option.value}
                   type="button"
@@ -4948,73 +5469,337 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                       ? 'bg-white/20 border-white/30 text-white'
                       : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
                   }`}
+                  style={getSettingsDropdownItemStyle(index)}
                 >
                   <div className="text-[10px] uppercase tracking-[0.14em] font-bold">{option.label}</div>
                   <div className="mt-1 text-xs font-semibold tabular-nums text-white/55">{option.detail}</div>
                 </button>
               ))}
             </div>
-          </div>
-          {isCompactTimerPreset && (
-            <div className="space-y-3">
-              <ToggleRow
-                label="Two-In-A-Row"
-                description="Auto-starts the second focus in each pair."
-                checked={settings.twoInARowMode}
-                onToggle={() => {
-                  const nextEnabled = !settings.twoInARowMode;
-                  updateTimerSettings({
-                    twoInARowMode: nextEnabled,
-                    miniPomoAutoStartBlock: nextEnabled ? 2 : 1,
-                  });
+            {isCustomTimerPreset && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
+                <div className="doro-settings-stagger-item space-y-1" style={getSettingsDropdownItemStyle(4)}>
+                  <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Work (min)</label>
+                  <input
+                    type="number"
+                    className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                    value={Math.round(settings.workDuration / 60)}
+                    onChange={event => setDurationFromMinutes('workDuration', event.target.value)}
+                  />
+                </div>
+                <div className="doro-settings-stagger-item space-y-1" style={getSettingsDropdownItemStyle(5)}>
+                  <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Short Break</label>
+                  <input
+                    type="number"
+                    className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                    value={Math.round(settings.shortBreakDuration / 60)}
+                    onChange={event => setDurationFromMinutes('shortBreakDuration', event.target.value)}
+                  />
+                </div>
+                <div className="doro-settings-stagger-item space-y-1" style={getSettingsDropdownItemStyle(6)}>
+                  <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break</label>
+                  <input
+                    type="number"
+                    className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                    value={Math.round(settings.longBreakDuration / 60)}
+                    onChange={event => setDurationFromMinutes('longBreakDuration', event.target.value)}
+                  />
+                </div>
+                <div className="doro-settings-stagger-item space-y-1" style={getSettingsDropdownItemStyle(7)}>
+                  <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Long Break Every</label>
+                  <input
+                    type="number"
+                    className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none focus:border-white/30"
+                    value={settings.longBreakInterval}
+                    onChange={event => setLongBreakInterval(event.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+            {isCompactTimerPreset && (
+              <div className="doro-settings-stagger-item space-y-3" style={getSettingsDropdownItemStyle(4)}>
+                <ToggleRow
+                  label="Two-In-A-Row"
+                  description="Auto-starts the second focus in each pair."
+                  checked={settings.twoInARowMode}
+                  onToggle={() => {
+                    const nextEnabled = !settings.twoInARowMode;
+                    updateTimerSettings({
+                      twoInARowMode: nextEnabled,
+                      miniPomoAutoStartBlock: nextEnabled ? 2 : 1,
+                    });
+                  }}
+                  tone="quiet"
+                  switchTone="neutral"
+                />
+                {showAutoStartSoundPanel && (
+                  <div
+                    className={`doro-auto-start-sound-panel rounded-[1rem] border border-white/[0.08] bg-white/[0.035] px-4 py-3.5 ${
+                      autoStartSoundPanelExiting ? 'doro-auto-start-sound-panel-out' : 'doro-auto-start-sound-panel-in'
+                    }`}
+                  >
+                    <div className="mb-3 text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Auto-Start Sound</div>
+                    <div className="settings-sound-grid settings-auto-start-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                      {ALARM_OPTIONS.map((option, index) => (
+                        <button
+                          key={`two-in-a-row-sound-${option.value}`}
+                          type="button"
+                          onClick={() => {
+                            updateTimerSettings({ twoInARowStartSound: option.value });
+                            void playAlarm(option.value, { volume: alarmSoundVolumePercent });
+                          }}
+                          className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
+                            settings.twoInARowStartSound === option.value
+                              ? 'bg-white/20 border-white/30 text-white'
+                              : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
+                          }`}
+                          style={getSettingsDropdownItemStyle(index)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        ), {
+          className: 'pt-4 md:pt-5 border-t border-white/[0.08]',
+          bodyClassName: 'space-y-5',
+          summary: selectedTimerModeLabel,
+        })}
+
+        {renderSettingsDropdownSection('categories', 'Categories', (
+          <>
+            {showAddCategory && (
+              <div
+                key={`category-editor-${editingCategoryId ?? 'new'}`}
+                className={`doro-category-editor-shell relative overflow-hidden rounded-[1.35rem] border px-4 py-4 ${
+                  categoryEditorCloseState === 'save'
+                    ? 'doro-category-editor-close-save'
+                    : categoryEditorCloseState === 'cancel'
+                      ? 'doro-category-editor-close-cancel'
+                      : 'doro-category-editor-open'
+                }`}
+                style={{
+                  borderColor: colorToRgba(newCategoryColor, 0.3),
+                  background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.18)} 0%, rgba(15, 23, 42, 0.34) 44%, rgba(15, 23, 42, 0.18) 100%)`,
+                  boxShadow: `0 20px 42px -28px ${colorToRgba(newCategoryColor, 0.45)}`,
                 }}
-                tone="quiet"
-                switchTone="neutral"
-              />
-              {showAutoStartSoundPanel && (
-                <div
-                  className={`doro-auto-start-sound-panel rounded-[1rem] border border-white/[0.08] bg-white/[0.035] px-4 py-3.5 ${
-                    autoStartSoundPanelExiting ? 'doro-auto-start-sound-panel-out' : 'doro-auto-start-sound-panel-in'
-                  }`}
-                >
-                  <div className="mb-3 text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Auto-Start Sound</div>
-                  <div className="settings-sound-grid settings-auto-start-sound-grid grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                    {ALARM_OPTIONS.map(option => (
-                      <button
-                        key={`two-in-a-row-sound-${option.value}`}
-                        type="button"
-                        onClick={() => {
-                          updateTimerSettings({ twoInARowStartSound: option.value });
-                          void playAlarm(option.value);
+              >
+                <div className="pointer-events-none absolute inset-0 opacity-80" style={{ background: `radial-gradient(circle at 14% -8%, ${colorToRgba(newCategoryColor, 0.28)} 0%, transparent 32%), radial-gradient(circle at 88% 12%, rgba(255,255,255,0.1) 0%, transparent 22%)` }} />
+                <div className="doro-category-editor-content relative space-y-4">
+                  <div className="doro-category-editor-section flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className="doro-category-preview-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/20 text-white shadow-lg"
+                        style={{
+                          background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.98)} 0%, ${colorToRgba(newCategoryColor, 0.72)} 100%)`,
+                          boxShadow: `0 14px 30px -18px ${colorToRgba(newCategoryColor, 0.68)}`,
                         }}
-                        className={`settings-option-btn settings-sound-option-btn p-3 rounded-xl border text-[10px] uppercase tracking-[0.12em] font-bold transition-all truncate ${
-                          settings.twoInARowStartSound === option.value
-                            ? 'bg-white/20 border-white/30 text-white'
-                            : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                        }`}
                       >
-                        {option.label}
+                        {getIcon(newCategoryIcon, { size: 20, strokeWidth: 2.15 })}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/48">
+                          {editingCategoryId !== null ? 'Editing Category' : 'Creating Category'}
+                        </div>
+                        <div className="mt-1 truncate text-base font-bold tracking-tight text-white">
+                          {activeCategoryPreviewLabel}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="doro-category-editor-actions flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => closeCategoryForm('cancel')}
+                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-black/20 hover:bg-black/30 text-white/70 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
+                      >
+                        Close
                       </button>
-                    ))}
+                    </div>
+                  </div>
+
+                  <div className="doro-category-editor-section flex flex-wrap items-start gap-4">
+                    <div className="doro-category-editor-field min-w-[14rem] flex-1">
+                      <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Name</label>
+                      <input
+                        type="text"
+                        value={newCategoryName}
+                        onChange={event => {
+                          setNewCategoryName(event.target.value);
+                          if (categoryFormError) setCategoryFormError(null);
+                        }}
+                        className="w-full rounded-2xl border border-white/12 bg-black/20 px-3.5 py-3 text-white text-sm outline-none transition-colors placeholder:text-white/22 focus:border-white/28"
+                        placeholder="e.g. Math"
+                      />
+                    </div>
+
+                    <div className="doro-category-editor-field shrink-0">
+                      <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Color</label>
+                      <div className="flex gap-2 flex-wrap">
+                        {PRESET_COLORS.map((color, index) => (
+                          <button
+                            key={color}
+                            type="button"
+                            onClick={() => {
+                              setNewCategoryColor(color);
+                              if (categoryFormError) setCategoryFormError(null);
+                            }}
+                            className={`doro-category-color-swatch h-8 w-8 rounded-full border transition-all ${
+                              newCategoryColor === color
+                                ? 'scale-110 border-white/70 ring-2 ring-white/70 shadow-[0_0_0_6px_rgba(255,255,255,0.08)]'
+                                : 'border-white/10 opacity-72 hover:opacity-100 hover:-translate-y-[1px]'
+                            }`}
+                            style={{
+                              backgroundColor: color,
+                              boxShadow: newCategoryColor === color ? `0 12px 20px -12px ${colorToRgba(color, 0.8)}` : undefined,
+                              animationDelay: `${150 + (index * 18)}ms`,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="doro-category-editor-section">
+                    <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Icon</label>
+                    <div className="grid grid-cols-6 sm:grid-cols-8 gap-2">
+                      {CATEGORY_ICON_OPTIONS.map(({ key, label }, index) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => {
+                            setNewCategoryIcon(key);
+                            if (categoryFormError) setCategoryFormError(null);
+                          }}
+                          title={label}
+                          aria-label={label}
+                          className={`doro-category-icon-option flex h-11 items-center justify-center rounded-2xl border text-white transition-all ${
+                            newCategoryIcon === key
+                              ? 'border-white/32 bg-white/18 shadow-[0_14px_26px_-20px_rgba(255,255,255,0.42)]'
+                              : 'border-white/8 bg-white/[0.04] opacity-65 hover:bg-white/[0.1] hover:opacity-100 hover:-translate-y-[1px]'
+                          }`}
+                          style={{ animationDelay: `${190 + (index * 9)}ms` }}
+                        >
+                          {getIcon(key, { size: 18 })}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {categoryFormError && (
+                    <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                      {categoryFormError}
+                    </div>
+                  )}
+
+                  <div className="doro-category-editor-footer flex flex-wrap gap-2">
+                    {editingCategoryId !== null && (
+                      <button
+                        type="button"
+                        onClick={() => handleArchiveCategory(editingCategoryId)}
+                        className="flex-1 min-w-[8rem] rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/75 transition-all hover:border-red-300/28 hover:bg-red-500/16 hover:text-red-100"
+                      >
+                        Archive
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => closeCategoryForm('cancel')}
+                      className="flex-1 min-w-[8rem] rounded-xl border border-white/12 bg-black/20 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/72 transition-all hover:bg-black/30 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateCategory}
+                      disabled={!newCategoryName.trim()}
+                      className="flex-1 min-w-[8rem] rounded-xl bg-white px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-black shadow-lg transition-all hover:bg-gray-200 active:scale-[0.985] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {editingCategoryId !== null ? 'Save Changes' : 'Create Category'}
+                    </button>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+              </div>
+            )}
 
-        <div ref={categorySettingsSectionRef} className="space-y-5 pt-8 md:pt-9 border-t border-white/[0.08]">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-bold text-white">Categories</div>
-              <div className="text-xs text-white/45">Used for task grouping and stats.</div>
+            <div className="space-y-2">
+              {safeActiveCategories.length === 0 && (
+                <div className="text-center text-white/35 text-xs italic py-4">No active categories.</div>
+              )}
+              {safeActiveCategories.map((category, index) => (
+                <div
+                  key={category.id}
+                  ref={(node) => registerCategoryRef(category.id, node)}
+                  onPointerDown={(event) => handleCategoryPointerDown(event, category.id)}
+                  className={`doro-settings-stagger-item relative overflow-hidden flex justify-between items-center gap-3 p-3 rounded-xl border transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out ${
+                    editingCategoryId === category.id
+                      ? 'bg-white/12 border-white/25 shadow-[0_18px_34px_-26px_rgba(255,255,255,0.34)] -translate-y-[1px]'
+                      : 'bg-white/5 border-white/10 hover:bg-white/[0.075]'
+                  } ${draggingCategoryId === category.id ? 'opacity-45 scale-[0.985] cursor-grabbing' : 'cursor-grab active:cursor-grabbing'}`}
+                  style={{
+                    ...getSettingsDropdownItemStyle(index),
+                    touchAction: draggingCategoryId === category.id ? 'none' : 'pan-y',
+                    boxShadow: editingCategoryId === category.id ? `0 20px 34px -28px ${colorToRgba(category.color, 0.7)}` : undefined,
+                  }}
+                >
+                  {categoryDropHint && draggingCategoryId !== category.id && categoryDropHint.categoryId === category.id && (
+                    <div
+                      className={`pointer-events-none absolute left-2 right-2 ${categoryDropHint.position === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`}
+                    />
+                  )}
+                  {editingCategoryId === category.id && (
+                    <div className="absolute inset-y-0 left-0 w-1.5" style={{ backgroundColor: category.color }} />
+                  )}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex h-8 w-4 shrink-0 items-center justify-center text-white/24">
+                      <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+                        <circle cx="2" cy="2" r="1.1" />
+                        <circle cx="8" cy="2" r="1.1" />
+                        <circle cx="2" cy="7" r="1.1" />
+                        <circle cx="8" cy="7" r="1.1" />
+                        <circle cx="2" cy="12" r="1.1" />
+                        <circle cx="8" cy="12" r="1.1" />
+                      </svg>
+                    </div>
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: category.color }}>
+                      {getIcon(category.icon)}
+                    </div>
+                    <div className="min-w-0 text-white font-bold text-sm truncate">{category.name}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      data-category-action="true"
+                      onClick={() => openCategoryEditor(category)}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                      title="Edit"
+                      aria-label={`Edit ${category.name}`}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
+          </>
+        ), {
+          className: 'pt-4 md:pt-5 border-t border-white/[0.08]',
+          bodyClassName: 'space-y-5',
+          sectionRef: categorySettingsSectionRef,
+          headerAction: (
             <button
               type="button"
               onClick={() => {
                 if (showAddCategory) {
                   closeCategoryForm('cancel');
                 } else {
+                  setSettingsSectionOpen(prev => ({ ...prev, categories: true }));
                   openNewCategoryForm();
                 }
               }}
@@ -5022,227 +5807,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             >
               {showAddCategory ? 'Cancel' : 'New Category'}
             </button>
-          </div>
+          ),
+        })}
 
-          {showAddCategory && (
-            <div
-              key={`category-editor-${editingCategoryId ?? 'new'}`}
-              className={`doro-category-editor-shell relative overflow-hidden rounded-[1.35rem] border px-4 py-4 ${
-                categoryEditorCloseState === 'save'
-                  ? 'doro-category-editor-close-save'
-                  : categoryEditorCloseState === 'cancel'
-                    ? 'doro-category-editor-close-cancel'
-                    : 'doro-category-editor-open'
-              }`}
-              style={{
-                borderColor: colorToRgba(newCategoryColor, 0.3),
-                background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.18)} 0%, rgba(15, 23, 42, 0.34) 44%, rgba(15, 23, 42, 0.18) 100%)`,
-                boxShadow: `0 20px 42px -28px ${colorToRgba(newCategoryColor, 0.45)}`,
-              }}
-            >
-              <div className="pointer-events-none absolute inset-0 opacity-80" style={{ background: `radial-gradient(circle at 14% -8%, ${colorToRgba(newCategoryColor, 0.28)} 0%, transparent 32%), radial-gradient(circle at 88% 12%, rgba(255,255,255,0.1) 0%, transparent 22%)` }} />
-              <div className="doro-category-editor-content relative space-y-4">
-                <div className="doro-category-editor-section flex flex-wrap items-start justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      className="doro-category-preview-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/20 text-white shadow-lg"
-                      style={{
-                        background: `linear-gradient(160deg, ${colorToRgba(newCategoryColor, 0.98)} 0%, ${colorToRgba(newCategoryColor, 0.72)} 100%)`,
-                        boxShadow: `0 14px 30px -18px ${colorToRgba(newCategoryColor, 0.68)}`,
-                      }}
-                    >
-                      {getIcon(newCategoryIcon, { size: 20, strokeWidth: 2.15 })}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/48">
-                        {editingCategoryId !== null ? 'Editing Category' : 'Creating Category'}
-                      </div>
-                      <div className="mt-1 truncate text-base font-bold tracking-tight text-white">
-                        {activeCategoryPreviewLabel}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="doro-category-editor-actions flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => closeCategoryForm('cancel')}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-black/20 hover:bg-black/30 text-white/70 hover:text-white text-[10px] uppercase tracking-[0.14em] font-bold transition-colors"
-                    >
-                      Close
-                    </button>
-                  </div>
-                </div>
-
-                <div className="doro-category-editor-section flex flex-wrap items-start gap-4">
-                  <div className="doro-category-editor-field min-w-[14rem] flex-1">
-                    <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Name</label>
-                    <input
-                      type="text"
-                      value={newCategoryName}
-                      onChange={event => {
-                        setNewCategoryName(event.target.value);
-                        if (categoryFormError) setCategoryFormError(null);
-                      }}
-                      className="w-full rounded-2xl border border-white/12 bg-black/20 px-3.5 py-3 text-white text-sm outline-none transition-colors placeholder:text-white/22 focus:border-white/28"
-                      placeholder="e.g. Math"
-                    />
-                  </div>
-
-                  <div className="doro-category-editor-field shrink-0">
-                    <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Color</label>
-                    <div className="flex gap-2 flex-wrap">
-                      {PRESET_COLORS.map((color, index) => (
-                        <button
-                          key={color}
-                          type="button"
-                          onClick={() => {
-                            setNewCategoryColor(color);
-                            if (categoryFormError) setCategoryFormError(null);
-                          }}
-                          className={`doro-category-color-swatch h-8 w-8 rounded-full border transition-all ${
-                            newCategoryColor === color
-                              ? 'scale-110 border-white/70 ring-2 ring-white/70 shadow-[0_0_0_6px_rgba(255,255,255,0.08)]'
-                              : 'border-white/10 opacity-72 hover:opacity-100 hover:-translate-y-[1px]'
-                          }`}
-                          style={{
-                            backgroundColor: color,
-                            boxShadow: newCategoryColor === color ? `0 12px 20px -12px ${colorToRgba(color, 0.8)}` : undefined,
-                            animationDelay: `${150 + (index * 18)}ms`,
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="doro-category-editor-section">
-                  <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Icon</label>
-                  <div className="grid grid-cols-6 sm:grid-cols-8 gap-2">
-                    {CATEGORY_ICON_OPTIONS.map(({ key, label }, index) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => {
-                          setNewCategoryIcon(key);
-                          if (categoryFormError) setCategoryFormError(null);
-                        }}
-                        title={label}
-                        aria-label={label}
-                        className={`doro-category-icon-option flex h-11 items-center justify-center rounded-2xl border text-white transition-all ${
-                          newCategoryIcon === key
-                            ? 'border-white/32 bg-white/18 shadow-[0_14px_26px_-20px_rgba(255,255,255,0.42)]'
-                            : 'border-white/8 bg-white/[0.04] opacity-65 hover:bg-white/[0.1] hover:opacity-100 hover:-translate-y-[1px]'
-                        }`}
-                        style={{ animationDelay: `${190 + (index * 9)}ms` }}
-                      >
-                        {getIcon(key, { size: 18 })}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {categoryFormError && (
-                  <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                    {categoryFormError}
-                  </div>
-                )}
-
-                <div className="doro-category-editor-footer flex flex-wrap gap-2">
-                  {editingCategoryId !== null && (
-                    <button
-                      type="button"
-                      onClick={() => handleArchiveCategory(editingCategoryId)}
-                      className="flex-1 min-w-[8rem] rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-red-100/75 transition-all hover:border-red-300/28 hover:bg-red-500/16 hover:text-red-100"
-                    >
-                      Archive
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => closeCategoryForm('cancel')}
-                    className="flex-1 min-w-[8rem] rounded-xl border border-white/12 bg-black/20 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/72 transition-all hover:bg-black/30 hover:text-white"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCreateCategory}
-                    disabled={!newCategoryName.trim()}
-                    className="flex-1 min-w-[8rem] rounded-xl bg-white px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-black shadow-lg transition-all hover:bg-gray-200 active:scale-[0.985] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {editingCategoryId !== null ? 'Save Changes' : 'Create Category'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            {safeActiveCategories.length === 0 && (
-              <div className="text-center text-white/35 text-xs italic py-4">No active categories.</div>
-            )}
-            {safeActiveCategories.map(category => (
-              <div
-                key={category.id}
-                ref={(node) => registerCategoryRef(category.id, node)}
-                onPointerDown={(event) => handleCategoryPointerDown(event, category.id)}
-                className={`relative overflow-hidden flex justify-between items-center gap-3 p-3 rounded-xl border transition-[background-color,border-color,box-shadow,transform,opacity] duration-300 ease-out ${
-                  editingCategoryId === category.id
-                    ? 'bg-white/12 border-white/25 shadow-[0_18px_34px_-26px_rgba(255,255,255,0.34)] -translate-y-[1px]'
-                    : 'bg-white/5 border-white/10 hover:bg-white/[0.075]'
-                } ${draggingCategoryId === category.id ? 'opacity-45 scale-[0.985] cursor-grabbing' : 'cursor-grab active:cursor-grabbing'}`}
-                style={{
-                  touchAction: draggingCategoryId === category.id ? 'none' : 'pan-y',
-                  boxShadow: editingCategoryId === category.id ? `0 20px 34px -28px ${colorToRgba(category.color, 0.7)}` : undefined,
-                }}
-              >
-                {categoryDropHint && draggingCategoryId !== category.id && categoryDropHint.categoryId === category.id && (
-                  <div
-                    className={`pointer-events-none absolute left-2 right-2 ${categoryDropHint.position === 'before' ? 'top-0.5' : 'bottom-0.5'} h-[2px] rounded-full bg-white/75 shadow-[0_0_12px_rgba(255,255,255,0.5)]`}
-                  />
-                )}
-                {editingCategoryId === category.id && (
-                  <div className="absolute inset-y-0 left-0 w-1.5" style={{ backgroundColor: category.color }} />
-                )}
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="flex h-8 w-4 shrink-0 items-center justify-center text-white/24">
-                    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
-                      <circle cx="2" cy="2" r="1.1" />
-                      <circle cx="8" cy="2" r="1.1" />
-                      <circle cx="2" cy="7" r="1.1" />
-                      <circle cx="8" cy="7" r="1.1" />
-                      <circle cx="2" cy="12" r="1.1" />
-                      <circle cx="8" cy="12" r="1.1" />
-                    </svg>
-                  </div>
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: category.color }}>
-                    {getIcon(category.icon)}
-                  </div>
-                  <div className="min-w-0 text-white font-bold text-sm truncate">{category.name}</div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    data-category-action="true"
-                    onClick={() => openCategoryEditor(category)}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-                    title="Edit"
-                    aria-label={`Edit ${category.name}`}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-3 pt-2 border-t border-white/10">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Appearance</div>
-          <div className="grid grid-cols-2 gap-2">
+        {renderSettingsDropdownSection('appearance', 'Appearance', (
+          <div className="doro-settings-theme-grid grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => updateTimerSettings({ themeMode: 'light' })}
@@ -5251,8 +5820,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   ? 'bg-white/20 border-white/30 text-white'
                   : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
               }`}
+              style={getSettingsDropdownItemStyle(0)}
             >
-              Light
+              Light (Beta)
             </button>
             <button
               type="button"
@@ -5262,19 +5832,21 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   ? 'bg-white/20 border-white/30 text-white'
                   : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
               }`}
+              style={getSettingsDropdownItemStyle(1)}
             >
               Dark
             </button>
           </div>
-        </div>
+        ), {
+          className: 'pt-4 md:pt-5 border-t border-white/[0.08]',
+          summary: selectedAppearanceLabel,
+        })}
 
-        <div className="space-y-4 pt-8 md:pt-9 border-t border-white/[0.08]">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/40">Manual Focus Log</div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Hours</label>
+        {renderSettingsDropdownSection('manualFocus', 'Manual Focus Log', (
+          <>
+          <div className="doro-manual-focus-time-grid">
+            <label className="doro-settings-stagger-item doro-manual-focus-field" style={getSettingsDropdownItemStyle(0)}>
+              <span className="doro-manual-focus-label">Hours</span>
               <input
                 type="number"
                 min={0}
@@ -5285,12 +5857,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   setManualFocusHoursInput(event.target.value);
                   if (manualFocusError) setManualFocusError(null);
                 }}
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none transition-colors placeholder:text-white/22 focus:border-white/30"
+                className="doro-manual-focus-input doro-no-spin"
                 placeholder="0"
               />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Minutes</label>
+            </label>
+            <label className="doro-settings-stagger-item doro-manual-focus-field" style={getSettingsDropdownItemStyle(1)}>
+              <span className="doro-manual-focus-label">Minutes</span>
               <input
                 type="number"
                 min={0}
@@ -5301,23 +5873,24 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   setManualFocusMinutesInput(event.target.value);
                   if (manualFocusError) setManualFocusError(null);
                 }}
-                className="doro-no-spin w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white text-center font-bold outline-none transition-colors placeholder:text-white/22 focus:border-white/30"
+                className="doro-manual-focus-input doro-no-spin"
                 placeholder="0"
               />
-            </div>
+            </label>
+            <input
+              type="text"
+              value={manualFocusNote}
+              onChange={event => {
+                setManualFocusNote(event.target.value);
+                if (manualFocusError) setManualFocusError(null);
+              }}
+              className="doro-settings-stagger-item doro-manual-focus-note-input"
+              placeholder="Optional note"
+              style={getSettingsDropdownItemStyle(2)}
+            />
           </div>
-          <input
-            type="text"
-            value={manualFocusNote}
-            onChange={event => {
-              setManualFocusNote(event.target.value);
-              if (manualFocusError) setManualFocusError(null);
-            }}
-            className="w-full rounded-xl border border-white/10 bg-white/[0.045] px-3.5 py-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-white/24 focus:border-white/28"
-            placeholder="Optional note"
-          />
           {safeActiveCategories.length > 0 && (
-            <div className="space-y-2">
+            <div className="doro-settings-stagger-item space-y-2" style={getSettingsDropdownItemStyle(3)}>
               <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/35">Category</div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -5352,18 +5925,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </div>
           )}
           {manualFocusError && (
-            <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-100/80">
+            <div className="doro-settings-stagger-item rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-100/80" style={getSettingsDropdownItemStyle(4)}>
               {manualFocusError}
             </div>
           )}
           <button
             type="button"
             onClick={handleManualFocusLog}
-            className="w-full rounded-xl border border-white/12 bg-white/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition-all hover:border-white/22 hover:bg-white/18 active:scale-[0.99]"
+            className="doro-settings-stagger-item w-full rounded-xl border border-white/12 bg-white/12 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition-all hover:border-white/22 hover:bg-white/18 active:scale-[0.99]"
+            style={getSettingsDropdownItemStyle(5)}
           >
             Log Focus Time
           </button>
-        </div>
+          </>
+        ), {
+          className: 'pt-4 md:pt-5 border-t border-white/[0.08]',
+        })}
 
         <div className="pt-4 border-t border-white/10">
           {showResetConfirm ? (
@@ -5467,6 +6044,238 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   return (
     <>
       <style>{`
+        .doro-group-study-shell {
+          --doro-group-study-ease: cubic-bezier(0.16, 1, 0.3, 1);
+          --doro-group-study-ease-soft: cubic-bezier(0.22, 0.76, 0.26, 1);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
+            rgba(255,255,255,0.075);
+          border-color: rgba(255, 255, 255, 0.18);
+          box-shadow:
+            0 38px 82px -40px rgba(0,0,0,0.84),
+            0 18px 38px -22px rgba(0,0,0,0.64),
+            inset 0 1px 0 rgba(255,255,255,0.16);
+        }
+        .doro-group-study-morph-shell {
+          position: relative;
+          min-height: 9.55rem;
+          overflow: hidden;
+          transform-origin: top center;
+          transition:
+            height 340ms cubic-bezier(0.22, 1, 0.36, 1),
+            min-height 340ms cubic-bezier(0.22, 1, 0.36, 1),
+            border-radius 340ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 300ms ease,
+            border-color 260ms ease,
+            background-color 260ms ease;
+          will-change: height;
+          contain: layout paint;
+        }
+        .doro-group-study-morph-shell.view-menu {
+          border-radius: 1.25rem;
+        }
+        .doro-group-study-morph-shell.view-host-timer,
+        .doro-group-study-morph-shell.view-host-goal,
+        .doro-group-study-morph-shell.view-join,
+        .doro-group-study-morph-shell.view-join-invite {
+          border-radius: 1.45rem;
+        }
+        .doro-group-study-flow-panel {
+          position: absolute;
+          inset: 0.75rem;
+          min-width: 0;
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+          transform: translateY(10px) scale(0.98);
+          transition:
+            opacity 230ms ease,
+            visibility 0ms linear 260ms,
+            transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+          will-change: opacity, transform;
+        }
+        .doro-group-study-flow-panel.is-active {
+          opacity: 1;
+          visibility: visible;
+          pointer-events: auto;
+          transform: none;
+          transition:
+            opacity 220ms ease 60ms,
+            visibility 0ms linear 0ms,
+            transform 300ms cubic-bezier(0.22, 1, 0.36, 1) 60ms;
+        }
+        .doro-group-study-flow-panel:not(.is-active) {
+          transform: translateY(5px) scale(0.985);
+        }
+        @keyframes doro-group-study-item-in {
+          0% {
+            opacity: 0;
+            transform: translateY(8px) scale(0.98);
+          }
+          100% {
+            opacity: 1;
+            transform: none;
+          }
+        }
+        .doro-group-study-flow-panel.is-active .doro-group-study-stagger {
+          animation: doro-group-study-item-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation-delay: var(--doro-group-study-delay, 70ms);
+          will-change: transform, opacity;
+        }
+        .doro-group-study-inset,
+        .doro-group-study-choice,
+        .doro-group-study-option,
+        .doro-group-study-input,
+        .doro-group-study-note,
+        .doro-group-study-stat {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)),
+            rgba(0, 0, 0, 0.24);
+          border-color: rgba(255, 255, 255, 0.16);
+          box-shadow: 0 14px 26px -24px rgba(0, 0, 0, 0.54);
+        }
+        .doro-group-study-choice,
+        .doro-group-study-option,
+        .doro-group-study-primary,
+        .doro-group-study-danger,
+        .doro-group-study-input,
+        .doro-group-study-pill {
+          transition:
+            transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+            background-color 240ms ease,
+            border-color 240ms ease,
+            box-shadow 260ms ease,
+            color 260ms ease;
+          will-change: transform, box-shadow, background-color;
+        }
+        .doro-group-study-choice:hover,
+        .doro-group-study-option:hover,
+        .doro-group-study-primary:hover,
+        .doro-group-study-danger:hover,
+        .doro-group-study-pill:hover {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.095), rgba(255,255,255,0.035)),
+            rgba(0, 0, 0, 0.3);
+          border-color: rgba(255, 255, 255, 0.28);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.6),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+          transform: translateY(-1px);
+        }
+        .doro-group-study-choice:active,
+        .doro-group-study-option:active,
+        .doro-group-study-primary:active,
+        .doro-group-study-danger:active {
+          transform: translateY(0) scale(0.998);
+          box-shadow: 0 14px 24px -23px rgba(0, 0, 0, 0.54);
+        }
+        .doro-group-study-choice.is-selected,
+        .doro-group-study-option.is-selected,
+        .doro-group-study-option.is-emphasis {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.13), rgba(255,255,255,0.045)),
+            rgba(0, 0, 0, 0.34);
+          border-color: rgba(255, 255, 255, 0.3);
+          color: rgba(255, 255, 255, 0.94);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.64),
+            inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        }
+        .doro-group-study-choice.is-selected,
+        button.doro-group-study-option.is-selected {
+          transform: translateY(-2px);
+          box-shadow:
+            0 34px 58px -32px rgba(0, 0, 0, 0.86),
+            0 16px 28px -20px rgba(0, 0, 0, 0.68),
+            inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+        .doro-group-study-choice.is-selected:hover,
+        button.doro-group-study-option.is-selected:hover {
+          transform: translateY(-3px);
+          box-shadow:
+            0 40px 68px -34px rgba(0, 0, 0, 0.9),
+            0 18px 32px -20px rgba(0, 0, 0, 0.72),
+            inset 0 1px 0 rgba(255, 255, 255, 0.22);
+        }
+        .doro-group-study-choice.is-selected:active,
+        button.doro-group-study-option.is-selected:active {
+          transform: translateY(-1px) scale(0.998);
+        }
+        .doro-group-study-icon,
+        .doro-group-study-pill {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025)),
+            rgba(0, 0, 0, 0.2);
+          border-color: rgba(255, 255, 255, 0.14);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+        .doro-group-study-icon,
+        .doro-group-study-option svg,
+        .doro-group-study-choice svg,
+        .doro-group-study-primary svg,
+        .doro-group-study-danger svg {
+          flex-shrink: 0;
+          transition:
+            color 220ms ease,
+            opacity 220ms ease,
+            background-color 240ms ease,
+            border-color 240ms ease,
+            box-shadow 240ms ease;
+        }
+        .doro-group-study-choice:hover .doro-group-study-icon,
+        .doro-group-study-option:hover .doro-group-study-icon {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.105), rgba(255,255,255,0.035)),
+            rgba(0, 0, 0, 0.24);
+          border-color: rgba(255, 255, 255, 0.22);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.14),
+            0 12px 18px -16px rgba(0, 0, 0, 0.42);
+        }
+        .doro-group-study-input {
+          color: rgba(255, 255, 255, 0.9);
+          caret-color: rgba(255, 255, 255, 0.92);
+        }
+        .doro-group-study-input:focus {
+          border-color: rgba(255, 255, 255, 0.32);
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.095), rgba(255,255,255,0.035)),
+            rgba(0, 0, 0, 0.3);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.6),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12);
+        }
+        .doro-group-study-primary {
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.13), rgba(255,255,255,0.045)),
+            rgba(0, 0, 0, 0.34);
+          border-color: rgba(255, 255, 255, 0.3);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.62),
+            inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        }
+        .doro-group-study-danger,
+        .doro-group-study-error {
+          background:
+            linear-gradient(145deg, rgba(248,113,113,0.16), rgba(248,113,113,0.055)),
+            rgba(0, 0, 0, 0.24);
+          border-color: rgba(252, 165, 165, 0.24);
+          color: rgba(254, 226, 226, 0.9);
+          box-shadow: 0 14px 26px -24px rgba(0, 0, 0, 0.54);
+        }
+        .doro-group-study-danger:hover {
+          background:
+            linear-gradient(145deg, rgba(248,113,113,0.22), rgba(248,113,113,0.08)),
+            rgba(0, 0, 0, 0.3);
+          border-color: rgba(252, 165, 165, 0.34);
+          color: rgba(254, 226, 226, 0.96);
+        }
+        .doro-group-study-note {
+          color: rgba(255, 255, 255, 0.76);
+        }
+        .doro-group-study-stat {
+          min-width: 0;
+        }
         @keyframes doro-account-stat-enter {
           0% {
             opacity: 0;
@@ -6335,9 +7144,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           .doro-focus-friend-confirmation::before,
           .doro-focus-friend-confirmation-heart,
           .doro-focus-friend-encouragement-menu,
+          .doro-group-study-morph-shell,
+          .doro-group-study-flow-panel,
+          .doro-group-study-stagger,
+          .doro-group-study-choice,
+          .doro-group-study-option,
+          .doro-group-study-primary,
+          .doro-group-study-danger,
           .doro-auto-start-sound-panel,
           .doro-auto-start-sound-panel-in,
           .doro-auto-start-sound-panel-out,
+          .doro-settings-dropdown-trigger,
+          .doro-settings-dropdown-chevron-trigger,
+          .doro-settings-dropdown-chevron,
+          .doro-settings-dropdown-panel,
+          .doro-settings-dropdown-content,
+          .doro-settings-stagger-item,
+          .doro-settings-dropdown-section .settings-option-btn,
           .doro-category-editor-shell,
           .doro-category-editor-content,
           .doro-category-editor-section,
@@ -6360,6 +7183,271 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             transform: translateY(-4px) scale(0.99) !important;
             border-color: rgba(255, 255, 255, 0) !important;
           }
+        }
+        @keyframes doro-settings-dropdown-item-in {
+          0% {
+            opacity: 0;
+            transform: translateY(5px) scale(0.94);
+          }
+          72% {
+            opacity: 1;
+            transform: translateY(-1px) scale(1.018);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .doro-settings-dropdown-section {
+          --doro-settings-section-duration: 360ms;
+        }
+        .doro-settings-dropdown-header-row {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          min-width: 0;
+        }
+        .doro-settings-dropdown-trigger {
+          position: relative;
+          flex: 1 1 auto;
+          min-width: 0;
+          min-height: 2.55rem;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.8rem;
+          border: 0;
+          border-radius: 0.85rem;
+          background: transparent;
+          color: inherit;
+          margin-left: -0.72rem;
+          padding: 0.34rem 0.72rem;
+          transition:
+            background-color 180ms ease,
+            color 180ms ease,
+            transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 180ms ease;
+        }
+        .doro-settings-dropdown-trigger:hover {
+          background: rgba(255, 255, 255, 0.035);
+        }
+        .doro-settings-dropdown-chevron-trigger {
+          flex: 0 0 auto;
+          width: 2.35rem;
+          min-height: 2.55rem;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          border-radius: 0.85rem;
+          background: transparent;
+          color: inherit;
+          margin-right: -0.58rem;
+          padding: 0.34rem 0.58rem;
+          transition:
+            background-color 180ms ease,
+            color 180ms ease,
+            transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 180ms ease;
+        }
+        .doro-settings-dropdown-chevron-trigger:hover {
+          background: rgba(255, 255, 255, 0.035);
+        }
+        .doro-settings-dropdown-trigger:active {
+          transform: scale(0.992);
+        }
+        .doro-settings-dropdown-chevron-trigger:active {
+          transform: scale(0.94);
+        }
+        .doro-settings-dropdown-trigger:focus-visible {
+          outline: none;
+          box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+        }
+        .doro-settings-dropdown-chevron-trigger:focus-visible {
+          outline: none;
+          box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+        }
+        .doro-settings-dropdown-right {
+          display: inline-flex;
+          flex: 0 0 auto;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 0.58rem;
+          margin-left: auto;
+          min-width: 0;
+        }
+        .doro-settings-dropdown-summary {
+          max-width: min(11rem, 36vw);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: rgba(255, 255, 255, 0.52);
+          font-size: 0.64rem;
+          font-weight: 850;
+          line-height: 1;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          transition: color 180ms ease, opacity 180ms ease;
+        }
+        .doro-settings-dropdown-trigger:hover .doro-settings-dropdown-summary,
+        .doro-settings-dropdown-section.is-open .doro-settings-dropdown-summary {
+          color: rgba(255, 255, 255, 0.72);
+        }
+        .doro-settings-dropdown-chevron {
+          flex: 0 0 auto;
+          color: rgba(255, 255, 255, 0.42);
+          transform: rotate(0deg);
+          transition:
+            transform 300ms cubic-bezier(0.2, 0.9, 0.3, 1.08),
+            color 180ms ease,
+            opacity 180ms ease;
+        }
+        .doro-settings-dropdown-section.is-open .doro-settings-dropdown-chevron {
+          color: rgba(255, 255, 255, 0.74);
+          transform: rotate(180deg);
+        }
+        .doro-settings-dropdown-action {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          flex: 0 0 auto;
+        }
+        .doro-settings-dropdown-panel {
+          display: grid;
+          grid-template-rows: 0fr;
+          opacity: 0;
+          transition:
+            grid-template-rows var(--doro-settings-section-duration) cubic-bezier(0.2, 0.9, 0.3, 1),
+            opacity 220ms ease;
+        }
+        .doro-settings-dropdown-section.is-open .doro-settings-dropdown-panel {
+          grid-template-rows: 1fr;
+          opacity: 1;
+        }
+        .doro-settings-dropdown-content {
+          min-height: 0;
+          overflow: hidden;
+          padding-top: 0;
+          pointer-events: none;
+          visibility: hidden;
+          transform: translateY(-7px) scale(0.996);
+          filter: saturate(0.94);
+          transition:
+            padding-top var(--doro-settings-section-duration) cubic-bezier(0.2, 0.9, 0.3, 1),
+            transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1),
+            filter 260ms ease,
+            visibility 0s linear var(--doro-settings-section-duration);
+        }
+        .doro-settings-dropdown-section.is-open .doro-settings-dropdown-content {
+          padding-top: 1rem;
+          pointer-events: auto;
+          visibility: visible;
+          transform: translateY(0) scale(1);
+          filter: saturate(1);
+          transition:
+            padding-top var(--doro-settings-section-duration) cubic-bezier(0.2, 0.9, 0.3, 1),
+            transform 300ms cubic-bezier(0.18, 0.9, 0.32, 1.06),
+            filter 260ms ease,
+            visibility 0s linear 0s;
+        }
+        .doro-settings-dropdown-section.is-open .settings-option-btn,
+        .doro-settings-dropdown-section.is-open .doro-settings-stagger-item {
+          animation-name: doro-settings-dropdown-item-in;
+          animation-duration: 300ms;
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.3, 1.08);
+          animation-fill-mode: backwards;
+          animation-delay: calc((var(--doro-settings-item-index, 0) * 18ms) + 85ms);
+        }
+        .doro-manual-focus-time-grid {
+          display: grid;
+          grid-template-columns: minmax(8.2rem, 0.74fr) minmax(8.2rem, 0.74fr) minmax(14rem, 1.55fr);
+          gap: 0.65rem;
+          align-items: stretch;
+        }
+        .doro-manual-focus-field {
+          min-width: 0;
+          min-height: 3.05rem;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.7rem;
+          border-radius: 0.9rem;
+          border: 1px solid rgba(255, 255, 255, 0.095);
+          background: rgba(255, 255, 255, 0.045);
+          padding: 0.54rem 0.74rem;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+          transition:
+            border-color 180ms ease,
+            background-color 180ms ease,
+            box-shadow 200ms ease,
+            transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-manual-focus-field:hover {
+          border-color: rgba(255, 255, 255, 0.15);
+          background: rgba(255, 255, 255, 0.06);
+        }
+        .doro-manual-focus-field:focus-within {
+          border-color: rgba(255, 255, 255, 0.24);
+          background: rgba(255, 255, 255, 0.075);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 14px 24px -22px rgba(255, 255, 255, 0.35);
+        }
+        .doro-manual-focus-label {
+          flex: 0 0 auto;
+          color: rgba(255, 255, 255, 0.38);
+          font-size: 0.58rem;
+          font-weight: 800;
+          line-height: 1;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+        }
+        .doro-manual-focus-input {
+          width: 100%;
+          min-width: 2.75rem;
+          height: 1.55rem;
+          border: 0 !important;
+          background: transparent !important;
+          box-shadow: none !important;
+          color: rgba(255, 255, 255, 0.84) !important;
+          outline: none;
+          padding: 0;
+          text-align: right;
+          font-size: 1.05rem;
+          font-weight: 850;
+          line-height: 1;
+          font-variant-numeric: tabular-nums;
+        }
+        .doro-manual-focus-input::placeholder {
+          color: rgba(255, 255, 255, 0.3);
+        }
+        .doro-manual-focus-note-input {
+          min-width: 0;
+          min-height: 3.05rem;
+          width: 100%;
+          border-radius: 0.9rem;
+          border: 1px solid rgba(255, 255, 255, 0.095);
+          background: rgba(255, 255, 255, 0.045);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+          color: rgba(255, 255, 255, 0.84);
+          outline: none;
+          padding: 0.54rem 0.9rem;
+          font-size: 0.88rem;
+          font-weight: 700;
+          transition:
+            border-color 180ms ease,
+            background-color 180ms ease,
+            box-shadow 200ms ease;
+        }
+        .doro-manual-focus-note-input::placeholder {
+          color: rgba(255, 255, 255, 0.34);
+        }
+        .doro-manual-focus-note-input:hover {
+          border-color: rgba(255, 255, 255, 0.15);
+          background: rgba(255, 255, 255, 0.06);
+        }
+        .doro-manual-focus-note-input:focus {
+          border-color: rgba(255, 255, 255, 0.24);
+          background: rgba(255, 255, 255, 0.075);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 14px 24px -22px rgba(255, 255, 255, 0.35);
         }
         @keyframes doro-auto-start-sound-panel-in {
           0% {
@@ -6986,6 +8074,38 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             padding-left: 0.8rem !important;
             padding-right: 0.8rem !important;
           }
+          .doro-settings-dropdown-header-row {
+            gap: 0.45rem;
+          }
+          .doro-settings-dropdown-trigger {
+            min-height: 2.4rem;
+            margin-left: -0.5rem;
+            padding: 0.34rem 0.5rem;
+          }
+          .doro-settings-dropdown-chevron-trigger {
+            width: 2.15rem;
+            min-height: 2.4rem;
+            margin-right: -0.4rem;
+            padding: 0.34rem 0.4rem;
+          }
+          .doro-settings-dropdown-summary {
+            max-width: 7.25rem;
+            font-size: 0.58rem;
+            letter-spacing: 0.1em;
+          }
+          .doro-manual-focus-time-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+          .doro-manual-focus-note-input {
+            grid-column: 1 / -1;
+          }
+          .doro-settings-dropdown-action button {
+            min-height: 2.25rem !important;
+            padding-left: 0.7rem !important;
+            padding-right: 0.7rem !important;
+            font-size: 0.55rem !important;
+            letter-spacing: 0.1em !important;
+          }
           .settings-panel-content {
             padding-top: 1.25rem !important;
             padding-bottom: 2rem !important;
@@ -7220,6 +8340,72 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-settings-shell.theme-light .doro-focus-sound-slider::-moz-range-thumb {
           border-color: rgba(196, 209, 227, 0.96);
           box-shadow: 0 10px 18px -12px rgba(76, 96, 130, 0.28);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-trigger:hover {
+          background: rgba(15, 23, 42, 0.035);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-chevron-trigger:hover {
+          background: rgba(15, 23, 42, 0.035);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-trigger:focus-visible {
+          box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.14);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-chevron-trigger:focus-visible {
+          box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.14);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-chevron {
+          color: rgba(82, 101, 132, 0.58);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-section.is-open .doro-settings-dropdown-chevron {
+          color: rgba(15, 23, 42, 0.72);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-summary {
+          color: rgba(82, 101, 132, 0.68);
+        }
+        .doro-settings-shell.theme-light .doro-settings-dropdown-trigger:hover .doro-settings-dropdown-summary,
+        .doro-settings-shell.theme-light .doro-settings-dropdown-section.is-open .doro-settings-dropdown-summary {
+          color: rgba(15, 23, 42, 0.76);
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-field {
+          border-color: rgba(15, 23, 42, 0.12);
+          background: rgba(15, 23, 42, 0.045);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 16px 28px -26px rgba(82, 101, 136, 0.32);
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-field:hover {
+          border-color: rgba(15, 23, 42, 0.18);
+          background: rgba(15, 23, 42, 0.06);
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-field:focus-within {
+          border-color: rgba(15, 23, 42, 0.26);
+          background: rgba(15, 23, 42, 0.07);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62), 0 18px 30px -26px rgba(76, 96, 130, 0.42);
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-label {
+          color: rgba(82, 101, 132, 0.68) !important;
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-input {
+          color: #102133 !important;
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-input::placeholder {
+          color: rgba(82, 101, 132, 0.46) !important;
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-note-input {
+          border-color: rgba(15, 23, 42, 0.12) !important;
+          background: rgba(15, 23, 42, 0.045) !important;
+          color: #102133 !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 16px 28px -26px rgba(82, 101, 136, 0.32) !important;
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-note-input:hover {
+          border-color: rgba(15, 23, 42, 0.18) !important;
+          background: rgba(15, 23, 42, 0.06) !important;
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-note-input:focus {
+          border-color: rgba(15, 23, 42, 0.26) !important;
+          background: rgba(15, 23, 42, 0.07) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62), 0 18px 30px -26px rgba(76, 96, 130, 0.42) !important;
+        }
+        .doro-settings-shell.theme-light .doro-manual-focus-note-input::placeholder {
+          color: rgba(82, 101, 132, 0.48) !important;
         }
         .doro-settings-shell.theme-light [class*='border-white/'] {
           border-color: rgba(15, 23, 42, 0.12) !important;

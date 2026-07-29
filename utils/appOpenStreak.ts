@@ -33,6 +33,7 @@ export interface AppOpenStreakSnapshot extends AppOpenStreakState {
 type EarnedStreakStats = {
   currentStreak?: unknown;
   bestStreak?: unknown;
+  lastActiveDate?: unknown;
 } | null | undefined;
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -138,6 +139,36 @@ const buildRollingDays = (
     };
   })
 );
+
+const backfillEarnedActiveDays = (
+  historyByDate: Record<string, AppOpenStreakDayStatus>,
+  todayDate: string,
+  earnedCurrentStreak: number,
+  earnedLastActiveDate: unknown,
+) => {
+  if (earnedCurrentStreak <= 0) return historyByDate;
+
+  const candidateEndDate = typeof earnedLastActiveDate === 'string' && parseDateKey(earnedLastActiveDate)
+    ? earnedLastActiveDate
+    : todayDate;
+  const diffToToday = diffLocalDateKeys(candidateEndDate, todayDate);
+  const endDate = diffToToday !== null && diffToToday >= 0 && diffToToday <= 1
+    ? candidateEndDate
+    : todayDate;
+  let nextHistory = historyByDate;
+
+  for (let dayOffset = 0; dayOffset < Math.min(earnedCurrentStreak, 7); dayOffset += 1) {
+    const dateKey = addLocalDays(endDate, -dayOffset);
+    if (!dateKey) continue;
+    const daysAgo = diffLocalDateKeys(dateKey, todayDate);
+    if (daysAgo === null || daysAgo < 0 || daysAgo > STREAK_HISTORY_RETENTION_DAYS) continue;
+    if (nextHistory[dateKey] === 'active') continue;
+    if (nextHistory === historyByDate) nextHistory = { ...historyByDate };
+    nextHistory[dateKey] = 'active';
+  }
+
+  return nextHistory;
+};
 
 export const createEmptyAppOpenStreakState = (): AppOpenStreakState => ({
   currentStreak: 0,
@@ -302,15 +333,20 @@ const preserveEarnedStreakInSnapshot = (
   const earnedBest = getNonNegativeStreakInt(earnedStats?.bestStreak);
   const currentStreak = Math.max(snapshot.currentStreak, earnedCurrent);
   const bestStreak = Math.max(snapshot.bestStreak, earnedBest, currentStreak);
+  const historyByDate = backfillEarnedActiveDays(
+    snapshot.historyByDate,
+    snapshot.todayDate,
+    earnedCurrent,
+    earnedStats?.lastActiveDate,
+  );
 
-  if (currentStreak === snapshot.currentStreak && bestStreak === snapshot.bestStreak) {
+  if (
+    currentStreak === snapshot.currentStreak
+    && bestStreak === snapshot.bestStreak
+    && historyByDate === snapshot.historyByDate
+  ) {
     return snapshot;
   }
-
-  const historyByDate = {
-    ...snapshot.historyByDate,
-    [snapshot.todayDate]: 'active' as const,
-  };
 
   return {
     ...snapshot,

@@ -608,6 +608,89 @@ describe('buildEndSessionStats', () => {
     expect(stats.miniPomosCompleted).toBe(3);
   });
 
+  it('repairs compact session minutes when one mini-pomodoro completion log is missing', () => {
+    const sessionStartMs = Date.parse('2026-07-18T09:00:00.000Z');
+    const logs: LogEntry[] = Array.from({ length: 15 }, (_, index) => {
+      const start = new Date(sessionStartMs + index * 15 * 60_000);
+      const end = new Date(start.getTime() + 15 * 60_000);
+      return makeLog({
+        start: start.toISOString(),
+        end: end.toISOString(),
+        duration: 15 * 60,
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: index < 8 ? 1 : 2,
+      });
+    });
+
+    const stats = buildEndSessionStats({
+      logs,
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T13:00:00.000Z',
+      categories,
+      pomodoroCount: 16,
+      settings: { timerPreset: 'compact' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(240);
+    expect(stats.pomosCompleted).toBe(8);
+    expect(stats.miniPomosCompleted).toBe(16);
+    expect(stats.categoryStats).toEqual({
+      'Deep Work': 120,
+      Admin: 105,
+      Uncategorized: 15,
+    });
+  });
+
+  it('totals compact category-switch segments from exact logged durations', () => {
+    const sessionStartMs = Date.parse('2026-07-18T09:00:00.000Z');
+    const logs: LogEntry[] = [
+      makeLog({
+        start: '2026-07-18T09:00:00.000Z',
+        end: '2026-07-18T09:05:00.000Z',
+        duration: 5 * 60,
+        reason: 'Task/Category Switch',
+        categoryId: 1,
+      }),
+      makeLog({
+        start: '2026-07-18T09:05:00.000Z',
+        end: '2026-07-18T09:15:00.000Z',
+        duration: 10 * 60,
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 2,
+      }),
+      ...Array.from({ length: 15 }, (_, index) => {
+        const start = new Date(sessionStartMs + (index + 1) * 15 * 60_000);
+        const end = new Date(start.getTime() + 15 * 60_000);
+        return makeLog({
+          start: start.toISOString(),
+          end: end.toISOString(),
+          duration: 15 * 60,
+          reason: 'Mini-Pomodoro Complete',
+          categoryId: 2,
+        });
+      }),
+    ];
+
+    const stats = buildEndSessionStats({
+      logs,
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T13:00:00.000Z',
+      categories,
+      pomodoroCount: 16,
+      settings: { timerPreset: 'compact' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(240);
+    expect(stats.pomosCompleted).toBe(8);
+    expect(stats.miniPomosCompleted).toBe(16);
+    expect(stats.categoryStats).toEqual({
+      'Deep Work': 5,
+      Admin: 235,
+    });
+  });
+
   it('finds unique task completions inside the session window only', () => {
     const completionIds = getSessionTaskCompletionIdsFromLogs([
       makeLog({

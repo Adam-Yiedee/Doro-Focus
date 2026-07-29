@@ -1,6 +1,9 @@
 
 import { AlarmSound, FocusSound } from '../types';
 import streakFireWhooshUrl from '../assets/streak-fire-whoosh.mp3';
+import streakDayPopUrl from '../assets/streak-day-pop.mp3';
+import streakSuccessFanfareUrl from '../assets/streak-success-fanfare.mp3';
+import timerSwitchTapUrl from '../assets/timer-switch-tap.mp3';
 
 type NoiseColor = 'white' | 'pink' | 'brown';
 type FocusSoundPreset = {
@@ -40,6 +43,18 @@ let focusSoundRequestToken = 0;
 let focusSoundPreviewRequestToken = 0;
 let streakFireWhooshBuffer: AudioBuffer | null = null;
 let streakFireWhooshBufferPromise: Promise<AudioBuffer | null> | null = null;
+let streakDayPopArrayBuffer: ArrayBuffer | null = null;
+let streakDayPopArrayBufferPromise: Promise<ArrayBuffer | null> | null = null;
+let streakDayPopBuffer: AudioBuffer | null = null;
+let streakDayPopBufferPromise: Promise<AudioBuffer | null> | null = null;
+let streakSuccessFanfareArrayBuffer: ArrayBuffer | null = null;
+let streakSuccessFanfareArrayBufferPromise: Promise<ArrayBuffer | null> | null = null;
+let streakSuccessFanfareBuffer: AudioBuffer | null = null;
+let streakSuccessFanfareBufferPromise: Promise<AudioBuffer | null> | null = null;
+let timerSwitchTapArrayBuffer: ArrayBuffer | null = null;
+let timerSwitchTapArrayBufferPromise: Promise<ArrayBuffer | null> | null = null;
+let timerSwitchTapBuffer: AudioBuffer | null = null;
+let timerSwitchTapBufferPromise: Promise<AudioBuffer | null> | null = null;
 
 const getBrowserAudioContextConstructor = () => {
   if (typeof window === 'undefined') return null;
@@ -96,6 +111,13 @@ const getFocusSoundVolumeScale = (volume: number) => {
 const getFocusSoundGain = (preset: FocusSoundPreset, volume: number) => (
   Math.max(0, preset.gain * getFocusSoundVolumeScale(volume))
 );
+
+export const clampAlarmSoundVolume = (value: number) => {
+  if (!Number.isFinite(value)) return 100;
+  return Math.max(0, Math.min(100, value));
+};
+
+const getAlarmSoundVolumeScale = (volume: number) => clampAlarmSoundVolume(volume) / 100;
 
 const createNoiseBuffer = (ctx: AudioContext, color: NoiseColor, durationSeconds = 2) => {
   const frameCount = Math.max(1, Math.floor(ctx.sampleRate * durationSeconds));
@@ -349,7 +371,15 @@ export const startFocusSound = async (soundType: FocusSound, volume = 100) => {
   focusSoundState = { ctx, preset: soundType, volume: safeVolume, source, masterGain, teardown };
 };
 
-const playOscillator = (ctx: AudioContext, type: OscillatorType, freq: number, start: number, dur: number, gainVal: number) => {
+const playOscillator = (
+  ctx: AudioContext,
+  type: OscillatorType,
+  freq: number,
+  start: number,
+  dur: number,
+  gainVal: number,
+  destination: AudioNode = ctx.destination,
+) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = type;
@@ -357,7 +387,7 @@ const playOscillator = (ctx: AudioContext, type: OscillatorType, freq: number, s
     gain.gain.setValueAtTime(gainVal, start);
     gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(destination);
     osc.start(start);
     osc.stop(start + dur);
 };
@@ -370,6 +400,7 @@ const playSmoothTone = (
   dur: number,
   gainVal: number,
   endFreq?: number,
+  destination: AudioNode = ctx.destination,
 ) => {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -382,7 +413,7 @@ const playSmoothTone = (
   gain.gain.linearRampToValueAtTime(gainVal, start + Math.min(0.035, dur * 0.35));
   gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
   osc.connect(gain);
-  gain.connect(ctx.destination);
+  gain.connect(destination);
   osc.start(start);
   osc.stop(start + dur + 0.04);
 };
@@ -395,6 +426,7 @@ const playNoiseBurst = (
   gainVal: number,
   frequency: number,
   q = 2.4,
+  destination: AudioNode = ctx.destination,
 ) => {
   const source = ctx.createBufferSource();
   const filter = ctx.createBiquadFilter();
@@ -408,7 +440,7 @@ const playNoiseBurst = (
   gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
   source.connect(filter);
   filter.connect(gain);
-  gain.connect(ctx.destination);
+  gain.connect(destination);
   source.start(start);
   source.stop(start + dur + 0.02);
 };
@@ -437,6 +469,280 @@ const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
   return streakFireWhooshBufferPromise;
 };
 
+type FocusStreakMomentDaySound = {
+  status?: string | null;
+} | null | undefined;
+
+type FocusStreakDayNote = {
+  index: number;
+  offsetSeconds: number;
+  playbackRate: number;
+};
+
+type FocusStreakMomentSoundOptions = {
+  streakIncreased?: boolean;
+};
+type TimerSwitchSoundVariant = 'default' | 'break-bank';
+
+const FOCUS_STREAK_DAY_NOTE_BASE_SECONDS = 3.12;
+const FOCUS_STREAK_DAY_NOTE_STEP_SECONDS = 0.048;
+const FOCUS_STREAK_DAY_NOTE_SLOT_COUNT = 7;
+const FOCUS_STREAK_DAY_POP_GAIN = 1.85;
+const FOCUS_STREAK_SUCCESS_FANFARE_AFTER_FIRE_SECONDS = 1.82;
+
+export const getFocusStreakDayNotePlaybackRate = (
+  index: number,
+  totalSlots = FOCUS_STREAK_DAY_NOTE_SLOT_COUNT,
+) => {
+  const safeTotalSlots = Number.isFinite(totalSlots) ? Math.max(1, Math.floor(totalSlots)) : FOCUS_STREAK_DAY_NOTE_SLOT_COUNT;
+  const safeIndex = Number.isFinite(index)
+    ? Math.max(0, Math.min(safeTotalSlots - 1, Math.floor(index)))
+    : 0;
+  const semitoneOffset = safeIndex - (safeTotalSlots - 1);
+  return Math.pow(2, semitoneOffset / 12);
+};
+
+export const getFocusStreakMomentDayNotes = (
+  days: FocusStreakMomentDaySound[] = [],
+): FocusStreakDayNote[] => (
+  days
+    .map((day, index) => {
+      if (!day?.status) return null;
+      return {
+        index,
+        offsetSeconds: FOCUS_STREAK_DAY_NOTE_BASE_SECONDS + (index * FOCUS_STREAK_DAY_NOTE_STEP_SECONDS),
+        playbackRate: getFocusStreakDayNotePlaybackRate(index, Math.max(FOCUS_STREAK_DAY_NOTE_SLOT_COUNT, days.length)),
+      };
+    })
+    .filter((note): note is FocusStreakDayNote => Boolean(note))
+);
+
+const getStreakDayPopArrayBuffer = () => {
+  if (streakDayPopArrayBuffer) return Promise.resolve(streakDayPopArrayBuffer);
+  if (typeof fetch !== 'function') return Promise.resolve(null);
+
+  if (!streakDayPopArrayBufferPromise) {
+    streakDayPopArrayBufferPromise = fetch(streakDayPopUrl)
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((arrayBuffer) => {
+        if (!arrayBuffer) {
+          streakDayPopArrayBufferPromise = null;
+          return null;
+        }
+        streakDayPopArrayBuffer = arrayBuffer;
+        return arrayBuffer;
+      })
+      .catch((error) => {
+        console.error('Streak day pop failed to preload', error);
+        streakDayPopArrayBufferPromise = null;
+        return null;
+      });
+  }
+
+  return streakDayPopArrayBufferPromise;
+};
+
+const getStreakSuccessFanfareArrayBuffer = () => {
+  if (streakSuccessFanfareArrayBuffer) return Promise.resolve(streakSuccessFanfareArrayBuffer);
+  if (typeof fetch !== 'function') return Promise.resolve(null);
+
+  if (!streakSuccessFanfareArrayBufferPromise) {
+    streakSuccessFanfareArrayBufferPromise = fetch(streakSuccessFanfareUrl)
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((arrayBuffer) => {
+        if (!arrayBuffer) {
+          streakSuccessFanfareArrayBufferPromise = null;
+          return null;
+        }
+        streakSuccessFanfareArrayBuffer = arrayBuffer;
+        return arrayBuffer;
+      })
+      .catch((error) => {
+        console.error('Streak success fanfare failed to preload', error);
+        streakSuccessFanfareArrayBufferPromise = null;
+        return null;
+      });
+  }
+
+  return streakSuccessFanfareArrayBufferPromise;
+};
+
+const getTimerSwitchTapArrayBuffer = () => {
+  if (timerSwitchTapArrayBuffer) return Promise.resolve(timerSwitchTapArrayBuffer);
+  if (typeof fetch !== 'function') return Promise.resolve(null);
+
+  if (!timerSwitchTapArrayBufferPromise) {
+    timerSwitchTapArrayBufferPromise = fetch(timerSwitchTapUrl)
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((arrayBuffer) => {
+        if (!arrayBuffer) {
+          timerSwitchTapArrayBufferPromise = null;
+          return null;
+        }
+        timerSwitchTapArrayBuffer = arrayBuffer;
+        return arrayBuffer;
+      })
+      .catch((error) => {
+        console.error('Timer switch tap failed to preload', error);
+        timerSwitchTapArrayBufferPromise = null;
+        return null;
+      });
+  }
+
+  return timerSwitchTapArrayBufferPromise;
+};
+
+export const preloadNotificationSounds = async () => {
+  await Promise.all([
+    getStreakDayPopArrayBuffer(),
+    getStreakSuccessFanfareArrayBuffer(),
+    getTimerSwitchTapArrayBuffer(),
+  ]);
+};
+
+export const preloadFocusStreakMomentSounds = preloadNotificationSounds;
+
+const getStreakDayPopBuffer = (ctx: AudioContext) => {
+  if (streakDayPopBuffer) return Promise.resolve(streakDayPopBuffer);
+
+  if (!streakDayPopBufferPromise) {
+    streakDayPopBufferPromise = getStreakDayPopArrayBuffer()
+      .then((arrayBuffer) => (
+        arrayBuffer ? ctx.decodeAudioData(arrayBuffer.slice(0)) : null
+      ))
+      .then((buffer) => {
+        if (!buffer) {
+          streakDayPopBufferPromise = null;
+          return null;
+        }
+        streakDayPopBuffer = buffer;
+        return buffer;
+      })
+      .catch((error) => {
+        console.error('Streak day pop failed to load', error);
+        streakDayPopBufferPromise = null;
+        return null;
+      });
+  }
+
+  return streakDayPopBufferPromise;
+};
+
+const getStreakSuccessFanfareBuffer = (ctx: AudioContext) => {
+  if (streakSuccessFanfareBuffer) return Promise.resolve(streakSuccessFanfareBuffer);
+
+  if (!streakSuccessFanfareBufferPromise) {
+    streakSuccessFanfareBufferPromise = getStreakSuccessFanfareArrayBuffer()
+      .then((arrayBuffer) => (
+        arrayBuffer ? ctx.decodeAudioData(arrayBuffer.slice(0)) : null
+      ))
+      .then((buffer) => {
+        if (!buffer) {
+          streakSuccessFanfareBufferPromise = null;
+          return null;
+        }
+        streakSuccessFanfareBuffer = buffer;
+        return buffer;
+      })
+      .catch((error) => {
+        console.error('Streak success fanfare failed to load', error);
+        streakSuccessFanfareBufferPromise = null;
+        return null;
+      });
+  }
+
+  return streakSuccessFanfareBufferPromise;
+};
+
+const getTimerSwitchTapBuffer = (ctx: AudioContext) => {
+  if (timerSwitchTapBuffer) return Promise.resolve(timerSwitchTapBuffer);
+
+  if (!timerSwitchTapBufferPromise) {
+    timerSwitchTapBufferPromise = getTimerSwitchTapArrayBuffer()
+      .then((arrayBuffer) => (
+        arrayBuffer ? ctx.decodeAudioData(arrayBuffer.slice(0)) : null
+      ))
+      .then((buffer) => {
+        if (!buffer) {
+          timerSwitchTapBufferPromise = null;
+          return null;
+        }
+        timerSwitchTapBuffer = buffer;
+        return buffer;
+      })
+      .catch((error) => {
+        console.error('Timer switch tap failed to load', error);
+        timerSwitchTapBufferPromise = null;
+        return null;
+      });
+  }
+
+  return timerSwitchTapBufferPromise;
+};
+
+type SoftPopSampleOptions = {
+  playbackRate?: number;
+  gain?: number;
+  maxDuration?: number;
+  maxLateSeconds?: number;
+};
+
+const scheduleSoftPopSample = (
+  ctx: AudioContext,
+  start: number,
+  buffer: AudioBuffer | null,
+  {
+    playbackRate = 1,
+    gain = 0.72,
+    maxDuration = 0.58,
+    maxLateSeconds = 0.22,
+  }: SoftPopSampleOptions = {},
+) => {
+  try {
+    if (!buffer) return false;
+
+    const latestStart = start + maxLateSeconds;
+    if (ctx.currentTime > latestStart) return false;
+
+    const safeStart = Math.max(start, ctx.currentTime + 0.025);
+    if (safeStart > latestStart) return false;
+
+    const safePlaybackRate = Number.isFinite(playbackRate) && playbackRate > 0
+      ? playbackRate
+      : 1;
+    const duration = Math.min(buffer.duration / safePlaybackRate, maxDuration);
+    const source = ctx.createBufferSource();
+    const gainNode = ctx.createGain();
+
+    source.buffer = buffer;
+    source.playbackRate.setValueAtTime(safePlaybackRate, safeStart);
+
+    gainNode.gain.setValueAtTime(0.0001, safeStart);
+    gainNode.gain.linearRampToValueAtTime(gain, safeStart + 0.012);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, safeStart + Math.max(0.08, duration));
+
+    source.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    source.start(safeStart);
+    source.stop(safeStart + duration + 0.02);
+    return true;
+  } catch (error) {
+    console.error('Soft pop sample failed to schedule', error);
+    return false;
+  }
+};
+
+const scheduleDefaultNotificationPopSample = (
+  ctx: AudioContext,
+  start: number,
+  buffer: AudioBuffer | null,
+  maxLateSeconds = 0.18,
+) => scheduleSoftPopSample(ctx, start, buffer, {
+  gain: 0.58,
+  maxDuration: 0.42,
+  maxLateSeconds,
+});
+
 const scheduleStreakFireWhoosh = (
   ctx: AudioContext,
   start: number,
@@ -460,8 +766,8 @@ const scheduleStreakFireWhoosh = (
     source.playbackRate.setValueAtTime(1.02, safeStart);
 
     gain.gain.setValueAtTime(0.0001, safeStart);
-    gain.gain.linearRampToValueAtTime(1.65, safeStart + 0.035);
-    gain.gain.exponentialRampToValueAtTime(1.18, safeStart + Math.min(0.42, duration * 0.36));
+    gain.gain.linearRampToValueAtTime(3.75, safeStart + 0.035);
+    gain.gain.exponentialRampToValueAtTime(2.8, safeStart + Math.min(0.42, duration * 0.36));
     gain.gain.exponentialRampToValueAtTime(0.001, safeStart + duration);
 
     source.connect(gain);
@@ -475,10 +781,88 @@ const scheduleStreakFireWhoosh = (
   }
 };
 
+const scheduleStreakSuccessFanfare = (
+  ctx: AudioContext,
+  start: number,
+  buffer: AudioBuffer | null,
+  maxLateSeconds = 0.45,
+) => {
+  try {
+    if (!buffer) return false;
+
+    const latestStart = start + maxLateSeconds;
+    if (ctx.currentTime > latestStart) return false;
+
+    const safeStart = Math.max(start, ctx.currentTime + 0.025);
+    if (safeStart > latestStart) return false;
+
+    const duration = Math.min(buffer.duration, 3.8);
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+
+    source.buffer = buffer;
+    source.playbackRate.setValueAtTime(1, safeStart);
+
+    gain.gain.setValueAtTime(0.0001, safeStart);
+    gain.gain.linearRampToValueAtTime(0.92, safeStart + 0.035);
+    gain.gain.exponentialRampToValueAtTime(0.74, safeStart + Math.min(0.38, duration * 0.32));
+    gain.gain.exponentialRampToValueAtTime(0.001, safeStart + duration);
+
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(safeStart);
+    source.stop(safeStart + duration + 0.04);
+    return true;
+  } catch (error) {
+    console.error('Streak success fanfare failed to schedule', error);
+    return false;
+  }
+};
+
+const scheduleFocusStreakDayPopNote = (
+  ctx: AudioContext,
+  start: number,
+  buffer: AudioBuffer | null,
+  playbackRate: number,
+  maxLateSeconds = 0.22,
+) => scheduleSoftPopSample(ctx, start, buffer, {
+  playbackRate,
+  gain: FOCUS_STREAK_DAY_POP_GAIN,
+  maxDuration: 0.58,
+  maxLateSeconds,
+});
+
+const scheduleFocusStreakDayPopNotes = (
+  ctx: AudioContext,
+  baseStart: number,
+  buffer: AudioBuffer | null,
+  notes: FocusStreakDayNote[],
+) => {
+  notes.forEach((note) => {
+    scheduleFocusStreakDayPopNote(
+      ctx,
+      baseStart + note.offsetSeconds,
+      buffer,
+      note.playbackRate,
+    );
+  });
+};
+
 const playFocusStreakIntroPop = (ctx: AudioContext, start: number) => {
   playNoiseBurst(ctx, 'pink', start, 0.14, 0.0046, 1850, 2.1);
   playSmoothTone(ctx, 'sine', 196.0, start + 0.006, 0.22, 0.018, 246.94);
   playSmoothTone(ctx, 'triangle', 493.88, start + 0.038, 0.2, 0.012, 659.25);
+};
+
+const playFocusStreakAppearancePop = (ctx: AudioContext, start: number) => {
+  if (scheduleDefaultNotificationPopSample(ctx, start, streakDayPopBuffer, 0.08)) return;
+  if (streakDayPopArrayBuffer || streakDayPopArrayBufferPromise) {
+    void getStreakDayPopBuffer(ctx).then((buffer) => {
+      scheduleDefaultNotificationPopSample(ctx, start, buffer, 0.18);
+    });
+    return;
+  }
+  playFocusStreakIntroPop(ctx, start);
 };
 
 const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: number, gainVal: number) => {
@@ -535,6 +919,7 @@ const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: n
 
 type AlarmPlaybackOptions = {
     onContext?: (ctx: AudioContext) => void;
+    volume?: number;
 };
 
 export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOptions) => {
@@ -545,6 +930,9 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
         options?.onContext?.(ctx);
         if (ctx.state === 'suspended') try { await ctx.resume(); } catch {}
         const now = ctx.currentTime;
+        const output = ctx.createGain();
+        output.gain.setValueAtTime(getAlarmSoundVolumeScale(options?.volume ?? 100), now);
+        output.connect(ctx.destination);
 
         switch (soundType) {
             case 'bell': // Original
@@ -565,21 +953,21 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 osc1.connect(filter);
                 osc2.connect(filter);
                 filter.connect(gain);
-                gain.connect(ctx.destination);
+                gain.connect(output);
                 osc1.start(now);
                 osc2.start(now);
                 osc1.stop(now + 1.7);
                 osc2.stop(now + 1.7);
                 break;
             case 'digital':
-                playOscillator(ctx, 'square', 880, now, 0.1, 0.1);
-                playOscillator(ctx, 'square', 1760, now + 0.1, 0.1, 0.1);
-                playOscillator(ctx, 'square', 880, now + 0.2, 0.1, 0.1);
+                playOscillator(ctx, 'square', 880, now, 0.1, 0.1, output);
+                playOscillator(ctx, 'square', 1760, now + 0.1, 0.1, 0.1, output);
+                playOscillator(ctx, 'square', 880, now + 0.2, 0.1, 0.1, output);
                 break;
             case 'chime':
-                playOscillator(ctx, 'sine', 523.25, now, 1.5, 0.3);
-                playOscillator(ctx, 'sine', 659.25, now + 0.1, 1.5, 0.3);
-                playOscillator(ctx, 'sine', 783.99, now + 0.2, 1.5, 0.3);
+                playOscillator(ctx, 'sine', 523.25, now, 1.5, 0.3, output);
+                playOscillator(ctx, 'sine', 659.25, now + 0.1, 1.5, 0.3, output);
+                playOscillator(ctx, 'sine', 783.99, now + 0.2, 1.5, 0.3, output);
                 break;
             case 'gong':
                  const gOsc = ctx.createOscillator();
@@ -590,20 +978,20 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                  gGain.gain.setValueAtTime(0.5, now);
                  gGain.gain.exponentialRampToValueAtTime(0.001, now + 3);
                  gOsc.connect(gGain);
-                 gGain.connect(ctx.destination);
+                 gGain.connect(output);
                  gOsc.start(now);
                  gOsc.stop(now + 3);
                  break;
             case 'pop':
-                playOscillator(ctx, 'sine', 800, now, 0.1, 0.3);
+                playOscillator(ctx, 'sine', 800, now, 0.1, 0.3, output);
                 break;
             case 'wood':
-                playOscillator(ctx, 'sine', 800, now, 0.05, 0.4);
-                playOscillator(ctx, 'sine', 1200, now + 0.1, 0.05, 0.2);
+                playOscillator(ctx, 'sine', 800, now, 0.05, 0.4, output);
+                playOscillator(ctx, 'sine', 1200, now + 0.1, 0.05, 0.2, output);
                 break;
             case 'marimba':
                 [440, 554, 659, 880].forEach((freq, i) => {
-                    playOscillator(ctx, 'triangle', freq, now + i * 0.08, 0.4, 0.3);
+                    playOscillator(ctx, 'triangle', freq, now + i * 0.08, 0.4, 0.3, output);
                 });
                 break;
             case 'crystal':
@@ -616,7 +1004,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                     gain.gain.exponentialRampToValueAtTime(0.3, now + 0.1);
                     gain.gain.exponentialRampToValueAtTime(0.001, now + 2.5);
                     osc.connect(gain);
-                    gain.connect(ctx.destination);
+                    gain.connect(output);
                     osc.start(now + i*0.2);
                     osc.stop(now + 3);
                 });
@@ -635,7 +1023,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 bFilter.frequency.linearRampToValueAtTime(2000, now + 0.2);
                 bOsc.connect(bFilter);
                 bFilter.connect(bGain);
-                bGain.connect(ctx.destination);
+                bGain.connect(output);
                 bOsc.start(now);
                 bOsc.stop(now + 1);
                 break;
@@ -653,54 +1041,54 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 const feedback = ctx.createGain();
                 feedback.gain.value = 0.4;
                 cOsc.connect(cGain);
-                cGain.connect(ctx.destination);
+                cGain.connect(output);
                 cGain.connect(delay);
                 delay.connect(feedback);
                 feedback.connect(delay);
-                delay.connect(ctx.destination);
+                delay.connect(output);
                 cOsc.start(now);
                 cOsc.stop(now + 1.5);
                 break;
             case 'ripple':
                 for(let i=0; i<5; i++) {
-                     playOscillator(ctx, 'sine', 600 + (i * 50), now + (i * 0.1), 0.5, 0.2 - (i*0.03));
+                     playOscillator(ctx, 'sine', 600 + (i * 50), now + (i * 0.1), 0.5, 0.2 - (i*0.03), output);
                 }
                 break;
             case 'news':
                  [500, 750, 1000, 500, 750, 1000].forEach((freq, i) => {
-                     playOscillator(ctx, 'square', freq, now + i * 0.08, 0.05, 0.05);
+                     playOscillator(ctx, 'square', freq, now + i * 0.08, 0.05, 0.05, output);
                  });
-                 playOscillator(ctx, 'square', 1500, now + 0.5, 0.3, 0.05);
+                 playOscillator(ctx, 'square', 1500, now + 0.5, 0.3, 0.05, output);
                  break;
             case 'harp': {
                 [392.00, 493.88, 587.33, 783.99, 987.77].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.09), 1.15, 0.2 - (i * 0.018));
+                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.09), 1.15, 0.2 - (i * 0.018), undefined, output);
                 });
                 break;
             }
             case 'pulse': {
                 [0, 0.18, 0.36, 0.54].forEach((offset, i) => {
-                    playSmoothTone(ctx, 'square', i % 2 === 0 ? 220 : 330, now + offset, 0.13, 0.11);
-                    playNoiseBurst(ctx, 'pink', now + offset, 0.11, 0.018, 520, 1.4);
+                    playSmoothTone(ctx, 'square', i % 2 === 0 ? 220 : 330, now + offset, 0.13, 0.11, undefined, output);
+                    playNoiseBurst(ctx, 'pink', now + offset, 0.11, 0.018, 520, 1.4, output);
                 });
                 break;
             }
             case 'beacon': {
                 [880, 660, 880].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.28), 0.42, 0.18, freq * 1.035);
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.28), 0.42, 0.18, freq * 1.035, output);
                 });
                 break;
             }
             case 'bubbles': {
                 [620, 740, 880, 1046.5, 1318.5, 1568].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.055), 0.22, 0.13 - (i * 0.01), freq * 1.08);
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.055), 0.22, 0.13 - (i * 0.01), freq * 1.08, output);
                 });
                 break;
             }
             case 'pluck': {
                 [246.94, 369.99, 493.88].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.07), 0.5, 0.2 - (i * 0.035));
-                    playNoiseBurst(ctx, 'brown', now + (i * 0.07), 0.08, 0.018, 1200 + (i * 260), 3);
+                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.07), 0.5, 0.2 - (i * 0.035), undefined, output);
+                    playNoiseBurst(ctx, 'brown', now + (i * 0.07), 0.08, 0.018, 1200 + (i * 260), 3, output);
                 });
                 break;
             }
@@ -720,14 +1108,14 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 fGain.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
                 fOsc.connect(fFilter);
                 fFilter.connect(fGain);
-                fGain.connect(ctx.destination);
+                fGain.connect(output);
                 fOsc.start(now);
                 fOsc.stop(now + 0.9);
                 break;
             }
             case 'drift': {
                 [987.77, 739.99, 554.37, 415.3].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.16), 0.95, 0.16 - (i * 0.02), freq * 0.985);
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.16), 0.95, 0.16 - (i * 0.02), freq * 0.985, output);
                 });
                 break;
             }
@@ -738,7 +1126,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 oFeedback.gain.setValueAtTime(0.26, now);
                 oDelay.connect(oFeedback);
                 oFeedback.connect(oDelay);
-                oDelay.connect(ctx.destination);
+                oDelay.connect(output);
                 [329.63, 493.88, 659.25, 987.77].forEach((freq, i) => {
                     const oOsc = ctx.createOscillator();
                     const oGain = ctx.createGain();
@@ -749,7 +1137,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                     oGain.gain.linearRampToValueAtTime(0.12, now + (i * 0.12) + 0.03);
                     oGain.gain.exponentialRampToValueAtTime(0.001, now + (i * 0.12) + 0.7);
                     oOsc.connect(oGain);
-                    oGain.connect(ctx.destination);
+                    oGain.connect(output);
                     oGain.connect(oDelay);
                     oOsc.start(now + (i * 0.12));
                     oOsc.stop(now + (i * 0.12) + 0.74);
@@ -758,9 +1146,9 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
             }
             case 'twinkle': {
                 [1174.66, 1567.98, 1318.51, 1760.0, 2093.0].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.075), 0.42, 0.12 - (i * 0.012), freq * 1.012);
+                    playSmoothTone(ctx, 'sine', freq, now + (i * 0.075), 0.42, 0.12 - (i * 0.012), freq * 1.012, output);
                 });
-                playNoiseBurst(ctx, 'white', now + 0.03, 0.34, 0.012, 4200, 3.4);
+                playNoiseBurst(ctx, 'white', now + 0.03, 0.34, 0.012, 4200, 3.4, output);
                 break;
             }
             case 'echo': {
@@ -770,7 +1158,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 eFeedback.gain.setValueAtTime(0.32, now);
                 eDelay.connect(eFeedback);
                 eFeedback.connect(eDelay);
-                eDelay.connect(ctx.destination);
+                eDelay.connect(output);
                 [587.33, 739.99, 880].forEach((freq, i) => {
                     const eOsc = ctx.createOscillator();
                     const eGain = ctx.createGain();
@@ -781,7 +1169,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                     eGain.gain.linearRampToValueAtTime(0.13 - (i * 0.02), start + 0.025);
                     eGain.gain.exponentialRampToValueAtTime(0.001, start + 0.45);
                     eOsc.connect(eGain);
-                    eGain.connect(ctx.destination);
+                    eGain.connect(output);
                     eGain.connect(eDelay);
                     eOsc.start(start);
                     eOsc.stop(start + 0.5);
@@ -790,9 +1178,9 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
             }
             case 'sprout': {
                 [329.63, 392, 493.88, 659.25].forEach((freq, i) => {
-                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.1), 0.75, 0.14 + (i * 0.012), freq * 1.045);
+                    playSmoothTone(ctx, 'triangle', freq, now + (i * 0.1), 0.75, 0.14 + (i * 0.012), freq * 1.045, output);
                 });
-                playNoiseBurst(ctx, 'pink', now + 0.05, 0.42, 0.012, 1800, 0.9);
+                playNoiseBurst(ctx, 'pink', now + 0.05, 0.42, 0.012, 1800, 0.9, output);
                 break;
             }
             case 'comet': {
@@ -811,7 +1199,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
                 cometGain.gain.exponentialRampToValueAtTime(0.001, now + 0.76);
                 cometOsc.connect(cometFilter);
                 cometFilter.connect(cometGain);
-                cometGain.connect(ctx.destination);
+                cometGain.connect(output);
                 cometOsc.start(now);
                 cometOsc.stop(now + 0.82);
                 break;
@@ -820,7 +1208,7 @@ export const playAlarm = async (soundType: AlarmSound, options?: AlarmPlaybackOp
     } catch(e) { console.error(e); }
 };
 
-export const startPersistentAlarm = (soundType: AlarmSound, repeatMs = 3200) => {
+export const startPersistentAlarm = (soundType: AlarmSound, repeatMs = 3200, volume = 100) => {
     if (typeof window === 'undefined') return () => {};
 
     let stopped = false;
@@ -842,7 +1230,7 @@ export const startPersistentAlarm = (soundType: AlarmSound, repeatMs = 3200) => 
     };
     const play = () => {
         if (stopped) return;
-        void playAlarm(soundType, { onContext: registerContext });
+        void playAlarm(soundType, { onContext: registerContext, volume });
     };
 
     play();
@@ -893,56 +1281,63 @@ export const playEncouragementDing = async () => {
   }
 };
 
-export const playFocusStreakMomentSound = async () => {
+export const playDefaultNotificationSound = async () => {
+  try {
+    const ctx = await resumeAudioContext();
+    if (!ctx || ctx.state === 'suspended') return;
+
+    const start = ctx.currentTime + 0.025;
+    if (streakDayPopBuffer) {
+      scheduleDefaultNotificationPopSample(ctx, start, streakDayPopBuffer);
+      return;
+    }
+
+    void getStreakDayPopBuffer(ctx).then((buffer) => {
+      scheduleDefaultNotificationPopSample(ctx, start, buffer);
+    });
+  } catch (e) {
+    console.error('Default notification sound failed', e);
+  }
+};
+
+export const playFocusStreakMomentSound = async (
+  days: FocusStreakMomentDaySound[] = [],
+  options: FocusStreakMomentSoundOptions = {},
+) => {
   try {
     const ctx = await resumeAudioContext();
     if (!ctx || ctx.state === 'suspended') return;
 
     const now = ctx.currentTime + 0.025;
     const whooshStart = now + 0.62;
-    const weekScale = [392.0, 493.88, 587.33, 659.25, 783.99, 880.0, 1046.5];
+    const fanfareStart = whooshStart + FOCUS_STREAK_SUCCESS_FANFARE_AFTER_FIRE_SECONDS;
+    const dayNotes = getFocusStreakMomentDayNotes(days);
     const didScheduleCachedFireWhoosh = scheduleStreakFireWhoosh(ctx, whooshStart, streakFireWhooshBuffer);
     if (!didScheduleCachedFireWhoosh) {
       void getStreakFireWhooshBuffer(ctx).then((buffer) => {
         scheduleStreakFireWhoosh(ctx, whooshStart, buffer);
       });
     }
+    if (options.streakIncreased) {
+      const didScheduleCachedFanfare = streakSuccessFanfareBuffer
+        ? scheduleStreakSuccessFanfare(ctx, fanfareStart, streakSuccessFanfareBuffer)
+        : false;
+      if (!didScheduleCachedFanfare) {
+        void getStreakSuccessFanfareBuffer(ctx).then((buffer) => {
+          scheduleStreakSuccessFanfare(ctx, fanfareStart, buffer);
+        });
+      }
+    }
+    const didScheduleCachedDayPops = streakDayPopBuffer
+      ? (scheduleFocusStreakDayPopNotes(ctx, now, streakDayPopBuffer, dayNotes), true)
+      : false;
+    if (!didScheduleCachedDayPops && dayNotes.length > 0) {
+      void getStreakDayPopBuffer(ctx).then((buffer) => {
+        scheduleFocusStreakDayPopNotes(ctx, now, buffer, dayNotes);
+      });
+    }
 
-    playFocusStreakIntroPop(ctx, now);
-    playSmoothTone(ctx, 'sine', 174.61, now + 0.08, 0.42, 0.01, 220.0);
-    playSmoothTone(ctx, 'triangle', 329.63, now + 0.42, 0.78, 0.018, 493.88);
-    playNoiseBurst(ctx, 'brown', now + 0.6, 0.86, didScheduleCachedFireWhoosh ? 0.014 : 0.032, 560, 0.9);
-    playNoiseBurst(ctx, 'pink', now + 0.66, 0.7, didScheduleCachedFireWhoosh ? 0.014 : 0.028, 1380, 1.25);
-    playNoiseBurst(ctx, 'white', now + 0.8, 0.36, didScheduleCachedFireWhoosh ? 0.008 : 0.015, 3100, 2.4);
-
-    playNoiseBurst(ctx, 'white', now + 1.34, 0.58, 0.012, 2500, 2.9);
-    playSmoothTone(ctx, 'triangle', 261.63, now + 1.76, 0.42, 0.044, 196.0);
-    [
-      { freq: 523.25, offset: 1.86, gain: 0.028 },
-      { freq: 659.25, offset: 1.94, gain: 0.024 },
-      { freq: 783.99, offset: 2.02, gain: 0.021 },
-    ].forEach((note) => {
-      playSmoothTone(ctx, 'sine', note.freq, now + note.offset, 0.72, note.gain, note.freq * 1.012);
-    });
-
-    playNoiseBurst(ctx, 'pink', now + 2.68, 0.18, 0.005, 1650, 2.1);
-    playSmoothTone(ctx, 'triangle', 987.77, now + 3.04, 0.32, 0.016, 1174.66);
-    [1567.98, 1975.53, 2637.02].forEach((freq, index) => {
-      playSmoothTone(ctx, 'sine', freq, now + 3.24 + (index * 0.07), 0.34, 0.012 - (index * 0.002), freq * 1.018);
-    });
-    playNoiseBurst(ctx, 'white', now + 3.26, 0.2, 0.004, 4200, 4);
-
-    weekScale.forEach((freq, index) => {
-      const start = now + 3.72 + (index * 0.07);
-      playSmoothTone(ctx, index % 2 === 0 ? 'triangle' : 'sine', freq, start, 0.26, 0.017, freq * 1.055);
-      playNoiseBurst(ctx, 'pink', start + 0.01, 0.075, 0.0028, 1250 + (index * 180), 2.4);
-    });
-
-    const ignite = now + 4.54;
-    playNoiseBurst(ctx, 'white', ignite, 0.28, 0.009, 3200, 3.2);
-    playSmoothTone(ctx, 'triangle', 783.99, ignite + 0.02, 0.48, 0.03, 987.77);
-    playSmoothTone(ctx, 'sine', 1318.51, ignite + 0.1, 0.56, 0.018, 1567.98);
-    playSmoothTone(ctx, 'sine', 2093.0, ignite + 0.18, 0.46, 0.011, 1975.53);
+    playFocusStreakAppearancePop(ctx, now);
   } catch (e) {
     console.error('Focus streak moment sound failed', e);
   }
@@ -1050,24 +1445,68 @@ export const playSummaryDistributionSound = async (
   }
 };
 
-export const playSwitch = async () => {
+const playSyntheticSwitchFallback = (ctx: AudioContext, variant: TimerSwitchSoundVariant) => {
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const isBreakBank = variant === 'break-bank';
+  osc.frequency.setValueAtTime(isBreakBank ? 360 : 800, now);
+  osc.frequency.exponentialRampToValueAtTime(isBreakBank ? 92 : 200, now + (isBreakBank ? 0.08 : 0.05));
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(isBreakBank ? 0.28 : 0.25, now + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + (isBreakBank ? 0.16 : 0.1));
+  osc.type = 'sine';
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + (isBreakBank ? 0.16 : 0.1));
+};
+
+const scheduleTimerSwitchTap = (
+  ctx: AudioContext,
+  buffer: AudioBuffer | null,
+  variant: TimerSwitchSoundVariant,
+) => {
+  try {
+    if (!buffer) return false;
+    const now = ctx.currentTime;
+    const start = now + 0.01;
+    const isBreakBank = variant === 'break-bank';
+    const playbackRate = isBreakBank ? 0.52 : 1;
+    const maxDuration = isBreakBank ? 0.42 : 0.26;
+    const duration = Math.min(buffer.duration / playbackRate, maxDuration);
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+
+    source.buffer = buffer;
+    source.playbackRate.setValueAtTime(playbackRate, start);
+
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.linearRampToValueAtTime(isBreakBank ? 0.86 : 0.7, start + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + Math.max(0.08, duration));
+
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    source.start(start);
+    source.stop(start + duration + 0.02);
+    return true;
+  } catch (error) {
+    console.error('Timer switch tap failed to schedule', error);
+    return false;
+  }
+};
+
+export const playSwitch = async (variant: TimerSwitchSoundVariant = 'default') => {
   try {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
     if (ctx.state === 'suspended') try { await ctx.resume(); } catch {}
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.setValueAtTime(800, now);
-    osc.frequency.exponentialRampToValueAtTime(200, now + 0.05);
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.25, now + 0.005);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-    osc.type = 'sine';
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.1);
+    if (timerSwitchTapBuffer && scheduleTimerSwitchTap(ctx, timerSwitchTapBuffer, variant)) return;
+    void getTimerSwitchTapBuffer(ctx).then((buffer) => {
+      if (!scheduleTimerSwitchTap(ctx, buffer, variant)) {
+        playSyntheticSwitchFallback(ctx, variant);
+      }
+    });
   } catch (_) {}
 };
