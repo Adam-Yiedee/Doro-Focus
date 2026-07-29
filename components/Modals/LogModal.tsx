@@ -397,6 +397,41 @@ const formatCompactMinutes = (minutes: number) => {
   return `${Math.max(1, Math.round(safe))}m`;
 };
 
+const GROUP_GOAL_UNIT_MINUTES: Record<GroupGoalUnit, number> = {
+  pomodoro: 25,
+  'mini-pomo': 15,
+};
+
+const getSafeGroupGoalTarget = (value: string | number) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.round(numeric);
+};
+
+const getGroupGoalFocusMinutes = (target: number, unit: GroupGoalUnit) => (
+  getSafeGroupGoalTarget(target) * GROUP_GOAL_UNIT_MINUTES[unit]
+);
+
+const formatGroupFocusMinutes = (minutes: number, approximate = false) => {
+  const safe = Math.max(0, Number.isFinite(minutes) ? minutes : 0);
+  const rounded = approximate ? (safe > 0 ? Math.max(1, Math.round(safe)) : 0) : safe;
+  const display = Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toFixed(1).replace(/\.0$/, '');
+  return `${approximate ? 'about ' : ''}${display} minute${rounded === 1 ? '' : 's'}`;
+};
+
+const formatGroupGoalFocusSummary = (
+  target: number,
+  unit: GroupGoalUnit,
+  type: GroupGoalType,
+) => {
+  const safeTarget = getSafeGroupGoalTarget(target);
+  if (safeTarget <= 0) return 'Set a goal';
+  const minutes = getGroupGoalFocusMinutes(safeTarget, unit);
+  return `${formatGroupFocusMinutes(minutes)} of focus ${type === 'pooled-total' ? 'total' : 'each'}`;
+};
+
 const formatClockMinutes = (minutes: number | null) => {
   if (minutes === null || !Number.isFinite(minutes)) return '--';
   const normalized = ((Math.round(minutes) % 1440) + 1440) % 1440;
@@ -4705,6 +4740,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const groupMorphStyle = groupMorphHeight
       ? ({ height: groupMorphHeight } as React.CSSProperties)
       : undefined;
+    const hostDraftGoalAmount = getSafeGroupGoalTarget(hostDraftGoalTarget);
+    const hostDraftParticipantCount = Math.max(1, hostDraftInvites.length + 1);
+    const hostDraftGoalFocusMinutes = getGroupGoalFocusMinutes(hostDraftGoalAmount, hostDraftGoalUnit);
+    const hostDraftGoalFocusSummary = formatGroupGoalFocusSummary(
+      hostDraftGoalAmount,
+      hostDraftGoalUnit,
+      hostDraftGoalType,
+    );
+    const hostDraftEachOptionSummary = hostDraftGoalAmount > 0
+      ? `${formatGroupFocusMinutes(hostDraftGoalFocusMinutes)} each`
+      : 'Goal per person';
+    const hostDraftTotalOptionSummary = hostDraftGoalAmount > 0
+      ? `${formatGroupFocusMinutes(hostDraftGoalFocusMinutes)} total`
+      : 'Goal together';
+    const hostDraftPooledPerPersonSummary = hostDraftGoalAmount > 0
+      ? `${formatGroupFocusMinutes(hostDraftGoalFocusMinutes / hostDraftParticipantCount, true)} each with ${hostDraftParticipantCount} ${hostDraftParticipantCount === 1 ? 'person' : 'people'}`
+      : null;
 
     if (groupBusy) {
       return (
@@ -4718,18 +4770,20 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     if (safeGroupSessionId) {
       const activeGroupSessionConfig = normalizeGroupSessionConfig(groupSessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
       const activeGoal = activeGroupSessionConfig.goal;
-      const activeGoalUnitLabel = activeGoal?.unit === 'mini-pomo'
-        ? (activeGoal.target === 1 ? 'Mini-Pomo' : 'Mini-Pomos')
-        : (activeGoal?.target === 1 ? 'Pomodoro' : 'Pomodoros');
+      const activeGoalFocusMinutes = activeGoal
+        ? getGroupGoalFocusMinutes(activeGoal.target, activeGoal.unit)
+        : 0;
+      const activeEachFocusMinutes = activeGoal
+        ? activeGoal.type === 'pooled-total'
+          ? activeGoalFocusMinutes / Math.max(1, activeGoal.expectedParticipants)
+          : activeGoalFocusMinutes
+        : 0;
       const activeSessionTitle = activeGroupSessionConfig.mode === 'shared-goal'
         ? (activeGoal?.type === 'pooled-total' ? 'Shared Goal: Pooled Total' : 'Shared Goal: Everyone Live')
         : 'Timer Sync';
       const activeSessionDetail = activeGroupSessionConfig.mode === 'shared-goal' && activeGoal
-        ? `${formatPomodoroCount(activeGoal.target)} ${activeGoalUnitLabel}`
+        ? formatGroupGoalFocusSummary(activeGoal.target, activeGoal.unit, activeGoal.type)
         : 'The host controls the shared timer.';
-      const pooledPerPerson = activeGoal?.type === 'pooled-total'
-        ? activeGoal.target / Math.max(1, activeGoal.expectedParticipants)
-        : null;
       return (
         <div className="p-4 md:p-8 min-h-[520px]">
           <div className="max-w-xl mx-auto space-y-4">
@@ -4844,9 +4898,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                       <div className="mt-1 text-xs font-semibold text-white/78">{activeGoal.expectedParticipants}</div>
                     </div>
                     <div className="doro-group-study-stat rounded-[0.85rem] border px-3 py-2">
-                      <div className="text-[9px] font-bold uppercase tracking-[0.13em] text-white/34">Each</div>
+                      <div className="text-[9px] font-bold uppercase tracking-[0.13em] text-white/34">
+                        {activeGoal.type === 'pooled-total' ? 'Each Est.' : 'Each'}
+                      </div>
                       <div className="mt-1 text-xs font-semibold text-white/78">
-                        {pooledPerPerson !== null ? formatPomodoroCount(pooledPerPerson) : formatPomodoroCount(activeGoal.target)}
+                        {formatGroupFocusMinutes(activeEachFocusMinutes, activeGoal.type === 'pooled-total')}
                       </div>
                     </div>
                   </div>
@@ -5021,7 +5077,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   className={`doro-group-study-stagger space-y-3 px-4 py-4 ${groupInsetClass}`}
                   style={{ '--doro-group-study-delay': '70ms' } as React.CSSProperties}
                 >
-                  <div className={groupSectionLabelClass}>Goal</div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className={groupSectionLabelClass}>Goal</div>
+                    <div className="doro-group-study-focus-summary max-w-full rounded-full border px-2.5 py-1 text-right text-[10px] font-black uppercase leading-tight tracking-[0.1em] text-white/62">
+                      {hostDraftGoalFocusSummary}
+                    </div>
+                  </div>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(8.8rem,auto)]">
                     <input
                       type="number"
@@ -5048,23 +5109,26 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     </div>
                   </div>
 
-                  <div className={groupSectionLabelClass}>Progress</div>
+                  <div className={groupSectionLabelClass}>Focus</div>
                   <div className="grid grid-cols-2 gap-2">
                     {(['everyone-live', 'pooled-total'] as GroupGoalType[]).map(type => (
                       <button
                         key={type}
                         type="button"
                         onClick={() => setHostDraftGoalType(type)}
-                        className={`${groupUtilityButtonClass} ${hostDraftGoalType === type ? 'is-selected' : ''}`}
+                        className={`${groupUtilityButtonClass} min-h-[3.65rem] flex-col gap-1 ${hostDraftGoalType === type ? 'is-selected' : ''}`}
                       >
-                        {type === 'pooled-total' ? 'Group Total' : 'Each Person'}
+                        <span>{type === 'pooled-total' ? 'Focus Total' : 'Focus Each'}</span>
+                        <span className="text-[9px] font-semibold normal-case tracking-normal text-white/44">
+                          {type === 'pooled-total' ? hostDraftTotalOptionSummary : hostDraftEachOptionSummary}
+                        </span>
                       </button>
                     ))}
                   </div>
 
-                  {hostDraftGoalType === 'pooled-total' && (
+                  {hostDraftGoalType === 'pooled-total' && hostDraftPooledPerPersonSummary && (
                     <div className="doro-group-study-note rounded-[0.85rem] border px-3 py-2 text-[11px] font-semibold leading-relaxed text-white/72">
-                      {formatPomodoroCount(Number(hostDraftGoalTarget || 0) || 0)} total across {hostDraftInvites.length + 1} people, about {formatPomodoroCount((Number(hostDraftGoalTarget || 0) || 0) / Math.max(1, hostDraftInvites.length + 1))} each.
+                      {hostDraftPooledPerPersonSummary}.
                     </div>
                   )}
 
@@ -5151,7 +5215,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                   style={{ '--doro-group-study-delay': '135ms' } as React.CSSProperties}
                 >
                   {inviteSessionConfig?.mode === 'shared-goal' && inviteSessionConfig.goal
-                    ? `Invite loaded: ${formatPomodoroCount(inviteSessionConfig.goal.target)} ${inviteSessionConfig.goal.unit === 'mini-pomo' ? 'mini-pomos' : 'pomodoros'} ${inviteSessionConfig.goal.type === 'pooled-total' ? 'pooled total' : 'each'}.`
+                    ? `Invite loaded: ${formatGroupGoalFocusSummary(inviteSessionConfig.goal.target, inviteSessionConfig.goal.unit, inviteSessionConfig.goal.type)}.`
                     : 'Invite loaded. Enter your name and join.'}
                 </div>
               )}
@@ -6127,7 +6191,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-group-study-option,
         .doro-group-study-input,
         .doro-group-study-note,
-        .doro-group-study-stat {
+        .doro-group-study-stat,
+        .doro-group-study-focus-summary {
           background:
             linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)),
             rgba(0, 0, 0, 0.24);
