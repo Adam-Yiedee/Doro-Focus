@@ -4,6 +4,7 @@ import { Check, Clock, HelpCircle, Lock, Play, Timer as TimerIcon, Volume2, Volu
 import { useTimer } from '../context/TimerContext';
 import type { MiniPomoAutoStartBlock, TimerPreset, TimerSettings } from '../types';
 import { getFocusTimerDisplaySeconds } from '../utils/focusTimerDisplay';
+import { DEFAULT_WORK_SURFACE, getMutedSurfaceColor } from '../utils/palette';
 import { TIMER_PRESETS } from '../utils/timerRuntime';
 
 const formatTime = (seconds: number) => {
@@ -505,6 +506,7 @@ interface IdlePresetControlProps {
   isVisible: boolean;
   isOpen: boolean;
   settings: TimerSettings;
+  surfaceColor: string;
   chromeButtonClass: string;
   topIconClass: string;
   onOpenChange: (isOpen: boolean) => void;
@@ -553,6 +555,7 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
   isVisible,
   isOpen,
   settings,
+  surfaceColor,
   chromeButtonClass,
   topIconClass,
   onOpenChange,
@@ -729,6 +732,7 @@ const IdlePresetControl: React.FC<IdlePresetControlProps> = ({
           relative ${isOpen ? 'overflow-visible' : 'overflow-hidden'} border transform-gpu
           ${chromeButtonClass}
         `}
+        style={{ ['--doro-start-popout-surface' as any]: surfaceColor }}
       >
         <button
           type="button"
@@ -991,6 +995,7 @@ const TimerDisplay: React.FC = () => {
     toggleTimerLock,
     restartActiveTimer,
     activeTask,
+    activeColor,
     settings,
     logs,
     sessionStartTime,
@@ -1171,6 +1176,7 @@ const TimerDisplay: React.FC = () => {
   const timerContainerGapClass = shouldRenderIdlePresetControl
     ? 'gap-4'
     : 'gap-6 md:gap-10 lg:gap-24';
+  const idlePresetSurfaceColor = getMutedSurfaceColor(activeColor || activeTask?.color, DEFAULT_WORK_SURFACE);
 
   return (
     <div className="relative w-full flex flex-col items-center py-4 px-2">
@@ -1728,7 +1734,7 @@ const TimerDisplay: React.FC = () => {
           background:
             radial-gradient(circle at 18% 0%, rgba(255,255,255,0.2), transparent 42%),
             linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
-            rgba(214, 154, 168, 0.92);
+            var(--doro-start-popout-surface, rgba(214, 154, 168, 0.92));
           box-shadow:
             0 34px 72px -38px rgba(0, 0, 0, 0.82),
             0 18px 34px -24px rgba(0, 0, 0, 0.62),
@@ -1837,7 +1843,7 @@ const TimerDisplay: React.FC = () => {
           background:
             radial-gradient(circle at 18% 0%, rgba(255,255,255,0.18), transparent 42%),
             linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
-            rgba(214,154,168,0.94);
+            var(--doro-start-popout-surface, rgba(214,154,168,0.94));
           color: rgba(255,255,255,0.82);
           box-shadow:
             0 26px 54px -34px rgba(0,0,0,0.82),
@@ -2395,6 +2401,7 @@ const TimerDisplay: React.FC = () => {
             isVisible={isIdlePresetControlVisible}
             isOpen={isIdlePresetMenuOpen}
             settings={settings}
+            surfaceColor={idlePresetSurfaceColor}
             chromeButtonClass={chromeButtonClass}
             topIconClass={topIconClass}
             onOpenChange={setIsIdlePresetMenuOpen}
