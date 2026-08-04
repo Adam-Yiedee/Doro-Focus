@@ -270,6 +270,7 @@ export interface GroupSessionConfig {
   mode: GroupSessionMode;
   goal?: GroupStudyGoal | null;
   createdAt: number;
+  purpose?: 'group-study' | 'focus-share';
 }
 
 export interface GroupGoalProgress {
@@ -279,6 +280,10 @@ export interface GroupGoalProgress {
   completedSeconds: number;
   activeSeconds: number;
   totalSeconds: number;
+  activeTaskName?: string | null;
+  activeCategoryName?: string | null;
+  activeCategoryColor?: string;
+  activeColor?: string;
   updatedAt: number;
 }
 
@@ -290,6 +295,7 @@ export interface GroupMember {
 
 export type GroupEventType =
   | 'joined'
+  | 'encouragement'
   | 'timer-started'
   | 'timer-stopped'
   | 'timer-paused'
@@ -305,6 +311,8 @@ export interface GroupEventPayload {
   actorName: string;
   mode?: TimerMode;
   reason?: string;
+  targetId?: string;
+  targetName?: string;
   at: number;
 }
 

@@ -1,10 +1,12 @@
 import { LogEntry, SessionRecord, TimerSettings } from '../types';
 import { isProductiveFocusLog } from './logClassification';
+import { TIMER_PRESETS } from './timerRuntime';
 
 export const POMODORO_COMPLETE_REASON = 'Pomodoro Complete';
 export const MINI_POMODORO_COMPLETE_REASON = 'Mini-Pomodoro Complete';
 export const MINI_POMODORO_WEIGHT = 0.5;
-export const ACCOUNT_STATS_POMODORO_SECONDS = 25 * 60;
+export const ACCOUNT_STATS_POMODORO_SECONDS = TIMER_PRESETS.classic.workDuration;
+export const MINI_POMODORO_SECONDS = TIMER_PRESETS.compact.workDuration;
 
 const normalizeReason = (reason: unknown) => (
   typeof reason === 'string' ? reason.trim().toLowerCase() : ''
@@ -45,15 +47,25 @@ export const getAccountStatsPomodoroEquivalent = (
 ) => {
   if (!isProductiveFocusLog(entry)) return 0;
 
+  const completionWeight = getPomodoroEquivalentWeight(entry);
+  if (completionWeight > 0) return completionWeight;
+
   const durationSeconds = getPositiveDurationSeconds(entry.duration);
   if (durationSeconds > 0) return durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS;
 
-  const normalized = normalizeReason(entry.reason);
-  if (normalized === POMODORO_COMPLETE_REASON.toLowerCase()) return 1;
-  if (normalized === MINI_POMODORO_COMPLETE_REASON.toLowerCase()) {
-    return MINI_POMODORO_WEIGHT;
-  }
   return 0;
+};
+
+export const getAccountStatsFocusSeconds = (
+  entry: Pick<LogEntry, 'type' | 'reason' | 'duration' | 'source'>,
+) => {
+  if (!isProductiveFocusLog(entry)) return 0;
+
+  if (entry.source !== 'manual' && isMiniPomodoroCompleteReason(entry.reason)) {
+    return MINI_POMODORO_SECONDS;
+  }
+
+  return getPositiveDurationSeconds(entry.duration);
 };
 
 export const isCompletedPomodoroLog = (entry: Pick<LogEntry, 'type' | 'reason' | 'source'>) => (
@@ -113,6 +125,11 @@ export const getSessionPomodoroEquivalent = (session: SessionRecord) => {
 };
 
 export const getAccountStatsSessionPomodoroEquivalent = (session: SessionRecord) => {
+  const miniPomos = Number(session.stats?.miniPomosCompleted || 0);
+  if (Number.isFinite(miniPomos) && miniPomos > 0) {
+    return miniPomos * MINI_POMODORO_WEIGHT;
+  }
+
   const workMinutes = Number(session.stats?.totalWorkMinutes || 0);
   if (Number.isFinite(workMinutes) && workMinutes > 0) {
     return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);

@@ -38,6 +38,7 @@ export const TIMER_SYNC_GROUP_SESSION_CONFIG: GroupSessionConfig = {
   mode: 'timer-sync',
   goal: null,
   createdAt: 0,
+  purpose: 'group-study',
 };
 
 export const GROUP_MEMBER_FALLBACK_NAME = 'Member';
@@ -130,13 +131,24 @@ export const normalizeGroupSessionConfig = (
   const createdAt = Number.isFinite(Number(source?.createdAt))
     ? Math.max(0, Number(source?.createdAt))
     : (fallback.createdAt || Date.now());
+  const fallbackPurpose = fallback.purpose === 'focus-share' ? 'focus-share' : 'group-study';
+  const purpose = mode === 'timer-sync' && source?.purpose === 'focus-share'
+    ? 'focus-share'
+    : mode === 'timer-sync' && !source?.purpose
+      ? fallbackPurpose
+      : 'group-study';
 
   return {
     mode,
     goal,
     createdAt,
+    purpose,
   };
 };
+
+export const isFocusShareSessionConfig = (config: GroupSessionConfig | null | undefined) => (
+  normalizeGroupSessionConfig(config, TIMER_SYNC_GROUP_SESSION_CONFIG).purpose === 'focus-share'
+);
 
 export const getGroupSyncConfigForSession = (config: GroupSessionConfig): GroupSyncConfig => (
   config.mode === 'shared-goal' ? NO_GROUP_SYNC_CONFIG : TIMER_ONLY_GROUP_SYNC_CONFIG
@@ -161,7 +173,8 @@ export const getPooledGoalPerPersonTarget = (goal: Pick<GroupStudyGoal, 'target'
   const expectedParticipants = Number.isFinite(goal.expectedParticipants)
     ? Math.max(1, Math.floor(goal.expectedParticipants))
     : 1;
-  return goal.target / expectedParticipants;
+  const target = Number.isFinite(goal.target) ? Math.max(1, goal.target) : 1;
+  return Math.ceil(target / expectedParticipants);
 };
 
 const getPositiveSeconds = (value: unknown) => {
@@ -238,6 +251,20 @@ const normalizeProgressSeconds = (value: unknown) => {
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
 };
 
+const normalizeProgressText = (value: unknown, maxLength: number) => {
+  const normalized = typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim()
+    : '';
+  return normalized ? normalized.slice(0, maxLength) : null;
+};
+
+const GROUP_PROGRESS_COLOR_PATTERN = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+const normalizeProgressColor = (value: unknown) => {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return GROUP_PROGRESS_COLOR_PATTERN.test(normalized) ? normalized : undefined;
+};
+
 export const normalizeGroupGoalProgress = (value: unknown): GroupGoalProgress | null => {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<GroupGoalProgress>;
@@ -246,7 +273,7 @@ export const normalizeGroupGoalProgress = (value: unknown): GroupGoalProgress | 
   const completedSeconds = normalizeProgressSeconds(candidate.completedSeconds);
   const activeSeconds = normalizeProgressSeconds(candidate.activeSeconds);
   const totalSeconds = normalizeProgressSeconds(candidate.totalSeconds || completedSeconds + activeSeconds);
-  return {
+  const normalized: GroupGoalProgress = {
     memberId: rawMemberId.slice(0, 80),
     name: sanitizeGroupMemberName(candidate.name),
     isHost: Boolean(candidate.isHost),
@@ -255,6 +282,15 @@ export const normalizeGroupGoalProgress = (value: unknown): GroupGoalProgress | 
     totalSeconds,
     updatedAt: Number.isFinite(Number(candidate.updatedAt)) ? Math.max(0, Number(candidate.updatedAt)) : Date.now(),
   };
+  const activeTaskName = normalizeProgressText(candidate.activeTaskName, 80);
+  const activeCategoryName = normalizeProgressText(candidate.activeCategoryName, 60);
+  const activeCategoryColor = normalizeProgressColor(candidate.activeCategoryColor);
+  const activeColor = normalizeProgressColor(candidate.activeColor);
+  if (activeTaskName) normalized.activeTaskName = activeTaskName;
+  if (activeCategoryName) normalized.activeCategoryName = activeCategoryName;
+  if (activeCategoryColor) normalized.activeCategoryColor = activeCategoryColor;
+  if (activeColor) normalized.activeColor = activeColor;
+  return normalized;
 };
 
 export const normalizeGroupGoalProgressPayload = (value: unknown): GroupGoalProgress[] => {

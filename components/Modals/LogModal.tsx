@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Bug, Check, ChevronDown, Flame, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Timer as TimerIcon, UserPlus, Users, X } from 'lucide-react';
+import { Bug, Check, ChevronDown, Flame, Handshake, Heart, Link as LinkIcon, LogIn, Plus, QrCode, Send, Share2, Swords, Timer as TimerIcon, UserPlus, Users, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupGoalType, GroupGoalUnit, GroupMember, GroupSessionConfig, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
@@ -1214,6 +1214,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [inviteSessionConfig, setInviteSessionConfig] = useState<GroupSessionConfig | null>(null);
   const [timerShareBusy, setTimerShareBusy] = useState(false);
   const [timerShareMessage, setTimerShareMessage] = useState<string | null>(null);
+  const [developerViewSessionBusy, setDeveloperViewSessionBusy] = useState(false);
+  const [developerViewSessionMessage, setDeveloperViewSessionMessage] = useState<string | null>(null);
   const [groupMorphHeight, setGroupMorphHeight] = useState<number | null>(null);
   const groupNameInputRef = useRef<HTMLInputElement | null>(null);
   const groupMorphPanelRefs = useRef<Record<GroupFlow, HTMLDivElement | null>>({
@@ -1377,7 +1379,11 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       frameId = window.requestAnimationFrame(updateHeight);
     };
 
-    scheduleUpdate();
+    if (groupMorphHeight === null) {
+      updateHeight();
+    } else {
+      scheduleUpdate();
+    }
 
     const observer = typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(scheduleUpdate)
@@ -1393,6 +1399,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   }, [
     groupBusy,
     groupFlow,
+    groupMorphHeight,
     groupName,
     groupSessionInput,
     hostDraftGoalTarget,
@@ -2971,31 +2978,57 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     });
   };
 
+  const prepareCurrentTimerShareLink = async () => {
+    let sessionId = safeGroupSessionId;
+
+    if (!sessionId) {
+      const shareName = groupName.trim() || safeUser?.username || safeUserName || 'Host';
+      setGroupName(shareName);
+      setHostDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
+      sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG, {
+        ...TIMER_SYNC_GROUP_SESSION_CONFIG,
+        createdAt: Date.now(),
+        purpose: 'focus-share',
+      });
+    }
+
+    return buildCurrentTimerShareUrl(sessionId);
+  };
+
   const handleCopyTimerShareLink = async () => {
     if (timerShareBusy) return;
     setTimerShareBusy(true);
     setTimerShareMessage(null);
 
     try {
-      let sessionId = safeGroupSessionId;
-
-      if (!sessionId) {
-        const shareName = groupName.trim() || safeUser?.username || safeUserName || 'Host';
-        setGroupName(shareName);
-        setHostDraftConfig(TIMER_ONLY_GROUP_SYNC_CONFIG);
-        sessionId = await createGroupSession(shareName, TIMER_ONLY_GROUP_SYNC_CONFIG, {
-          ...TIMER_SYNC_GROUP_SESSION_CONFIG,
-          createdAt: Date.now(),
-        });
-      }
-
-      const link = buildCurrentTimerShareUrl(sessionId);
+      const link = await prepareCurrentTimerShareLink();
       const copied = await copyToClipboard(link);
       setTimerShareMessage(copied ? 'copied' : 'Could not copy link. Try again from this browser.');
     } catch (error) {
       setTimerShareMessage(error instanceof Error ? error.message : 'Failed to prepare spectator link.');
     } finally {
       setTimerShareBusy(false);
+    }
+  };
+
+  const handleDeveloperViewTimerSharePage = async () => {
+    if (developerViewSessionBusy) return;
+    setDeveloperViewSessionBusy(true);
+    setDeveloperViewSessionMessage(null);
+
+    try {
+      const link = await prepareCurrentTimerShareLink();
+      const openedWindow = window.open(link, '_blank', 'noopener,noreferrer');
+      if (!openedWindow) {
+        const copied = await copyToClipboard(link);
+        setDeveloperViewSessionMessage(copied ? 'Viewer link copied.' : 'Could not open viewer page.');
+        return;
+      }
+      setDeveloperViewSessionMessage('Viewer opened.');
+    } catch (error) {
+      setDeveloperViewSessionMessage(error instanceof Error ? error.message : 'Failed to open viewer page.');
+    } finally {
+      setDeveloperViewSessionBusy(false);
     }
   };
 
@@ -3510,6 +3543,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const weekStats = safeWeeklyStats;
     const insights = computeAccountInsights({
       logs: safeLogs,
+      sessions: safePastSessions,
       categories: safeCategories,
       joinedAt: safeUser.joinedAt,
     });
@@ -4233,6 +4267,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
         <AccountInsights
           logs={safeLogs}
+          sessions={safePastSessions}
           categories={safeCategories}
           joinedAt={safeUser.joinedAt}
           accentColor={accountPrimaryColor}
@@ -4277,6 +4312,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
 
         <AccountInsights
           logs={safeLogs}
+          sessions={safePastSessions}
           categories={safeCategories}
           joinedAt={safeUser.joinedAt}
           accentColor={accountPrimaryColor}
@@ -4741,22 +4777,13 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       ? ({ height: groupMorphHeight } as React.CSSProperties)
       : undefined;
     const hostDraftGoalAmount = getSafeGroupGoalTarget(hostDraftGoalTarget);
-    const hostDraftParticipantCount = Math.max(1, hostDraftInvites.length + 1);
     const hostDraftGoalFocusMinutes = getGroupGoalFocusMinutes(hostDraftGoalAmount, hostDraftGoalUnit);
-    const hostDraftGoalFocusSummary = formatGroupGoalFocusSummary(
-      hostDraftGoalAmount,
-      hostDraftGoalUnit,
-      hostDraftGoalType,
-    );
     const hostDraftEachOptionSummary = hostDraftGoalAmount > 0
       ? `${formatGroupFocusMinutes(hostDraftGoalFocusMinutes)} each`
       : 'Goal per person';
     const hostDraftTotalOptionSummary = hostDraftGoalAmount > 0
       ? `${formatGroupFocusMinutes(hostDraftGoalFocusMinutes)} total`
       : 'Goal together';
-    const hostDraftPooledPerPersonSummary = hostDraftGoalAmount > 0
-      ? `${formatGroupFocusMinutes(hostDraftGoalFocusMinutes / hostDraftParticipantCount, true)} each with ${hostDraftParticipantCount} ${hostDraftParticipantCount === 1 ? 'person' : 'people'}`
-      : null;
 
     if (groupBusy) {
       return (
@@ -5033,7 +5060,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             >
               <div
                 className="doro-group-study-stagger flex items-center justify-between"
-                style={{ '--doro-group-study-delay': '80ms' } as React.CSSProperties}
+                style={{ '--doro-group-study-delay': '35ms' } as React.CSSProperties}
               >
                 <div className={groupSectionLabelClass}>Host Session</div>
                 <button
@@ -5051,23 +5078,23 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               <div
-                className="doro-group-study-stagger grid grid-cols-2 gap-2"
-                style={{ '--doro-group-study-delay': '135ms' } as React.CSSProperties}
+                className="doro-group-study-stagger doro-group-study-mode-grid grid grid-cols-2 gap-3"
+                style={{ '--doro-group-study-delay': '55ms' } as React.CSSProperties}
               >
                 <button
                   type="button"
                   onClick={() => setHostDraftSessionMode('timer-sync')}
-                  className={`${groupUtilityButtonClass} ${hostDraftSessionMode === 'timer-sync' ? 'is-selected' : ''}`}
+                  className={`${groupUtilityButtonClass} doro-group-study-mode-button ${hostDraftSessionMode === 'timer-sync' ? 'is-selected' : ''}`}
                 >
-                  <TimerIcon size={13} strokeWidth={2.2} aria-hidden="true" />
+                  <TimerIcon size={18} strokeWidth={2.2} aria-hidden="true" />
                   Timer Sync
                 </button>
                 <button
                   type="button"
                   onClick={() => setHostDraftSessionMode('shared-goal')}
-                  className={`${groupUtilityButtonClass} ${hostDraftSessionMode === 'shared-goal' ? 'is-selected' : ''}`}
+                  className={`${groupUtilityButtonClass} doro-group-study-mode-button ${hostDraftSessionMode === 'shared-goal' ? 'is-selected' : ''}`}
                 >
-                  <Users size={13} strokeWidth={2.2} aria-hidden="true" />
+                  <Users size={18} strokeWidth={2.2} aria-hidden="true" />
                   Shared Goal
                 </button>
               </div>
@@ -5075,13 +5102,10 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               {hostDraftSessionMode === 'shared-goal' && (
                 <div
                   className={`doro-group-study-stagger space-y-3 px-4 py-4 ${groupInsetClass}`}
-                  style={{ '--doro-group-study-delay': '70ms' } as React.CSSProperties}
+                  style={{ '--doro-group-study-delay': '20ms' } as React.CSSProperties}
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center">
                     <div className={groupSectionLabelClass}>Goal</div>
-                    <div className="doro-group-study-focus-summary max-w-full rounded-full border px-2.5 py-1 text-right text-[10px] font-black uppercase leading-tight tracking-[0.1em] text-white/62">
-                      {hostDraftGoalFocusSummary}
-                    </div>
                   </div>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(8.8rem,auto)]">
                     <input
@@ -5093,7 +5117,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                       onChange={event => setHostDraftGoalTarget(event.target.value)}
                       placeholder="4"
                       aria-label="Goal amount"
-                      className="doro-group-study-input w-full rounded-[0.85rem] border px-4 py-3 text-center font-semibold text-white outline-none placeholder:text-white/26"
+                      className="doro-group-study-input doro-no-spin w-full rounded-[0.85rem] border px-4 py-3 text-center font-semibold text-white outline-none placeholder:text-white/26"
                     />
                     <div className="grid grid-cols-2 gap-2">
                       {(['pomodoro', 'mini-pomo'] as GroupGoalUnit[]).map(unit => (
@@ -5101,7 +5125,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                           key={unit}
                           type="button"
                           onClick={() => setHostDraftGoalUnit(unit)}
-                          className={`${groupUtilityButtonClass} ${hostDraftGoalUnit === unit ? 'is-selected' : ''}`}
+                          className={`${groupUtilityButtonClass} doro-group-study-explainer-button doro-group-study-unit-button relative ${hostDraftGoalUnit === unit ? 'is-selected' : ''}`}
+                          data-explainer={unit === 'mini-pomo' ? '15 Minutes' : '25 Minutes'}
+                          aria-label={unit === 'mini-pomo' ? 'Mini, 15 minutes' : 'Pomo, 25 minutes'}
                         >
                           {unit === 'mini-pomo' ? 'Mini' : 'Pomo'}
                         </button>
@@ -5116,21 +5142,28 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                         key={type}
                         type="button"
                         onClick={() => setHostDraftGoalType(type)}
-                        className={`${groupUtilityButtonClass} min-h-[3.65rem] flex-col gap-1 ${hostDraftGoalType === type ? 'is-selected' : ''}`}
+                        className={`${groupUtilityButtonClass} doro-group-study-explainer-button relative min-h-[3.65rem] flex-col gap-1 ${hostDraftGoalType === type ? 'is-selected' : ''}`}
+                        data-explainer={type === 'pooled-total'
+                          ? 'Everyone contributes to one shared total. The group finishes when the pool is complete.'
+                          : 'Each person gets their own goal. Race side by side toward the same target.'}
+                        aria-label={type === 'pooled-total'
+                          ? `Work Together. ${hostDraftTotalOptionSummary}. Everyone contributes to one shared total. The group finishes when the pool is complete.`
+                          : `Compete. ${hostDraftEachOptionSummary}. Each person gets their own goal. Race side by side toward the same target.`}
                       >
-                        <span>{type === 'pooled-total' ? 'Focus Total' : 'Focus Each'}</span>
+                        <span className="inline-flex items-center justify-center gap-1.5">
+                          {type === 'pooled-total' ? (
+                            <Handshake size={14} strokeWidth={2.35} aria-hidden="true" />
+                          ) : (
+                            <Swords size={14} strokeWidth={2.35} aria-hidden="true" />
+                          )}
+                          <span>{type === 'pooled-total' ? 'Work Together' : 'Compete'}</span>
+                        </span>
                         <span className="text-[9px] font-semibold normal-case tracking-normal text-white/44">
                           {type === 'pooled-total' ? hostDraftTotalOptionSummary : hostDraftEachOptionSummary}
                         </span>
                       </button>
                     ))}
                   </div>
-
-                  {hostDraftGoalType === 'pooled-total' && hostDraftPooledPerPersonSummary && (
-                    <div className="doro-group-study-note rounded-[0.85rem] border px-3 py-2 text-[11px] font-semibold leading-relaxed text-white/72">
-                      {hostDraftPooledPerPersonSummary}.
-                    </div>
-                  )}
 
                   <div className="space-y-2 pt-1">
                     <div className={groupSectionLabelClass}>Invites</div>
@@ -5179,9 +5212,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                 type="button"
                 onClick={handleCreateGroup}
                 className="doro-group-study-primary doro-group-study-stagger w-full rounded-[0.85rem] border py-3 text-xs font-black uppercase tracking-[0.14em] text-white"
-                style={{ '--doro-group-study-delay': hostDraftSessionMode === 'shared-goal' ? '110ms' : '150ms' } as React.CSSProperties}
+                style={{ '--doro-group-study-delay': hostDraftSessionMode === 'shared-goal' ? '45ms' : '65ms' } as React.CSSProperties}
               >
-                {hostDraftSessionMode === 'shared-goal' ? 'Start Shared Goal' : 'Start Timer Sync'}
+                {hostDraftSessionMode === 'shared-goal' ? 'Start Group Study' : 'Start Timer Sync'}
               </button>
             </div>
 
@@ -6038,21 +6071,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             </button>
           )}
           <div className="mt-3">
-            <div className="flex justify-center">
             <button
               type="button"
               onClick={() => setDeveloperToolsOpen(prev => !prev)}
-              className={`doro-developer-toggle inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[9px] font-bold uppercase tracking-[0.14em] transition-all ${
+              className={`doro-developer-toggle flex w-full items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-bold uppercase tracking-[0.14em] transition-colors ${
                 developerToolsOpen
-                  ? 'border-white/18 bg-white/12 text-white'
-                  : 'border-white/8 bg-white/[0.035] text-white/42 hover:border-white/14 hover:bg-white/[0.06] hover:text-white/62'
+                  ? 'bg-white/14 text-white'
+                  : 'bg-white/8 text-white/68 hover:bg-white/14 hover:text-white/82'
               }`}
               aria-expanded={developerToolsOpen}
             >
               <Bug size={13} strokeWidth={2.2} aria-hidden="true" />
               Developer
             </button>
-            </div>
 
             {developerToolsOpen && (
               <div
@@ -6077,6 +6108,20 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
                     </button>
                   ))}
                 </div>
+                <button
+                  type="button"
+                  onClick={handleDeveloperViewTimerSharePage}
+                  disabled={developerViewSessionBusy}
+                  className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200/[0.14] bg-sky-300/[0.08] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.14em] text-sky-100/72 transition-colors hover:bg-sky-300/[0.13] hover:text-sky-50 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <LinkIcon size={12} strokeWidth={2.25} aria-hidden="true" />
+                  {developerViewSessionBusy ? 'Opening Viewer' : 'View Session Page'}
+                </button>
+                {developerViewSessionMessage && (
+                  <div className="mt-1.5 text-center text-[10px] font-semibold leading-tight text-white/38">
+                    {developerViewSessionMessage}
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => dispatchDeveloperPreview('clear-previews')}
@@ -6126,12 +6171,12 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           overflow: hidden;
           transform-origin: top center;
           transition:
-            height 340ms cubic-bezier(0.22, 1, 0.36, 1),
-            min-height 340ms cubic-bezier(0.22, 1, 0.36, 1),
-            border-radius 340ms cubic-bezier(0.22, 1, 0.36, 1),
-            box-shadow 300ms ease,
-            border-color 260ms ease,
-            background-color 260ms ease;
+            height 190ms cubic-bezier(0.2, 0.88, 0.24, 1),
+            min-height 190ms cubic-bezier(0.2, 0.88, 0.24, 1),
+            border-radius 190ms cubic-bezier(0.2, 0.88, 0.24, 1),
+            box-shadow 220ms ease,
+            border-color 190ms ease,
+            background-color 190ms ease;
           will-change: height;
           contain: layout paint;
         }
@@ -6146,16 +6191,19 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         }
         .doro-group-study-flow-panel {
           position: absolute;
-          inset: 0.75rem;
+          top: 0.75rem;
+          right: 0.75rem;
+          bottom: auto;
+          left: 0.75rem;
           min-width: 0;
           opacity: 0;
           visibility: hidden;
           pointer-events: none;
           transform: translateY(10px) scale(0.98);
           transition:
-            opacity 230ms ease,
-            visibility 0ms linear 260ms,
-            transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+            opacity 160ms ease,
+            visibility 0ms linear 190ms,
+            transform 210ms cubic-bezier(0.22, 1, 0.36, 1);
           will-change: opacity, transform;
         }
         .doro-group-study-flow-panel.is-active {
@@ -6164,9 +6212,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           pointer-events: auto;
           transform: none;
           transition:
-            opacity 220ms ease 60ms,
+            opacity 150ms ease 24ms,
             visibility 0ms linear 0ms,
-            transform 300ms cubic-bezier(0.22, 1, 0.36, 1) 60ms;
+            transform 210ms cubic-bezier(0.22, 1, 0.36, 1) 24ms;
         }
         .doro-group-study-flow-panel:not(.is-active) {
           transform: translateY(5px) scale(0.985);
@@ -6182,8 +6230,8 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           }
         }
         .doro-group-study-flow-panel.is-active .doro-group-study-stagger {
-          animation: doro-group-study-item-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
-          animation-delay: var(--doro-group-study-delay, 70ms);
+          animation: doro-group-study-item-in 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation-delay: var(--doro-group-study-delay, 30ms);
           will-change: transform, opacity;
         }
         .doro-group-study-inset,
@@ -6191,8 +6239,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-group-study-option,
         .doro-group-study-input,
         .doro-group-study-note,
-        .doro-group-study-stat,
-        .doro-group-study-focus-summary {
+        .doro-group-study-stat {
           background:
             linear-gradient(145deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)),
             rgba(0, 0, 0, 0.24);
@@ -6234,8 +6281,6 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           transform: translateY(0) scale(0.998);
           box-shadow: 0 14px 24px -23px rgba(0, 0, 0, 0.54);
         }
-        .doro-group-study-choice.is-selected,
-        .doro-group-study-option.is-selected,
         .doro-group-study-option.is-emphasis {
           background:
             linear-gradient(145deg, rgba(255,255,255,0.13), rgba(255,255,255,0.045)),
@@ -6247,24 +6292,156 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             inset 0 1px 0 rgba(255, 255, 255, 0.16);
         }
         .doro-group-study-choice.is-selected,
+        .doro-group-study-option.is-selected {
+          background:
+            radial-gradient(circle at 50% 0%, rgba(125, 211, 252, 0.2), transparent 58%),
+            linear-gradient(145deg, rgba(59, 130, 246, 0.2), rgba(14, 165, 233, 0.075)),
+            rgba(10, 25, 48, 0.44);
+          border-color: rgba(147, 197, 253, 0.48);
+          color: rgba(239, 246, 255, 0.98);
+          box-shadow:
+            0 18px 28px -24px rgba(0, 0, 0, 0.64),
+            0 0 0 1px rgba(96, 165, 250, 0.13),
+            inset 0 1px 0 rgba(219, 234, 254, 0.2);
+        }
+        .doro-group-study-choice.is-selected,
         button.doro-group-study-option.is-selected {
           transform: translateY(-2px);
           box-shadow:
             0 34px 58px -32px rgba(0, 0, 0, 0.86),
+            0 18px 36px -28px rgba(96, 165, 250, 0.62),
+            0 0 0 1px rgba(96, 165, 250, 0.16),
             0 16px 28px -20px rgba(0, 0, 0, 0.68),
-            inset 0 1px 0 rgba(255, 255, 255, 0.2);
+            inset 0 1px 0 rgba(219, 234, 254, 0.22);
         }
         .doro-group-study-choice.is-selected:hover,
         button.doro-group-study-option.is-selected:hover {
+          background:
+            radial-gradient(circle at 50% 0%, rgba(186, 230, 253, 0.24), transparent 58%),
+            linear-gradient(145deg, rgba(96, 165, 250, 0.24), rgba(14, 165, 233, 0.1)),
+            rgba(11, 30, 56, 0.48);
+          border-color: rgba(191, 219, 254, 0.58);
           transform: translateY(-3px);
           box-shadow:
             0 40px 68px -34px rgba(0, 0, 0, 0.9),
+            0 20px 42px -28px rgba(96, 165, 250, 0.72),
+            0 0 0 1px rgba(147, 197, 253, 0.2),
             0 18px 32px -20px rgba(0, 0, 0, 0.72),
-            inset 0 1px 0 rgba(255, 255, 255, 0.22);
+            inset 0 1px 0 rgba(239, 246, 255, 0.24);
         }
         .doro-group-study-choice.is-selected:active,
         button.doro-group-study-option.is-selected:active {
           transform: translateY(-1px) scale(0.998);
+        }
+        .doro-group-study-choice.is-selected svg,
+        .doro-group-study-option.is-selected svg {
+          color: rgba(219, 234, 254, 0.96);
+          filter: drop-shadow(0 0 8px rgba(96, 165, 250, 0.22));
+        }
+        .doro-group-study-explainer-button {
+          isolation: isolate;
+          overflow: visible;
+        }
+        .doro-group-study-explainer-button:hover,
+        .doro-group-study-explainer-button:focus-visible {
+          z-index: 18;
+        }
+        .doro-group-study-explainer-button::after {
+          content: attr(data-explainer);
+          position: absolute;
+          bottom: calc(100% + 0.58rem);
+          left: 50%;
+          z-index: 30;
+          width: min(17.5rem, calc(100vw - 4rem));
+          max-width: calc(100vw - 4rem);
+          border-radius: 0.78rem;
+          border: 1px solid;
+          padding: 0.62rem 0.72rem;
+          opacity: 0;
+          pointer-events: none;
+          text-align: left;
+          white-space: normal;
+          font-size: 0.72rem;
+          font-weight: 750;
+          letter-spacing: 0;
+          line-height: 1.28;
+          text-transform: none;
+          transform: translate3d(-50%, 6px, 0) scale(0.965);
+          transition:
+            opacity 150ms ease,
+            transform 170ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-group-study-explainer-button::before {
+          content: '';
+          position: absolute;
+          bottom: calc(100% + 0.36rem);
+          left: 50%;
+          z-index: 29;
+          height: 0.48rem;
+          width: 0.48rem;
+          border: 1px solid;
+          border-top: 0;
+          border-left: 0;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(-50%, 6px, 0) rotate(45deg);
+          transition:
+            opacity 150ms ease,
+            transform 170ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-group-study-explainer-button:hover::after,
+        .doro-group-study-explainer-button:focus-visible::after,
+        .doro-group-study-explainer-button:hover::before,
+        .doro-group-study-explainer-button:focus-visible::before {
+          opacity: 1;
+          transform: translate3d(-50%, 0, 0) scale(1);
+        }
+        .doro-settings-shell.theme-light .doro-group-study-explainer-button::after,
+        .doro-settings-shell.theme-light .doro-group-study-explainer-button::before {
+          border-color: rgba(15, 23, 42, 0.12);
+          background: rgba(255, 255, 255, 0.96);
+          color: rgba(15, 23, 42, 0.86);
+          box-shadow: 0 18px 30px -24px rgba(45, 60, 88, 0.46);
+        }
+        .doro-settings-shell.theme-dark .doro-group-study-explainer-button::after,
+        .doro-settings-shell.theme-dark .doro-group-study-explainer-button::before {
+          border-color: rgba(255, 255, 255, 0.11);
+          background: rgba(13, 18, 27, 0.98);
+          color: rgba(255, 255, 255, 0.78);
+          box-shadow: 0 20px 34px -24px rgba(0, 0, 0, 0.78);
+        }
+        .doro-group-study-unit-button::after {
+          width: max-content;
+          max-width: 8rem;
+          padding-inline: 0.62rem;
+          text-align: center;
+          white-space: nowrap;
+          line-height: 1;
+        }
+        .doro-group-study-mode-grid {
+          align-items: stretch;
+        }
+        .doro-group-study-mode-button {
+          min-height: 5.35rem;
+          flex-direction: column;
+          gap: 0.55rem;
+          border-radius: 1.08rem;
+          padding: 0.9rem 0.75rem;
+          font-size: 0.68rem;
+          letter-spacing: 0.13em;
+          line-height: 1.05;
+        }
+        .doro-group-study-mode-button svg {
+          width: 1.2rem;
+          height: 1.2rem;
+        }
+        @media (max-width: 430px) {
+          .doro-group-study-mode-button {
+            min-height: 4.8rem;
+            border-radius: 1rem;
+            padding: 0.78rem 0.55rem;
+            font-size: 0.62rem;
+          }
         }
         .doro-group-study-icon,
         .doro-group-study-pill {

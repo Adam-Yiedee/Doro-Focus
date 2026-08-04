@@ -1,6 +1,7 @@
 import { Category, LogEntry, SessionCategoryStat, SessionRecord, User } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import {
+  getAccountStatsFocusSeconds,
   getAccountStatsPomodoroEquivalent,
   getAccountStatsSessionPomodoroEquivalent,
 } from './pomodoroAccounting';
@@ -155,7 +156,7 @@ export const calculateLifetimeStatsFromData = (
   let manualPomosFromLogs = 0;
 
   productiveLogs.forEach((entry) => {
-    const minutes = Math.max(0, entry.duration / 60);
+    const minutes = Math.max(0, getAccountStatsFocusSeconds(entry) / 60);
     if (minutes <= 0) return;
     const pomos = getAccountStatsPomodoroEquivalent(entry);
     const categoryName = resolveLogEntryCategory(entry, categoryMap).name || 'Uncategorized';
@@ -177,7 +178,10 @@ export const calculateLifetimeStatsFromData = (
   });
 
   timerSessionDurationLogs.forEach((entry) => {
-    const minutes = Math.max(0, entry.duration / 60);
+    const seconds = isProductiveFocusLog(entry)
+      ? getAccountStatsFocusSeconds(entry)
+      : entry.duration;
+    const minutes = Math.max(0, seconds / 60);
     if (minutes <= 0) return;
     const dateKey = getLocalDateKeyFromIso(entry.start);
     const totals = dateKey ? getDayTotals(timerLogDays, dateKey) : undatedTimerTotals;

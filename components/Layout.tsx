@@ -27,7 +27,8 @@ import {
   playDefaultNotificationSound,
   playEncouragementDing,
   playFocusStreakMomentSound,
-  preloadNotificationSounds,
+  preloadFocusStreakMomentSounds,
+  resumeAudioContext,
   startPersistentAlarm,
 } from '../utils/sound';
 import { getFocusFriendInviteUsernameFromCurrentUrl } from '../utils/focusFriendInvite';
@@ -35,7 +36,9 @@ import {
   getGroupGoalProgressPercent,
   getGroupGoalProgressValue,
   getGroupSyncConfigForSession,
+  getPooledGoalPerPersonTarget,
   getPooledGroupGoalProgressValue,
+  isFocusShareSessionConfig,
   normalizeGroupSessionConfig,
   TIMER_SYNC_GROUP_SESSION_CONFIG,
 } from '../utils/groupStudy';
@@ -57,7 +60,7 @@ type NotificationBannerItem = {
   persistUntilDismissed?: boolean;
 };
 type DailyWelcomeBanner = { id: string; message: string; exiting: boolean };
-type FocusStreakBanner = { id: string; snapshot: AppOpenStreakSnapshot; exiting: boolean };
+type FocusStreakBanner = { id: string; snapshot: AppOpenStreakSnapshot; exiting: boolean; armed: boolean };
 type CelebrationConfettiPiece = {
   id: string;
   left: number;
@@ -97,14 +100,16 @@ const GROUP_BANNER_TOTAL_MS = GROUP_BANNER_VISIBLE_MS + GROUP_BANNER_EXIT_MS;
 const ENCOURAGEMENT_BANNER_VISIBLE_MS = 120_000;
 const ENCOURAGEMENT_BANNER_EXIT_MS = 860;
 const ENCOURAGEMENT_BANNER_TOTAL_MS = ENCOURAGEMENT_BANNER_VISIBLE_MS + ENCOURAGEMENT_BANNER_EXIT_MS;
-const DAILY_WELCOME_VISIBLE_MS = 16000;
+const DAILY_WELCOME_VISIBLE_MS = 22000;
 const DAILY_WELCOME_EXIT_MS = 680;
 const DAILY_WELCOME_TOTAL_MS = DAILY_WELCOME_VISIBLE_MS + DAILY_WELCOME_EXIT_MS;
 const DAILY_WELCOME_SHOW_DELAY_MS = 1150;
+const DAILY_WELCOME_AFTER_FOCUS_DELAY_MS = 900;
 const DAILY_WELCOME_STORAGE_KEY = 'doro_daily_welcome_seen_date';
 const FOCUS_STREAK_VISIBLE_MS = 9200;
 const FOCUS_STREAK_EXIT_MS = 720;
 const FOCUS_STREAK_TOTAL_MS = FOCUS_STREAK_VISIBLE_MS + FOCUS_STREAK_EXIT_MS;
+const FOCUS_STREAK_SOUND_WARMUP_MAX_MS = 420;
 const ALL_TASKS_CELEBRATION_DISMISS_MS = 360;
 const ALL_TASKS_CELEBRATION_BUFFER_MS = 280;
 const ALL_TASKS_CELEBRATION_COLORS = ['#FDE68A', '#FCA5A5', '#93C5FD', '#A7F3D0', '#C4B5FD', '#F9A8D4', '#FDBA74'];
@@ -320,15 +325,97 @@ const getGroupGoalUnitLabel = (unit: GroupGoalUnit, value: number) => {
   return value === 1 ? 'Pomodoro' : 'Pomodoros';
 };
 
+const GROUP_GOAL_ROW_FALLBACK_COLORS = ['#7CB4FF', '#95D7A1', '#F5B27A', '#C6A2FF', '#F49AB1'];
+
+const getGroupGoalParticipantColor = (item: GroupGoalProgress, index: number) => (
+  item.activeCategoryColor?.trim()
+  || item.activeColor?.trim()
+  || GROUP_GOAL_ROW_FALLBACK_COLORS[index % GROUP_GOAL_ROW_FALLBACK_COLORS.length]
+);
+
+const getGroupGoalParticipantSubject = (item: GroupGoalProgress) => (
+  item.activeCategoryName?.trim()
+  || item.activeTaskName?.trim()
+  || ''
+);
+
+const isGroupGoalSelfName = (name: string) => name.trim().toLowerCase() === 'you';
+
+const getGroupGoalParticipantTooltip = (item: GroupGoalProgress, subject: string) => {
+  if (isGroupGoalSelfName(item.name)) {
+    if (subject) return `You are working on ${subject}.`;
+    return item.activeSeconds > 0 ? 'You are focusing right now.' : 'You have not shared a focus goal yet.';
+  }
+  if (subject) return `${item.name} is working on ${subject}.`;
+  return item.activeSeconds > 0 ? `${item.name} is focusing right now.` : `${item.name} has not shared a focus goal yet.`;
+};
+
+const getGroupGoalEncouragementOptions = ({
+  item,
+  rank,
+  participantCount,
+  value,
+  unitLabel,
+  subject,
+}: {
+  item: GroupGoalProgress;
+  rank: number;
+  participantCount: number;
+  value: number;
+  unitLabel: string;
+  subject: string;
+}) => {
+  const name = item.name || 'You';
+  const isSelf = isGroupGoalSelfName(name);
+  const roundedValue = Math.max(0, Math.floor(value));
+  const options: string[] = [];
+
+  if (participantCount > 1 && rank === 1) {
+    options.push(isSelf ? 'First place energy. Keep setting the pace.' : `First place energy, ${name}. Keep setting the pace.`);
+  }
+  if (roundedValue >= 3) {
+    options.push(isSelf
+      ? `${formatPomodoroCount(roundedValue)} ${unitLabel.toLowerCase()} down. That is serious momentum.`
+      : `${formatPomodoroCount(roundedValue)} ${unitLabel.toLowerCase()} down, ${name}. That is serious momentum.`);
+  }
+  if (participantCount > 1 && rank === participantCount) {
+    options.push(isSelf ? 'One focused block and you are right back in it.' : `${name}, one focused block and you are right back in it.`);
+  }
+  if (subject) {
+    options.push(isSelf ? `${subject} is moving. Keep going.` : `${subject} is moving, ${name}. Keep going.`);
+  }
+  options.push(isSelf ? 'You have got this. Stay with it.' : `You have got this, ${name}. Stay with it.`);
+
+  return Array.from(new Set(options)).slice(0, 4);
+};
+
 const GroupStudyGoalPanel: React.FC<{
   sessionConfig: GroupSessionConfig;
   progress: GroupGoalProgress[];
   members?: GroupMember[];
   warning?: string | null;
   isPreview?: boolean;
-}> = ({ sessionConfig, progress, members = [], warning, isPreview = false }) => {
+  onSendEncouragement?: (member: GroupGoalProgress, message: string) => boolean | void;
+}> = ({ sessionConfig, progress, members = [], warning, isPreview = false, onSendEncouragement }) => {
+  const [encouragementMenuMemberId, setEncouragementMenuMemberId] = useState<string | null>(null);
+  const [sentEncouragementMemberId, setSentEncouragementMemberId] = useState<string | null>(null);
+  const encouragementMenuRef = useRef<HTMLDivElement | null>(null);
   const normalizedConfig = normalizeGroupSessionConfig(sessionConfig, TIMER_SYNC_GROUP_SESSION_CONFIG);
   const goal = normalizedConfig.goal;
+
+  useEffect(() => {
+    if (!encouragementMenuMemberId) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (encouragementMenuRef.current?.contains(target)) return;
+      setEncouragementMenuMemberId(null);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
+  }, [encouragementMenuMemberId]);
 
   if (normalizedConfig.mode !== 'shared-goal' || !goal) {
     const sortedMembers = [...members]
@@ -370,7 +457,6 @@ const GroupStudyGoalPanel: React.FC<{
     );
   }
 
-  const unitLabel = getGroupGoalUnitLabel(goal.unit, goal.target);
   const isPooled = goal.type === 'pooled-total';
   const pooledValue = getPooledGroupGoalProgressValue(progress, goal.unit);
   const totalValue = isPooled ? pooledValue : 0;
@@ -378,7 +464,10 @@ const GroupStudyGoalPanel: React.FC<{
     ? totalValue
     : Math.max(0, ...progress.map(item => getGroupGoalProgressValue(item.totalSeconds, goal.unit)));
   const headlinePercent = getGroupGoalProgressPercent(isPooled ? totalValue : headlineValue, goal.target);
+  const rowTarget = isPooled ? getPooledGoalPerPersonTarget(goal) : goal.target;
   const sortedProgress = [...progress].sort((a, b) => Number(b.isHost) - Number(a.isHost) || b.totalSeconds - a.totalSeconds);
+  const rankedProgress = [...progress].sort((a, b) => b.totalSeconds - a.totalSeconds || a.name.localeCompare(b.name));
+  const rankByMemberId = new Map(rankedProgress.map((item, index) => [item.memberId, index + 1]));
 
   return (
     <aside className="doro-group-goal-panel w-full max-w-[21rem] shrink-0 rounded-[1.25rem] border p-3">
@@ -386,9 +475,6 @@ const GroupStudyGoalPanel: React.FC<{
         <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/42">{isPreview ? 'Preview Goal' : 'Group Goal'}</div>
           <div className="mt-1 text-sm font-bold text-white/90">{isPooled ? 'Pooled Total' : 'Everyone Live'}</div>
-          <div className="mt-1 text-xs font-semibold leading-relaxed text-white/48">
-            {formatPomodoroCount(goal.target)} {unitLabel}{isPooled ? ` across ${goal.expectedParticipants} people` : ' each'}
-          </div>
         </div>
         <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
           <Users size={16} strokeWidth={2.2} />
@@ -411,17 +497,89 @@ const GroupStudyGoalPanel: React.FC<{
       </div>
 
       <div className="mt-4 space-y-2">
-        {sortedProgress.map(item => {
+        {sortedProgress.map((item, index) => {
           const value = getGroupGoalProgressValue(item.totalSeconds, goal.unit);
-          const rowPercent = getGroupGoalProgressPercent(value, isPooled ? Math.max(goal.target, pooledValue || goal.target) : goal.target);
+          const rowPercent = getGroupGoalProgressPercent(value, rowTarget);
+          const participantColor = getGroupGoalParticipantColor(item, index);
+          const subject = getGroupGoalParticipantSubject(item);
+          const tooltip = getGroupGoalParticipantTooltip(item, subject);
+          const encouragementOptions = getGroupGoalEncouragementOptions({
+            item,
+            rank: rankByMemberId.get(item.memberId) || index + 1,
+            participantCount: rankedProgress.length,
+            value,
+            unitLabel: getGroupGoalUnitLabel(goal.unit, value),
+            subject,
+          });
+          const isEncouragementOpen = encouragementMenuMemberId === item.memberId;
+          const encouragementSent = sentEncouragementMemberId === item.memberId;
+
           return (
-            <div key={item.memberId} className="doro-group-goal-row rounded-[0.85rem] border px-3 py-2">
+            <div
+              key={item.memberId}
+              className={`doro-group-goal-row rounded-[0.85rem] border px-3 py-2 ${isEncouragementOpen ? 'doro-group-goal-row-menu-open' : ''}`}
+              style={{ '--doro-group-goal-color': participantColor } as React.CSSProperties}
+            >
               <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 truncate text-xs font-bold text-white/78">{item.name}{item.isHost ? ' (Host)' : ''}</div>
-                <div className="shrink-0 text-[11px] font-black tabular-nums text-white/72">{formatPomodoroCount(value)}</div>
+                <div className="min-w-0 text-xs font-bold text-white/78">
+                  <span
+                    className="doro-group-goal-name-tip"
+                    title={tooltip}
+                    data-tooltip={tooltip}
+                    tabIndex={0}
+                  >
+                    <span className="doro-group-goal-name-label">
+                      {item.name}{item.isHost ? ' (Host)' : ''}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {onSendEncouragement && (
+                    <div
+                      ref={isEncouragementOpen ? encouragementMenuRef : undefined}
+                      className={`doro-group-goal-encouragement relative ${isEncouragementOpen ? 'is-open' : ''} ${encouragementSent ? 'is-sent' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        className={`doro-group-goal-heart-button ${isEncouragementOpen ? 'is-open' : ''} ${encouragementSent ? 'is-sent' : ''}`}
+                        title={encouragementSent ? `Encouragement sent to ${item.name}` : `Encourage ${item.name}`}
+                        aria-label={encouragementSent ? `Encouragement sent to ${item.name}` : `Encourage ${item.name}`}
+                        aria-expanded={isEncouragementOpen}
+                        onClick={() => setEncouragementMenuMemberId(current => current === item.memberId ? null : item.memberId)}
+                      >
+                        <Heart size={12} strokeWidth={2.4} fill={encouragementSent ? 'currentColor' : 'none'} />
+                      </button>
+
+                      {isEncouragementOpen && (
+                        <div className="doro-group-goal-encouragement-menu">
+                          {encouragementOptions.map(option => (
+                            <button
+                              key={option}
+                              type="button"
+                              className="doro-group-goal-encouragement-option"
+                              onClick={() => {
+                                const sent = onSendEncouragement(item, option);
+                                if (sent !== false) {
+                                  setSentEncouragementMemberId(item.memberId);
+                                  window.setTimeout(() => {
+                                    setSentEncouragementMemberId(current => current === item.memberId ? null : current);
+                                  }, 1500);
+                                }
+                                setEncouragementMenuMemberId(null);
+                              }}
+                            >
+                              {option}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="text-[11px] font-black tabular-nums text-white/72">{formatPomodoroCount(value)}</div>
+                </div>
               </div>
               <div className="doro-group-goal-rail mt-1.5 h-1.5 overflow-hidden rounded-full border">
-                <div className="h-full rounded-full bg-white/45 transition-[width] duration-500" style={{ width: `${rowPercent}%` }} />
+                <div className="doro-group-goal-row-fill h-full rounded-full transition-[width,background-color] duration-500" style={{ width: `${rowPercent}%` }} />
               </div>
             </div>
           );
@@ -464,6 +622,7 @@ const Layout: React.FC = () => {
     approveFocusFriendJoinRequest,
     declineFocusFriendJoinRequest,
     markFocusFriendActionRead,
+    sendGroupEncouragement,
     dismissGuestTimerLockNotice,
     leaveGroupSession,
   } = useTimer();
@@ -477,6 +636,7 @@ const Layout: React.FC = () => {
   const [allTasksCelebration, setAllTasksCelebration] = useState<AllTasksCelebration | null>(null);
   const [taskCreationPreviewColor, setTaskCreationPreviewColor] = useState<string | undefined>(undefined);
   const [notificationTimersActive, setNotificationTimersActive] = useState(areNotificationTimersActive);
+  const [notificationAudioUnlockRevision, setNotificationAudioUnlockRevision] = useState(0);
   const [focusFriendJoinBusyId, setFocusFriendJoinBusyId] = useState<string | null>(null);
   const bannerTimersRef = useRef<Record<string, BannerTimerEntry>>({});
   const bannerDismissTimeoutsRef = useRef<Record<string, number>>({});
@@ -500,6 +660,7 @@ const Layout: React.FC = () => {
     remove: createPausableTimeout(FOCUS_STREAK_TOTAL_MS),
   });
   const playedFocusStreakSoundIdsRef = useRef<Set<string>>(new Set());
+  const pendingFocusStreakSoundIdsRef = useRef<Set<string>>(new Set());
   const allTasksCelebrationTimeoutRef = useRef<number | null>(null);
   const queuedAllTasksCelebrationIdRef = useRef<number | null>(null);
   const didRecordAppOpenStreakRef = useRef(false);
@@ -554,6 +715,17 @@ const Layout: React.FC = () => {
     dailyWelcomeTimersRef.current.show.remainingMs = DAILY_WELCOME_SHOW_DELAY_MS;
     dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
     dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
+  };
+
+  const holdDailyWelcomeUntilAfterFocusMoment = () => {
+    clearDailyWelcomeTimers();
+    dailyWelcomeTimersRef.current.show.remainingMs = DAILY_WELCOME_AFTER_FOCUS_DELAY_MS;
+    dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
+    dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
+    setDailyWelcomeBanner((current) => {
+      if (!current) return current;
+      return null;
+    });
   };
 
   const resetFocusStreakTimers = () => {
@@ -625,7 +797,7 @@ const Layout: React.FC = () => {
   };
 
   const scheduleFocusStreakLifecycle = () => {
-    if (!notificationTimersActive || !focusStreakBanner) return;
+    if (!notificationTimersActive || !focusStreakBanner?.armed) return;
     const bannerId = focusStreakBanner.id;
 
     startPausableTimeout(focusStreakTimersRef.current.exit, () => {
@@ -899,6 +1071,7 @@ const Layout: React.FC = () => {
         id: `focus-streak-${snapshot.todayDate}-${Date.now()}`,
         snapshot,
         exiting: false,
+        armed: false,
       });
     } catch {
       setFocusStreakBanner(null);
@@ -1022,22 +1195,84 @@ const Layout: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    void preloadNotificationSounds();
+    void preloadFocusStreakMomentSounds();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const unlockNotificationAudio = () => {
+      void resumeAudioContext()
+        .then((ctx) => {
+          void preloadFocusStreakMomentSounds();
+          if (!ctx || ctx.state !== 'suspended') {
+            setNotificationAudioUnlockRevision((revision) => revision + 1);
+          }
+        });
+    };
+
+    window.addEventListener('pointerdown', unlockNotificationAudio, { passive: true });
+    window.addEventListener('keydown', unlockNotificationAudio);
+
+    return () => {
+      window.removeEventListener('pointerdown', unlockNotificationAudio);
+      window.removeEventListener('keydown', unlockNotificationAudio);
+    };
   }, []);
 
   useEffect(() => {
     if (focusStreakBanner) {
-      if (!dailyWelcomeBannerRef.current) {
-        clearDailyWelcomeTimers();
-        dailyWelcomeTimersRef.current.show.remainingMs = 0;
-        dailyWelcomeTimersRef.current.exit.remainingMs = DAILY_WELCOME_VISIBLE_MS;
-        dailyWelcomeTimersRef.current.remove.remainingMs = DAILY_WELCOME_TOTAL_MS;
-      }
+      holdDailyWelcomeUntilAfterFocusMoment();
       return;
     }
 
     scheduleDailyWelcomeLifecycle();
   }, [focusStreakBanner?.id, focusStreakBanner?.exiting, notificationTimersActive]);
+
+  useEffect(() => {
+    if (!focusStreakBanner || focusStreakBanner.exiting || focusStreakBanner.armed || !notificationTimersActive) return;
+    const bannerId = focusStreakBanner.id;
+    let cancelled = false;
+
+    const armFocusStreakMoment = () => {
+      if (cancelled) return;
+      setFocusStreakBanner((current) => (
+        current && current.id === bannerId
+          ? { ...current, armed: true }
+          : current
+      ));
+    };
+
+    const armFocusStreakMomentIfAudioReady = async () => {
+      const ctx = await resumeAudioContext({ timeoutMs: 140 });
+      if (cancelled) return;
+      if (ctx?.state === 'suspended') return;
+      armFocusStreakMoment();
+    };
+
+    const fallbackTimeout = window.setTimeout(() => {
+      void armFocusStreakMomentIfAudioReady();
+    }, FOCUS_STREAK_SOUND_WARMUP_MAX_MS);
+    void preloadFocusStreakMomentSounds()
+      .catch(() => {
+        // The sound helper logs load/decode failures. The visual should still run on time.
+      })
+      .finally(() => {
+        window.clearTimeout(fallbackTimeout);
+        void armFocusStreakMomentIfAudioReady();
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(fallbackTimeout);
+    };
+  }, [
+    focusStreakBanner?.id,
+    focusStreakBanner?.armed,
+    focusStreakBanner?.exiting,
+    notificationAudioUnlockRevision,
+    notificationTimersActive,
+  ]);
 
   useEffect(() => {
     if (!notificationTimersActive) return;
@@ -1068,16 +1303,28 @@ const Layout: React.FC = () => {
 
   useEffect(() => {
     scheduleFocusStreakLifecycle();
-  }, [focusStreakBanner?.id, notificationTimersActive]);
+  }, [focusStreakBanner?.id, focusStreakBanner?.armed, notificationTimersActive]);
 
   useEffect(() => {
-    if (!focusStreakBanner || focusStreakBanner.exiting || !notificationTimersActive) return;
+    if (!focusStreakBanner || focusStreakBanner.exiting || !focusStreakBanner.armed || !notificationTimersActive) return;
     if (playedFocusStreakSoundIdsRef.current.has(focusStreakBanner.id)) return;
-    playedFocusStreakSoundIdsRef.current.add(focusStreakBanner.id);
+    if (pendingFocusStreakSoundIdsRef.current.has(focusStreakBanner.id)) return;
+
+    const bannerId = focusStreakBanner.id;
+    pendingFocusStreakSoundIdsRef.current.add(bannerId);
     void playFocusStreakMomentSound(focusStreakBanner.snapshot.rollingDays, {
       streakIncreased: !focusStreakBanner.snapshot.streakBroken,
-    });
-  }, [focusStreakBanner, notificationTimersActive]);
+    })
+      .then((didPlay) => {
+        pendingFocusStreakSoundIdsRef.current.delete(bannerId);
+        if (didPlay) {
+          playedFocusStreakSoundIdsRef.current.add(bannerId);
+        }
+      })
+      .catch(() => {
+        pendingFocusStreakSoundIdsRef.current.delete(bannerId);
+      });
+  }, [focusStreakBanner, notificationAudioUnlockRevision, notificationTimersActive]);
 
   useEffect(() => {
     if (previousGroupSessionIdRef.current !== groupSessionId) {
@@ -1292,6 +1539,7 @@ const Layout: React.FC = () => {
         id: `developer-focus-streak-${Date.now()}`,
         snapshot,
         exiting: false,
+        armed: false,
       });
     };
 
@@ -1299,11 +1547,13 @@ const Layout: React.FC = () => {
       const now = Date.now();
       const makeProgress = (
         unit: GroupGoalUnit,
-        rows: Array<{ id: string; name: string; isHost?: boolean; value: number }>,
+        rows: Array<{ id: string; name: string; isHost?: boolean; value: number; subject?: string; color?: string; task?: string }>,
       ): GroupGoalProgress[] => {
         const unitSeconds = unit === 'mini-pomo' ? 15 * 60 : 25 * 60;
         return rows.map((row, index) => {
           const totalSeconds = Math.max(0, Math.round(row.value * unitSeconds));
+          const subject = row.subject?.trim();
+          const color = row.color?.trim();
           return {
             memberId: row.id,
             name: row.name,
@@ -1311,6 +1561,10 @@ const Layout: React.FC = () => {
             completedSeconds: totalSeconds,
             activeSeconds: 0,
             totalSeconds,
+            activeTaskName: row.task?.trim() || subject || null,
+            activeCategoryName: subject || null,
+            activeCategoryColor: color || undefined,
+            activeColor: color || undefined,
             updatedAt: now - index * 1200,
           };
         });
@@ -1352,9 +1606,9 @@ const Layout: React.FC = () => {
             },
           },
           progress: makeProgress('pomodoro', [
-            { id: 'developer-host', name: localName, isHost: true, value: 1.4 },
-            { id: 'developer-mira', name: 'Mira', value: 1 },
-            { id: 'developer-sam', name: 'Sam', value: 0.5 },
+            { id: 'developer-host', name: localName, isHost: true, value: 1.4, subject: 'Deep Work', color: '#7CB4FF' },
+            { id: 'developer-mira', name: 'Mira', value: 1, subject: 'Biology', color: '#95D7A1' },
+            { id: 'developer-sam', name: 'Sam', value: 0.5, subject: 'Writing', color: '#F5B27A' },
           ]),
           members: timerSyncMembers,
           warning: 'Preview warning: this goal was set up for the Classic preset.',
@@ -1376,10 +1630,10 @@ const Layout: React.FC = () => {
             },
           },
           progress: makeProgress('pomodoro', [
-            { id: 'developer-host', name: localName, isHost: true, value: 2.2 },
-            { id: 'developer-mira', name: 'Mira', value: 1.8 },
-            { id: 'developer-sam', name: 'Sam', value: 1.25 },
-            { id: 'developer-lee', name: 'Lee', value: 0.75 },
+            { id: 'developer-host', name: localName, isHost: true, value: 2.2, subject: 'Deep Work', color: '#7CB4FF' },
+            { id: 'developer-mira', name: 'Mira', value: 1.8, subject: 'Biology', color: '#95D7A1' },
+            { id: 'developer-sam', name: 'Sam', value: 1.25, subject: 'Writing', color: '#F5B27A' },
+            { id: 'developer-lee', name: 'Lee', value: 0.75, subject: 'Chemistry', color: '#C6A2FF' },
           ]),
           members: makeMembers([
             { id: 'developer-host', name: localName, isHost: true },
@@ -1404,9 +1658,9 @@ const Layout: React.FC = () => {
           },
         },
         progress: makeProgress('mini-pomo', [
-          { id: 'developer-host', name: localName, isHost: true, value: 3.5 },
-          { id: 'developer-mira', name: 'Mira', value: 2.5 },
-          { id: 'developer-sam', name: 'Sam', value: 2.25 },
+          { id: 'developer-host', name: localName, isHost: true, value: 3.5, subject: 'Deep Work', color: '#7CB4FF' },
+          { id: 'developer-mira', name: 'Mira', value: 2.5, subject: 'Biology', color: '#95D7A1' },
+          { id: 'developer-sam', name: 'Sam', value: 2.25, subject: 'Writing', color: '#F5B27A' },
         ]),
         members: timerSyncMembers,
       });
@@ -1624,12 +1878,14 @@ const Layout: React.FC = () => {
   }), [isLightTheme]);
   const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
   const focusStreakSnapshot = focusStreakBanner?.snapshot || null;
+  const shouldRenderFocusStreakMoment = Boolean(focusStreakBanner?.armed && focusStreakSnapshot);
+  const shouldShowGroupStudyPanel = Boolean(groupSessionId && !isFocusShareSessionConfig(groupSessionConfig));
   const groupStudyPanel = developerGroupPreview
     ? {
       ...developerGroupPreview,
       isPreview: true,
     }
-    : groupSessionId
+    : shouldShowGroupStudyPanel
       ? {
         sessionConfig: groupSessionConfig,
         progress: groupGoalProgress,
@@ -1647,6 +1903,7 @@ const Layout: React.FC = () => {
       <style>{`
         .doro-group-goal-panel {
           --doro-group-goal-ease: cubic-bezier(0.16, 1, 0.3, 1);
+          overflow: visible;
           background:
             linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
             rgba(255,255,255,0.075);
@@ -1668,6 +1925,8 @@ const Layout: React.FC = () => {
           box-shadow: 0 14px 26px -24px rgba(0, 0, 0, 0.54);
         }
         .doro-group-goal-row {
+          position: relative;
+          overflow: visible;
           transition:
             transform 370ms var(--doro-group-goal-ease),
             background-color 280ms ease,
@@ -1688,10 +1947,177 @@ const Layout: React.FC = () => {
           transform: translate3d(0, -1px, 0) scale(1.003);
           filter: brightness(1.018);
         }
+        .doro-group-goal-row-menu-open {
+          z-index: 8;
+        }
         .doro-group-goal-rail {
           background: rgba(0, 0, 0, 0.24);
           border-color: rgba(255, 255, 255, 0.12);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+        .doro-group-goal-row-fill {
+          background: var(--doro-group-goal-color, rgba(255, 255, 255, 0.45));
+          box-shadow: 0 0 14px -7px var(--doro-group-goal-color, rgba(255, 255, 255, 0.45));
+        }
+        .doro-group-goal-name-tip {
+          position: relative;
+          display: block;
+          max-width: 100%;
+          outline: none;
+        }
+        .doro-group-goal-name-label {
+          display: block;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .doro-group-goal-name-tip::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          left: 0;
+          bottom: calc(100% + 0.5rem);
+          z-index: 45;
+          width: max-content;
+          max-width: min(15rem, calc(100vw - 2rem));
+          padding: 0.45rem 0.6rem;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 0.65rem;
+          background:
+            linear-gradient(145deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.055)),
+            rgba(20, 24, 38, 0.9);
+          box-shadow: 0 18px 34px -24px rgba(0, 0, 0, 0.74);
+          color: rgba(255, 255, 255, 0.9);
+          font-size: 0.68rem;
+          font-weight: 800;
+          line-height: 1.25;
+          white-space: normal;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0, 0.3rem, 0) scale(0.98);
+          transition:
+            opacity 180ms ease,
+            transform 220ms var(--doro-group-goal-ease);
+        }
+        .doro-group-goal-name-tip:hover::after,
+        .doro-group-goal-name-tip:focus-visible::after {
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        .doro-group-goal-encouragement {
+          display: inline-flex;
+          width: 1.5rem;
+          height: 1.5rem;
+          flex: 0 0 1.5rem;
+          align-items: center;
+          justify-content: center;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(0.28rem, 0.16rem, 0) scale(0.86);
+          transition:
+            opacity 170ms ease,
+            transform 210ms cubic-bezier(0.22, 1, 0.36, 1);
+          will-change: opacity, transform;
+        }
+        .doro-group-goal-row:hover .doro-group-goal-encouragement,
+        .doro-group-goal-row:focus-within .doro-group-goal-encouragement,
+        .doro-group-goal-encouragement.is-open,
+        .doro-group-goal-encouragement.is-sent {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        .doro-group-goal-heart-button {
+          display: flex;
+          width: 1.5rem;
+          height: 1.5rem;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.075);
+          color: rgba(255, 255, 255, 0.62);
+          outline: none;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+          transition:
+            color 180ms ease,
+            background-color 180ms ease,
+            border-color 180ms ease,
+            transform 180ms ease,
+            box-shadow 200ms ease;
+        }
+        .doro-group-goal-heart-button:hover,
+        .doro-group-goal-heart-button:focus-visible,
+        .doro-group-goal-heart-button.is-open,
+        .doro-group-goal-heart-button.is-sent {
+          background: rgba(255, 255, 255, 0.16);
+          border-color: rgba(255, 255, 255, 0.3);
+          color: rgba(255, 255, 255, 0.94);
+          box-shadow:
+            0 12px 22px -18px rgba(0, 0, 0, 0.72),
+            0 0 16px -9px var(--doro-group-goal-color, rgba(255, 255, 255, 0.45));
+          transform: translateY(-1px) scale(1.04);
+        }
+        .doro-group-goal-heart-button.is-sent {
+          color: #F49AB1;
+        }
+        .doro-group-goal-encouragement-menu {
+          position: absolute;
+          top: calc(100% + 0.45rem);
+          right: -0.15rem;
+          z-index: 80;
+          display: grid;
+          width: min(15.5rem, calc(100vw - 2rem));
+          max-height: 13rem;
+          overflow-y: auto;
+          gap: 0.12rem;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 0.85rem;
+          background: rgba(10, 14, 24, 0.98);
+          box-shadow:
+            0 28px 52px -26px rgba(0, 0, 0, 0.86),
+            0 8px 18px -12px rgba(0, 0, 0, 0.78),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12);
+          padding: 0.35rem;
+          animation: doroGroupEncouragementMenuIn 180ms var(--doro-group-goal-ease);
+          transform-origin: top right;
+          backdrop-filter: blur(18px) saturate(160%);
+          -webkit-backdrop-filter: blur(18px) saturate(160%);
+        }
+        .doro-group-goal-encouragement-option {
+          display: block;
+          width: 100%;
+          border: 0;
+          border-radius: 0.62rem;
+          background: transparent;
+          padding: 0.5rem 0.55rem;
+          color: rgba(255, 255, 255, 0.88);
+          font-size: 0.72rem;
+          font-weight: 800;
+          line-height: 1.25;
+          text-align: left;
+          outline: none;
+          transition:
+            background-color 160ms ease,
+            color 160ms ease,
+            transform 160ms ease;
+        }
+        .doro-group-goal-encouragement-option:hover,
+        .doro-group-goal-encouragement-option:focus-visible {
+          background: rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.98);
+          transform: translateX(1px);
+        }
+        @media (hover: none) {
+          .doro-group-goal-encouragement {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translate3d(0, 0, 0) scale(1);
+          }
+        }
+        @keyframes doroGroupEncouragementMenuIn {
+          0% { opacity: 0; transform: translate3d(0, -0.35rem, 0) scale(0.96); }
+          100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
         }
         @keyframes doroGroupBannerIn {
           0% { opacity: 0; transform: translateY(-14px) scale(0.98); }
@@ -2176,6 +2602,12 @@ const Layout: React.FC = () => {
         .doro-focus-streak-overlay.is-exiting {
           pointer-events: none;
           animation: doroFocusStreakOverlayOut ${FOCUS_STREAK_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+        }
+        .doro-focus-streak-overlay.is-paused,
+        .doro-focus-streak-overlay.is-paused *,
+        .doro-focus-streak-overlay.is-paused *::before,
+        .doro-focus-streak-overlay.is-paused *::after {
+          animation-play-state: paused !important;
         }
         .doro-focus-streak-card {
           width: min(78vw, 24rem);
@@ -2804,11 +3236,11 @@ const Layout: React.FC = () => {
         }
       `}</style>
 
-      {focusStreakBanner && focusStreakSnapshot && (
+      {focusStreakBanner && focusStreakSnapshot && shouldRenderFocusStreakMoment && (
         <div
           className={`doro-focus-streak-overlay fixed inset-0 z-[82] flex items-center justify-center p-4 ${
             focusStreakBanner.exiting ? 'is-exiting' : ''
-          }`}
+          } ${notificationTimersActive ? '' : 'is-paused'}`}
         >
           <button
             type="button"
@@ -2821,7 +3253,7 @@ const Layout: React.FC = () => {
           >
             <div className="doro-focus-streak-glow pointer-events-none absolute inset-[17%] z-0 rounded-full" />
             <div className="doro-focus-streak-fire-field">
-              <StreakFlame className="doro-focus-streak-fire" delayMs={680} />
+              <StreakFlame className="doro-focus-streak-fire" delayMs={680} paused={!notificationTimersActive} />
             </div>
             <div className="doro-focus-streak-content relative flex flex-col items-center justify-center">
               <div className="doro-focus-streak-label text-[0.78rem] font-black uppercase leading-none tracking-[0.24em] text-white/64">
@@ -3170,6 +3602,7 @@ const Layout: React.FC = () => {
                       members={groupStudyPanel.members}
                       warning={groupStudyPanel.warning}
                       isPreview={groupStudyPanel.isPreview}
+                      onSendEncouragement={(member, message) => sendGroupEncouragement(member.name, message, member.memberId)}
                     />
                   )}
                 </div>

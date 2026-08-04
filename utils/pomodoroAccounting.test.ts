@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getAccountStatsPomodoroEquivalent,
+  getAccountStatsFocusSeconds,
   getAccountStatsSessionPomodoroEquivalent,
   getPomodoroCompletionStatsFromLogs,
   MINI_POMODORO_COMPLETE_REASON,
@@ -34,12 +35,12 @@ describe('pomodoro accounting', () => {
     expect(stats.miniPomosCompleted).toBeUndefined();
   });
 
-  it('converts mini-pomo account statistics from actual worked minutes', () => {
+  it('counts completed mini-pomos from their completion unit in account statistics', () => {
     expect(getAccountStatsPomodoroEquivalent({
       type: 'work',
       reason: MINI_POMODORO_COMPLETE_REASON,
       duration: 900,
-    })).toBeCloseTo(0.6, 5);
+    })).toBeCloseTo(0.5, 5);
 
     expect(getAccountStatsSessionPomodoroEquivalent({
       id: 'mini-session',
@@ -52,7 +53,22 @@ describe('pomodoro accounting', () => {
         miniPomosCompleted: 11,
         tasksCompleted: 0,
       },
-    })).toBeCloseTo(6.6, 5);
+    })).toBeCloseTo(5.5, 5);
+  });
+
+  it('uses the mini-pomo preset duration for completed mini-pomo focus time', () => {
+    expect(getAccountStatsFocusSeconds({
+      type: 'work',
+      reason: MINI_POMODORO_COMPLETE_REASON,
+      duration: 13 * 60,
+    })).toBe(15 * 60);
+
+    expect(getAccountStatsFocusSeconds({
+      type: 'work',
+      reason: 'Manual Focus',
+      source: 'manual',
+      duration: 13 * 60,
+    })).toBe(13 * 60);
   });
 
   it('converts archived account session pomodoros from total work minutes', () => {
@@ -80,7 +96,7 @@ describe('pomodoro accounting', () => {
       type: 'work',
       reason: POMODORO_COMPLETE_REASON,
       duration: 30 * 60,
-    })).toBeCloseTo(1.2, 5);
+    })).toBeCloseTo(1, 5);
   });
 
   it('converts manually logged focus minutes into account pomodoro equivalents', () => {

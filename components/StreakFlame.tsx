@@ -28,17 +28,31 @@ const getAnimationFrames = () => {
 interface StreakFlameProps {
   className?: string;
   delayMs?: number;
+  paused?: boolean;
 }
 
-const StreakFlame: React.FC<StreakFlameProps> = ({ className = '', delayMs = 0 }) => {
+const StreakFlame: React.FC<StreakFlameProps> = ({ className = '', delayMs = 0, paused = false }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const animationRef = useRef<ReturnType<typeof lottie.loadAnimation> | null>(null);
+  const startTimeoutRef = useRef<number | null>(null);
+  const startDelayRemainingMsRef = useRef(0);
+  const startDelayStartedAtMsRef = useRef<number | null>(null);
+  const hasStartedRef = useRef(false);
   const prefersReducedMotion = usePrefersReducedMotion();
   const frames = useMemo(getAnimationFrames, []);
+
+  const clearStartTimeout = () => {
+    if (startTimeoutRef.current === null) return;
+    window.clearTimeout(startTimeoutRef.current);
+    startTimeoutRef.current = null;
+    startDelayStartedAtMsRef.current = null;
+  };
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
+    clearStartTimeout();
     container.innerHTML = '';
     const animation = lottie.loadAnimation({
       container,
@@ -51,22 +65,72 @@ const StreakFlame: React.FC<StreakFlameProps> = ({ className = '', delayMs = 0 }
         progressiveLoad: true,
       },
     });
+    animationRef.current = animation;
     animation.setSpeed(1);
-    let timeoutId: number | null = null;
+    hasStartedRef.current = false;
+    startDelayRemainingMsRef.current = Math.max(0, delayMs);
+    startDelayStartedAtMsRef.current = null;
 
     if (prefersReducedMotion) {
       animation.goToAndStop(frames.finalFrame, true);
-    } else {
-      timeoutId = window.setTimeout(() => {
-        animation.playSegments([frames.firstFrame, frames.finalFrame], true);
-      }, Math.max(0, delayMs));
     }
 
     return () => {
-      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      clearStartTimeout();
       animation.destroy();
+      animationRef.current = null;
     };
   }, [delayMs, frames, prefersReducedMotion]);
+
+  useEffect(() => {
+    if (prefersReducedMotion) return;
+    const animation = animationRef.current;
+    if (!animation) return;
+
+    const getNowMs = () => (
+      typeof window.performance?.now === 'function'
+        ? window.performance.now()
+        : Date.now()
+    );
+
+    const startAnimation = () => {
+      clearStartTimeout();
+      hasStartedRef.current = true;
+      startDelayRemainingMsRef.current = 0;
+      animation.playSegments([frames.firstFrame, frames.finalFrame], true);
+    };
+
+    const scheduleStart = () => {
+      clearStartTimeout();
+      const remainingMs = Math.max(0, startDelayRemainingMsRef.current);
+      if (remainingMs <= 0) {
+        startAnimation();
+        return;
+      }
+
+      startDelayStartedAtMsRef.current = getNowMs();
+      startTimeoutRef.current = window.setTimeout(startAnimation, remainingMs);
+    };
+
+    if (paused) {
+      if (!hasStartedRef.current && startTimeoutRef.current !== null && startDelayStartedAtMsRef.current !== null) {
+        startDelayRemainingMsRef.current = Math.max(
+          0,
+          startDelayRemainingMsRef.current - (getNowMs() - startDelayStartedAtMsRef.current),
+        );
+      }
+      clearStartTimeout();
+      if (hasStartedRef.current) animation.pause();
+      return;
+    }
+
+    if (hasStartedRef.current) {
+      animation.play();
+      return;
+    }
+
+    scheduleStart();
+  }, [delayMs, frames, paused, prefersReducedMotion]);
 
   return <div ref={containerRef} className={`doro-streak-flame ${className}`} aria-hidden="true" />;
 };

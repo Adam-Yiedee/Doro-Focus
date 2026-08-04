@@ -45,12 +45,14 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
 
   class FakeAudioBuffer {
     numberOfChannels: number;
+    sampleRate: number;
     duration = 1;
     private readonly channels: Float32Array[];
 
-    constructor(channels: number, frames: number) {
+    constructor(channels: number, frames: number, sampleRate = 44_100) {
       this.numberOfChannels = channels;
-      this.duration = frames / 44_100;
+      this.sampleRate = sampleRate;
+      this.duration = frames / sampleRate;
       this.channels = Array.from({ length: channels }, () => new Float32Array(frames));
     }
 
@@ -129,8 +131,8 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
       });
     }
 
-    createBuffer(channels: number, frameCount: number) {
-      return new FakeAudioBuffer(channels, frameCount);
+    createBuffer(channels: number, frameCount: number, sampleRate = this.sampleRate) {
+      return new FakeAudioBuffer(channels, frameCount, sampleRate);
     }
 
     createBufferSource() {
@@ -150,7 +152,7 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
     }
 
     decodeAudioData(_buffer: ArrayBuffer) {
-      return Promise.resolve(new FakeAudioBuffer(1, 44_100));
+      return Promise.resolve(new FakeAudioBuffer(1, 44_100, this.sampleRate));
     }
   }
 
@@ -285,6 +287,31 @@ describe('focus sound engine', () => {
     expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBeCloseTo(0.055 * 2.35, 5);
   });
 
+  it('uses a long faded loop buffer for focus ambience so the seam does not click', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const sound = await import('./sound');
+
+    await sound.startFocusSound('brown-deep', 100);
+
+    const buffer = fakeAudio.startedSources[0].buffer;
+    expect(buffer?.duration).toBeGreaterThan(12);
+
+    const channel = buffer!.getChannelData(0);
+    expect(channel[0]).toBeCloseTo(0, 8);
+    expect(channel[channel.length - 1]).toBeCloseTo(0, 8);
+  });
+
+  it('reuses generated focus noise buffers when switching presets with the same noise color', async () => {
+    const fakeAudio = installFakeAudioContext();
+    const sound = await import('./sound');
+
+    await sound.startFocusSound('white-soft', 100);
+    await sound.startFocusSound('white-bright', 80);
+
+    expect(fakeAudio.startedSources).toHaveLength(2);
+    expect(fakeAudio.startedSources[1].buffer).toBe(fakeAudio.startedSources[0].buffer);
+  });
+
   it('treats zero volume as a true mute target', async () => {
     const fakeAudio = installFakeAudioContext();
     const sound = await import('./sound');
@@ -360,6 +387,34 @@ describe('focus sound engine', () => {
     expect(fakeAudio.startedSources).toHaveLength(scheduledBeforeWhooshLoaded);
   });
 
+  it('does not schedule a streak sound later when the audio context stays locked', async () => {
+    vi.useFakeTimers();
+    const fakeAudio = installFakeAudioContext({ resumeAsync: true });
+    const sound = await import('./sound');
+
+    const pendingPlay = sound.playFocusStreakMomentSound();
+    await vi.advanceTimersByTimeAsync(181);
+
+    await expect(pendingPlay).resolves.toBe(false);
+    expect(fakeAudio.startedSources).toHaveLength(0);
+    expect(fakeAudio.startedOscillators).toHaveLength(0);
+  });
+
+  it('uses on-time fallback cues while streak samples are still preloading', async () => {
+    const fakeAudio = installFakeAudioContext();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    const sound = await import('./sound');
+
+    void sound.preloadFocusStreakMomentSounds();
+    await sound.playFocusStreakMomentSound([{ status: 'active' }], { streakIncreased: true });
+
+    const startedAt = fakeAudio.startedSources.map(source => source.startedAt);
+    expect(startedAt.some(time => time !== null && Math.abs(time - 0.025) < 0.00001)).toBe(true);
+    expect(startedAt.some(time => time !== null && Math.abs(time - 0.645) < 0.00001)).toBe(true);
+    expect(startedAt.some(time => time !== null && Math.abs(time - 3.145) < 0.00001)).toBe(true);
+    expect(fakeAudio.startedOscillators.length).toBeGreaterThan(0);
+  });
+
   it('maps streak day slots from low pitch up to the original sample pitch', async () => {
     const sound = await import('./sound');
 
@@ -380,7 +435,7 @@ describe('focus sound engine', () => {
     expect(notes[1].playbackRate).toBeCloseTo(sound.getFocusStreakDayNotePlaybackRate(2), 5);
   });
 
-  it('preloads the small notification and interaction samples before the visual moment needs them', async () => {
+  it('preloads the streak moment samples before the visual moment needs them', async () => {
     const fetchMock = vi.fn(() => Promise.resolve({
       ok: true,
       arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
@@ -391,7 +446,7 @@ describe('focus sound engine', () => {
     await sound.preloadFocusStreakMomentSounds();
     await sound.preloadFocusStreakMomentSounds();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('plays the timer switch tap sample at normal pitch by default', async () => {
@@ -473,7 +528,7 @@ describe('focus sound engine', () => {
       Math.abs(source.playbackRate.value - 1) < 0.00001
     ));
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(appearanceSource?.startedAt).toBeCloseTo(0.025, 5);
     expect(fakeAudio.startedOscillators).toHaveLength(0);
   });
@@ -495,7 +550,7 @@ describe('focus sound engine', () => {
       await Promise.resolve();
     }
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(fakeAudio.startedSources.some(source => (
       Math.abs(source.playbackRate.value - sound.getFocusStreakDayNotePlaybackRate(0)) < 0.00001
     ))).toBe(true);
@@ -510,14 +565,18 @@ describe('focus sound engine', () => {
     const sound = await import('./sound');
     const hasFanfareSource = () => fakeAudio.startedSources.some(source => (
       Math.abs(source.playbackRate.value - 1) < 0.00001
+      && source.startedAt !== null
+      && Math.abs(source.startedAt - 2.465) < 0.00001
     ));
 
+    await sound.preloadFocusStreakMomentSounds();
     await sound.playFocusStreakMomentSound([], { streakIncreased: false });
     for (let index = 0; index < 40; index += 1) {
       await Promise.resolve();
     }
 
     expect(hasFanfareSource()).toBe(false);
+    fakeAudio.startedSources.length = 0;
 
     await sound.playFocusStreakMomentSound([], { streakIncreased: true });
     for (let index = 0; index < 40; index += 1) {
@@ -535,6 +594,7 @@ describe('focus sound engine', () => {
     })));
     const sound = await import('./sound');
 
+    await sound.preloadFocusStreakMomentSounds();
     await sound.playFocusStreakMomentSound([], { streakIncreased: true });
     for (let index = 0; index < 40; index += 1) {
       await Promise.resolve();
@@ -555,6 +615,7 @@ describe('focus sound engine', () => {
     })));
     const sound = await import('./sound');
 
+    await sound.preloadFocusStreakMomentSounds();
     await sound.playFocusStreakMomentSound();
     for (let index = 0; index < 40; index += 1) {
       await Promise.resolve();
@@ -572,6 +633,7 @@ describe('focus sound engine', () => {
     })));
     const sound = await import('./sound');
 
+    await sound.preloadFocusStreakMomentSounds();
     await sound.playFocusStreakMomentSound([{ status: 'active' }], { streakIncreased: true });
     for (let index = 0; index < 40; index += 1) {
       await Promise.resolve();
@@ -588,6 +650,7 @@ describe('focus sound engine', () => {
     })));
     const sound = await import('./sound');
 
+    await sound.preloadFocusStreakMomentSounds();
     await sound.playFocusStreakMomentSound([
       { status: 'active' },
       { status: 'active' },
@@ -608,6 +671,7 @@ describe('focus sound engine', () => {
     })));
     const sound = await import('./sound');
 
+    await sound.preloadFocusStreakMomentSounds();
     await sound.playFocusStreakMomentSound([
       { status: 'active' },
       { status: null },

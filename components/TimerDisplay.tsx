@@ -48,6 +48,18 @@ export const getBreakSquareDisplayOptions = ({
   };
 };
 
+export const getFocusTimerSingleLabel = ({
+  isReadyToStart,
+  activeTaskName,
+}: {
+  isReadyToStart: boolean;
+  activeTaskName?: string | null;
+}) => {
+  if (isReadyToStart) return 'Click to Start';
+  const normalizedTaskName = typeof activeTaskName === 'string' ? activeTaskName.trim() : '';
+  return normalizedTaskName || 'Focus Timer';
+};
+
 const clampPercent = (value: number, max: number = 1) => Math.max(0, Math.min(max, value));
 const clampUnit = (value: number) => Math.max(-1, Math.min(1, value));
 
@@ -529,10 +541,358 @@ const TimerSquare: React.FC<TimerSquareProps> = ({
   );
 };
 
+const FOCUS_TIMER_FLIP_ANIMATION_MS = 400;
+const requestDoroAnimationFrame = (callback: FrameRequestCallback) => {
+  if (typeof window.requestAnimationFrame === 'function') {
+    return window.requestAnimationFrame(callback);
+  }
+  return window.setTimeout(() => callback(Date.now()), 16);
+};
+const cancelDoroAnimationFrame = (handle: number) => {
+  if (typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(handle);
+    return;
+  }
+  window.clearTimeout(handle);
+};
+
+type FocusTimerSingleFace = 'work' | 'break';
+
+interface FocusTimerSingleDisplayProps {
+  workTime: number;
+  breakTime: number;
+  activeMode: 'work' | 'break';
+  focusLabel: string;
+  focusDisplayValue: string;
+  focusDisplayHidden: boolean;
+  breakLabel?: string;
+  breakDisplayValue?: string;
+  breakDisplayVariant: 'time' | 'word';
+  breakHideLabel: boolean;
+  isIdle: boolean;
+  disableBlur: boolean;
+  canStartOnClick: boolean;
+  onStart: () => void;
+  onToggleFocusHidden: () => void;
+}
+
+const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
+  workTime,
+  breakTime,
+  activeMode,
+  focusLabel,
+  focusDisplayValue,
+  focusDisplayHidden,
+  breakLabel,
+  breakDisplayValue,
+  breakDisplayVariant,
+  breakHideLabel,
+  isIdle,
+  disableBlur,
+  canStartOnClick,
+  onStart,
+  onToggleFocusHidden,
+}) => {
+  const [displaySide, setDisplaySide] = useState<'active' | 'alternate'>('active');
+  const [isFlipAnimating, setIsFlipAnimating] = useState(false);
+  const [flipDirection, setFlipDirection] = useState<'to-active' | 'to-alternate' | null>(null);
+  const [flipFaces, setFlipFaces] = useState<{ from: FocusTimerSingleFace; to: FocusTimerSingleFace } | null>(null);
+  const [isHoldPriming, setIsHoldPriming] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const [tilt, setTilt] = useState<TimerTiltState>(TIMER_TILT_REST);
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const flipStepTimeoutRef = useRef<number | null>(null);
+  const flipRunIdRef = useRef(0);
+  const flipAnimatingRef = useRef(false);
+  const holdTimeoutRef = useRef<number | null>(null);
+  const tiltFrameRef = useRef<number | null>(null);
+  const pendingTiltRef = useRef<TimerTiltState>(TIMER_TILT_REST);
+  const suppressClickRef = useRef(false);
+
+  const activeFace: FocusTimerSingleFace = activeMode === 'break' ? 'break' : 'work';
+  const alternateFace: FocusTimerSingleFace = activeFace === 'work' ? 'break' : 'work';
+  const visibleFace = displaySide === 'active' ? activeFace : alternateFace;
+  const isFlipped = displaySide === 'alternate';
+
+  const clearFlipStepTimeout = () => {
+    flipRunIdRef.current += 1;
+    if (flipStepTimeoutRef.current !== null) {
+      window.clearTimeout(flipStepTimeoutRef.current);
+      flipStepTimeoutRef.current = null;
+    }
+  };
+
+  const clearHoldTimeout = () => {
+    if (holdTimeoutRef.current !== null) {
+      window.clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+  };
+
+  const clearTiltFrame = () => {
+    if (tiltFrameRef.current !== null) {
+      cancelDoroAnimationFrame(tiltFrameRef.current);
+      tiltFrameRef.current = null;
+    }
+  };
+
+  const commitTilt = (nextTilt: TimerTiltState) => {
+    pendingTiltRef.current = nextTilt;
+    if (tiltFrameRef.current !== null) return;
+
+    tiltFrameRef.current = requestDoroAnimationFrame(() => {
+      tiltFrameRef.current = null;
+      const pendingTilt = pendingTiltRef.current;
+      setTilt(prev => {
+        const didMove = Math.abs(prev.x - pendingTilt.x) > 0.01
+          || Math.abs(prev.y - pendingTilt.y) > 0.01
+          || Math.abs(prev.intensity - pendingTilt.intensity) > 0.01;
+        return didMove ? pendingTilt : prev;
+      });
+    });
+  };
+
+  const resetTilt = () => {
+    pendingTiltRef.current = TIMER_TILT_REST;
+    clearTiltFrame();
+    setTilt(TIMER_TILT_REST);
+  };
+
+  const updateTiltFromPointer = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (prefersReducedMotion || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const x = clampUnit(((event.clientX - rect.left) / rect.width - 0.5) * 2);
+    const y = clampUnit(((event.clientY - rect.top) / rect.height - 0.5) * 2);
+    const easedX = Math.sign(x) * Math.pow(Math.abs(x), 0.86);
+    const easedY = Math.sign(y) * Math.pow(Math.abs(y), 0.86);
+
+    commitTilt({
+      x: easedX,
+      y: easedY,
+      intensity: Math.min(1, Math.hypot(easedX, easedY)),
+    });
+  };
+
+  useEffect(() => {
+    setDisplaySide('active');
+    setIsFlipAnimating(false);
+    setFlipDirection(null);
+    setFlipFaces(null);
+    flipAnimatingRef.current = false;
+    setIsHoldPriming(false);
+    setIsHovered(false);
+    resetTilt();
+    clearFlipStepTimeout();
+    clearHoldTimeout();
+  }, [activeMode]);
+
+  useEffect(() => () => {
+    clearFlipStepTimeout();
+    clearHoldTimeout();
+    clearTiltFrame();
+  }, []);
+
+  const beginFlip = () => {
+    if (flipAnimatingRef.current) return;
+    clearFlipStepTimeout();
+    const nextDisplaySide = displaySide === 'active' ? 'alternate' : 'active';
+    const nextFlipDirection = nextDisplaySide === 'alternate' ? 'to-alternate' : 'to-active';
+    const nextVisibleFace = nextDisplaySide === 'active' ? activeFace : alternateFace;
+    setFlipFaces({ from: visibleFace, to: nextVisibleFace });
+    setDisplaySide(nextDisplaySide);
+    setFlipDirection(nextFlipDirection);
+    if (prefersReducedMotion) {
+      setFlipDirection(null);
+      setFlipFaces(null);
+      return;
+    }
+    flipAnimatingRef.current = true;
+    setIsFlipAnimating(true);
+    flipStepTimeoutRef.current = window.setTimeout(() => {
+      flipStepTimeoutRef.current = null;
+      setFlipDirection(null);
+      setFlipFaces(null);
+      setIsFlipAnimating(false);
+      flipAnimatingRef.current = false;
+    }, FOCUS_TIMER_FLIP_ANIMATION_MS);
+  };
+
+  const beginHold = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (flipAnimatingRef.current) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+    if (event.pointerType === 'mouse' || event.pointerType === 'pen') {
+      setIsHovered(true);
+      updateTiltFromPointer(event);
+    }
+
+    clearHoldTimeout();
+    suppressClickRef.current = false;
+    if (visibleFace === 'work') setIsHoldPriming(true);
+    holdTimeoutRef.current = window.setTimeout(() => {
+      holdTimeoutRef.current = null;
+      setIsHoldPriming(false);
+      if (visibleFace !== 'work') return;
+      suppressClickRef.current = true;
+      onToggleFocusHidden();
+    }, 550);
+  };
+
+  const endHold = () => {
+    clearHoldTimeout();
+    setIsHoldPriming(false);
+  };
+
+  const handleClick = () => {
+    if (suppressClickRef.current) {
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      return;
+    }
+    if (canStartOnClick) {
+      onStart();
+      return;
+    }
+    beginFlip();
+  };
+
+  const focusLabelLength = focusLabel.trim().length;
+  const focusLabelLengthClass = focusLabelLength > 42
+    ? 'doro-focus-label-long'
+    : focusLabelLength > 18
+      ? 'doro-focus-label-medium'
+      : 'doro-focus-label-short';
+  const effectiveTilt = prefersReducedMotion || isFlipAnimating ? TIMER_TILT_REST : tilt;
+  const raisedByInteraction = isHovered || isFlipped || isFlipAnimating;
+  const baseTranslateY = isFlipAnimating ? -18 : isHovered ? -9 : isFlipped ? -6 : 0;
+  const hoverDepth = isHovered || isFlipAnimating ? 4 : 0;
+  const baseScale = isFlipAnimating ? 1.052 : isHovered ? 1.02 : isFlipped ? 1.012 : 1;
+  const tiltBoost = isHovered && !isFlipAnimating ? 1 + (effectiveTilt.intensity * 0.001) : 1;
+  const rotateX = -effectiveTilt.y * 1.5;
+  const rotateY = effectiveTilt.x * 1.68;
+  const focusCardStyle: React.CSSProperties = {
+    transform: `translate3d(0, ${baseTranslateY}px, ${hoverDepth}px) scale(${baseScale * tiltBoost}) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
+    transformOrigin: 'center',
+    transformStyle: 'preserve-3d',
+    transition: prefersReducedMotion
+      ? 'opacity 220ms ease'
+      : isFlipAnimating
+        ? `transform ${FOCUS_TIMER_FLIP_ANIMATION_MS}ms cubic-bezier(0.32,0,0.2,1), opacity 240ms ease`
+        : isHovered
+          ? 'transform 130ms ease-out, opacity 450ms ease'
+          : 'transform 420ms cubic-bezier(0.16,0.9,0.3,1), opacity 560ms cubic-bezier(0.2,0.8,0.2,1)',
+    willChange: 'transform',
+  };
+  const sheenStyle: React.CSSProperties = {
+    background: `radial-gradient(circle at ${50 + effectiveTilt.x * 7}% ${42 + effectiveTilt.y * 7}%, rgba(255,255,255,0.14), rgba(255,255,255,0.035) 32%, transparent 66%)`,
+    opacity: isHovered && !prefersReducedMotion ? 0.08 + (effectiveTilt.intensity * 0.03) : 0,
+    transform: 'translateZ(5px)',
+    transition: isHovered ? 'opacity 130ms ease-out, background 130ms ease-out' : 'opacity 420ms ease-out',
+  };
+  const cardInnerStyle: React.CSSProperties = {
+    boxShadow: getTimerTiltShadow(true, raisedByInteraction, effectiveTilt),
+    transition: prefersReducedMotion
+      ? 'box-shadow 220ms ease'
+      : isFlipAnimating
+        ? `box-shadow ${FOCUS_TIMER_FLIP_ANIMATION_MS}ms cubic-bezier(0.32,0,0.2,1)`
+        : isHovered
+          ? 'box-shadow 130ms ease-out'
+          : 'box-shadow 420ms cubic-bezier(0.16,0.9,0.3,1)',
+  };
+  const frontFace = isFlipAnimating && flipFaces
+    ? flipDirection === 'to-alternate'
+      ? flipFaces.from
+      : flipFaces.to
+    : visibleFace;
+  const backFace = isFlipAnimating && flipFaces
+    ? flipDirection === 'to-alternate'
+      ? flipFaces.to
+      : flipFaces.from
+    : visibleFace;
+
+  const renderFace = (face: FocusTimerSingleFace) => {
+    if (face === 'work') {
+      return (
+        <div className={`doro-focus-single-face-content ${focusDisplayHidden ? 'is-display-hidden' : ''}`}>
+          <div className="doro-focus-single-label">
+            <span>{focusLabel}</span>
+          </div>
+          <div className="doro-focus-single-value">
+            <span>{focusDisplayHidden ? focusLabel : focusDisplayValue || formatTime(workTime)}</span>
+          </div>
+          <div className="doro-focus-single-hint">
+            {canStartOnClick ? 'Click to Start' : focusDisplayHidden ? 'Hold to Show Timer' : 'Hold to Hide Timer'}
+          </div>
+        </div>
+      );
+    }
+
+    const breakValue = breakDisplayValue || formatTime(breakTime);
+    return (
+      <div className={`doro-focus-single-face-content is-break-face ${breakDisplayVariant === 'word' ? 'is-word-face' : ''}`}>
+        {!breakHideLabel && breakLabel && (
+          <div className="doro-focus-single-label">
+            <span>{breakLabel}</span>
+          </div>
+        )}
+        <div className="doro-focus-single-value">
+          <span>{breakValue}</span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <button
+      type="button"
+      aria-label={canStartOnClick ? 'Start focus timer' : visibleFace === 'work' ? 'Show break timer' : 'Show active timer'}
+      className={`doro-focus-single-card ${focusLabelLengthClass} ${isFlipped ? 'is-flipped' : ''} ${isFlipAnimating ? 'is-flip-animating' : ''} ${flipDirection ? `is-flip-${flipDirection}` : ''} ${isHoldPriming ? 'is-hold-priming' : ''} ${canStartOnClick ? 'is-ready-to-start' : ''} ${isIdle ? 'is-idle' : ''} ${disableBlur ? 'is-blur-disabled' : ''}`}
+      style={focusCardStyle}
+      onPointerEnter={(event) => {
+        if (event.pointerType === 'mouse' || event.pointerType === 'pen') {
+          setIsHovered(true);
+          updateTiltFromPointer(event);
+        }
+      }}
+      onPointerMove={updateTiltFromPointer}
+      onPointerDown={beginHold}
+      onPointerUp={endHold}
+      onPointerLeave={() => {
+        setIsHovered(false);
+        resetTilt();
+        endHold();
+      }}
+      onPointerCancel={() => {
+        setIsHovered(false);
+        resetTilt();
+        endHold();
+      }}
+      onClick={handleClick}
+    >
+      <span className="doro-focus-single-card-inner" style={cardInnerStyle}>
+        <span className="doro-focus-single-face doro-focus-single-front">
+          <span className="doro-focus-single-sheen" style={sheenStyle} />
+          {renderFace(frontFace)}
+        </span>
+        <span className="doro-focus-single-face doro-focus-single-back">
+          <span className="doro-focus-single-sheen" style={sheenStyle} />
+          {renderFace(backFace)}
+        </span>
+      </span>
+    </button>
+  );
+};
+
 type IdlePresetMenuValue = Exclude<TimerPreset, 'custom'>;
 type IdlePresetMenuView = 'choices' | 'timer' | 'delayed';
 const START_SESSION_MENU_CLOSE_SETTLE_MS = 660;
 const START_SESSION_EXIT_DURATION_MS = 840;
+const TIMER_MODE_TRANSITION_OUT_MS = 300;
+const TIMER_MODE_TRANSITION_IN_MS = 520;
 
 interface IdlePresetControlProps {
   isRendered: boolean;
@@ -1027,6 +1387,7 @@ const TimerDisplay: React.FC = () => {
     activateMode,
     toggleTimerLock,
     restartActiveTimer,
+    startTimer,
     activeTask,
     activeColor,
     settings,
@@ -1051,6 +1412,7 @@ const TimerDisplay: React.FC = () => {
   const isPressingResetRef = useRef(false);
   const focusDisplaySessionRef = useRef<string | null>(null);
   const focusDisplaySecondsRef = useRef(0);
+  const timerModeTransitionTimeoutsRef = useRef<number[]>([]);
 
   const clearResetTimeout = () => {
     if (resetTimeoutRef.current) {
@@ -1102,16 +1464,80 @@ const TimerDisplay: React.FC = () => {
   };
 
   const isFocusTimerPreset = settings.timerPreset === 'focus';
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const [renderedIsFocusTimerPreset, setRenderedIsFocusTimerPreset] = useState(isFocusTimerPreset);
+  const renderedFocusTimerPresetRef = useRef(isFocusTimerPreset);
+  const [timerModeTransition, setTimerModeTransition] = useState<{
+    phase: 'out' | 'in';
+    fromFocus: boolean;
+    toFocus: boolean;
+  } | null>(null);
+  const isFocusTimerReadyToStart = renderedIsFocusTimerPreset && isIdle && !timerStarted;
+  const focusTimerLabel = getFocusTimerSingleLabel({
+    isReadyToStart: isFocusTimerReadyToStart,
+    activeTaskName: activeTask?.name,
+  });
+
+  const clearTimerModeTransitionTimeouts = () => {
+    timerModeTransitionTimeoutsRef.current.forEach(timeoutId => {
+      window.clearTimeout(timeoutId);
+    });
+    timerModeTransitionTimeoutsRef.current = [];
+  };
+
+  const setRenderedFocusTimerPreset = (nextIsFocusTimerPreset: boolean) => {
+    renderedFocusTimerPresetRef.current = nextIsFocusTimerPreset;
+    setRenderedIsFocusTimerPreset(nextIsFocusTimerPreset);
+  };
+
   useEffect(() => {
-    if (!isFocusTimerPreset) setIsFocusTimerHidden(false);
-  }, [isFocusTimerPreset]);
+    const fromFocus = renderedFocusTimerPresetRef.current;
+    const toFocus = isFocusTimerPreset;
+
+    if (fromFocus === toFocus) {
+      clearTimerModeTransitionTimeouts();
+      setTimerModeTransition(null);
+      return undefined;
+    }
+
+    clearTimerModeTransitionTimeouts();
+
+    if (prefersReducedMotion) {
+      setRenderedFocusTimerPreset(toFocus);
+      setTimerModeTransition(null);
+      return undefined;
+    }
+
+    setTimerModeTransition({ phase: 'out', fromFocus, toFocus });
+
+    const swapTimeout = window.setTimeout(() => {
+      setRenderedFocusTimerPreset(toFocus);
+      setTimerModeTransition({ phase: 'in', fromFocus, toFocus });
+    }, TIMER_MODE_TRANSITION_OUT_MS);
+
+    const settleTimeout = window.setTimeout(() => {
+      setTimerModeTransition(null);
+    }, TIMER_MODE_TRANSITION_OUT_MS + TIMER_MODE_TRANSITION_IN_MS + 40);
+
+    timerModeTransitionTimeoutsRef.current = [swapTimeout, settleTimeout];
+    return undefined;
+  }, [isFocusTimerPreset, prefersReducedMotion]);
+
+  useEffect(() => () => {
+    clearTimerModeTransitionTimeouts();
+  }, []);
+
+  useEffect(() => {
+    if (!isFocusTimerPreset && !renderedIsFocusTimerPreset) setIsFocusTimerHidden(false);
+  }, [isFocusTimerPreset, renderedIsFocusTimerPreset]);
 
   const toggleFocusTimerHidden = () => {
     setIsFocusTimerHidden(prev => !prev);
   };
 
+  const shouldComputeFocusTimerDisplay = isFocusTimerPreset || renderedIsFocusTimerPreset;
   const focusTimerNowMs = Date.now();
-  const rawFocusTimerDisplaySeconds = isFocusTimerPreset
+  const rawFocusTimerDisplaySeconds = shouldComputeFocusTimerDisplay
     ? getFocusTimerDisplaySeconds({
       logs,
       sessionStartTime,
@@ -1126,20 +1552,20 @@ const TimerDisplay: React.FC = () => {
       graceOpen,
     })
     : 0;
-  if (!isFocusTimerPreset) {
+  if (!shouldComputeFocusTimerDisplay) {
     focusDisplaySessionRef.current = null;
     focusDisplaySecondsRef.current = 0;
   } else if (focusDisplaySessionRef.current !== sessionStartTime) {
     focusDisplaySessionRef.current = sessionStartTime;
     focusDisplaySecondsRef.current = 0;
   }
-  if (isFocusTimerPreset && !sessionStartTime && isIdle) {
+  if (shouldComputeFocusTimerDisplay && !sessionStartTime && isIdle) {
     focusDisplaySecondsRef.current = 0;
   }
-  const focusTimerDisplaySeconds = isFocusTimerPreset
+  const focusTimerDisplaySeconds = shouldComputeFocusTimerDisplay
     ? Math.max(rawFocusTimerDisplaySeconds + focusTimerDisplayOffsetSeconds, focusDisplaySecondsRef.current)
     : 0;
-  if (isFocusTimerPreset) {
+  if (shouldComputeFocusTimerDisplay) {
     focusDisplaySecondsRef.current = focusTimerDisplaySeconds;
   }
   const focusTimerDisplayValue = formatTime(focusTimerDisplaySeconds);
@@ -1151,7 +1577,7 @@ const TimerDisplay: React.FC = () => {
   })();
   const isDelayedStartCountdown = Boolean(delayedStartBeginLabel);
   const breakSquareDisplayOptions = getBreakSquareDisplayOptions({
-    isFocusTimerPreset,
+    isFocusTimerPreset: renderedIsFocusTimerPreset,
     isDelayedStartCountdown,
   });
 
@@ -1215,6 +1641,9 @@ const TimerDisplay: React.FC = () => {
     ? 'gap-4'
     : 'gap-6 md:gap-10 lg:gap-24';
   const idlePresetSurfaceColor = getMutedSurfaceColor(activeColor || activeTask?.color, DEFAULT_WORK_SURFACE);
+  const timerModeTransitionClassName = timerModeTransition
+    ? `is-${timerModeTransition.phase} ${timerModeTransition.fromFocus ? 'is-from-focus' : 'is-from-dual'} ${timerModeTransition.toFocus ? 'is-to-focus' : 'is-to-dual'}`
+    : '';
 
   return (
     <div className="relative w-full flex flex-col items-center py-4 px-2">
@@ -1254,6 +1683,566 @@ const TimerDisplay: React.FC = () => {
         .animate-wave-slow { animation: wave-rotate 40s linear infinite; }
         .animate-wave-med { animation: wave-rotate 32s linear infinite reverse; }
         .animate-wave-fast { animation: wave-rotate 25s linear infinite; }
+        @keyframes doro-focus-single-enter {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 18px, 0) scale(0.965);
+            filter: blur(8px);
+          }
+          58% {
+            opacity: 1;
+            filter: blur(0);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        @keyframes doro-focus-single-hold-prime {
+          0% {
+            clip-path: inset(0 100% 0 0 round 2.4rem);
+            opacity: 0.35;
+          }
+          100% {
+            clip-path: inset(0 0 0 0 round 2.4rem);
+            opacity: 1;
+          }
+        }
+        @keyframes doro-focus-single-hidden-value-in {
+          0% {
+            opacity: 0.08;
+            transform: translate3d(0, 0.9rem, 0) scale(0.82);
+            filter: blur(10px);
+          }
+          58% {
+            opacity: 1;
+            filter: blur(0);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        @keyframes doro-focus-single-flip-to-alternate {
+          0% {
+            transform: translateZ(0) rotateY(0deg);
+          }
+          50% {
+            transform: translateZ(8px) rotateY(-90deg);
+          }
+          100% {
+            transform: translateZ(0) rotateY(-180deg);
+          }
+        }
+        @keyframes doro-focus-single-flip-to-active {
+          0% {
+            transform: translateZ(0) rotateY(-180deg);
+          }
+          50% {
+            transform: translateZ(8px) rotateY(-90deg);
+          }
+          100% {
+            transform: translateZ(0) rotateY(0deg);
+          }
+        }
+        @keyframes doro-timer-mode-blur-out {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+          48% {
+            opacity: 0.78;
+            transform: translate3d(0, 2px, 0) scale(0.975);
+            filter: blur(12px);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, 8px, 0) scale(0.9);
+            filter: blur(30px);
+          }
+        }
+        @keyframes doro-timer-mode-focus-in {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 18px, 0) scale(0.88);
+            filter: blur(36px);
+          }
+          58% {
+            opacity: 1;
+            transform: translate3d(0, 1px, 0) scale(1.006);
+            filter: blur(6px);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        @keyframes doro-timer-mode-dual-in {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 12px, 0) scale(0.93);
+            filter: blur(32px);
+          }
+          58% {
+            opacity: 1;
+            transform: translate3d(0, 1px, 0) scale(1.004);
+            filter: blur(6px);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0);
+          }
+        }
+        .doro-timer-mode-stage {
+          display: flex;
+          width: 100%;
+          align-items: center;
+          justify-content: center;
+          perspective: 1200px;
+        }
+        .doro-timer-mode-content {
+          width: 100%;
+          transform-origin: center;
+          will-change: opacity, transform, filter;
+        }
+        .doro-timer-mode-stage.is-out .doro-timer-mode-content {
+          pointer-events: none;
+          animation: doro-timer-mode-blur-out ${TIMER_MODE_TRANSITION_OUT_MS}ms cubic-bezier(0.4, 0, 0.2, 1) both;
+        }
+        .doro-timer-mode-stage.is-in.is-to-focus .doro-timer-mode-content {
+          animation: doro-timer-mode-focus-in ${TIMER_MODE_TRANSITION_IN_MS}ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        .doro-timer-mode-stage.is-in.is-to-dual .doro-timer-mode-content {
+          animation: doro-timer-mode-dual-in ${TIMER_MODE_TRANSITION_IN_MS}ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        .doro-timer-mode-stage.is-out .doro-focus-single-stage,
+        .doro-timer-mode-stage.is-in .doro-focus-single-stage,
+        .doro-timer-mode-stage.is-out .doro-focus-single-start-slot,
+        .doro-timer-mode-stage.is-in .doro-focus-single-start-slot {
+          animation: none;
+        }
+        .doro-focus-single-stage {
+          display: flex;
+          width: 100%;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 1.05rem;
+          perspective: 1200px;
+          animation: doro-focus-single-enter 760ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        .doro-focus-single-start-slot {
+          display: flex;
+          min-height: 2.75rem;
+          align-items: center;
+          justify-content: center;
+          animation: doro-focus-single-enter 760ms cubic-bezier(0.16, 1, 0.3, 1) 80ms both;
+        }
+        .doro-focus-single-card {
+          position: relative;
+          display: block;
+          width: min(100%, 19rem);
+          max-width: min(82vw, 24rem);
+          aspect-ratio: 1;
+          padding: 0;
+          border: 0;
+          border-radius: 3rem;
+          background: transparent;
+          color: #fff;
+          cursor: pointer;
+          font: inherit;
+          transform: translate3d(0, 0, 0) scale(1);
+          transform-style: preserve-3d;
+          overflow: visible;
+          filter: none;
+          box-shadow: none;
+          will-change: transform;
+        }
+        .doro-focus-single-card::after {
+          content: '';
+          position: absolute;
+          inset: 0.95rem;
+          z-index: 5;
+          border-radius: 2.35rem;
+          border: 1px solid rgba(255, 255, 255, 0.24);
+          opacity: 0;
+          pointer-events: none;
+          transform: scale(0.965);
+          box-shadow:
+            0 0 0 0 rgba(255, 255, 255, 0),
+            inset 0 0 34px rgba(255, 255, 255, 0.04);
+          transition:
+            opacity 240ms ease,
+            transform 540ms cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow 540ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-focus-single-card.is-hold-priming::after {
+          opacity: 1;
+          transform: scale(1);
+          box-shadow:
+            0 0 40px -18px rgba(255, 255, 255, 0.52),
+            inset 0 0 38px rgba(255, 255, 255, 0.08);
+          animation: doro-focus-single-hold-prime 550ms linear both;
+        }
+        .doro-focus-single-card.is-flip-animating::after {
+          opacity: 0;
+          transform: scale(0.965);
+          animation: none;
+        }
+        .doro-focus-single-card:hover,
+        .doro-focus-single-card:focus-visible {
+          outline: none;
+        }
+        .doro-focus-single-card-inner {
+          position: absolute;
+          inset: 0;
+          display: block;
+          border-radius: inherit;
+          transform: rotateY(0deg);
+          transform-origin: center;
+          transform-style: preserve-3d;
+          transform-box: border-box;
+          isolation: isolate;
+          will-change: transform;
+        }
+        .doro-focus-single-card.is-flipped .doro-focus-single-card-inner {
+          transform: rotateY(-180deg);
+        }
+        .doro-focus-single-card.is-flip-to-alternate .doro-focus-single-card-inner {
+          animation: doro-focus-single-flip-to-alternate 400ms cubic-bezier(0.32, 0, 0.2, 1) both;
+        }
+        .doro-focus-single-card.is-flip-to-active .doro-focus-single-card-inner {
+          animation: doro-focus-single-flip-to-active 400ms cubic-bezier(0.32, 0, 0.2, 1) both;
+        }
+        .doro-focus-single-face {
+          position: absolute;
+          inset: 0;
+          z-index: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          border: 1px solid rgba(255, 255, 255, 0.22);
+          border-radius: inherit;
+          background: rgba(255, 255, 255, 0.1);
+          box-shadow:
+            0 0 0 1px rgba(255, 255, 255, 0.3),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12),
+            inset 0 -24px 46px rgba(0, 0, 0, 0.08),
+            inset 0 0 60px rgba(255, 255, 255, 0.1);
+          opacity: 1;
+          pointer-events: none;
+          backface-visibility: hidden;
+          -webkit-backface-visibility: hidden;
+          isolation: isolate;
+          transform-style: preserve-3d;
+          transition:
+            background-color 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+            border-color 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+            box-shadow 560ms cubic-bezier(0.16, 0.9, 0.3, 1);
+        }
+        .doro-focus-single-front {
+          transform: rotateY(0deg) translateZ(0.12px);
+          opacity: 1;
+          visibility: visible;
+        }
+        .doro-focus-single-back {
+          transform: rotateY(180deg) translateZ(0.12px);
+          opacity: 0;
+          visibility: hidden;
+        }
+        .doro-focus-single-card.is-flipped .doro-focus-single-front {
+          opacity: 0;
+          visibility: hidden;
+        }
+        .doro-focus-single-card.is-flipped .doro-focus-single-back {
+          opacity: 1;
+          visibility: visible;
+        }
+        .doro-focus-single-card:not(.is-flipped):not(.is-flip-animating) .doro-focus-single-back,
+        .doro-focus-single-card.is-flipped:not(.is-flip-animating) .doro-focus-single-front {
+          display: none;
+        }
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-face {
+          display: flex;
+          opacity: 1;
+          visibility: visible;
+          will-change: transform;
+        }
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-sheen {
+          opacity: 0 !important;
+        }
+        .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating) .doro-focus-single-face {
+          backdrop-filter: blur(24px);
+          -webkit-backdrop-filter: blur(24px);
+        }
+        .doro-focus-single-card:hover .doro-focus-single-face,
+        .doro-focus-single-card:focus-visible .doro-focus-single-face,
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-face {
+          border-color: rgba(255, 255, 255, 0.24);
+          background: rgba(255, 255, 255, 0.11);
+        }
+        .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating):hover .doro-focus-single-face,
+        .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating):focus-visible .doro-focus-single-face {
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+        .doro-focus-single-card.is-idle:not(:hover):not(:focus-visible) .doro-focus-single-face {
+          background: rgba(255, 255, 255, 0.09);
+          border-color: rgba(255, 255, 255, 0.2);
+          box-shadow:
+            0 0 0 1px rgba(255, 255, 255, 0.24),
+            inset 0 1px 0 rgba(255, 255, 255, 0.11),
+            inset 0 -24px 46px rgba(0, 0, 0, 0.075),
+            inset 0 0 54px rgba(255, 255, 255, 0.085);
+        }
+        .doro-focus-single-face::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          z-index: 0;
+          background:
+            linear-gradient(to top right, rgba(255,255,255,0.1), transparent 46%),
+            radial-gradient(circle at 50% 0%, rgba(255,255,255,0.12), transparent 54%);
+          opacity: 1;
+          pointer-events: none;
+          transform: translateZ(0.2px);
+        }
+        .doro-focus-single-sheen {
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          border-radius: inherit;
+          pointer-events: none;
+          mix-blend-mode: screen;
+        }
+        .doro-focus-single-face-content {
+          container-type: inline-size;
+          position: relative;
+          z-index: 1;
+          display: flex;
+          width: 100%;
+          height: 100%;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 2.35rem 1.05rem;
+          text-align: center;
+          backface-visibility: hidden;
+          -webkit-backface-visibility: hidden;
+          transform: translateZ(1.2px);
+          transition:
+            transform 400ms cubic-bezier(0.32, 0, 0.2, 1),
+            filter 260ms ease;
+        }
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-face-content {
+          transition: none;
+          filter: none;
+        }
+        .doro-focus-single-label {
+          max-width: 82%;
+          color: rgba(255, 255, 255, 0.88);
+          font-size: 0.75rem;
+          font-weight: 800;
+          line-height: 1.05;
+          letter-spacing: 0.2em;
+          text-transform: uppercase;
+          text-shadow: 0 9px 18px rgba(0, 0, 0, 0.32);
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+          transition:
+            opacity 360ms ease,
+            transform 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            filter 420ms ease,
+            color 420ms ease,
+            font-size 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            line-height 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            letter-spacing 520ms ease;
+          will-change: opacity, transform, filter, font-size, letter-spacing;
+        }
+        .doro-focus-single-label span {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .doro-focus-single-value {
+          display: flex;
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+          margin-top: 0.6rem;
+          align-items: center;
+          justify-content: center;
+          color: #fff;
+          font-size: clamp(4.05rem, 25cqw, 4.35rem);
+          font-weight: 800;
+          font-variant-numeric: tabular-nums;
+          line-height: 0.9;
+          letter-spacing: 0;
+          text-align: center;
+          text-shadow: 0 18px 28px rgba(0, 0, 0, 0.34);
+          transform: translate3d(0, 0, 0) scale(1);
+          filter: blur(0);
+          overflow: visible;
+          overflow-wrap: normal;
+          white-space: nowrap;
+          word-break: keep-all;
+          transition:
+            margin-top 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            opacity 360ms ease,
+            transform 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            filter 420ms ease,
+            font-size 680ms cubic-bezier(0.18, 0.9, 0.24, 1),
+            line-height 680ms cubic-bezier(0.18, 0.9, 0.24, 1);
+          will-change: opacity, transform, filter, font-size;
+        }
+        .doro-focus-single-value span {
+          display: inline-flex;
+          max-width: 100%;
+          min-width: 0;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          overflow-wrap: normal;
+          white-space: nowrap;
+          word-break: keep-all;
+        }
+        .doro-focus-single-face-content.is-display-hidden .doro-focus-single-label {
+          opacity: 0;
+          transform: translate3d(0, -0.85rem, 0) scale(0.86);
+          filter: blur(6px);
+        }
+        .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+          margin-top: 0;
+          font-size: 3.1rem;
+          line-height: 0.98;
+          text-transform: none;
+          transform: translate3d(0, -0.05rem, 0) scale(1);
+          animation: doro-focus-single-hidden-value-in 680ms cubic-bezier(0.18, 0.9, 0.24, 1) both;
+        }
+        .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value span {
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+          overflow-wrap: anywhere;
+          text-wrap: balance;
+          white-space: normal;
+        }
+        .doro-focus-single-card.doro-focus-label-short .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value span {
+          -webkit-line-clamp: 2;
+        }
+        .doro-focus-single-card.doro-focus-label-medium .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+          font-size: 2.45rem;
+          line-height: 0.98;
+        }
+        .doro-focus-single-card.doro-focus-label-medium .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value span {
+          -webkit-line-clamp: 3;
+        }
+        .doro-focus-single-card.doro-focus-label-long .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+          font-size: 1.7rem;
+          line-height: 1.04;
+        }
+        .doro-focus-single-card.doro-focus-label-long .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value span {
+          -webkit-line-clamp: 4;
+        }
+        .doro-focus-single-card.is-ready-to-start .doro-focus-single-label {
+          color: rgba(255, 255, 255, 0.96);
+        }
+        .doro-focus-single-face-content.is-break-face .doro-focus-single-value {
+          margin-top: 0;
+        }
+        .doro-focus-single-face-content.is-word-face .doro-focus-single-value {
+          font-size: 3.1rem;
+          text-transform: uppercase;
+        }
+        .doro-focus-single-hint {
+          position: absolute;
+          right: 1.8rem;
+          bottom: 1.7rem;
+          left: 1.8rem;
+          color: rgba(255, 255, 255, 0.68);
+          font-size: 0.62rem;
+          font-weight: 800;
+          line-height: 1;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          opacity: 0;
+          transform: translate3d(0, 0.65rem, 0);
+          transition:
+            opacity 260ms ease,
+            transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .doro-focus-single-card:hover .doro-focus-single-hint,
+        .doro-focus-single-card:focus-visible .doro-focus-single-hint {
+          opacity: 1;
+          transform: translate3d(0, 0, 0);
+        }
+        @media (min-width: 640px) {
+          .doro-focus-single-card {
+            width: min(100%, 20rem);
+          }
+          .doro-focus-single-value {
+            font-size: clamp(4.35rem, 25cqw, 4.85rem);
+          }
+          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value,
+          .doro-focus-single-face-content.is-word-face .doro-focus-single-value {
+            font-size: 3.55rem;
+          }
+          .doro-focus-single-card.doro-focus-label-medium .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 2.85rem;
+          }
+          .doro-focus-single-card.doro-focus-label-long .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 2.05rem;
+          }
+        }
+        @media (min-width: 768px) {
+          .doro-focus-single-label {
+            font-size: 0.875rem;
+          }
+          .doro-focus-single-value {
+            font-size: clamp(4.6rem, 25cqw, 6rem);
+          }
+          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 3.75rem;
+            line-height: 0.92;
+          }
+          .doro-focus-single-card.doro-focus-label-medium .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 3.15rem;
+          }
+          .doro-focus-single-card.doro-focus-label-long .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 2.35rem;
+          }
+          .doro-focus-single-face-content.is-word-face .doro-focus-single-value {
+            font-size: 3.75rem;
+          }
+        }
+        @media (min-width: 1024px) {
+          .doro-focus-single-card {
+            width: min(100%, 24rem);
+          }
+          .doro-focus-single-value {
+            font-size: clamp(5.4rem, 30cqw, 7.5rem);
+          }
+          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value,
+          .doro-focus-single-face-content.is-word-face .doro-focus-single-value {
+            font-size: 4.5rem;
+          }
+          .doro-focus-single-card.doro-focus-label-medium .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 3.45rem;
+          }
+          .doro-focus-single-card.doro-focus-label-long .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 2.55rem;
+          }
+          .doro-focus-single-stage {
+            gap: 1.2rem;
+          }
+        }
         .doro-focus-timer-shell {
           container-type: inline-size;
           isolation: isolate;
@@ -2294,6 +3283,19 @@ const TimerDisplay: React.FC = () => {
           animation: doro-reset-icon-spin 820ms linear infinite;
         }
         @media (prefers-reduced-motion: reduce) {
+          .doro-timer-mode-stage,
+          .doro-timer-mode-content,
+          .doro-focus-single-stage,
+          .doro-focus-single-start-slot,
+          .doro-focus-single-card,
+          .doro-focus-single-card::after,
+          .doro-focus-single-card-inner,
+          .doro-focus-single-face,
+          .doro-focus-single-sheen,
+          .doro-focus-single-face-content,
+          .doro-focus-single-label,
+          .doro-focus-single-value,
+          .doro-focus-single-hint,
           .doro-start-session-shell,
           .doro-start-session-button,
           .doro-start-session-menu,
@@ -2334,6 +3336,40 @@ const TimerDisplay: React.FC = () => {
           .doro-start-session-shell.is-exiting {
             opacity: 0;
             transform: scale(0.7);
+          }
+          .doro-timer-mode-stage,
+          .doro-timer-mode-content,
+          .doro-focus-single-stage,
+          .doro-focus-single-start-slot,
+          .doro-focus-single-card,
+          .doro-focus-single-card.is-flipped,
+          .doro-focus-single-card.is-flip-animating {
+            transform: none !important;
+            filter: none !important;
+          }
+          .doro-focus-single-card-inner,
+          .doro-focus-single-card.is-flipped .doro-focus-single-card-inner,
+          .doro-focus-single-sheen,
+          .doro-focus-single-face-content {
+            transform: none !important;
+            filter: none !important;
+          }
+          .doro-focus-single-face {
+            transform: none !important;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+          }
+          .doro-focus-single-card:not(.is-flipped) .doro-focus-single-front,
+          .doro-focus-single-card.is-flipped .doro-focus-single-back {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: none;
+          }
+          .doro-focus-single-face-content,
+          .doro-focus-single-card:hover,
+          .doro-focus-single-card:focus-visible {
+            transform: none !important;
           }
           .group:hover .doro-reset-icon {
             animation: none;
@@ -2413,58 +3449,100 @@ const TimerDisplay: React.FC = () => {
       )}
 
       {/* Timer Container */}
-      <div className={`flex flex-col md:flex-row items-center justify-center ${timerContainerGapClass} w-full mt-8 md:mt-0 transition-[gap] duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]`}>
-        <TimerSquare 
-            type="work" 
-            time={workTime}
-            maxTime={settings.workDuration}
-            activeMode={activeMode} 
-            label={activeTask ? activeTask.name : (isFocusTimerPreset ? 'Focus Timer' : 'Focus')}
-            displayValue={isFocusTimerPreset ? focusTimerDisplayValue : undefined}
-            displayHidden={isFocusTimerPreset && isFocusTimerHidden}
-            hideLiquid={isFocusTimerPreset}
-            isIdle={isIdle} 
-            isLocked={!isFocusTimerPreset && lockedTimerMode === 'work'}
+      <div className={`doro-timer-mode-stage ${timerModeTransitionClassName}`}>
+        <div className="doro-timer-mode-content">
+          {renderedIsFocusTimerPreset ? (
+            <div className="doro-focus-single-stage w-full mt-8 md:mt-0">
+          <FocusTimerSingleDisplay
+            workTime={workTime}
+            breakTime={breakTime}
+            activeMode={activeMode}
+            focusLabel={focusTimerLabel}
+            focusDisplayValue={focusTimerDisplayValue}
+            focusDisplayHidden={isFocusTimerHidden}
+            breakLabel={delayedStartBeginLabel}
+            breakDisplayValue={breakSquareDisplayOptions.displayValue}
+            breakDisplayVariant={breakSquareDisplayOptions.displayVariant}
+            breakHideLabel={breakSquareDisplayOptions.hideLabel}
+            isIdle={isIdle}
             disableBlur={settings.disableBlur}
-            enableLockControls
-            allowHoldWhenInactive={isFocusTimerPreset}
-            holdHintLabel={isFocusTimerPreset ? (isFocusTimerHidden ? 'Hold to Show Timer' : 'Hold to Hide Timer') : undefined}
-            promoteLabelWhenDisplayHidden={isFocusTimerPreset}
-            onActivate={activateMode} 
-            onToggleLock={toggleTimerLock}
-            onHoldAction={isFocusTimerPreset ? toggleFocusTimerHidden : undefined}
-        />
-        <IdlePresetControl
-            isRendered={shouldRenderIdlePresetControl}
-            isVisible={isIdlePresetControlVisible}
-            isOpen={isIdlePresetMenuOpen}
-            settings={settings}
-            surfaceColor={idlePresetSurfaceColor}
-            chromeButtonClass={chromeButtonClass}
-            topIconClass={topIconClass}
-            onOpenChange={setIsIdlePresetMenuOpen}
-            onSelectPreset={selectIdlePreset}
-            onSelectMiniPomoBlock={selectMiniPomoAutoStartBlock}
-            onToggleMiniPomoAutoStartSound={toggleMiniPomoAutoStartSound}
-            onStartDelayedStart={startDelayedStart}
-        />
-        <TimerSquare 
-            type="break" 
-            time={breakTime}
-            maxTime={settings.longBreakDuration}
-            activeMode={activeMode} 
-            label={delayedStartBeginLabel}
-            displayValue={breakSquareDisplayOptions.displayValue}
-            displayVariant={breakSquareDisplayOptions.displayVariant}
-            hideLabel={breakSquareDisplayOptions.hideLabel}
-            hideLiquid={breakSquareDisplayOptions.hideLiquid}
-            isIdle={isIdle} 
-            isLocked={!isFocusTimerPreset && lockedTimerMode === 'break'}
-            disableBlur={settings.disableBlur}
-            enableLockControls={!isFocusTimerPreset}
-            onActivate={activateMode} 
-            onToggleLock={toggleTimerLock}
-        />
+            canStartOnClick={isFocusTimerReadyToStart}
+            onStart={startTimer}
+            onToggleFocusHidden={toggleFocusTimerHidden}
+          />
+          <div className="doro-focus-single-start-slot">
+            <IdlePresetControl
+                isRendered={shouldRenderIdlePresetControl}
+                isVisible={isIdlePresetControlVisible}
+                isOpen={isIdlePresetMenuOpen}
+                settings={settings}
+                surfaceColor={idlePresetSurfaceColor}
+                chromeButtonClass={chromeButtonClass}
+                topIconClass={topIconClass}
+                onOpenChange={setIsIdlePresetMenuOpen}
+                onSelectPreset={selectIdlePreset}
+                onSelectMiniPomoBlock={selectMiniPomoAutoStartBlock}
+                onToggleMiniPomoAutoStartSound={toggleMiniPomoAutoStartSound}
+                onStartDelayedStart={startDelayedStart}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className={`flex flex-col md:flex-row items-center justify-center ${timerContainerGapClass} w-full mt-8 md:mt-0 transition-[gap] duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]`}>
+          <TimerSquare
+              type="work"
+              time={workTime}
+              maxTime={settings.workDuration}
+              activeMode={activeMode}
+              label={activeTask ? activeTask.name : (renderedIsFocusTimerPreset ? 'Focus Timer' : 'Focus')}
+              displayValue={renderedIsFocusTimerPreset ? focusTimerDisplayValue : undefined}
+              displayHidden={renderedIsFocusTimerPreset && isFocusTimerHidden}
+              hideLiquid={renderedIsFocusTimerPreset}
+              isIdle={isIdle}
+              isLocked={!renderedIsFocusTimerPreset && lockedTimerMode === 'work'}
+              disableBlur={settings.disableBlur}
+              enableLockControls
+              allowHoldWhenInactive={renderedIsFocusTimerPreset}
+              holdHintLabel={renderedIsFocusTimerPreset ? (isFocusTimerHidden ? 'Hold to Show Timer' : 'Hold to Hide Timer') : undefined}
+              promoteLabelWhenDisplayHidden={renderedIsFocusTimerPreset}
+              onActivate={activateMode}
+              onToggleLock={toggleTimerLock}
+              onHoldAction={renderedIsFocusTimerPreset ? toggleFocusTimerHidden : undefined}
+          />
+          <IdlePresetControl
+              isRendered={shouldRenderIdlePresetControl}
+              isVisible={isIdlePresetControlVisible}
+              isOpen={isIdlePresetMenuOpen}
+              settings={settings}
+              surfaceColor={idlePresetSurfaceColor}
+              chromeButtonClass={chromeButtonClass}
+              topIconClass={topIconClass}
+              onOpenChange={setIsIdlePresetMenuOpen}
+              onSelectPreset={selectIdlePreset}
+              onSelectMiniPomoBlock={selectMiniPomoAutoStartBlock}
+              onToggleMiniPomoAutoStartSound={toggleMiniPomoAutoStartSound}
+              onStartDelayedStart={startDelayedStart}
+          />
+          <TimerSquare
+              type="break"
+              time={breakTime}
+              maxTime={settings.longBreakDuration}
+              activeMode={activeMode}
+              label={delayedStartBeginLabel}
+              displayValue={breakSquareDisplayOptions.displayValue}
+              displayVariant={breakSquareDisplayOptions.displayVariant}
+              hideLabel={breakSquareDisplayOptions.hideLabel}
+              hideLiquid={breakSquareDisplayOptions.hideLiquid}
+              isIdle={isIdle}
+              isLocked={!renderedIsFocusTimerPreset && lockedTimerMode === 'break'}
+              disableBlur={settings.disableBlur}
+              enableLockControls={!renderedIsFocusTimerPreset}
+              onActivate={activateMode}
+              onToggleLock={toggleTimerLock}
+          />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
