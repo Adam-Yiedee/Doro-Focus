@@ -51,7 +51,7 @@ type NotificationBannerItem = {
   title: string;
   tone: 'join' | 'group' | 'friend' | 'encouragement';
   exiting: boolean;
-  exitStyle?: 'fade' | 'pop';
+  exitStyle?: 'fade' | 'pop' | 'alarm';
   focusFriendAction?: FocusFriendAction;
   status?: 'working' | 'success' | 'error';
   statusMessage?: string;
@@ -2127,6 +2127,52 @@ const Layout: React.FC = () => {
           0% { transform: scaleX(1); }
           100% { transform: scaleX(0); }
         }
+        @keyframes doroDelayedStartAlarmOut {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+            filter: blur(0) saturate(1) brightness(1);
+          }
+          24% {
+            opacity: 1;
+            transform: translate3d(0, 3px, 0) scale(1.012);
+            filter: blur(0) saturate(1.12) brightness(1.16);
+          }
+          58% {
+            opacity: 0.86;
+            transform: translate3d(0, -5px, 0) scale(0.982);
+            filter: blur(1px) saturate(0.94) brightness(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, -24px, 0) scale(0.92);
+            filter: blur(9px) saturate(0.78) brightness(0.9);
+          }
+        }
+        @keyframes doroDelayedStartAlarmContentOut {
+          0% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate3d(0, -6px, 0) scale(0.972);
+          }
+        }
+        @keyframes doroDelayedStartAlarmRingOut {
+          0% {
+            opacity: 0;
+            transform: scale(0.96);
+          }
+          26% {
+            opacity: 0.74;
+            transform: scale(1.01);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(1.1);
+          }
+        }
         @keyframes doroDailyWelcomeIn {
           0% {
             opacity: 0;
@@ -2507,6 +2553,34 @@ const Layout: React.FC = () => {
         }
         .doro-group-banner {
           animation: doroGroupBannerIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .doro-delayed-start-alarm-banner {
+          transform-origin: top center;
+          will-change: transform, opacity, filter;
+        }
+        .doro-delayed-start-alarm-banner::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          border-radius: inherit;
+          border: 1px solid rgba(255, 255, 255, 0.52);
+          box-shadow:
+            0 0 0 1px rgba(255, 255, 255, 0.12),
+            0 0 38px rgba(255, 255, 255, 0.28);
+          opacity: 0;
+          pointer-events: none;
+          transform-origin: center;
+        }
+        .doro-delayed-start-alarm-banner-exit {
+          pointer-events: none;
+          animation: doroDelayedStartAlarmOut ${GROUP_BANNER_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
+        }
+        .doro-delayed-start-alarm-banner-exit::after {
+          animation: doroDelayedStartAlarmRingOut ${GROUP_BANNER_EXIT_MS}ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .doro-delayed-start-alarm-banner-exit .doro-group-banner-content {
+          animation: doroDelayedStartAlarmContentOut ${GROUP_BANNER_EXIT_MS}ms cubic-bezier(0.45, 0, 0.2, 1) forwards;
         }
         .doro-focus-friend-action-banner {
           background: #c98290;
@@ -3183,6 +3257,9 @@ const Layout: React.FC = () => {
           .doro-encouragement-banner,
           .doro-encouragement-banner::before,
           .doro-encouragement-heart,
+          .doro-delayed-start-alarm-banner,
+          .doro-delayed-start-alarm-banner::after,
+          .doro-delayed-start-alarm-banner-exit,
           .doro-daily-welcome-banner,
           .doro-daily-welcome-banner-exit,
           .doro-focus-streak-overlay,
@@ -3213,6 +3290,14 @@ const Layout: React.FC = () => {
             opacity: 0 !important;
             transform: translateY(-8px) scale(0.98) !important;
             filter: none !important;
+          }
+          .doro-delayed-start-alarm-banner-exit {
+            opacity: 0 !important;
+            transform: translateY(-8px) scale(0.98) !important;
+            filter: none !important;
+          }
+          .doro-delayed-start-alarm-banner-exit::after {
+            opacity: 0 !important;
           }
           .doro-focus-streak-overlay.is-exiting {
             opacity: 0 !important;
@@ -3339,7 +3424,14 @@ const Layout: React.FC = () => {
           } as React.CSSProperties;
           const isJoinRequestBanner = notice.focusFriendAction?.type === 'join-request' && !notice.focusFriendAction.readAt;
           const isFocusFriendBannerBusy = focusFriendJoinBusyId === notice.id;
+          const isDelayedStartAlarmBanner = Boolean(notice.stopAlarmOnDismiss);
           const hasTimedProgress = !notice.persistUntilDismissed && !shouldHoldFocusFriendJoinBanner(notice.focusFriendAction);
+          const bannerDismissExitStyle: NotificationBannerItem['exitStyle'] = isDelayedStartAlarmBanner ? 'alarm' : 'pop';
+          const bannerExitClassName = notice.exiting
+            ? isDelayedStartAlarmBanner
+              ? 'doro-delayed-start-alarm-banner-exit'
+              : 'opacity-0 -translate-y-2 scale-[0.985]'
+            : 'opacity-100 translate-y-0 scale-100';
           const bannerMessage = notice.actorName.trim()
             ? (
                 <>
@@ -3398,11 +3490,11 @@ const Layout: React.FC = () => {
               key={notice.id}
               role={notice.dismissOnClick ? 'button' : undefined}
               tabIndex={notice.dismissOnClick ? 0 : undefined}
-              onClick={notice.dismissOnClick ? () => dismissBanner(notice.id, 'pop') : undefined}
+              onClick={notice.dismissOnClick ? () => dismissBanner(notice.id, bannerDismissExitStyle) : undefined}
               onKeyDown={notice.dismissOnClick ? (event) => {
                 if (event.key !== 'Enter' && event.key !== ' ') return;
                 event.preventDefault();
-                dismissBanner(notice.id, 'pop');
+                dismissBanner(notice.id, bannerDismissExitStyle);
               } : undefined}
               aria-label={notice.dismissOnClick ? `Dismiss ${notice.title}: ${notice.message}` : undefined}
               className={`doro-group-banner pointer-events-auto isolate relative overflow-hidden rounded-2xl border px-4 py-3 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.9)] transition-all duration-500 ${
@@ -3412,7 +3504,9 @@ const Layout: React.FC = () => {
                     ? 'doro-focus-friend-action-banner'
                   : 'border-white/25 bg-white/10'
               } ${settings.disableBlur || notice.tone === 'friend' ? '' : 'backdrop-blur-2xl'} ${
-                notice.exiting ? 'opacity-0 -translate-y-2 scale-[0.985]' : 'opacity-100 translate-y-0 scale-100'
+                bannerExitClassName
+              } ${
+                isDelayedStartAlarmBanner ? 'doro-delayed-start-alarm-banner' : ''
               } ${notice.dismissOnClick ? 'cursor-pointer outline-none hover:-translate-y-[1px] hover:border-white/35 hover:bg-white/[0.13] focus-visible:ring-2 focus-visible:ring-white/45' : ''}`}
               style={{ animationDelay: `${i * 70}ms` }}
             >

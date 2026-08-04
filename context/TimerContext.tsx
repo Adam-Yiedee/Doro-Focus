@@ -5886,13 +5886,20 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     isResolvingGraceRef.current = true;
 
     if (graceOpen && options?.logGraceAs) {
-        const graceStart = new Date(Date.now() - graceTotal * 1000);
+        const resolveNowMs = Date.now();
+        const runtimeGraceTotal = runtimeRef.current.phase === 'grace'
+          ? deriveRuntimeValues(runtimeRef.current, resolveNowMs).graceTotal
+          : graceTotal;
+        const loggedGraceTotal = Math.max(0, runtimeGraceTotal);
+        const graceStart = new Date(resolveNowMs - loggedGraceTotal * 1000);
         let taskOverride: Task | undefined = undefined;
         if (options.logGraceAs === 'work' && activeTask) taskOverride = activeTask;
         let reason = 'Grace Period';
         if (options.logGraceAs === 'work') reason = 'Grace Period (Working)';
         else if (options.logGraceAs === 'break') reason = 'Grace Period (Resting)';
-        logActivity(options.logGraceAs, graceStart, graceTotal, reason, taskOverride);
+        if (loggedGraceTotal > 0.5) {
+          logActivity(options.logGraceAs, graceStart, loggedGraceTotal, reason, taskOverride);
+        }
     }
     
     setGraceOpen(false);
@@ -6029,53 +6036,85 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     let sessionEndEntry: LogEntry | null = null;
     let pendingActivity: EndSessionPendingActivity | null = null;
-    const pendingWindow = getEndSessionPendingActivityWindow({
-      isIdle,
-      timerStarted,
-      activityStartMs: effectiveActivityStartMs,
-      effectiveEndMs,
-      allPauseActive,
-      allPauseStartTime,
+    const parsedSessionStartMs = typeof effectiveSessionStartTime === 'string' ? Date.parse(effectiveSessionStartTime) : NaN;
+    const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+    const pendingActiveCategoryId = activeCategoryId;
+    const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
+
+    const createSessionEndEntry = (
+      type: TimerMode,
+      startMs: number,
+      endMs: number,
+      durationSeconds: number,
+    ): LogEntry => ({
+      type,
+      start: new Date(startMs).toISOString(),
+      end: new Date(endMs).toISOString(),
+      duration: durationSeconds,
+      reason: 'Session End',
+      source: 'timer',
+      task: selectedTask,
+      color: activeColor,
+      categoryId: pendingActiveCategoryId ?? null,
+      ...pendingActiveCategorySnapshot,
     });
 
-    if (pendingWindow) {
-      const parsedSessionStartMs = typeof effectiveSessionStartTime === 'string' ? Date.parse(effectiveSessionStartTime) : NaN;
-      const boundedPendingStartMs = Number.isFinite(parsedSessionStartMs)
-        ? Math.max(pendingWindow.startMs, parsedSessionStartMs)
-        : pendingWindow.startMs;
-      const boundedPendingEndMs = pendingWindow.endMs;
-      const boundedPendingDurationSeconds = (boundedPendingEndMs - boundedPendingStartMs) / 1000;
-      if (!Number.isFinite(boundedPendingDurationSeconds) || boundedPendingDurationSeconds <= 0.5) {
-        pendingActivity = null;
-        sessionEndEntry = null;
-      } else {
-        const pendingActiveCategoryId = activeCategoryId;
-        const pendingActiveCategorySnapshot = buildCategorySnapshot(categories, pendingActiveCategoryId ?? null);
-        const pendingActiveStartIso = new Date(boundedPendingStartMs).toISOString();
-        const pendingActiveEndIso = new Date(boundedPendingEndMs).toISOString();
-        const selectedTask = activeTask ? { id: activeTask.id, name: activeTask.name } : null;
+    const runtimeAtEnd = deriveRuntimeValues(runtimeRef.current, effectiveEndMs);
+    const focusedGraceDurationSeconds = (
+      graceOpen
+      && graceContext === 'afterWork'
+      && !isIdle
+    )
+      ? Math.max(0, runtimeRef.current.phase === 'grace' ? runtimeAtEnd.graceTotal : graceTotal)
+      : 0;
 
+    if (focusedGraceDurationSeconds > 0.5) {
+      const graceStartMs = effectiveEndMs - (focusedGraceDurationSeconds * 1000);
+      const boundedGraceStartMs = Number.isFinite(parsedSessionStartMs)
+        ? Math.max(graceStartMs, parsedSessionStartMs)
+        : graceStartMs;
+      const boundedGraceDurationSeconds = (effectiveEndMs - boundedGraceStartMs) / 1000;
+      if (Number.isFinite(boundedGraceDurationSeconds) && boundedGraceDurationSeconds > 0.5) {
         pendingActivity = {
-          mode: effectiveActiveMode,
-          durationSeconds: boundedPendingDurationSeconds,
-          startMs: boundedPendingStartMs,
-          endMs: boundedPendingEndMs,
+          mode: 'work',
+          durationSeconds: boundedGraceDurationSeconds,
+          startMs: boundedGraceStartMs,
+          endMs: effectiveEndMs,
           categoryId: pendingActiveCategoryId ?? null,
           ...pendingActiveCategorySnapshot,
         };
-        const nextSessionEndEntry: LogEntry = {
-          type: effectiveActiveMode,
-          start: pendingActiveStartIso,
-          end: pendingActiveEndIso,
-          duration: boundedPendingDurationSeconds,
-          reason: 'Session End',
-          source: 'timer',
-          task: selectedTask,
-          color: activeColor,
-          categoryId: pendingActiveCategoryId ?? null,
-          ...pendingActiveCategorySnapshot,
-        };
-        sessionEndEntry = nextSessionEndEntry;
+        sessionEndEntry = createSessionEndEntry('work', boundedGraceStartMs, effectiveEndMs, boundedGraceDurationSeconds);
+      }
+    } else {
+      const pendingWindow = getEndSessionPendingActivityWindow({
+        isIdle,
+        timerStarted,
+        activityStartMs: effectiveActivityStartMs,
+        effectiveEndMs,
+        allPauseActive,
+        allPauseStartTime,
+      });
+
+      if (pendingWindow) {
+        const boundedPendingStartMs = Number.isFinite(parsedSessionStartMs)
+          ? Math.max(pendingWindow.startMs, parsedSessionStartMs)
+          : pendingWindow.startMs;
+        const boundedPendingEndMs = pendingWindow.endMs;
+        const boundedPendingDurationSeconds = (boundedPendingEndMs - boundedPendingStartMs) / 1000;
+        if (!Number.isFinite(boundedPendingDurationSeconds) || boundedPendingDurationSeconds <= 0.5) {
+          pendingActivity = null;
+          sessionEndEntry = null;
+        } else {
+          pendingActivity = {
+            mode: effectiveActiveMode,
+            durationSeconds: boundedPendingDurationSeconds,
+            startMs: boundedPendingStartMs,
+            endMs: boundedPendingEndMs,
+            categoryId: pendingActiveCategoryId ?? null,
+            ...pendingActiveCategorySnapshot,
+          };
+          sessionEndEntry = createSessionEndEntry(effectiveActiveMode, boundedPendingStartMs, boundedPendingEndMs, boundedPendingDurationSeconds);
+        }
       }
     }
 
@@ -6233,6 +6272,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     blockGuestTimerControl,
     calculateLifetimeStats,
     categories,
+    graceContext,
+    graceOpen,
+    graceTotal,
     isIdle,
     logs,
     pastSessions,

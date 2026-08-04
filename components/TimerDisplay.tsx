@@ -602,6 +602,8 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
   const [tilt, setTilt] = useState<TimerTiltState>(TIMER_TILT_REST);
   const prefersReducedMotion = usePrefersReducedMotion();
   const flipStepTimeoutRef = useRef<number | null>(null);
+  const flipPrepareFrameRef = useRef<number | null>(null);
+  const flipCommitFrameRef = useRef<number | null>(null);
   const flipRunIdRef = useRef(0);
   const flipAnimatingRef = useRef(false);
   const holdTimeoutRef = useRef<number | null>(null);
@@ -615,11 +617,31 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
   const isFlipped = displaySide === 'alternate';
 
   const clearFlipStepTimeout = () => {
-    flipRunIdRef.current += 1;
     if (flipStepTimeoutRef.current !== null) {
       window.clearTimeout(flipStepTimeoutRef.current);
       flipStepTimeoutRef.current = null;
     }
+  };
+
+  const clearFlipAnimationFrames = () => {
+    if (flipPrepareFrameRef.current !== null) {
+      cancelDoroAnimationFrame(flipPrepareFrameRef.current);
+      flipPrepareFrameRef.current = null;
+    }
+    if (flipCommitFrameRef.current !== null) {
+      cancelDoroAnimationFrame(flipCommitFrameRef.current);
+      flipCommitFrameRef.current = null;
+    }
+  };
+
+  const finishFlip = (runId: number) => {
+    if (runId !== flipRunIdRef.current) return;
+    clearFlipStepTimeout();
+    clearFlipAnimationFrames();
+    setFlipDirection(null);
+    setFlipFaces(null);
+    setIsFlipAnimating(false);
+    flipAnimatingRef.current = false;
   };
 
   const clearHoldTimeout = () => {
@@ -685,39 +707,50 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
     setIsHoldPriming(false);
     setIsHovered(false);
     resetTilt();
+    flipRunIdRef.current += 1;
     clearFlipStepTimeout();
+    clearFlipAnimationFrames();
     clearHoldTimeout();
   }, [activeMode]);
 
   useEffect(() => () => {
+    flipRunIdRef.current += 1;
     clearFlipStepTimeout();
+    clearFlipAnimationFrames();
     clearHoldTimeout();
     clearTiltFrame();
   }, []);
 
   const beginFlip = () => {
     if (flipAnimatingRef.current) return;
+    flipRunIdRef.current += 1;
     clearFlipStepTimeout();
+    const flipRunId = flipRunIdRef.current;
     const nextDisplaySide = displaySide === 'active' ? 'alternate' : 'active';
     const nextFlipDirection = nextDisplaySide === 'alternate' ? 'to-alternate' : 'to-active';
     const nextVisibleFace = nextDisplaySide === 'active' ? activeFace : alternateFace;
     setFlipFaces({ from: visibleFace, to: nextVisibleFace });
-    setDisplaySide(nextDisplaySide);
     setFlipDirection(nextFlipDirection);
     if (prefersReducedMotion) {
+      setDisplaySide(nextDisplaySide);
       setFlipDirection(null);
       setFlipFaces(null);
       return;
     }
     flipAnimatingRef.current = true;
     setIsFlipAnimating(true);
+    flipPrepareFrameRef.current = requestDoroAnimationFrame(() => {
+      flipPrepareFrameRef.current = null;
+      flipCommitFrameRef.current = requestDoroAnimationFrame(() => {
+        flipCommitFrameRef.current = null;
+        if (flipRunId !== flipRunIdRef.current) return;
+        setDisplaySide(nextDisplaySide);
+      });
+    });
     flipStepTimeoutRef.current = window.setTimeout(() => {
-      flipStepTimeoutRef.current = null;
-      setFlipDirection(null);
-      setFlipFaces(null);
-      setIsFlipAnimating(false);
-      flipAnimatingRef.current = false;
-    }, FOCUS_TIMER_FLIP_ANIMATION_MS);
+      if (flipRunId === flipRunIdRef.current) setDisplaySide(nextDisplaySide);
+      finishFlip(flipRunId);
+    }, FOCUS_TIMER_FLIP_ANIMATION_MS + 180);
   };
 
   const beginHold = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -796,12 +829,12 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
   const cardInnerStyle: React.CSSProperties = {
     boxShadow: getTimerTiltShadow(true, raisedByInteraction, effectiveTilt),
     transition: prefersReducedMotion
-      ? 'box-shadow 220ms ease'
+      ? 'transform 1ms ease, box-shadow 220ms ease'
       : isFlipAnimating
-        ? `box-shadow ${FOCUS_TIMER_FLIP_ANIMATION_MS}ms cubic-bezier(0.32,0,0.2,1)`
+        ? `transform ${FOCUS_TIMER_FLIP_ANIMATION_MS}ms cubic-bezier(0.32,0,0.2,1), box-shadow ${FOCUS_TIMER_FLIP_ANIMATION_MS}ms cubic-bezier(0.32,0,0.2,1)`
         : isHovered
-          ? 'box-shadow 130ms ease-out'
-          : 'box-shadow 420ms cubic-bezier(0.16,0.9,0.3,1)',
+          ? 'transform 130ms ease-out, box-shadow 130ms ease-out'
+          : 'transform 420ms cubic-bezier(0.16,0.9,0.3,1), box-shadow 420ms cubic-bezier(0.16,0.9,0.3,1)',
   };
   const frontFace = isFlipAnimating && flipFaces
     ? flipDirection === 'to-alternate'
@@ -873,7 +906,16 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
       }}
       onClick={handleClick}
     >
-      <span className="doro-focus-single-card-inner" style={cardInnerStyle}>
+      <span
+        className="doro-focus-single-card-inner"
+        style={cardInnerStyle}
+        onTransitionEnd={(event) => {
+          if (event.currentTarget !== event.target) return;
+          if (event.propertyName !== 'transform') return;
+          if (!isFlipAnimating) return;
+          finishFlip(flipRunIdRef.current);
+        }}
+      >
         <span className="doro-focus-single-face doro-focus-single-front">
           <span className="doro-focus-single-sheen" style={sheenStyle} />
           {renderFace(frontFace)}
@@ -1725,28 +1767,6 @@ const TimerDisplay: React.FC = () => {
             filter: blur(0);
           }
         }
-        @keyframes doro-focus-single-flip-to-alternate {
-          0% {
-            transform: translateZ(0) rotateY(0deg);
-          }
-          50% {
-            transform: translateZ(8px) rotateY(-90deg);
-          }
-          100% {
-            transform: translateZ(0) rotateY(-180deg);
-          }
-        }
-        @keyframes doro-focus-single-flip-to-active {
-          0% {
-            transform: translateZ(0) rotateY(-180deg);
-          }
-          50% {
-            transform: translateZ(8px) rotateY(-90deg);
-          }
-          100% {
-            transform: translateZ(0) rotateY(0deg);
-          }
-        }
         @keyframes doro-timer-mode-blur-out {
           0% {
             opacity: 1;
@@ -1913,11 +1933,8 @@ const TimerDisplay: React.FC = () => {
         .doro-focus-single-card.is-flipped .doro-focus-single-card-inner {
           transform: rotateY(-180deg);
         }
-        .doro-focus-single-card.is-flip-to-alternate .doro-focus-single-card-inner {
-          animation: doro-focus-single-flip-to-alternate 400ms cubic-bezier(0.32, 0, 0.2, 1) both;
-        }
-        .doro-focus-single-card.is-flip-to-active .doro-focus-single-card-inner {
-          animation: doro-focus-single-flip-to-active 400ms cubic-bezier(0.32, 0, 0.2, 1) both;
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-card-inner {
+          will-change: transform, box-shadow;
         }
         .doro-focus-single-face {
           position: absolute;
@@ -1947,12 +1964,12 @@ const TimerDisplay: React.FC = () => {
             box-shadow 560ms cubic-bezier(0.16, 0.9, 0.3, 1);
         }
         .doro-focus-single-front {
-          transform: rotateY(0deg) translateZ(0.12px);
+          transform: rotateY(0deg) translateZ(0.5px);
           opacity: 1;
           visibility: visible;
         }
         .doro-focus-single-back {
-          transform: rotateY(180deg) translateZ(0.12px);
+          transform: rotateY(180deg) translateZ(0.5px);
           opacity: 0;
           visibility: hidden;
         }
@@ -1972,6 +1989,8 @@ const TimerDisplay: React.FC = () => {
           display: flex;
           opacity: 1;
           visibility: visible;
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
           will-change: transform;
         }
         .doro-focus-single-card.is-flip-animating .doro-focus-single-sheen {
@@ -1982,10 +2001,21 @@ const TimerDisplay: React.FC = () => {
           -webkit-backdrop-filter: blur(24px);
         }
         .doro-focus-single-card:hover .doro-focus-single-face,
-        .doro-focus-single-card:focus-visible .doro-focus-single-face,
-        .doro-focus-single-card.is-flip-animating .doro-focus-single-face {
+        .doro-focus-single-card:focus-visible .doro-focus-single-face {
           border-color: rgba(255, 255, 255, 0.24);
           background: rgba(255, 255, 255, 0.11);
+        }
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-face {
+          border-color: rgba(255, 255, 255, 0.32);
+          background-color: rgb(170, 187, 238);
+          background:
+            radial-gradient(circle at 50% 8%, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0) 54%),
+            linear-gradient(145deg, rgb(211, 222, 255), rgb(144, 162, 217));
+          box-shadow:
+            0 0 0 1px rgba(255, 255, 255, 0.38),
+            inset 0 1px 0 rgba(255, 255, 255, 0.18),
+            inset 0 -22px 44px rgba(0, 0, 0, 0.1),
+            inset 0 0 58px rgba(255, 255, 255, 0.14);
         }
         .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating):hover .doro-focus-single-face,
         .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating):focus-visible .doro-focus-single-face {
@@ -2024,7 +2054,7 @@ const TimerDisplay: React.FC = () => {
         .doro-focus-single-face-content {
           container-type: inline-size;
           position: relative;
-          z-index: 1;
+          z-index: 2;
           display: flex;
           width: 100%;
           height: 100%;
@@ -2035,13 +2065,26 @@ const TimerDisplay: React.FC = () => {
           text-align: center;
           backface-visibility: hidden;
           -webkit-backface-visibility: hidden;
-          transform: translateZ(1.2px);
+          transform: translateZ(1.6px);
           transition:
             transform 400ms cubic-bezier(0.32, 0, 0.2, 1),
             filter 260ms ease;
         }
         .doro-focus-single-card.is-flip-animating .doro-focus-single-face-content {
           transition: none;
+          filter: none;
+        }
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-label,
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-value,
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-hint {
+          animation: none !important;
+          transition: none !important;
+          filter: none !important;
+        }
+        .doro-focus-single-card.is-flip-animating .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+          animation: none !important;
+          opacity: 1;
+          transform: translate3d(0, -0.05rem, 0) scale(1);
           filter: none;
         }
         .doro-focus-single-label {

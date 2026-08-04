@@ -580,6 +580,40 @@ describe('computeAccountInsights', () => {
     expect(todayLane?.sessions[0].durationMinutes).toBeCloseTo(37, 5);
   });
 
+  it('counts quick continue grace logs saved as work focus time', () => {
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-14T00:00:00',
+      nowMs: Date.parse('2026-01-14T23:00:00'),
+      categories,
+      logs: [
+        makeLog({
+          start: '2026-01-14T09:00:00',
+          end: '2026-01-14T09:25:00',
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'work',
+          start: '2026-01-14T09:25:00',
+          end: '2026-01-14T09:27:30',
+          reason: 'Grace Period (Working)',
+          categoryId: 1,
+        }),
+        makeLog({
+          type: 'work',
+          start: '2026-01-14T09:27:30',
+          end: '2026-01-14T09:40:00',
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(40, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(1.6, 5);
+    expect(insights.topCategory).toMatchObject({ name: 'Writing', minutes: 40 });
+  });
+
   it('uses saved focus minutes for best hour and weekday stats', () => {
     const monday = '2026-01-05';
     const tuesday = '2026-01-06';

@@ -318,6 +318,14 @@ const GraceModal: React.FC<GraceModalProps> = ({ preview = null, onPreviewClose 
     resolveGrace(nextMode, { adjustBreakBalance: -(effectiveGraceTotal / 5), logGraceAs: 'work' });
   };
 
+  const handleContinueWorking = () => {
+    if (isPreview) {
+      closePreview();
+      return;
+    }
+    resolveGrace('work', isAfterWork ? { logGraceAs: 'work' } : undefined);
+  };
+
   const handleWasResting = () => {
     if (isPreview) {
       closePreview();
@@ -401,7 +409,7 @@ const GraceModal: React.FC<GraceModalProps> = ({ preview = null, onPreviewClose 
               
               {/* Button: Work */}
               <button 
-              onClick={effectiveShowOptions ? handleWasWorking : () => (isPreview ? closePreview() : resolveGrace('work'))}
+              onClick={effectiveShowOptions ? handleWasWorking : handleContinueWorking}
                 className={`${buttonClass} shadow-[0_0_40px_-10px_rgba(248,113,113,0.2)] hover:shadow-[0_0_50px_-5px_rgba(248,113,113,0.4)]`}
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-red-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
