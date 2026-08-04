@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Category, LogEntry } from '../../types';
+import { Category, LogEntry, SessionRecord } from '../../types';
 import {
   computeAccountInsights,
   DayPartKey,
@@ -20,6 +20,7 @@ import { buildSessionClockCycleOverlayWindows } from '../../utils/sessionClock';
 
 interface AccountInsightsProps {
   logs: LogEntry[];
+  sessions?: SessionRecord[];
   categories: Category[];
   joinedAt: string;
   accentColor: string;
@@ -385,6 +386,7 @@ const Card: React.FC<{
 
 const AccountInsights: React.FC<AccountInsightsProps> = ({
   logs,
+  sessions = [],
   categories,
   joinedAt,
   accentColor,
@@ -392,7 +394,10 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
   showTodayStats = true,
   placement = 'all',
 }) => {
-  const insights = useMemo(() => computeAccountInsights({ logs, categories, joinedAt }), [categories, joinedAt, logs]);
+  const insights = useMemo(
+    () => computeAccountInsights({ logs, sessions, categories, joinedAt }),
+    [categories, joinedAt, logs, sessions],
+  );
   const categoryColors = useMemo(() => {
     const categoriesById = getCategoryMapById(categories);
     const map = new Map(categories.map((category) => [category.name, category.color]));

@@ -15,6 +15,7 @@ const makeLog = ({
   categoryId = null,
   categoryName,
   source,
+  duration,
 }: {
   type?: LogEntry['type'];
   start: string;
@@ -23,11 +24,12 @@ const makeLog = ({
   categoryId?: number | null;
   categoryName?: string;
   source?: LogEntry['source'];
+  duration?: number;
 }): LogEntry => ({
   type,
   start,
   end,
-  duration: Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000),
+  duration: duration ?? Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000),
   reason,
   source,
   task: null,
@@ -139,7 +141,7 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 120 });
   });
 
-  it('converts mini-pomodoro work minutes to standard pomodoros from logs', () => {
+  it('counts completed mini-pomodoros by completion unit from logs', () => {
     const stats = calculateLifetimeStatsFromData([], [
       makeLog({
         start: '2026-03-12T09:00:00.000Z',
@@ -168,8 +170,29 @@ describe('calculateLifetimeStatsFromData', () => {
     ], categories);
 
     expect(stats.totalFocusHours).toBeCloseTo(60 / 60, 5);
-    expect(stats.totalPomos).toBeCloseTo(2.4, 5);
+    expect(stats.totalPomos).toBeCloseTo(2, 5);
     expect(stats.categoryBreakdown).toEqual({ Writing: 60 });
+  });
+
+  it('uses canonical mini-pomo focus minutes when completed mini logs have short saved durations', () => {
+    const sessionStartMs = Date.parse('2026-03-12T09:00:00.000Z');
+    const logs: LogEntry[] = Array.from({ length: 16 }, (_, index) => {
+      const start = new Date(sessionStartMs + index * 15 * 60_000);
+      const end = new Date(start.getTime() + 15 * 60_000);
+      return makeLog({
+        start: start.toISOString(),
+        end: end.toISOString(),
+        duration: 13.875 * 60,
+        reason: 'Mini-Pomodoro Complete',
+        categoryId: 2,
+      });
+    });
+
+    const stats = calculateLifetimeStatsFromData([], logs, categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(4, 5);
+    expect(stats.totalPomos).toBeCloseTo(8, 5);
+    expect(stats.categoryBreakdown).toEqual({ Study: 240 });
   });
 
   it('uses archived compact session totals when same-day mini-pomo logs undercount the session', () => {
@@ -212,11 +235,11 @@ describe('calculateLifetimeStatsFromData', () => {
     const stats = calculateLifetimeStatsFromData(sessions, logs, categories);
 
     expect(stats.totalFocusHours).toBeCloseTo(4, 5);
-    expect(stats.totalPomos).toBeCloseTo(9.6, 5);
+    expect(stats.totalPomos).toBeCloseTo(8, 5);
     expect(stats.categoryBreakdown).toEqual({ Study: 240 });
   });
 
-  it('keeps account pomodoros aligned with productive work minutes from mixed mini-pomo logs', () => {
+  it('keeps partial session-end work minute pomos while counting completed minis by unit', () => {
     const stats = calculateLifetimeStatsFromData([], [
       makeLog({
         start: '2026-03-12T09:00:00.000Z',
@@ -245,7 +268,7 @@ describe('calculateLifetimeStatsFromData', () => {
     ], categories);
 
     expect(stats.totalFocusHours).toBeCloseTo(4, 5);
-    expect(stats.totalPomos).toBeCloseTo(9.6, 5);
+    expect(stats.totalPomos).toBeCloseTo(9.4, 5);
     expect(stats.categoryBreakdown).toEqual({ Writing: 240 });
   });
 
@@ -264,7 +287,7 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Writing: 12.5 });
   });
 
-  it('converts archived mini-pomodoro session work minutes to standard pomodoros', () => {
+  it('counts archived mini-pomodoro sessions by completion unit', () => {
     const sessions: SessionRecord[] = [
       {
         id: 'mini-session-1',
@@ -283,7 +306,7 @@ describe('calculateLifetimeStatsFromData', () => {
 
     const stats = calculateLifetimeStatsFromData(sessions, [], categories);
 
-    expect(stats.totalPomos).toBeCloseTo(2.4, 5);
+    expect(stats.totalPomos).toBeCloseTo(2, 5);
     expect(stats.totalSessions).toBe(1);
   });
 

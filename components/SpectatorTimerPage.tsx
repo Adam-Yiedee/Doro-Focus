@@ -785,7 +785,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
   return (
     <div
       className="flex min-h-screen w-full flex-col overflow-x-hidden overflow-y-auto px-3 pb-14 pt-4 text-white transition-colors duration-700 md:px-8 md:pb-16 md:pt-8"
-      style={{ background: surfaceColor }}
+      style={{ background: surfaceColor, ['--doro-spectator-surface' as any]: surfaceColor }}
     >
       <style>{`
         @keyframes doroSpectatorWaveRotate {
@@ -797,7 +797,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
           100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
         }
         @keyframes doroSpectatorMenuIn {
-          0% { opacity: 0; transform: translate3d(-50%, -6px, 0) scale(0.97); filter: blur(6px); }
+          0% { opacity: 0; transform: translate3d(-50%, 8px, 0) scale(0.96); filter: blur(7px); }
           100% { opacity: 1; transform: translate3d(-50%, 0, 0) scale(1); filter: blur(0); }
         }
         @keyframes doroSpectatorFeedbackIn {
@@ -807,9 +807,28 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         .doro-spectator-shell {
           animation: doroSpectatorIn 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
         }
+        .doro-spectator-host-label {
+          animation: doroSpectatorIn 560ms cubic-bezier(0.16, 1, 0.3, 1) 80ms both;
+          text-shadow: 0 12px 22px rgba(0, 0, 0, 0.22);
+        }
+        .doro-spectator-headline-card {
+          background:
+            radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.16), transparent 44%),
+            linear-gradient(145deg, rgba(255, 255, 255, 0.145), rgba(255, 255, 255, 0.058)),
+            color-mix(in srgb, var(--doro-spectator-surface, rgba(214, 154, 168, 0.92)) 72%, rgba(255, 255, 255, 0.12));
+          box-shadow:
+            0 34px 72px -44px rgba(0, 0, 0, 0.74),
+            inset 0 1px 0 rgba(255, 255, 255, 0.16),
+            inset 0 -22px 48px rgba(0, 0, 0, 0.045);
+          backdrop-filter: blur(22px) saturate(1.16);
+          -webkit-backdrop-filter: blur(22px) saturate(1.16);
+        }
         .doro-spectator-wave-slow { animation: doroSpectatorWaveRotate 40s linear infinite; }
         .doro-spectator-wave-med { animation: doroSpectatorWaveRotate 32s linear infinite reverse; }
         .doro-spectator-wave-fast { animation: doroSpectatorWaveRotate 25s linear infinite; }
+        .doro-spectator-encouragement-dock {
+          animation: doroSpectatorIn 560ms cubic-bezier(0.16, 1, 0.3, 1) 130ms both;
+        }
         .doro-spectator-encouragement-button {
           box-shadow: 0 18px 42px -32px rgba(0, 0, 0, 0.86), inset 0 1px 0 rgba(255, 255, 255, 0.08);
         }
@@ -823,7 +842,28 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         }
         .doro-spectator-encouragement-menu {
           animation: doroSpectatorMenuIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
-          box-shadow: 0 28px 58px -38px rgba(0, 0, 0, 0.94), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+          background:
+            radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.18), transparent 42%),
+            linear-gradient(145deg, rgba(255, 255, 255, 0.145), rgba(255, 255, 255, 0.06)),
+            color-mix(in srgb, var(--doro-spectator-surface, rgba(214, 154, 168, 0.94)) 58%, rgba(12, 12, 14, 0.72));
+          box-shadow:
+            0 34px 72px -38px rgba(0, 0, 0, 0.86),
+            0 18px 34px -24px rgba(0, 0, 0, 0.62),
+            inset 0 1px 0 rgba(255, 255, 255, 0.18);
+        }
+        .doro-spectator-encouragement-menu::after {
+          content: "";
+          position: absolute;
+          left: 50%;
+          top: 100%;
+          width: 0.88rem;
+          height: 0.88rem;
+          border-right: 1px solid rgba(255, 255, 255, 0.18);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+          background:
+            linear-gradient(145deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.06)),
+            color-mix(in srgb, var(--doro-spectator-surface, rgba(214, 154, 168, 0.94)) 58%, rgba(12, 12, 14, 0.72));
+          transform: translate3d(-50%, -50%, 0) rotate(45deg);
         }
         .doro-spectator-encouragement-option:hover,
         .doro-spectator-encouragement-option:focus-visible {
@@ -859,6 +899,8 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         }
         @media (prefers-reduced-motion: reduce) {
           .doro-spectator-shell,
+          .doro-spectator-host-label,
+          .doro-spectator-encouragement-dock,
           .doro-spectator-wave-slow,
           .doro-spectator-wave-med,
           .doro-spectator-wave-fast,
@@ -870,23 +912,21 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         }
       `}</style>
 
-      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center gap-4">
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center gap-3 md:gap-4">
+        <div className="doro-spectator-host-label min-w-0 max-w-full px-3 text-center">
+          <div className="truncate text-sm font-semibold text-white/78 md:text-base">
+            {hostLabel}
+          </div>
+        </div>
+
         <section className="doro-spectator-shell relative w-full overflow-visible rounded-[1.7rem] border border-white/[0.13] bg-white/[0.072] px-4 py-5 shadow-[0_34px_78px_-48px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.065)] backdrop-blur-xl md:px-7 md:py-7">
           <div className="pointer-events-none absolute inset-0 rounded-[inherit] border border-white/[0.08] shadow-[inset_0_-34px_70px_rgba(0,0,0,0.08)]" />
 
-          <div className="relative flex flex-col items-center gap-3">
-            <div className="min-w-0 text-center">
-              <div className="truncate text-sm font-semibold text-white/72">
-                {hostLabel}
-              </div>
-            </div>
-          </div>
-
-          <div className="relative mt-7 text-center md:mt-8">
+          <div className="doro-spectator-headline-card relative mx-auto w-full max-w-[26rem] rounded-[1.35rem] border border-white/[0.16] px-4 py-5 text-center sm:max-w-[28rem] md:max-w-[32rem] md:rounded-[1.55rem] md:px-8 md:py-6 lg:max-w-[34rem]">
             <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/48">
               {statusLabel}
             </div>
-            <div className="mx-auto mt-2 max-w-full break-words font-sans text-[3.5rem] font-bold leading-none tracking-tighter text-white drop-shadow-2xl sm:text-[5.25rem] md:text-[6.8rem] lg:text-[7.5rem]">
+            <div className="mx-auto mt-2 max-w-full whitespace-nowrap font-sans text-[2.75rem] font-bold leading-none text-white drop-shadow-2xl sm:text-[4.15rem] md:text-[5.2rem] lg:text-[5.75rem]">
               {endLabel}
             </div>
           </div>
@@ -931,72 +971,72 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
             </div>
           )}
 
-          <div className="relative z-30 mx-auto mt-4 flex flex-col items-center gap-2">
-            <div ref={encouragementMenuRef} className="relative">
-              <button
-                type="button"
-                onClick={toggleEncouragementMenu}
-                disabled={!canSendEncouragement || isEncouragementSending}
-                aria-haspopup="menu"
-                aria-expanded={encouragementMenuOpen}
-                className={`doro-spectator-encouragement-button inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/[0.14] bg-white/[0.07] px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 outline-none transition-[background-color,border-color,color,transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-white/35 ${
-                  canSendEncouragement && !isEncouragementSending ? '' : 'cursor-not-allowed opacity-45'
-                }`}
-              >
-                <Heart size={16} strokeWidth={2.35} aria-hidden="true" />
-                Encourage
-              </button>
-
-              {encouragementMenuOpen && (
-                <div
-                  role="menu"
-                  className="doro-spectator-encouragement-menu absolute left-1/2 top-[calc(100%+0.6rem)] z-50 grid w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 gap-1 rounded-2xl border border-white/[0.14] bg-slate-950/92 p-1.5 text-left backdrop-blur-2xl"
-                >
-                  {encouragementOptions.map(prompt => (
-                    <button
-                      key={`${prompt.kind}-${prompt.message}`}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => sendSpectatorEncouragement(prompt)}
-                      className="doro-spectator-encouragement-option rounded-xl px-3.5 py-2.5 text-left text-sm font-semibold leading-snug text-white/72 outline-none transition-[background-color,color] duration-150"
-                    >
-                      {prompt.message}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {encouragementFeedback && (
-              <div
-                className={`doro-spectator-encouragement-feedback inline-flex min-h-8 max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] shadow-[0_16px_32px_-28px_rgba(0,0,0,0.9)] ${
-                  encouragementFeedback.phase === 'sent'
-                    ? 'border-rose-100/24 bg-rose-500/24 text-rose-50'
-                    : encouragementFeedback.phase === 'error'
-                      ? 'border-red-100/22 bg-red-950/42 text-red-100'
-                      : 'border-white/[0.14] bg-white/[0.075] text-white/70'
-                }`}
-                role="status"
-                aria-live="polite"
-              >
-                {encouragementFeedback.phase === 'sent' ? (
-                  <Check size={14} strokeWidth={2.45} aria-hidden="true" />
-                ) : encouragementFeedback.phase === 'error' ? (
-                  <X size={14} strokeWidth={2.45} aria-hidden="true" />
-                ) : (
-                  <span className="doro-spectator-encouragement-spinner" aria-hidden="true" />
-                )}
-                <span className="truncate">{encouragementFeedback.message}</span>
-              </div>
-            )}
-          </div>
-
           {status !== 'live' && (
             <div className="relative mt-6 rounded-lg border border-white/[0.12] bg-white/[0.045] px-4 py-3 text-center text-xs font-semibold text-white/58 shadow-[0_18px_38px_-32px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.05)]">
               {message}
             </div>
           )}
         </section>
+
+        <div className="doro-spectator-encouragement-dock relative z-30 mx-auto flex flex-col items-center gap-2">
+          <div ref={encouragementMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={toggleEncouragementMenu}
+              disabled={!canSendEncouragement || isEncouragementSending}
+              aria-haspopup="menu"
+              aria-expanded={encouragementMenuOpen}
+              className={`doro-spectator-encouragement-button inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/[0.14] bg-white/[0.07] px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 outline-none transition-[background-color,border-color,color,transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-white/35 ${
+                canSendEncouragement && !isEncouragementSending ? '' : 'cursor-not-allowed opacity-45'
+              }`}
+            >
+              <Heart size={16} strokeWidth={2.35} aria-hidden="true" />
+              Encourage
+            </button>
+
+            {encouragementMenuOpen && (
+              <div
+                role="menu"
+                className="doro-spectator-encouragement-menu absolute bottom-[calc(100%+0.72rem)] left-1/2 z-50 grid w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 gap-1 rounded-2xl border border-white/[0.18] p-1.5 text-left backdrop-blur-2xl"
+              >
+                {encouragementOptions.map(prompt => (
+                  <button
+                    key={`${prompt.kind}-${prompt.message}`}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => sendSpectatorEncouragement(prompt)}
+                    className="doro-spectator-encouragement-option rounded-xl px-3.5 py-2.5 text-left text-sm font-semibold leading-snug text-white/76 outline-none transition-[background-color,color] duration-150"
+                  >
+                    {prompt.message}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {encouragementFeedback && (
+            <div
+              className={`doro-spectator-encouragement-feedback inline-flex min-h-8 max-w-[calc(100vw-2rem)] items-center justify-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] shadow-[0_16px_32px_-28px_rgba(0,0,0,0.9)] ${
+                encouragementFeedback.phase === 'sent'
+                  ? 'border-rose-100/24 bg-rose-500/24 text-rose-50'
+                  : encouragementFeedback.phase === 'error'
+                    ? 'border-red-100/22 bg-red-950/42 text-red-100'
+                    : 'border-white/[0.14] bg-white/[0.075] text-white/70'
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              {encouragementFeedback.phase === 'sent' ? (
+                <Check size={14} strokeWidth={2.45} aria-hidden="true" />
+              ) : encouragementFeedback.phase === 'error' ? (
+                <X size={14} strokeWidth={2.45} aria-hidden="true" />
+              ) : (
+                <span className="doro-spectator-encouragement-spinner" aria-hidden="true" />
+              )}
+              <span className="truncate">{encouragementFeedback.message}</span>
+            </div>
+          )}
+        </div>
       </main>
       <footer className="fixed bottom-3 left-1/2 z-30 -translate-x-1/2 md:bottom-5">
         <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.1] bg-white/[0.04] px-2.5 py-1.5 text-center shadow-[0_16px_32px_-30px_rgba(0,0,0,0.86),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-xl">

@@ -1,7 +1,11 @@
-import { Category, LogEntry } from '../types';
+import { Category, LogEntry, SessionCategoryStat, SessionRecord } from '../types';
 import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking';
 import { LONG_GRACE_SESSION_TIMEOUT_SECONDS } from './timerRuntime';
-import { getAccountStatsPomodoroEquivalent } from './pomodoroAccounting';
+import {
+  getAccountStatsFocusSeconds,
+  getAccountStatsPomodoroEquivalent,
+  getAccountStatsSessionPomodoroEquivalent,
+} from './pomodoroAccounting';
 import { isProductiveFocusLog } from './logClassification';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -124,6 +128,13 @@ interface NormalizedLogWindow extends AccountLogWindow {
   entry: LogEntry;
 }
 
+type AccountInsightDayTotals = {
+  focusMinutes: number;
+  pomodoros: number;
+  sessions: number;
+  categoryMinutes: Map<string, number>;
+};
+
 const isGraceLike = (entry: LogEntry) => {
   return entry.type === 'grace' || (typeof entry.reason === 'string' && entry.reason.startsWith('Grace Period'));
 };
@@ -185,6 +196,12 @@ const getLocalDateKey = (ms: number) => {
   return `${year}-${month}-${day}`;
 };
 
+const getLocalDateKeyStartMs = (dateKey: string) => {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  if (![year, month, day].every(Number.isFinite)) return null;
+  return new Date(year, (month || 1) - 1, day || 1).getTime();
+};
+
 const getDayPart = (hour: number): DayPartKey => {
   if (hour >= 5 && hour < 12) return 'morning';
   if (hour >= 12 && hour < 18) return 'afternoon';
@@ -196,11 +213,72 @@ const getPositiveDurationSeconds = (duration: unknown) => {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 };
 
+const createDayTotals = (): AccountInsightDayTotals => ({
+  focusMinutes: 0,
+  pomodoros: 0,
+  sessions: 0,
+  categoryMinutes: new Map<string, number>(),
+});
+
+const getDayTotals = (map: Map<string, AccountInsightDayTotals>, dateKey: string) => {
+  const existing = map.get(dateKey);
+  if (existing) return existing;
+  const created = createDayTotals();
+  map.set(dateKey, created);
+  return created;
+};
+
+const addCategoryMinutes = (
+  totals: AccountInsightDayTotals,
+  categoryName: string,
+  minutes: number,
+) => {
+  if (!Number.isFinite(minutes) || minutes <= 0) return;
+  const safeCategoryName = categoryName || 'Uncategorized';
+  totals.categoryMinutes.set(
+    safeCategoryName,
+    (totals.categoryMinutes.get(safeCategoryName) || 0) + minutes,
+  );
+};
+
+const addSessionCategoryMinutes = (
+  totals: AccountInsightDayTotals,
+  session: SessionRecord,
+  categoriesById: ReturnType<typeof getCategoryMapById>,
+) => {
+  const categoryDetails = Array.isArray(session.stats?.categoryDetails)
+    ? session.stats.categoryDetails
+    : [];
+
+  if (categoryDetails.length > 0) {
+    categoryDetails.forEach((detail) => {
+      const safeDetail = detail as SessionCategoryStat;
+      const minutes = Number(safeDetail.minutes);
+      if (!Number.isFinite(minutes) || minutes <= 0) return;
+      addCategoryMinutes(totals, resolveLogEntryCategory(safeDetail, categoriesById).name || 'Uncategorized', minutes);
+    });
+    return;
+  }
+
+  if (session.stats?.categoryStats && typeof session.stats.categoryStats === 'object') {
+    Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
+      addCategoryMinutes(totals, name, Number(minutes));
+    });
+  }
+};
+
+const getSessionWorkMinutes = (session: SessionRecord) => {
+  const minutes = Number(session.stats?.totalWorkMinutes || 0);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
+};
+
 export const normalizeAccountLogWindow = (entry: LogEntry): AccountLogWindow | null => {
   const startMs = Date.parse(entry.start);
   if (!Number.isFinite(startMs)) return null;
 
-  const durationSeconds = getPositiveDurationSeconds(entry.duration);
+  const durationSeconds = isProductiveFocusLog(entry)
+    ? getAccountStatsFocusSeconds(entry)
+    : getPositiveDurationSeconds(entry.duration);
   const durationEndMs = durationSeconds > 0 ? startMs + (durationSeconds * 1000) : null;
   const parsedEndMs = Date.parse(entry.end);
   const endMs = durationEndMs ?? (Number.isFinite(parsedEndMs) ? parsedEndMs : null);
@@ -355,11 +433,13 @@ const distributeByDay = (
 
 export const computeAccountInsights = ({
   logs,
+  sessions: sessionRecords = [],
   categories,
   joinedAt,
   nowMs = Date.now(),
 }: {
   logs: LogEntry[];
+  sessions?: SessionRecord[];
   categories: Category[];
   joinedAt: string;
   nowMs?: number;
@@ -379,7 +459,7 @@ export const computeAccountInsights = ({
       pomodoroWeight: getAccountStatsPomodoroEquivalent(window.entry),
     }))
     .filter((window) => window.pomodoroWeight > 0);
-  const sessions = buildAnalyticsSessions(normalizedLogs);
+  const analyticsSessions = buildAnalyticsSessions(normalizedLogs);
 
   const todayStartMs = startOfLocalDay(nowMs);
   const tomorrowStartMs = todayStartMs + DAY_MS;
@@ -424,6 +504,8 @@ export const computeAccountInsights = ({
   };
   const categoryMinutes = new Map<string, number>();
   const todayCategoryMinutes = new Map<string, number>();
+  const logDayTotals = new Map<string, AccountInsightDayTotals>();
+  const sessionDayTotals = new Map<string, AccountInsightDayTotals>();
 
   let todayFocusMinutes = 0;
   let thisWeekFocusMinutes = 0;
@@ -445,6 +527,10 @@ export const computeAccountInsights = ({
     lastWeekFocusMinutes += getOverlapMinutes(window.startMs, window.endMs, lastWeekStartMs, thisWeekStartMs);
 
     distributeByDay(window.startMs, window.endMs, (dateKey, minutes) => {
+      const logDay = getDayTotals(logDayTotals, dateKey);
+      logDay.focusMinutes += minutes;
+      addCategoryMinutes(logDay, categoryName, minutes);
+
       const trendPoint = dailyTrendMap.get(dateKey);
       if (trendPoint) {
         trendPoint.focusMinutes += minutes;
@@ -474,6 +560,9 @@ export const computeAccountInsights = ({
 
   completedPomos.forEach((window) => {
     const endDateKey = getLocalDateKey(window.endMs);
+    const logDay = getDayTotals(logDayTotals, endDateKey);
+    logDay.pomodoros += window.pomodoroWeight;
+
     const trendPoint = dailyTrendMap.get(endDateKey);
     if (trendPoint) trendPoint.pomodoros += window.pomodoroWeight;
     if (window.endMs >= todayStartMs && window.endMs < tomorrowStartMs) todayPomos += window.pomodoroWeight;
@@ -481,11 +570,78 @@ export const computeAccountInsights = ({
     else if (window.endMs >= lastWeekStartMs && window.endMs < thisWeekStartMs) lastWeekPomos += window.pomodoroWeight;
   });
 
-  const sessionStartMinutes = sessions.map((session) => getMinutesOfDay(session.startMs));
+  const safeSessionRecords = Array.isArray(sessionRecords) ? sessionRecords : [];
+  safeSessionRecords.forEach((session) => {
+    const sessionStartMs = Date.parse(session.startTime);
+    if (!Number.isFinite(sessionStartMs)) return;
+    const dateKey = getLocalDateKey(sessionStartMs);
+    const totals = getDayTotals(sessionDayTotals, dateKey);
+    totals.focusMinutes += getSessionWorkMinutes(session);
+    totals.pomodoros += getAccountStatsSessionPomodoroEquivalent(session);
+    totals.sessions += 1;
+    addSessionCategoryMinutes(totals, session, categoriesById);
+  });
+
+  const todayDateKey = getLocalDateKey(todayStartMs);
+  sessionDayTotals.forEach((sessionTotals, dateKey) => {
+    const logTotals = logDayTotals.get(dateKey) || createDayTotals();
+    const dateStartMs = getLocalDateKeyStartMs(dateKey);
+    const focusAdjustment = Math.max(0, sessionTotals.focusMinutes - logTotals.focusMinutes);
+    const pomoAdjustment = Math.max(0, sessionTotals.pomodoros - logTotals.pomodoros);
+
+    if (focusAdjustment > 0) {
+      const trendPoint = dailyTrendMap.get(dateKey);
+      if (trendPoint) trendPoint.focusMinutes += focusAdjustment;
+
+      const lane = sessionLaneMap.get(dateKey);
+      if (lane) lane.totalFocusMinutes += focusAdjustment;
+
+      if (dateKey === todayDateKey) {
+        todayFocusMinutes += focusAdjustment;
+      }
+      if (dateStartMs !== null && dateStartMs >= thisWeekStartMs && dateStartMs < thisWeekStartMs + WEEK_MS) {
+        thisWeekFocusMinutes += focusAdjustment;
+      } else if (dateStartMs !== null && dateStartMs >= lastWeekStartMs && dateStartMs < thisWeekStartMs) {
+        lastWeekFocusMinutes += focusAdjustment;
+      }
+
+      let categoryAdjustmentTotal = 0;
+      sessionTotals.categoryMinutes.forEach((minutes, categoryName) => {
+        const adjustment = Math.max(0, minutes - (logTotals.categoryMinutes.get(categoryName) || 0));
+        if (adjustment <= 0) return;
+        categoryAdjustmentTotal += adjustment;
+        categoryMinutes.set(categoryName, (categoryMinutes.get(categoryName) || 0) + adjustment);
+        if (dateKey === todayDateKey) {
+          todayCategoryMinutes.set(categoryName, (todayCategoryMinutes.get(categoryName) || 0) + adjustment);
+        }
+      });
+
+      if (categoryAdjustmentTotal < focusAdjustment - 0.01) {
+        const adjustment = focusAdjustment - categoryAdjustmentTotal;
+        categoryMinutes.set('Uncategorized', (categoryMinutes.get('Uncategorized') || 0) + adjustment);
+        if (dateKey === todayDateKey) {
+          todayCategoryMinutes.set('Uncategorized', (todayCategoryMinutes.get('Uncategorized') || 0) + adjustment);
+        }
+      }
+    }
+
+    if (pomoAdjustment > 0) {
+      const trendPoint = dailyTrendMap.get(dateKey);
+      if (trendPoint) trendPoint.pomodoros += pomoAdjustment;
+      if (dateKey === todayDateKey) todayPomos += pomoAdjustment;
+      if (dateStartMs !== null && dateStartMs >= thisWeekStartMs && dateStartMs < thisWeekStartMs + WEEK_MS) {
+        thisWeekPomos += pomoAdjustment;
+      } else if (dateStartMs !== null && dateStartMs >= lastWeekStartMs && dateStartMs < thisWeekStartMs) {
+        lastWeekPomos += pomoAdjustment;
+      }
+    }
+  });
+
+  const sessionStartMinutes = analyticsSessions.map((session) => getMinutesOfDay(session.startMs));
   const averageStartMinutes = averageTimeOfDayMinutes(sessionStartMinutes);
 
   const quitBucketCounts = new Map<number, number>();
-  sessions.forEach((session) => {
+  analyticsSessions.forEach((session) => {
     if (!session.closed || session.endMs === null) return;
     const bucket = Math.round(getMinutesOfDay(session.endMs) / QUIT_TIME_BUCKET_MINUTES) * QUIT_TIME_BUCKET_MINUTES;
     const normalizedBucket = ((bucket % 1440) + 1440) % 1440;
@@ -544,14 +700,37 @@ export const computeAccountInsights = ({
   const peakHourToday = peakTodayMinutes > 0 ? todayHourlyFocusMinutes.findIndex((minutes) => minutes === peakTodayMinutes) : -1;
   const todayTopCategoryName = Array.from(todayCategoryMinutes.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
-  const todaySessions = sessions.filter((session) => session.startMs >= todayStartMs && session.startMs < tomorrowStartMs);
-  const thisWeekSessions = sessions.filter((session) => session.startMs >= thisWeekStartMs && session.startMs < thisWeekStartMs + WEEK_MS);
-  const lastWeekSessions = sessions.filter((session) => session.startMs >= lastWeekStartMs && session.startMs < thisWeekStartMs);
+  const todaySessions = analyticsSessions.filter((session) => session.startMs >= todayStartMs && session.startMs < tomorrowStartMs);
+  const thisWeekSessions = analyticsSessions.filter((session) => session.startMs >= thisWeekStartMs && session.startMs < thisWeekStartMs + WEEK_MS);
+  const lastWeekSessions = analyticsSessions.filter((session) => session.startMs >= lastWeekStartMs && session.startMs < thisWeekStartMs);
+  const getArchivedSessionCountInRange = (startMs: number, endMs: number) => {
+    let count = 0;
+    sessionDayTotals.forEach((totals, dateKey) => {
+      const dateStartMs = getLocalDateKeyStartMs(dateKey);
+      if (dateStartMs !== null && dateStartMs >= startMs && dateStartMs < endMs) {
+        count += totals.sessions;
+      }
+    });
+    return count;
+  };
+  const todaySessionCount = Math.max(todaySessions.length, getArchivedSessionCountInRange(todayStartMs, tomorrowStartMs));
+  const thisWeekSessionCount = Math.max(
+    thisWeekSessions.length,
+    getArchivedSessionCountInRange(thisWeekStartMs, thisWeekStartMs + WEEK_MS),
+  );
+  const lastWeekSessionCount = Math.max(
+    lastWeekSessions.length,
+    getArchivedSessionCountInRange(lastWeekStartMs, thisWeekStartMs),
+  );
+  const archivedTodayStartMinutes = safeSessionRecords
+    .map((session) => Date.parse(session.startTime))
+    .filter((startMs) => Number.isFinite(startMs) && startMs >= todayStartMs && startMs < tomorrowStartMs)
+    .map(getMinutesOfDay);
   const todayFirstStartMinutes = todaySessions.length > 0
     ? Math.min(...todaySessions.map((session) => getMinutesOfDay(session.startMs)))
-    : null;
+    : (archivedTodayStartMinutes.length > 0 ? Math.min(...archivedTodayStartMinutes) : null);
 
-  sessions.forEach((session) => {
+  analyticsSessions.forEach((session) => {
     const dateKey = getLocalDateKey(session.startMs);
     const trendPoint = dailyTrendMap.get(dateKey);
     if (trendPoint) trendPoint.sessions += 1;
@@ -575,6 +754,11 @@ export const computeAccountInsights = ({
     });
   });
 
+  sessionDayTotals.forEach((totals, dateKey) => {
+    const trendPoint = dailyTrendMap.get(dateKey);
+    if (trendPoint) trendPoint.sessions = Math.max(trendPoint.sessions, totals.sessions);
+  });
+
   const heatmapMaxMinutes = weekdayHourHeatmap.reduce((max, row) => {
     const rowMax = row.reduce((rowAcc, value) => Math.max(rowAcc, value), 0);
     return Math.max(max, rowMax);
@@ -584,7 +768,7 @@ export const computeAccountInsights = ({
     today: {
       focusMinutes: todayFocusMinutes,
       pomodoros: todayPomos,
-      sessions: todaySessions.length,
+      sessions: todaySessionCount,
       firstStartMinutes: todayFirstStartMinutes,
       peakHour: peakHourToday >= 0 ? peakHourToday : null,
       topCategoryName: todayTopCategoryName,
@@ -618,26 +802,26 @@ export const computeAccountInsights = ({
     todayHourlyFocusMinutes,
     weekdayHourHeatmap,
     heatmapMaxMinutes,
-    sessions,
+    sessions: analyticsSessions,
     dailyFocusTrend: dailyTrend,
     sessionLanes,
     weekComparison: {
       thisWeek: {
         focusMinutes: thisWeekFocusMinutes,
         pomodoros: thisWeekPomos,
-        sessions: thisWeekSessions.length,
+        sessions: thisWeekSessionCount,
       },
       lastWeek: {
         focusMinutes: lastWeekFocusMinutes,
         pomodoros: lastWeekPomos,
-        sessions: lastWeekSessions.length,
+        sessions: lastWeekSessionCount,
       },
       focusDeltaMinutes: thisWeekFocusMinutes - lastWeekFocusMinutes,
       focusDeltaPct: getChangePct(thisWeekFocusMinutes, lastWeekFocusMinutes),
       pomoDelta: thisWeekPomos - lastWeekPomos,
       pomoDeltaPct: getChangePct(thisWeekPomos, lastWeekPomos),
-      sessionDelta: thisWeekSessions.length - lastWeekSessions.length,
-      sessionDeltaPct: getChangePct(thisWeekSessions.length, lastWeekSessions.length),
+      sessionDelta: thisWeekSessionCount - lastWeekSessionCount,
+      sessionDeltaPct: getChangePct(thisWeekSessionCount, lastWeekSessionCount),
     },
   };
 };

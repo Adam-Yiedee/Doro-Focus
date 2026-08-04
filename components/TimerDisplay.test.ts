@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getBreakSquareDisplayOptions } from './TimerDisplay';
+import { getBreakSquareDisplayOptions, getFocusTimerSingleLabel } from './TimerDisplay';
 
 describe('TimerDisplay break square display options', () => {
   it('shows the delayed-start countdown in focus timer mode', () => {
@@ -36,5 +36,28 @@ describe('TimerDisplay break square display options', () => {
       hideLabel: false,
       hideLiquid: false,
     });
+  });
+});
+
+describe('focus timer single display label', () => {
+  it('uses click-to-start copy before the first focus timer start', () => {
+    expect(getFocusTimerSingleLabel({
+      isReadyToStart: true,
+      activeTaskName: 'Biology',
+    })).toBe('Click to Start');
+  });
+
+  it('uses the active task name once the focus timer is not in the pre-start state', () => {
+    expect(getFocusTimerSingleLabel({
+      isReadyToStart: false,
+      activeTaskName: ' Biology ',
+    })).toBe('Biology');
+  });
+
+  it('falls back to the focus timer label without an active task', () => {
+    expect(getFocusTimerSingleLabel({
+      isReadyToStart: false,
+      activeTaskName: '',
+    })).toBe('Focus Timer');
   });
 });

@@ -11,6 +11,7 @@ import {
   getPooledGroupGoalProgressValue,
   GROUP_MEMBER_FALLBACK_NAME,
   intersectSyncConfig,
+  isFocusShareSessionConfig,
   mergeClientMembers,
   normalizeGroupGoalProgressPayload,
   normalizeGroupInviteUsernames,
@@ -55,6 +56,7 @@ describe('groupStudy helpers', () => {
 
   it('normalizes group session metadata and keeps legacy sessions timer-sync', () => {
     expect(normalizeGroupSessionConfig(undefined).mode).toBe('timer-sync');
+    expect(normalizeGroupSessionConfig(undefined).purpose).toBe('group-study');
     expect(getGroupSyncConfigForSession(normalizeGroupSessionConfig(undefined))).toEqual(DEFAULT_GROUP_SYNC_CONFIG);
 
     const sharedGoal = normalizeGroupSessionConfig({
@@ -72,6 +74,7 @@ describe('groupStudy helpers', () => {
     expect(sharedGoal).toEqual({
       mode: 'shared-goal',
       createdAt: 123,
+      purpose: 'group-study',
       goal: {
         type: 'pooled-total',
         unit: 'mini-pomo',
@@ -81,6 +84,35 @@ describe('groupStudy helpers', () => {
       },
     });
     expect(getGroupSyncConfigForSession(sharedGoal)).toEqual(NO_GROUP_SYNC_CONFIG);
+  });
+
+  it('preserves focus-share session metadata without treating it as group study UI', () => {
+    const focusShare = normalizeGroupSessionConfig({
+      mode: 'timer-sync',
+      goal: null,
+      createdAt: 456,
+      purpose: 'focus-share',
+    });
+
+    expect(focusShare).toEqual({
+      mode: 'timer-sync',
+      goal: null,
+      createdAt: 456,
+      purpose: 'focus-share',
+    });
+    expect(isFocusShareSessionConfig(focusShare)).toBe(true);
+    expect(isFocusShareSessionConfig({ ...focusShare, purpose: 'group-study' })).toBe(false);
+    expect(isFocusShareSessionConfig({
+      ...focusShare,
+      mode: 'shared-goal',
+      goal: {
+        type: 'everyone-live',
+        unit: 'pomodoro',
+        target: 1,
+        expectedParticipants: 1,
+        invitedUsernames: [],
+      },
+    })).toBe(false);
   });
 
   it('deduplicates typed invite usernames conservatively', () => {
@@ -151,6 +183,10 @@ describe('groupStudy helpers', () => {
       target: 12,
       expectedParticipants: 3,
     })).toBe(4);
+    expect(getPooledGoalPerPersonTarget({
+      target: 8,
+      expectedParticipants: 3,
+    })).toBe(3);
 
     expect(getPooledGroupGoalProgressValue([
       {
@@ -188,6 +224,36 @@ describe('groupStudy helpers', () => {
         activeSeconds: 0,
         totalSeconds: 120,
         updatedAt: 2,
+      },
+    ]);
+  });
+
+  it('preserves safe participant focus metadata on progress payloads', () => {
+    expect(normalizeGroupGoalProgressPayload([
+      {
+        memberId: 'mira',
+        name: 'Mira',
+        completedSeconds: 60,
+        activeSeconds: 30,
+        totalSeconds: 90,
+        activeTaskName: '  Cell notes   review  ',
+        activeCategoryName: ' Biology ',
+        activeCategoryColor: '#95D7A1',
+        activeColor: 'url(bad)',
+        updatedAt: 5,
+      },
+    ])).toEqual([
+      {
+        memberId: 'mira',
+        name: 'Mira',
+        isHost: false,
+        completedSeconds: 60,
+        activeSeconds: 30,
+        totalSeconds: 90,
+        activeTaskName: 'Cell notes review',
+        activeCategoryName: 'Biology',
+        activeCategoryColor: '#95D7A1',
+        updatedAt: 5,
       },
     ]);
   });

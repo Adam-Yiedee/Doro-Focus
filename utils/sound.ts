@@ -41,6 +41,8 @@ let focusSoundPreviewState: FocusSoundPreviewState | null = null;
 let sharedFocusAudioContext: AudioContext | null = null;
 let focusSoundRequestToken = 0;
 let focusSoundPreviewRequestToken = 0;
+let streakFireWhooshArrayBuffer: ArrayBuffer | null = null;
+let streakFireWhooshArrayBufferPromise: Promise<ArrayBuffer | null> | null = null;
 let streakFireWhooshBuffer: AudioBuffer | null = null;
 let streakFireWhooshBufferPromise: Promise<AudioBuffer | null> | null = null;
 let streakDayPopArrayBuffer: ArrayBuffer | null = null;
@@ -55,10 +57,27 @@ let timerSwitchTapArrayBuffer: ArrayBuffer | null = null;
 let timerSwitchTapArrayBufferPromise: Promise<ArrayBuffer | null> | null = null;
 let timerSwitchTapBuffer: AudioBuffer | null = null;
 let timerSwitchTapBufferPromise: Promise<AudioBuffer | null> | null = null;
+const focusNoiseBufferCache = new WeakMap<AudioContext, Map<NoiseColor, AudioBuffer>>();
 
 const getBrowserAudioContextConstructor = () => {
   if (typeof window === 'undefined') return null;
   return window.AudioContext || (window as any).webkitAudioContext || null;
+};
+
+const getOrCreateSharedAudioContext = () => {
+  try {
+    const AudioCtx = getBrowserAudioContextConstructor();
+    if (!AudioCtx) return null;
+
+    if (!sharedFocusAudioContext || sharedFocusAudioContext.state === 'closed') {
+      sharedFocusAudioContext = new AudioCtx();
+    }
+
+    return sharedFocusAudioContext;
+  } catch (error) {
+    console.error('AudioContext creation failed', error);
+    return null;
+  }
 };
 
 const nextFocusSoundRequestToken = () => {
@@ -75,19 +94,45 @@ const nextFocusSoundPreviewRequestToken = () => {
 
 const isFocusSoundPreviewRequestCurrent = (requestToken: number) => focusSoundPreviewRequestToken === requestToken;
 
-export const resumeAudioContext = async () => {
+type ResumeAudioContextOptions = {
+  timeoutMs?: number;
+};
+
+const waitForAudioResumeTimeout = (timeoutMs: number) => new Promise<void>((resolve) => {
+  globalThis.setTimeout(resolve, Math.max(0, timeoutMs));
+});
+
+export const resumeAudioContext = async (options: ResumeAudioContextOptions = {}) => {
   try {
-    const AudioCtx = getBrowserAudioContextConstructor();
-    if (!AudioCtx) return;
+    const ctx = getOrCreateSharedAudioContext();
+    if (!ctx) return;
 
-    if (!sharedFocusAudioContext || sharedFocusAudioContext.state === 'closed') {
-      sharedFocusAudioContext = new AudioCtx();
-    }
+    if (ctx.state === 'suspended') {
+      const timeoutMs = options.timeoutMs;
+      if (Number.isFinite(timeoutMs)) {
+        let didResume = false;
+        let resumeError: unknown = null;
+        const resumePromise = ctx.resume().then(
+          () => {
+            didResume = true;
+          },
+          (error) => {
+            resumeError = error;
+          },
+        );
 
-    if (sharedFocusAudioContext.state === 'suspended') {
-      await sharedFocusAudioContext.resume();
+        await Promise.race([
+          resumePromise,
+          waitForAudioResumeTimeout(timeoutMs as number),
+        ]);
+
+        if (resumeError) throw resumeError;
+        if (!didResume) return ctx;
+      } else {
+        await ctx.resume();
+      }
     }
-    return sharedFocusAudioContext;
+    return ctx;
   } catch (e) {
     console.error('AudioContext resume failed', e);
   }
@@ -112,6 +157,11 @@ const getFocusSoundGain = (preset: FocusSoundPreset, volume: number) => (
   Math.max(0, preset.gain * getFocusSoundVolumeScale(volume))
 );
 
+const FOCUS_SOUND_LOOP_SECONDS = 18;
+const FOCUS_SOUND_LOOP_EDGE_FADE_SECONDS = 0.055;
+const FOCUS_SOUND_SUBSONIC_HIGHPASS_HZ = 18;
+const FOCUS_SOUND_BUFFER_PEAK_LIMIT = 0.94;
+
 export const clampAlarmSoundVolume = (value: number) => {
   if (!Number.isFinite(value)) return 100;
   return Math.max(0, Math.min(100, value));
@@ -119,7 +169,48 @@ export const clampAlarmSoundVolume = (value: number) => {
 
 const getAlarmSoundVolumeScale = (volume: number) => clampAlarmSoundVolume(volume) / 100;
 
-const createNoiseBuffer = (ctx: AudioContext, color: NoiseColor, durationSeconds = 2) => {
+type NoiseBufferOptions = {
+  seamlessLoop?: boolean;
+};
+
+const limitNoiseBufferPeak = (data: Float32Array, peakLimit = FOCUS_SOUND_BUFFER_PEAK_LIMIT) => {
+  let peak = 0;
+  for (let index = 0; index < data.length; index += 1) {
+    peak = Math.max(peak, Math.abs(data[index]));
+  }
+
+  if (!Number.isFinite(peak) || peak <= peakLimit || peak <= 0) return;
+
+  const scale = peakLimit / peak;
+  for (let index = 0; index < data.length; index += 1) {
+    data[index] *= scale;
+  }
+};
+
+const applyLoopEdgeFade = (
+  data: Float32Array,
+  sampleRate: number,
+  fadeSeconds = FOCUS_SOUND_LOOP_EDGE_FADE_SECONDS,
+) => {
+  const fadeFrames = Math.min(
+    Math.floor(data.length / 4),
+    Math.max(1, Math.floor(sampleRate * fadeSeconds)),
+  );
+
+  for (let index = 0; index < fadeFrames; index += 1) {
+    const progress = fadeFrames <= 1 ? 1 : index / (fadeFrames - 1);
+    const fadeIn = 0.5 - (Math.cos(Math.PI * progress) / 2);
+    data[index] *= fadeIn;
+    data[data.length - 1 - index] *= fadeIn;
+  }
+};
+
+const createNoiseBuffer = (
+  ctx: AudioContext,
+  color: NoiseColor,
+  durationSeconds = 2,
+  options: NoiseBufferOptions = {},
+) => {
   const frameCount = Math.max(1, Math.floor(ctx.sampleRate * durationSeconds));
   const buffer = ctx.createBuffer(2, frameCount, ctx.sampleRate);
 
@@ -130,10 +221,7 @@ const createNoiseBuffer = (ctx: AudioContext, color: NoiseColor, durationSeconds
       for (let index = 0; index < frameCount; index += 1) {
         data[index] = (Math.random() * 2) - 1;
       }
-      continue;
-    }
-
-    if (color === 'pink') {
+    } else if (color === 'pink') {
       let b0 = 0;
       let b1 = 0;
       let b2 = 0;
@@ -153,24 +241,45 @@ const createNoiseBuffer = (ctx: AudioContext, color: NoiseColor, durationSeconds
         b6 = white * 0.115926;
         data[index] = pink * 0.11;
       }
-      continue;
+    } else {
+      let lastOut = 0;
+      for (let index = 0; index < frameCount; index += 1) {
+        const white = (Math.random() * 2) - 1;
+        lastOut = (lastOut + (0.02 * white)) / 1.02;
+        data[index] = lastOut * 3.5;
+      }
     }
 
-    let lastOut = 0;
-    for (let index = 0; index < frameCount; index += 1) {
-      const white = (Math.random() * 2) - 1;
-      lastOut = (lastOut + (0.02 * white)) / 1.02;
-      data[index] = lastOut * 3.5;
+    if (options.seamlessLoop) {
+      limitNoiseBufferPeak(data);
+      applyLoopEdgeFade(data, ctx.sampleRate);
     }
   }
 
   return buffer;
 };
 
+const getFocusNoiseBuffer = (ctx: AudioContext, color: NoiseColor) => {
+  let contextCache = focusNoiseBufferCache.get(ctx);
+  if (!contextCache) {
+    contextCache = new Map<NoiseColor, AudioBuffer>();
+    focusNoiseBufferCache.set(ctx, contextCache);
+  }
+
+  const cachedBuffer = contextCache.get(color);
+  if (cachedBuffer && cachedBuffer.sampleRate === ctx.sampleRate) return cachedBuffer;
+
+  const buffer = createNoiseBuffer(ctx, color, FOCUS_SOUND_LOOP_SECONDS, { seamlessLoop: true });
+  contextCache.set(color, buffer);
+  return buffer;
+};
+
 const createFocusNoiseSource = (ctx: AudioContext, preset: FocusSoundPreset, volume: number) => {
   const source = ctx.createBufferSource();
-  source.buffer = createNoiseBuffer(ctx, preset.color);
+  source.buffer = getFocusNoiseBuffer(ctx, preset.color);
   source.loop = true;
+  source.loopStart = 0;
+  source.loopEnd = source.buffer.duration;
 
   const masterGain = ctx.createGain();
   masterGain.gain.setValueAtTime(0, ctx.currentTime);
@@ -178,6 +287,14 @@ const createFocusNoiseSource = (ctx: AudioContext, preset: FocusSoundPreset, vol
 
   let tailNode: AudioNode = source;
   const teardown: AudioNode[] = [source, masterGain];
+
+  const subsonicHighpass = ctx.createBiquadFilter();
+  subsonicHighpass.type = 'highpass';
+  subsonicHighpass.frequency.setValueAtTime(FOCUS_SOUND_SUBSONIC_HIGHPASS_HZ, ctx.currentTime);
+  subsonicHighpass.Q.value = 0.5;
+  tailNode.connect(subsonicHighpass);
+  tailNode = subsonicHighpass;
+  teardown.push(subsonicHighpass);
 
   if (preset.highpassHz) {
     const highpass = ctx.createBiquadFilter();
@@ -445,17 +562,44 @@ const playNoiseBurst = (
   source.stop(start + dur + 0.02);
 };
 
-const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
-  if (streakFireWhooshBuffer) return Promise.resolve(streakFireWhooshBuffer);
+const getStreakFireWhooshArrayBuffer = () => {
+  if (streakFireWhooshArrayBuffer) return Promise.resolve(streakFireWhooshArrayBuffer);
   if (typeof fetch !== 'function') return Promise.resolve(null);
 
-  if (!streakFireWhooshBufferPromise) {
-    streakFireWhooshBufferPromise = fetch(streakFireWhooshUrl)
+  if (!streakFireWhooshArrayBufferPromise) {
+    streakFireWhooshArrayBufferPromise = fetch(streakFireWhooshUrl)
       .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((arrayBuffer) => {
+        if (!arrayBuffer) {
+          streakFireWhooshArrayBufferPromise = null;
+          return null;
+        }
+        streakFireWhooshArrayBuffer = arrayBuffer;
+        return arrayBuffer;
+      })
+      .catch((error) => {
+        console.error('Streak fire whoosh failed to preload', error);
+        streakFireWhooshArrayBufferPromise = null;
+        return null;
+      });
+  }
+
+  return streakFireWhooshArrayBufferPromise;
+};
+
+const getStreakFireWhooshBuffer = (ctx: AudioContext) => {
+  if (streakFireWhooshBuffer) return Promise.resolve(streakFireWhooshBuffer);
+
+  if (!streakFireWhooshBufferPromise) {
+    streakFireWhooshBufferPromise = getStreakFireWhooshArrayBuffer()
       .then((arrayBuffer) => (
         arrayBuffer ? ctx.decodeAudioData(arrayBuffer.slice(0)) : null
       ))
       .then((buffer) => {
+        if (!buffer) {
+          streakFireWhooshBufferPromise = null;
+          return null;
+        }
         streakFireWhooshBuffer = buffer;
         return buffer;
       })
@@ -598,9 +742,35 @@ export const preloadNotificationSounds = async () => {
     getStreakSuccessFanfareArrayBuffer(),
     getTimerSwitchTapArrayBuffer(),
   ]);
+
+  const ctx = getOrCreateSharedAudioContext();
+  if (!ctx) return;
+
+  await Promise.all([
+    getStreakDayPopBuffer(ctx),
+    getStreakSuccessFanfareBuffer(ctx),
+    getTimerSwitchTapBuffer(ctx),
+  ]);
 };
 
-export const preloadFocusStreakMomentSounds = preloadNotificationSounds;
+export const preloadFocusStreakMomentSounds = async () => {
+  await Promise.all([
+    getStreakFireWhooshArrayBuffer(),
+    getStreakDayPopArrayBuffer(),
+    getStreakSuccessFanfareArrayBuffer(),
+    getTimerSwitchTapArrayBuffer(),
+  ]);
+
+  const ctx = getOrCreateSharedAudioContext();
+  if (!ctx) return;
+
+  await Promise.all([
+    getStreakFireWhooshBuffer(ctx),
+    getStreakDayPopBuffer(ctx),
+    getStreakSuccessFanfareBuffer(ctx),
+    getTimerSwitchTapBuffer(ctx),
+  ]);
+};
 
 const getStreakDayPopBuffer = (ctx: AudioContext) => {
   if (streakDayPopBuffer) return Promise.resolve(streakDayPopBuffer);
@@ -854,15 +1024,39 @@ const playFocusStreakIntroPop = (ctx: AudioContext, start: number) => {
   playSmoothTone(ctx, 'triangle', 493.88, start + 0.038, 0.2, 0.012, 659.25);
 };
 
+const playFocusStreakFireWhooshFallback = (ctx: AudioContext, start: number) => {
+  playNoiseBurst(ctx, 'brown', start, 1.28, 0.034, 210, 0.72);
+  playNoiseBurst(ctx, 'pink', start + 0.018, 0.96, 0.026, 760, 0.9);
+  playNoiseBurst(ctx, 'white', start + 0.048, 0.52, 0.012, 2400, 1.6);
+  playSmoothTone(ctx, 'triangle', 98, start + 0.016, 0.92, 0.035, 61.74);
+};
+
+const playFocusStreakDayPopFallbackNote = (
+  ctx: AudioContext,
+  start: number,
+  playbackRate: number,
+) => {
+  const safePlaybackRate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
+  const baseFrequency = 698.46 * safePlaybackRate;
+  playNoiseBurst(ctx, 'pink', start, 0.075, 0.0072, 2100 * safePlaybackRate, 2.4);
+  playSmoothTone(ctx, 'triangle', baseFrequency, start + 0.004, 0.14, 0.031, baseFrequency * 1.32);
+  playSmoothTone(ctx, 'sine', baseFrequency * 1.92, start + 0.038, 0.12, 0.014, baseFrequency * 2.08);
+};
+
+const playFocusStreakDayPopFallbackNotes = (
+  ctx: AudioContext,
+  baseStart: number,
+  notes: FocusStreakDayNote[],
+) => {
+  notes.forEach((note) => {
+    playFocusStreakDayPopFallbackNote(ctx, baseStart + note.offsetSeconds, note.playbackRate);
+  });
+};
+
 const playFocusStreakAppearancePop = (ctx: AudioContext, start: number) => {
   if (scheduleDefaultNotificationPopSample(ctx, start, streakDayPopBuffer, 0.08)) return;
-  if (streakDayPopArrayBuffer || streakDayPopArrayBufferPromise) {
-    void getStreakDayPopBuffer(ctx).then((buffer) => {
-      scheduleDefaultNotificationPopSample(ctx, start, buffer, 0.18);
-    });
-    return;
-  }
   playFocusStreakIntroPop(ctx, start);
+  void getStreakDayPopBuffer(ctx);
 };
 
 const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: number, gainVal: number) => {
@@ -915,6 +1109,17 @@ const playTrumpetVoice = (ctx: AudioContext, freq: number, start: number, dur: n
 
   vibrato.start(start);
   vibrato.stop(start + dur + 0.04);
+};
+
+const playFocusStreakSuccessFanfareFallback = (ctx: AudioContext, start: number) => {
+  [
+    { freq: 392.0, start: 0.00, dur: 0.2, gain: 0.042 },
+    { freq: 523.25, start: 0.09, dur: 0.22, gain: 0.046 },
+    { freq: 659.25, start: 0.19, dur: 0.26, gain: 0.054 },
+    { freq: 783.99, start: 0.34, dur: 0.48, gain: 0.064 },
+  ].forEach((note) => {
+    playTrumpetVoice(ctx, note.freq, start + note.start, note.dur, note.gain);
+  });
 };
 
 type AlarmPlaybackOptions = {
@@ -1283,20 +1488,18 @@ export const playEncouragementDing = async () => {
 
 export const playDefaultNotificationSound = async () => {
   try {
-    const ctx = await resumeAudioContext();
-    if (!ctx || ctx.state === 'suspended') return;
+    const ctx = await resumeAudioContext({ timeoutMs: 180 });
+    if (!ctx || ctx.state === 'suspended') return false;
 
     const start = ctx.currentTime + 0.025;
-    if (streakDayPopBuffer) {
-      scheduleDefaultNotificationPopSample(ctx, start, streakDayPopBuffer);
-      return;
-    }
+    if (scheduleDefaultNotificationPopSample(ctx, start, streakDayPopBuffer)) return true;
 
-    void getStreakDayPopBuffer(ctx).then((buffer) => {
-      scheduleDefaultNotificationPopSample(ctx, start, buffer);
-    });
+    playFocusStreakIntroPop(ctx, start);
+    void getStreakDayPopBuffer(ctx);
+    return true;
   } catch (e) {
     console.error('Default notification sound failed', e);
+    return false;
   }
 };
 
@@ -1305,8 +1508,8 @@ export const playFocusStreakMomentSound = async (
   options: FocusStreakMomentSoundOptions = {},
 ) => {
   try {
-    const ctx = await resumeAudioContext();
-    if (!ctx || ctx.state === 'suspended') return;
+    const ctx = await resumeAudioContext({ timeoutMs: 180 });
+    if (!ctx || ctx.state === 'suspended') return false;
 
     const now = ctx.currentTime + 0.025;
     const whooshStart = now + 0.62;
@@ -1314,32 +1517,31 @@ export const playFocusStreakMomentSound = async (
     const dayNotes = getFocusStreakMomentDayNotes(days);
     const didScheduleCachedFireWhoosh = scheduleStreakFireWhoosh(ctx, whooshStart, streakFireWhooshBuffer);
     if (!didScheduleCachedFireWhoosh) {
-      void getStreakFireWhooshBuffer(ctx).then((buffer) => {
-        scheduleStreakFireWhoosh(ctx, whooshStart, buffer);
-      });
+      playFocusStreakFireWhooshFallback(ctx, whooshStart);
+      void getStreakFireWhooshBuffer(ctx);
     }
     if (options.streakIncreased) {
       const didScheduleCachedFanfare = streakSuccessFanfareBuffer
         ? scheduleStreakSuccessFanfare(ctx, fanfareStart, streakSuccessFanfareBuffer)
         : false;
       if (!didScheduleCachedFanfare) {
-        void getStreakSuccessFanfareBuffer(ctx).then((buffer) => {
-          scheduleStreakSuccessFanfare(ctx, fanfareStart, buffer);
-        });
+        playFocusStreakSuccessFanfareFallback(ctx, fanfareStart);
+        void getStreakSuccessFanfareBuffer(ctx);
       }
     }
     const didScheduleCachedDayPops = streakDayPopBuffer
       ? (scheduleFocusStreakDayPopNotes(ctx, now, streakDayPopBuffer, dayNotes), true)
       : false;
     if (!didScheduleCachedDayPops && dayNotes.length > 0) {
-      void getStreakDayPopBuffer(ctx).then((buffer) => {
-        scheduleFocusStreakDayPopNotes(ctx, now, buffer, dayNotes);
-      });
+      playFocusStreakDayPopFallbackNotes(ctx, now, dayNotes);
+      void getStreakDayPopBuffer(ctx);
     }
 
     playFocusStreakAppearancePop(ctx, now);
+    return true;
   } catch (e) {
     console.error('Focus streak moment sound failed', e);
+    return false;
   }
 };
 
