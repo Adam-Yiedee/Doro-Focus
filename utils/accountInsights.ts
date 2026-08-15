@@ -586,8 +586,13 @@ export const computeAccountInsights = ({
   sessionDayTotals.forEach((sessionTotals, dateKey) => {
     const logTotals = logDayTotals.get(dateKey) || createDayTotals();
     const dateStartMs = getLocalDateKeyStartMs(dateKey);
-    const focusAdjustment = Math.max(0, sessionTotals.focusMinutes - logTotals.focusMinutes);
-    const pomoAdjustment = Math.max(0, sessionTotals.pomodoros - logTotals.pomodoros);
+    const hasLoggedFocus = logTotals.focusMinutes > 0.01;
+    const focusAdjustment = hasLoggedFocus
+      ? 0
+      : Math.max(0, sessionTotals.focusMinutes - logTotals.focusMinutes);
+    const pomoAdjustment = hasLoggedFocus
+      ? 0
+      : Math.max(0, sessionTotals.pomodoros - logTotals.pomodoros);
 
     if (focusAdjustment > 0) {
       const trendPoint = dailyTrendMap.get(dateKey);

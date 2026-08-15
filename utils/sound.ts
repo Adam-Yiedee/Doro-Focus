@@ -158,7 +158,7 @@ const getFocusSoundGain = (preset: FocusSoundPreset, volume: number) => (
 );
 
 const FOCUS_SOUND_LOOP_SECONDS = 18;
-const FOCUS_SOUND_LOOP_EDGE_FADE_SECONDS = 0.055;
+const FOCUS_SOUND_LOOP_STATE_WARMUP_SECONDS = 0.3;
 const FOCUS_SOUND_SUBSONIC_HIGHPASS_HZ = 18;
 const FOCUS_SOUND_BUFFER_PEAK_LIMIT = 0.94;
 
@@ -187,24 +187,6 @@ const limitNoiseBufferPeak = (data: Float32Array, peakLimit = FOCUS_SOUND_BUFFER
   }
 };
 
-const applyLoopEdgeFade = (
-  data: Float32Array,
-  sampleRate: number,
-  fadeSeconds = FOCUS_SOUND_LOOP_EDGE_FADE_SECONDS,
-) => {
-  const fadeFrames = Math.min(
-    Math.floor(data.length / 4),
-    Math.max(1, Math.floor(sampleRate * fadeSeconds)),
-  );
-
-  for (let index = 0; index < fadeFrames; index += 1) {
-    const progress = fadeFrames <= 1 ? 1 : index / (fadeFrames - 1);
-    const fadeIn = 0.5 - (Math.cos(Math.PI * progress) / 2);
-    data[index] *= fadeIn;
-    data[data.length - 1 - index] *= fadeIn;
-  }
-};
-
 const createNoiseBuffer = (
   ctx: AudioContext,
   color: NoiseColor,
@@ -216,10 +198,19 @@ const createNoiseBuffer = (
 
   for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
     const data = buffer.getChannelData(channel);
+    const periodicWhite = options.seamlessLoop ? new Float32Array(frameCount) : null;
+    if (periodicWhite) {
+      for (let index = 0; index < frameCount; index += 1) {
+        periodicWhite[index] = (Math.random() * 2) - 1;
+      }
+    }
+    const warmupFrames = periodicWhite
+      ? Math.min(frameCount, Math.floor(ctx.sampleRate * FOCUS_SOUND_LOOP_STATE_WARMUP_SECONDS))
+      : 0;
 
     if (color === 'white') {
       for (let index = 0; index < frameCount; index += 1) {
-        data[index] = (Math.random() * 2) - 1;
+        data[index] = periodicWhite?.[index] ?? ((Math.random() * 2) - 1);
       }
     } else if (color === 'pink') {
       let b0 = 0;
@@ -229,8 +220,9 @@ const createNoiseBuffer = (
       let b4 = 0;
       let b5 = 0;
       let b6 = 0;
-      for (let index = 0; index < frameCount; index += 1) {
-        const white = (Math.random() * 2) - 1;
+      for (let position = -warmupFrames; position < frameCount; position += 1) {
+        const periodicIndex = position < 0 ? frameCount + position : position;
+        const white = periodicWhite?.[periodicIndex] ?? ((Math.random() * 2) - 1);
         b0 = 0.99886 * b0 + (white * 0.0555179);
         b1 = 0.99332 * b1 + (white * 0.0750759);
         b2 = 0.969 * b2 + (white * 0.153852);
@@ -239,20 +231,20 @@ const createNoiseBuffer = (
         b5 = -0.7616 * b5 - (white * 0.016898);
         const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + (white * 0.5362);
         b6 = white * 0.115926;
-        data[index] = pink * 0.11;
+        if (position >= 0) data[position] = pink * 0.11;
       }
     } else {
       let lastOut = 0;
-      for (let index = 0; index < frameCount; index += 1) {
-        const white = (Math.random() * 2) - 1;
+      for (let position = -warmupFrames; position < frameCount; position += 1) {
+        const periodicIndex = position < 0 ? frameCount + position : position;
+        const white = periodicWhite?.[periodicIndex] ?? ((Math.random() * 2) - 1);
         lastOut = (lastOut + (0.02 * white)) / 1.02;
-        data[index] = lastOut * 3.5;
+        if (position >= 0) data[position] = lastOut * 3.5;
       }
     }
 
     if (options.seamlessLoop) {
       limitNoiseBufferPeak(data);
-      applyLoopEdgeFade(data, ctx.sampleRate);
     }
   }
 

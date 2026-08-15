@@ -5,7 +5,7 @@ import { useTimer } from '../../context/TimerContext';
 import { AlarmSound, Category, FocusFriend, FocusFriendAction, FocusFriendRequest, FocusSound, GroupGoalType, GroupGoalUnit, GroupMember, GroupSessionConfig, GroupSyncConfig, LogEntry, SessionRecord, TimerPreset, TimerSettings, User } from '../../types';
 import AccountInsights from './AccountInsights';
 import { CATEGORY_ICON_OPTIONS, CATEGORY_ICONS, getIcon } from '../../utils/icons';
-import { computeAccountInsights } from '../../utils/accountInsights';
+import { computeAccountInsights, normalizeAccountLogWindow } from '../../utils/accountInsights';
 import { getCategoryMapById, resolveLogEntryCategory } from '../../utils/categoryTracking';
 import { getActiveCategories } from '../../utils/categoryVisibility';
 import {
@@ -20,6 +20,7 @@ import { calculateLifetimeStatsFromData } from '../../utils/lifetimeStats';
 import { isProductiveFocusLog } from '../../utils/logClassification';
 import {
   formatPomodoroCount,
+  getAccountStatsFocusSeconds,
   getAccountStatsPomodoroEquivalent,
   getAccountStatsSessionPomodoroEquivalent,
   getPomodoroEquivalentWeightForReason,
@@ -781,6 +782,21 @@ const formatLogDurationCompact = (seconds: number) => {
   return `${remainingSeconds}s`;
 };
 
+const getAccountLogDurationSeconds = (entry: LogEntry) => (
+  isProductiveFocusLog(entry)
+    ? Math.max(0, getAccountStatsFocusSeconds(entry))
+    : Math.max(0, entry.duration)
+);
+
+const getAccountLogEndIso = (entry: LogEntry) => {
+  if (isProductiveFocusLog(entry)) {
+    const normalized = normalizeAccountLogWindow(entry);
+    if (normalized) return new Date(normalized.endMs).toISOString();
+  }
+
+  return entry.end;
+};
+
 const formatStreakDayPomoLabel = (pomos: number) => {
   const safe = Number.isFinite(pomos) ? Math.max(0, pomos) : 0;
   const unit = Math.abs(safe - 1) < 0.005 ? 'pomo' : 'pomos';
@@ -893,11 +909,13 @@ const buildActivityLogDisplayEntries = (
     const resolvedCategory = resolveLogEntryCategory(entry, categoriesById);
     const taskName = getActivityLogTaskName(entry);
     const previousDisplayEntry = displayEntries[displayEntries.length - 1];
+    const displayDuration = getAccountLogDurationSeconds(entry);
+    const displayEnd = getAccountLogEndIso(entry);
 
     if (previousDisplayEntry && shouldMergeActivityLogEntries(previousDisplayEntry, entry, mode, taskName, resolvedCategory.name || null)) {
       previousDisplayEntry.rawEntries.push(entry);
-      previousDisplayEntry.end = entry.end;
-      previousDisplayEntry.duration += Math.max(0, entry.duration);
+      previousDisplayEntry.end = displayEnd;
+      previousDisplayEntry.duration += displayDuration;
       if (!previousDisplayEntry.taskName && taskName) previousDisplayEntry.taskName = taskName;
       if (!previousDisplayEntry.categoryName && resolvedCategory.name) previousDisplayEntry.categoryName = resolvedCategory.name;
       if (!previousDisplayEntry.categoryColor && resolvedCategory.color) previousDisplayEntry.categoryColor = resolvedCategory.color;
@@ -909,8 +927,8 @@ const buildActivityLogDisplayEntries = (
       rawEntries: [entry],
       mode,
       start: entry.start,
-      end: entry.end,
-      duration: Math.max(0, entry.duration),
+      end: displayEnd,
+      duration: displayDuration,
       taskName,
       categoryName: resolvedCategory.name || null,
       categoryColor: resolvedCategory.color || null,
@@ -1214,6 +1232,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const [inviteSessionConfig, setInviteSessionConfig] = useState<GroupSessionConfig | null>(null);
   const [timerShareBusy, setTimerShareBusy] = useState(false);
   const [timerShareMessage, setTimerShareMessage] = useState<string | null>(null);
+  const [sessionCodeCopied, setSessionCodeCopied] = useState(false);
   const [developerViewSessionBusy, setDeveloperViewSessionBusy] = useState(false);
   const [developerViewSessionMessage, setDeveloperViewSessionMessage] = useState<string | null>(null);
   const [groupMorphHeight, setGroupMorphHeight] = useState<number | null>(null);
@@ -1261,6 +1280,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
   const categoryEditorTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStartSoundPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusSoundPreviewTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionCodeCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const categoryCardRefsRef = useRef(new Map<number, HTMLDivElement>());
   const previousCategoryTopsRef = useRef<Map<number, number>>(new Map());
   const categoryFlipAnimationsRef = useRef(new Map<number, Animation>());
@@ -1435,7 +1455,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
       const displayEntries = buildActivityLogDisplayEntries(sortedEntries, categoriesById);
       const totals = sortedEntries.reduce(
         (acc, entry) => {
-          if (isProductiveFocusLog(entry)) acc.work += Math.max(0, entry.duration);
+          if (isProductiveFocusLog(entry)) acc.work += getAccountLogDurationSeconds(entry);
           else if (entry.type === 'break') acc.break += Math.max(0, entry.duration);
           else if (entry.type === 'allpause') acc.pause += Math.max(0, entry.duration);
           else if (isGraceLike(entry)) acc.grace += Math.max(0, entry.duration);
@@ -3011,6 +3031,18 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleCopyGroupSessionCode = async () => {
+    if (!safeGroupSessionId) return;
+    const copied = await copyToClipboard(safeGroupSessionId);
+    if (!copied) return;
+    if (sessionCodeCopiedTimeoutRef.current) clearTimeout(sessionCodeCopiedTimeoutRef.current);
+    setSessionCodeCopied(true);
+    sessionCodeCopiedTimeoutRef.current = setTimeout(() => {
+      setSessionCodeCopied(false);
+      sessionCodeCopiedTimeoutRef.current = null;
+    }, 1600);
+  };
+
   const handleDeveloperViewTimerSharePage = async () => {
     if (developerViewSessionBusy) return;
     setDeveloperViewSessionBusy(true);
@@ -3087,6 +3119,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     return () => {
       if (autoStartSoundPanelTimeoutRef.current) clearTimeout(autoStartSoundPanelTimeoutRef.current);
       if (categoryEditorTransitionTimeoutRef.current) clearTimeout(categoryEditorTransitionTimeoutRef.current);
+      if (sessionCodeCopiedTimeoutRef.current) clearTimeout(sessionCodeCopiedTimeoutRef.current);
       pendingCategoryCommitRef.current = null;
     };
   }, []);
@@ -4713,7 +4746,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
     const groupError = groupLocalError || peerError;
     const hostControls = safeHostSyncConfig;
     const clientControls = safeClientSyncConfig;
-    const timerSharePrimaryLabel = timerShareMessage === 'copied' ? 'Timer Copied' : 'Timer Link';
+    const timerSharePrimaryLabel = timerShareMessage === 'copied' ? 'Copied!' : 'Share My Timer';
     const groupShellClass = 'doro-group-study-shell rounded-[1.25rem] border p-3 md:p-3';
     const groupInsetClass = 'doro-group-study-inset rounded-[0.85rem] border';
     const groupSectionLabelClass = 'text-[10px] font-black uppercase tracking-[0.16em] text-white/42';
@@ -4822,13 +4855,16 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_11.75rem] sm:items-stretch md:grid-cols-[minmax(0,1fr)_12.75rem]">
                 <button
                   type="button"
-                  onClick={async () => { await copyToClipboard(safeGroupSessionId); }}
-                  className={`group flex min-h-[7.15rem] min-w-0 transform-gpu flex-col justify-center gap-3 px-4 py-4 text-center transition-[background-color,border-color,box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.065] hover:shadow-[0_26px_50px_-38px_rgba(0,0,0,0.85),inset_0_1px_0_rgba(255,255,255,0.055)] active:translate-y-0 sm:min-h-[10.55rem] md:px-5 ${groupInsetClass}`}
+                  onClick={handleCopyGroupSessionCode}
+                  className={`group relative flex min-h-[7.15rem] min-w-0 transform-gpu flex-col justify-center gap-3 overflow-hidden px-4 py-4 text-center transition-[background-color,border-color,box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:border-white/[0.16] hover:bg-white/[0.065] hover:shadow-[0_26px_50px_-38px_rgba(0,0,0,0.85),inset_0_1px_0_rgba(255,255,255,0.055)] active:translate-y-0 sm:min-h-[10.55rem] md:px-5 ${groupInsetClass}`}
                   aria-label={`Copy session code ${safeGroupSessionId}`}
                 >
                   <span className={`${groupSectionLabelClass} transition-colors group-hover:text-white/48`}>Session Code</span>
                   <span className="font-mono text-[1.8rem] font-bold leading-none tracking-[0.18em] text-white transition-colors group-hover:text-blue-100 sm:text-[1.95rem] md:text-[2.1rem]">
                     {safeGroupSessionId}
+                  </span>
+                  <span className={`doro-session-code-copied absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.13em] ${sessionCodeCopied ? 'is-visible' : ''}`}>
+                    Copied!
                   </span>
                 </button>
                 <div className="grid w-full grid-cols-3 gap-2 sm:h-full sm:grid-cols-1 sm:auto-rows-fr">
@@ -6156,6 +6192,9 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-group-study-shell {
           --doro-group-study-ease: cubic-bezier(0.16, 1, 0.3, 1);
           --doro-group-study-ease-soft: cubic-bezier(0.22, 0.76, 0.26, 1);
+          text-rendering: geometricPrecision;
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
           background:
             linear-gradient(145deg, rgba(255,255,255,0.145), rgba(255,255,255,0.06)),
             rgba(255,255,255,0.075);
@@ -6232,7 +6271,22 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         .doro-group-study-flow-panel.is-active .doro-group-study-stagger {
           animation: doro-group-study-item-in 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
           animation-delay: var(--doro-group-study-delay, 30ms);
-          will-change: transform, opacity;
+          will-change: auto;
+        }
+        .doro-session-code-copied {
+          border-color: rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.1);
+          color: rgba(255, 255, 255, 0.82);
+          opacity: 0;
+          pointer-events: none;
+          transform: translate3d(-50%, 0.45rem, 0) scale(0.96);
+          transition:
+            opacity 180ms ease,
+            transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-session-code-copied.is-visible {
+          opacity: 1;
+          transform: translate3d(-50%, 0, 0) scale(1);
         }
         .doro-group-study-inset,
         .doro-group-study-choice,
@@ -6258,13 +6312,14 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
             border-color 240ms ease,
             box-shadow 260ms ease,
             color 260ms ease;
-          will-change: transform, box-shadow, background-color;
+          will-change: auto;
         }
         .doro-group-study-choice:hover,
         .doro-group-study-option:hover,
         .doro-group-study-primary:hover,
         .doro-group-study-danger:hover,
         .doro-group-study-pill:hover {
+          will-change: transform, box-shadow, background-color;
           background:
             linear-gradient(145deg, rgba(255,255,255,0.095), rgba(255,255,255,0.035)),
             rgba(0, 0, 0, 0.3);

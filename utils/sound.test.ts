@@ -64,6 +64,8 @@ const installFakeAudioContext = (options?: { resumeAsync?: boolean }) => {
   class FakeBufferSourceNode extends FakeAudioNode {
     buffer: FakeAudioBuffer | null = null;
     loop = false;
+    loopStart = 0;
+    loopEnd = 0;
     playbackRate = new FakeAudioParam();
     startedAt: number | null = null;
     stoppedAt: number | null = null;
@@ -287,18 +289,43 @@ describe('focus sound engine', () => {
     expect(fakeAudio.gainRampValues[fakeAudio.gainRampValues.length - 1]).toBeCloseTo(0.055 * 2.35, 5);
   });
 
-  it('uses a long faded loop buffer for focus ambience so the seam does not click', async () => {
+  it('keeps full, continuous ambience energy through every focus sound loop seam', async () => {
     const fakeAudio = installFakeAudioContext();
     const sound = await import('./sound');
 
-    await sound.startFocusSound('brown-deep', 100);
+    for (const preset of ['white-soft', 'pink-soft', 'brown-deep'] as const) {
+      await sound.startFocusSound(preset, 100);
 
-    const buffer = fakeAudio.startedSources[0].buffer;
-    expect(buffer?.duration).toBeGreaterThan(12);
+      const source = fakeAudio.startedSources[fakeAudio.startedSources.length - 1];
+      const buffer = source.buffer;
+      expect(buffer?.duration).toBeGreaterThan(12);
+      expect(source.loop).toBe(true);
+      expect(source.loopStart).toBe(0);
+      expect(source.loopEnd).toBe(buffer?.duration);
 
-    const channel = buffer!.getChannelData(0);
-    expect(channel[0]).toBeCloseTo(0, 8);
-    expect(channel[channel.length - 1]).toBeCloseTo(0, 8);
+      const channel = buffer!.getChannelData(0);
+      const edgeFrames = Math.floor(buffer!.sampleRate * 0.25);
+      const rms = (start: number, end: number) => {
+        let sum = 0;
+        for (let index = start; index < end; index += 1) {
+          sum += channel[index] * channel[index];
+        }
+        return Math.sqrt(sum / Math.max(1, end - start));
+      };
+      const fullRms = rms(0, channel.length);
+      const leadingRms = rms(0, edgeFrames);
+      const trailingRms = rms(channel.length - edgeFrames, channel.length);
+
+      expect(leadingRms).toBeGreaterThan(fullRms * 0.2);
+      expect(trailingRms).toBeGreaterThan(fullRms * 0.2);
+
+      let largestInternalStep = 0;
+      for (let index = 1; index < channel.length; index += 1) {
+        largestInternalStep = Math.max(largestInternalStep, Math.abs(channel[index] - channel[index - 1]));
+      }
+      const loopSeamStep = Math.abs(channel[0] - channel[channel.length - 1]);
+      expect(loopSeamStep).toBeLessThanOrEqual(largestInternalStep);
+    }
   });
 
   it('reuses generated focus noise buffers when switching presets with the same noise color', async () => {

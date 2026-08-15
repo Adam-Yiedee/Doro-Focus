@@ -15,66 +15,66 @@ export type EncouragementPromptContext = {
 };
 
 const ENCOURAGEMENT_PRESETS = [
-  "Oh, you're actually locked in locked in.",
-  'Okay productivity machine.',
-  'Who gave you permission to work this hard?',
-  'Casually becoming unstoppable, I see.',
-  'Save some productivity for the rest of us.',
-  'Academic weapon behavior.',
-  "You're making procrastination nervous.",
-  'Rare footage of you getting things done.',
-  'Honestly? Kind of impressive.',
-  'Your brain deserves a little applause.',
-  'Certified locked-in moment.',
-  'The focus is focusing.',
-  'Okay, scholar.',
-  'That task picked the wrong person today.',
-  "Keep going - I'm emotionally invested now.",
-  "You versus your to-do list. Current score: you're winning.",
-  'No distractions. Only greatness.',
-  "You're in the zone. Protect it.",
-  'Tiny win detected.',
-  'Productivity witnessed and officially approved.',
+  'That focus is landing. Keep the rhythm.',
+  'Strong pace. Stay with the next minute.',
+  'Clean momentum. Keep stacking it.',
+  'You are making real progress.',
+  'The room can feel that focus.',
+  'Steady work. Keep it simple and keep going.',
+  'Nice block. Protect the momentum.',
+  'One focused minute at a time.',
+  'You are moving this forward.',
+  'Solid pace. Stay locked in.',
+  'That is a real focus streak forming.',
+  'Quiet progress still counts.',
+  'Keep showing up. It is working.',
+  'The next block is yours.',
+  'You are closer than you were a minute ago.',
+  'Good work. Keep the thread alive.',
+  'This is how the session gets won.',
+  'Stay steady. The work is moving.',
+  'Tiny win detected. Keep building.',
+  'Focus witnessed and fully respected.',
 ] as const;
 
 const POMO_PROMPT_BUILDERS: Array<(context: EncouragementPromptContext) => string> = [
   context => context.currentPomoNumber !== null && context.currentPomoNumber > 1
-    ? `${context.pomoLabel} in? You're crazy.`
-    : 'First pomo energy. Lock in.',
+    ? `${context.pomoLabel} in. Keep the pace steady.`
+    : 'First block started. Set the tone.',
   context => context.currentPomoNumber !== null && context.currentPomoNumber >= 3
-    ? `${context.pomoLabel} deep. Academic weapon behavior.`
-    : 'Next pomo is going to fear you.',
+    ? `${context.pomoLabel} deep. That is strong momentum.`
+    : 'Next block is a clean chance to move.',
   context => context.isBreak
     ? context.completedPomoCount !== null && context.completedPomoCount > 0
       ? `${context.completedPomoCount} pomo${context.completedPomoCount === 1 ? '' : 's'} down. Break earned.`
-      : 'Break earned. Come back dangerous.'
+      : 'Break earned. Come back steady.'
     : context.currentPomoNumber !== null
-      ? `${context.pomoLabel} momentum detected.`
-      : 'Pomo momentum detected.',
+      ? `${context.pomoLabel} momentum is building.`
+      : 'Focus momentum is building.',
   context => context.currentPomoNumber !== null && context.currentPomoNumber >= 5
-    ? `${context.pomoLabel} in? Save some focus for the rest of us.`
+    ? `${context.pomoLabel} in. Serious endurance.`
     : context.currentPomoNumber !== null
-      ? `Certified ${context.pomoLabel} progress.`
-      : 'Certified pomo progress.',
+      ? `Solid ${context.pomoLabel} progress.`
+      : 'Solid focus progress.',
   context => context.currentPomoNumber !== null
-    ? `Tiny ${context.pomoLabel} win detected.`
-    : 'Tiny pomo win detected.',
+    ? `Small ${context.pomoLabel} win. Keep stacking.`
+    : 'Small focus win. Keep stacking.',
 ];
 
 const TASK_PROMPT_BUILDERS: Array<(context: EncouragementPromptContext) => string> = [
-  context => context.taskName ? `${context.taskName} picked the wrong person today.` : 'That task list picked the wrong person today.',
-  context => context.taskName ? `Rare footage of ${context.taskName} getting handled.` : 'Rare footage of tasks getting handled.',
-  context => context.taskName ? `${context.taskName}? Honestly, kind of impressive.` : 'Honestly? That task momentum is impressive.',
-  context => context.taskName ? `You versus ${context.taskName}. Current score: you're winning.` : "You versus the to-do list. Current score: you're winning.",
-  context => context.taskName ? `No distractions. Only ${context.taskName}.` : 'No distractions. Only greatness.',
+  context => context.taskName ? `${context.taskName} is moving. Stay with it.` : 'The task list is moving. Stay with it.',
+  context => context.taskName ? `Nice progress on ${context.taskName}. Keep the thread alive.` : 'Nice progress. Keep the thread alive.',
+  context => context.taskName ? `${context.taskName} is getting handled one block at a time.` : 'One block at a time. It adds up.',
+  context => context.taskName ? `Keep returning to ${context.taskName}. That consistency matters.` : 'Keep returning to the work. That consistency matters.',
+  context => context.taskName ? `One clean minute on ${context.taskName}. Then another.` : 'One clean minute. Then another.',
 ];
 
 const CATEGORY_PROMPT_BUILDERS: Array<(context: EncouragementPromptContext) => string> = [
-  context => context.categoryName ? `${context.categoryName} again? Nice!` : 'Category focus is looking clean.',
-  context => context.categoryName ? `${context.categoryName} mode activated.` : 'Focus mode activated.',
-  context => context.categoryName ? `${context.categoryName} does not stand a chance.` : 'This focus block does not stand a chance.',
-  context => context.categoryName ? `Certified ${context.categoryName} momentum.` : 'Certified momentum.',
-  context => context.categoryName ? `Your ${context.categoryName} focus is looking dangerous.` : 'Your focus is looking dangerous.',
+  context => context.categoryName ? `${context.categoryName} focus is settling in.` : 'Focus is settling in.',
+  context => context.categoryName ? `${context.categoryName} is getting real attention.` : 'This work is getting real attention.',
+  context => context.categoryName ? `Stay with ${context.categoryName}. Progress is visible.` : 'Stay with it. Progress is visible.',
+  context => context.categoryName ? `${context.categoryName} momentum is building.` : 'Momentum is building.',
+  context => context.categoryName ? `Your ${context.categoryName} rhythm looks strong.` : 'Your focus rhythm looks strong.',
 ];
 
 export const normalizeEncouragementSubject = (value: string | null | undefined, blockedLabels: string[] = []) => {

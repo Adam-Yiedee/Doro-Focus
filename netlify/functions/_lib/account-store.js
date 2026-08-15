@@ -155,9 +155,9 @@ const DEFAULT_SETTINGS = {
   themeMode: 'dark',
 };
 
-const POMODORO_COMPLETE_REASON = 'pomodoro complete';
 const MINI_POMODORO_COMPLETE_REASON = 'mini-pomodoro complete';
 const ACCOUNT_STATS_POMODORO_SECONDS = 25 * 60;
+const MINI_POMODORO_SECONDS = 15 * 60;
 
 const defaultLifetimeStats = () => ({
   totalFocusHours: 0,
@@ -229,6 +229,25 @@ const isPauseCreditedWorkLog = (entry) => {
   return reason.startsWith('paused') || reason.includes('pause credit');
 };
 
+const isGraceCreditedWorkLog = (entry) => {
+  if (!entry || entry.type !== 'grace') return false;
+  const reason = cleanString(entry.reason).trim().toLowerCase();
+  return reason.startsWith('grace period') && /\bworking\b/.test(reason);
+};
+
+const isProductiveFocusLog = (entry) => {
+  if (!entry) return false;
+  const reason = cleanString(entry.reason).trim().toLowerCase();
+
+  if (entry.type === 'work') {
+    if (reason.startsWith('paused') || reason.includes('pause credit')) return false;
+    if (reason.startsWith('grace period')) return /\bworking\b/.test(reason);
+    return true;
+  }
+
+  return isGraceCreditedWorkLog(entry);
+};
+
 const isManualFocusLog = (entry) => {
   return entry?.type === 'work' && entry.source === 'manual';
 };
@@ -236,19 +255,26 @@ const isManualFocusLog = (entry) => {
 const isTimerSessionDurationLog = (entry) => {
   if (!entry || entry.source === 'manual') return false;
   if (entry.type === 'break') return true;
-  return entry.type === 'work' && !isPauseCreditedWorkLog(entry);
+  return isProductiveFocusLog(entry);
+};
+
+const getPositiveDurationSeconds = (entry) => {
+  const durationSeconds = clampNumber(entry.duration, 0);
+  return durationSeconds > 0 ? durationSeconds : 0;
+};
+
+const getAccountStatsFocusSeconds = (entry) => {
+  if (!isProductiveFocusLog(entry)) return 0;
+  const reason = cleanString(entry.reason).trim().toLowerCase();
+  if (entry.source !== 'manual' && reason === MINI_POMODORO_COMPLETE_REASON) {
+    return MINI_POMODORO_SECONDS;
+  }
+  return getPositiveDurationSeconds(entry);
 };
 
 const getPomodoroEquivalentWeight = (entry) => {
-  if (!entry || entry.type !== 'work') return 0;
-
-  const durationSeconds = clampNumber(entry.duration, 0);
-  if (durationSeconds > 0) return durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS;
-
-  const reason = cleanString(entry.reason).trim().toLowerCase();
-  if (reason === POMODORO_COMPLETE_REASON) return 1;
-  if (reason === MINI_POMODORO_COMPLETE_REASON) return 0.5;
-  return 0;
+  if (!isProductiveFocusLog(entry)) return 0;
+  return getAccountStatsFocusSeconds(entry) / ACCOUNT_STATS_POMODORO_SECONDS;
 };
 
 const getStartOfLocalDayMs = (ms) => {
@@ -293,13 +319,12 @@ const getSessionTotalMinutes = (session) => {
 };
 
 const getSessionPomodoros = (session) => {
-  const miniPomos = Number(session?.stats?.miniPomosCompleted || 0);
-  if (Number.isFinite(miniPomos) && miniPomos > 0) {
-    const workMinutes = getSessionWorkMinutes(session);
-    if (workMinutes > 0) return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
-  }
+  const workMinutes = getSessionWorkMinutes(session);
+  if (workMinutes > 0) return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
+
   const pomos = Number(session?.stats?.pomosCompleted || 0);
   if (Number.isFinite(pomos) && pomos >= 0) return pomos;
+  const miniPomos = Number(session?.stats?.miniPomosCompleted || 0);
   return Number.isFinite(miniPomos) && miniPomos > 0 ? miniPomos * 0.5 : 0;
 };
 
@@ -318,16 +343,16 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   const safeCategories = Array.isArray(categories) ? categories : [];
 
   const productiveLogs = safeLogs.filter((entry) => {
-    if (!entry || entry.type !== 'work') return false;
+    if (!isProductiveFocusLog(entry)) return false;
     if (!Number.isFinite(entry.duration) || entry.duration <= 0) return false;
-    return !isPauseCreditedWorkLog(entry);
+    return true;
   });
   const completedPomodoroWeightFromLogs = productiveLogs.reduce(
     (acc, entry) => acc + getPomodoroEquivalentWeight(entry),
     0,
   );
 
-  const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
+  const workSecondsFromLogs = productiveLogs.reduce((acc, entry) => acc + getAccountStatsFocusSeconds(entry), 0);
   const manualWorkSecondsFromLogs = productiveLogs.reduce((acc, entry) => (
     acc + (isManualFocusLog(entry) ? Math.max(0, entry.duration) : 0)
   ), 0);
@@ -335,7 +360,9 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     if (!entry || !Number.isFinite(entry.duration) || entry.duration <= 0) return false;
     return isTimerSessionDurationLog(entry);
   });
-  const sessionSecondsFromLogs = timerSessionDurationLogs.reduce((acc, entry) => acc + Math.max(0, entry.duration), 0);
+  const sessionSecondsFromLogs = timerSessionDurationLogs.reduce((acc, entry) => (
+    acc + (isProductiveFocusLog(entry) ? getAccountStatsFocusSeconds(entry) : Math.max(0, entry.duration))
+  ), 0);
   const productiveLogDateKeys = new Set();
   productiveLogs.forEach((entry) => {
     if (isManualFocusLog(entry)) return;
@@ -370,7 +397,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
 
   const categoryBreakdown = {};
   productiveLogs.forEach((entry) => {
-    const minutes = Math.max(0, entry.duration / 60);
+    const minutes = Math.max(0, getAccountStatsFocusSeconds(entry) / 60);
     if (minutes <= 0) return;
     const key = getResolvedCategoryName(entry, categoryMap);
     categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;

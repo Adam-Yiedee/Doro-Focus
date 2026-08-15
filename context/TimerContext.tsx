@@ -75,6 +75,7 @@ import {
 import {
   buildHostMemberList,
   DEFAULT_GROUP_SYNC_CONFIG as DEFAULT_SYNC_CONFIG,
+  formatGroupEncouragementNoticeMessage,
   getGroupGoalActiveSeconds,
   getGroupGoalCompletedSecondsFromLogs,
   getGroupSyncConfigForSession,
@@ -94,15 +95,21 @@ import {
   shouldAttemptPeerReconnect,
   shouldBroadcastGroupState,
   shouldCreateReplacementPeerConnection,
+  shouldDisplayGroupEventNotice,
   shouldFollowHostTimerSync,
   shouldRefreshMembersAfterPeerCleanup,
+  shouldSendGroupEventToPeer,
   TIMER_SYNC_GROUP_SESSION_CONFIG,
   upsertGroupGoalProgress,
   TIMER_ONLY_GROUP_SYNC_CONFIG as TIMER_ONLY_SYNC_CONFIG,
 } from '../utils/groupStudy';
 import { buildCategorySnapshot } from '../utils/categoryTracking';
 import { isActiveCategory } from '../utils/categoryVisibility';
-import { getAccountStatsPomodoroEquivalent, getCompletionReasonForSettings } from '../utils/pomodoroAccounting';
+import {
+  convertTaskPomodoroUnits,
+  getAccountStatsPomodoroEquivalent,
+  getCompletionReasonForSettings,
+} from '../utils/pomodoroAccounting';
 import { getStableLocalUpdatedAtForAccountRefresh, selectLocalPayloadForAccountSync, shouldApplyAccountSyncSnapshot } from '../utils/accountSync';
 import { calculateLifetimeStatsFromData, EMPTY_LIFETIME_STATS } from '../utils/lifetimeStats';
 import { mergeOrderedEntitiesById, mergeTaskLists } from '../utils/stateMerge';
@@ -179,6 +186,7 @@ interface TimerContextType {
   pomodoroCount: number;
   allPauseActive: boolean;
   allPauseTime: number;
+  focusFlipPauseActive: boolean;
   
   // Grace Mode
   graceOpen: boolean;
@@ -261,6 +269,8 @@ interface TimerContextType {
   confirmAllPause: (reason: string) => void;
   endAllPause: () => void;
   resumeFromPause: (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => void;
+  pauseFocusTimerForFlip: () => void;
+  resumeFocusTimerFromFlip: () => void;
   restartActiveTimer: (customSeconds?: number) => void;
   resolveGrace: (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => void;
   endSession: (options?: { effectiveEndMs?: number; showSummary?: boolean }) => void;
@@ -312,6 +322,7 @@ interface TimerContextType {
 }
 
 const TimerContext = createContext<TimerContextType | undefined>(undefined);
+const FOCUS_TIMER_FLIP_PAUSE_REASON = 'Viewing break timer';
 
 // Storage Logic
 const getGuestKey = () => 'doro_guest_data';
@@ -2895,15 +2906,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     switch (event.type) {
       case 'joined':
         return 'joined the study session';
-      case 'encouragement': {
-        const message = normalizeSpectatorEncouragementMessage(event.reason);
-        const targetName = typeof event.targetName === 'string' && event.targetName.trim()
-          ? sanitizeGroupMemberName(event.targetName, '').trim()
-          : '';
-        if (message && targetName) return `sent encouragement to ${targetName}: ${message}`;
-        if (message) return message;
-        return targetName ? `sent encouragement to ${targetName}` : 'sent encouragement';
-      }
+      case 'encouragement':
+        return formatGroupEncouragementNoticeMessage(event.reason);
       case 'timer-started':
         return 'started the timer';
       case 'timer-stopped':
@@ -2925,6 +2929,9 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const postGroupNotice = useCallback((event: GroupEventPayload) => {
     if (!event.actorId || !event.actorName) return;
+    const localPeerId = localPeerIdRef.current
+      || (isHostRef.current ? groupSessionIdRef.current : null);
+    if (!shouldDisplayGroupEventNotice(event, localPeerId)) return;
     if (localPeerIdRef.current && event.actorId === localPeerIdRef.current) return;
     if (seenGroupEventIdsRef.current.has(event.id)) return;
     seenGroupEventIdsRef.current.add(event.id);
@@ -2991,7 +2998,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const openConnections = pruneConnections();
     if (openConnections.length === 0) return;
     openConnections.forEach(conn => {
-      if (conn.open && conn.peer !== excludeConnId && !isSpectatorConnection(conn)) {
+      if (
+        conn.open
+        && !isSpectatorConnection(conn)
+        && shouldSendGroupEventToPeer({
+          event,
+          peerId: conn.peer,
+          excludePeerId: excludeConnId,
+          senderIsHost: isHostRef.current,
+          hostPeerId: groupSessionIdRef.current,
+        })
+      ) {
         conn.send({ type: 'GROUP_EVENT', event });
       }
     });
@@ -3059,14 +3076,19 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!event) return false;
 
     seenGroupEventIdsRef.current.add(event.id);
-    setGroupNotice({
-      id: `${event.id}_${nowMs}`,
-      actorId: event.actorId,
-      actorName: event.actorName,
-      kind: 'encouragement',
-      message: formatGroupEventMessage(event),
-      createdAt: nowMs,
-    });
+    const localPeerId = localPeerIdRef.current
+      || (isHostRef.current ? groupSessionIdRef.current : null);
+    const isDeveloperPreview = !groupSessionIdRef.current;
+    if (shouldDisplayGroupEventNotice(event, localPeerId) || isDeveloperPreview) {
+      setGroupNotice({
+        id: `${event.id}_${nowMs}`,
+        actorId: event.actorId,
+        actorName: event.actorName,
+        kind: 'encouragement',
+        message: formatGroupEventMessage(event),
+        createdAt: nowMs,
+      });
+    }
     sendGroupEvent(event);
     return true;
   }, [formatGroupEventMessage, normalizeGroupEventPayload, sendGroupEvent]);
@@ -5880,6 +5902,18 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     emitLocalGroupEvent('timer-resumed', { mode: action });
   };
 
+  const focusFlipPauseActive = allPauseActive && allPauseReason === FOCUS_TIMER_FLIP_PAUSE_REASON;
+
+  const pauseFocusTimerForFlip = () => {
+    if (!timerStarted || isIdle || activeMode !== 'work' || allPauseActive) return;
+    confirmAllPause(FOCUS_TIMER_FLIP_PAUSE_REASON);
+  };
+
+  const resumeFocusTimerFromFlip = () => {
+    if (!focusFlipPauseActive) return;
+    resumeFromPause('work', 0);
+  };
+
   const resolveGrace = (nextMode: 'work' | 'break', options?: { adjustWorkStart?: number, adjustBreakBalance?: number, logGraceAs?: 'work' | 'break' | 'grace' }) => {
     if (blockGuestTimerControl()) return;
     if (isResolvingGraceRef.current) return;
@@ -6620,9 +6654,14 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateSettings = (newSettings: TimerSettings) => {
     const safeSettings = normalizeSettings(newSettings);
+    const taskUnitsChanged = (settings.timerPreset === 'compact') !== (safeSettings.timerPreset === 'compact');
     const focusPresetBoundary = settings.timerPreset === 'focus' || safeSettings.timerPreset === 'focus';
     if (focusPresetBoundary && lockedTimerMode !== null) {
       publishTimerLockState(null, null);
+    }
+    if (taskUnitsChanged) {
+      markAccountSyncDirty();
+      setTasks(prev => convertTaskPomodoroUnits(prev, settings, safeSettings));
     }
     setSettings(safeSettings);
     if (!timerStarted && activeMode === 'work') {
@@ -6644,7 +6683,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   return (
     <TimerContext.Provider value={{
       user, workTime, breakTime, activeMode, timerStarted, isIdle, lockedTimerMode, pomodoroCount,
-      allPauseActive, allPauseTime, graceOpen, graceContext, graceTotal,
+      allPauseActive, allPauseTime, focusFlipPauseActive, graceOpen, graceContext, graceTotal,
       tasks, pastSessions, categories, logs, settings, selectedCategoryId, scheduleBreaks, scheduleStartTime, sessionStartTime, delayedStartTargetTime,
       timerActivityStartTime: runtimeRef.current.activityStartIso ?? null,
       focusTimerDisplayOffsetSeconds,
@@ -6656,7 +6695,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       refreshFocusFriends, sendFocusFriendRequest, acceptFocusFriendInvite, acceptFocusFriendRequest, declineFocusFriendRequest, removeFocusFriend, sendFocusFriendEncouragement, requestFocusFriendJoin, sendFocusFriendJoinInvite, approveFocusFriendJoinRequest, declineFocusFriendJoinRequest, markFocusFriendActionRead,
       sendGroupEncouragement,
       startTimer, stopTimer, toggleTimer, toggleTimerLock, switchMode, activateMode, startDelayedStart,
-      startAllPause, confirmAllPause, endAllPause, resumeFromPause, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
+      startAllPause, confirmAllPause, endAllPause, resumeFromPause, pauseFocusTimerForFlip, resumeFocusTimerFromFlip, restartActiveTimer, resolveGrace, endSession, closeSummary, hardReset,
       createGroupSession, joinGroupSession, leaveGroupSession, updateHostSyncConfig, updateClientSyncConfig, setPendingJoinId, requestNewCategoryFlow, clearPendingMenuAction, dismissGuestTimerLockNotice,
       addTask, addDetailedTask, addSubtasksToTask, updateTask, deleteTask, selectTask, toggleTaskExpansion, moveTask, moveSubtask, splitTask,
       toggleTaskFuture, setTaskSchedule,

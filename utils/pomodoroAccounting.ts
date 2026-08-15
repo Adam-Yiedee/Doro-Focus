@@ -1,4 +1,4 @@
-import { LogEntry, SessionRecord, TimerSettings } from '../types';
+import { LogEntry, SessionRecord, Task, TimerSettings } from '../types';
 import { isProductiveFocusLog } from './logClassification';
 import { TIMER_PRESETS } from './timerRuntime';
 
@@ -7,6 +7,31 @@ export const MINI_POMODORO_COMPLETE_REASON = 'Mini-Pomodoro Complete';
 export const MINI_POMODORO_WEIGHT = 0.5;
 export const ACCOUNT_STATS_POMODORO_SECONDS = TIMER_PRESETS.classic.workDuration;
 export const MINI_POMODORO_SECONDS = TIMER_PRESETS.compact.workDuration;
+
+const getTaskPomodoroUnitMultiplier = (
+  settings: Pick<TimerSettings, 'timerPreset'>,
+) => settings.timerPreset === 'compact' ? 2 : 1;
+
+const convertTaskPomodoroValue = (value: number, factor: number) => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(Math.max(0, value * factor) * 1000) / 1000;
+};
+
+export const convertTaskPomodoroUnits = (
+  tasks: Task[],
+  previousSettings: Pick<TimerSettings, 'timerPreset'>,
+  nextSettings: Pick<TimerSettings, 'timerPreset'>,
+): Task[] => {
+  const factor = getTaskPomodoroUnitMultiplier(nextSettings) / getTaskPomodoroUnitMultiplier(previousSettings);
+  if (factor === 1) return tasks;
+
+  return tasks.map(task => ({
+    ...task,
+    estimated: convertTaskPomodoroValue(task.estimated, factor),
+    completed: convertTaskPomodoroValue(task.completed, factor),
+    subtasks: convertTaskPomodoroUnits(task.subtasks, previousSettings, nextSettings),
+  }));
+};
 
 const normalizeReason = (reason: unknown) => (
   typeof reason === 'string' ? reason.trim().toLowerCase() : ''
@@ -47,13 +72,7 @@ export const getAccountStatsPomodoroEquivalent = (
 ) => {
   if (!isProductiveFocusLog(entry)) return 0;
 
-  const completionWeight = getPomodoroEquivalentWeight(entry);
-  if (completionWeight > 0) return completionWeight;
-
-  const durationSeconds = getPositiveDurationSeconds(entry.duration);
-  if (durationSeconds > 0) return durationSeconds / ACCOUNT_STATS_POMODORO_SECONDS;
-
-  return 0;
+  return getAccountStatsFocusSeconds(entry) / ACCOUNT_STATS_POMODORO_SECONDS;
 };
 
 export const getAccountStatsFocusSeconds = (
@@ -125,11 +144,6 @@ export const getSessionPomodoroEquivalent = (session: SessionRecord) => {
 };
 
 export const getAccountStatsSessionPomodoroEquivalent = (session: SessionRecord) => {
-  const miniPomos = Number(session.stats?.miniPomosCompleted || 0);
-  if (Number.isFinite(miniPomos) && miniPomos > 0) {
-    return miniPomos * MINI_POMODORO_WEIGHT;
-  }
-
   const workMinutes = Number(session.stats?.totalWorkMinutes || 0);
   if (Number.isFinite(workMinutes) && workMinutes > 0) {
     return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);

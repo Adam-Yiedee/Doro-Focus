@@ -2,6 +2,7 @@ import {
   GroupGoalProgress,
   GroupGoalType,
   GroupGoalUnit,
+  GroupEventPayload,
   GroupMember,
   GroupSessionConfig,
   GroupStudyGoal,
@@ -46,10 +47,51 @@ const GROUP_GOAL_MIN_TARGET = 1;
 const GROUP_GOAL_MAX_TARGET = 999;
 const GROUP_INVITE_USERNAME_MAX_LENGTH = 32;
 const GROUP_PROGRESS_STALE_MS = 45_000;
+const GROUP_ENCOURAGEMENT_MAX_LENGTH = 180;
 
 type PeerConnectionLike = {
   peer: string;
   open?: boolean;
+};
+
+type GroupEventDeliveryPayload = Pick<GroupEventPayload, 'type' | 'targetId'>;
+
+export const isTargetedGroupEncouragement = (event: GroupEventDeliveryPayload) => (
+  event.type === 'encouragement' && Boolean(event.targetId?.trim())
+);
+
+export const formatGroupEncouragementNoticeMessage = (value: unknown) => {
+  const message = typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim().slice(0, GROUP_ENCOURAGEMENT_MAX_LENGTH)
+    : '';
+  return message || 'Keep going.';
+};
+
+export const shouldDisplayGroupEventNotice = (
+  event: GroupEventDeliveryPayload,
+  localPeerId: string | null | undefined,
+) => {
+  if (!isTargetedGroupEncouragement(event)) return true;
+  return Boolean(localPeerId && event.targetId?.trim() === localPeerId);
+};
+
+export const shouldSendGroupEventToPeer = ({
+  event,
+  peerId,
+  excludePeerId,
+  senderIsHost,
+  hostPeerId,
+}: {
+  event: GroupEventDeliveryPayload;
+  peerId: string;
+  excludePeerId?: string;
+  senderIsHost: boolean;
+  hostPeerId: string | null | undefined;
+}) => {
+  if (!peerId || peerId === excludePeerId) return false;
+  if (!isTargetedGroupEncouragement(event)) return true;
+  if (senderIsHost) return peerId === event.targetId?.trim();
+  return Boolean(hostPeerId && peerId === hostPeerId);
 };
 
 export const normalizeSyncConfig = (

@@ -312,6 +312,72 @@ describe('account store blob compatibility', () => {
     });
   });
 
+  it('uses canonical mini-pomo focus minutes when server logs saved short durations', () => {
+    const logs = Array.from({ length: 4 }, (_, index) => {
+      const startMs = Date.parse('2026-03-12T09:00:00.000Z') + (index * 15 * 60_000);
+      return {
+        type: 'work',
+        start: new Date(startMs).toISOString(),
+        end: new Date(startMs + (15 * 60_000)).toISOString(),
+        duration: 13.875 * 60,
+        reason: 'Mini-Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      };
+    });
+
+    const stats = calculateLifetimeStatsFromAccountData([], logs, []);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 1,
+      totalPomos: 2.4,
+      activeDays: 1,
+    });
+  });
+
+  it('counts grace marked as working in server-rebuilt focus stats', () => {
+    const stats = calculateLifetimeStatsFromAccountData([], [
+      {
+        type: 'work',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T09:25:00.000Z',
+        duration: 1500,
+        reason: 'Pomodoro Complete',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'grace',
+        start: '2026-03-12T09:25:00.000Z',
+        end: '2026-03-12T09:32:00.000Z',
+        duration: 420,
+        reason: 'Grace Period (Working)',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+      {
+        type: 'grace',
+        start: '2026-03-12T09:32:00.000Z',
+        end: '2026-03-12T09:35:00.000Z',
+        duration: 180,
+        reason: 'Grace Period',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+    ], []);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 32 / 60,
+      totalSessionHours: 32 / 60,
+      totalPomos: 32 / 25,
+      activeDays: 1,
+    });
+  });
+
   it('keeps older archived session days when newer synced logs exist on different dates', () => {
     const stats = calculateLifetimeStatsFromAccountData([
       {

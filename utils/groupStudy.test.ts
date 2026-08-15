@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildHostMemberList,
   DEFAULT_GROUP_SYNC_CONFIG,
+  formatGroupEncouragementNoticeMessage,
   getGroupGoalActiveSeconds,
   getGroupGoalCompletedSecondsFromLogs,
   getGroupGoalProgressValue,
@@ -26,11 +27,19 @@ import {
   shouldAttemptPeerReconnect,
   shouldBroadcastGroupState,
   shouldCreateReplacementPeerConnection,
+  shouldDisplayGroupEventNotice,
   shouldFollowHostTimerSync,
   shouldRefreshMembersAfterPeerCleanup,
+  shouldSendGroupEventToPeer,
 } from './groupStudy';
 
 describe('groupStudy helpers', () => {
+  it('shows only the encouragement copy in recipient notifications', () => {
+    expect(formatGroupEncouragementNoticeMessage('  Sam, keep the momentum going.  '))
+      .toBe('Sam, keep the momentum going.');
+    expect(formatGroupEncouragementNoticeMessage('')).toBe('Keep going.');
+  });
+
   it('keeps the default sync config timer-only', () => {
     expect(DEFAULT_GROUP_SYNC_CONFIG).toEqual({
       syncTimers: true,
@@ -439,6 +448,66 @@ describe('groupStudy helpers', () => {
       groupSessionId: null,
       isHost: true,
     })).toBe(false);
+  });
+
+  it('only displays targeted encouragement for its intended member', () => {
+    const targetedEncouragement = {
+      type: 'encouragement' as const,
+      targetId: 'MIRA',
+    };
+
+    expect(shouldDisplayGroupEventNotice(targetedEncouragement, 'MIRA')).toBe(true);
+    expect(shouldDisplayGroupEventNotice(targetedEncouragement, 'HOST')).toBe(false);
+    expect(shouldDisplayGroupEventNotice(targetedEncouragement, null)).toBe(false);
+    expect(shouldDisplayGroupEventNotice({
+      type: 'encouragement',
+    }, 'HOST')).toBe(true);
+    expect(shouldDisplayGroupEventNotice({
+      type: 'timer-started',
+      targetId: 'MIRA',
+    }, 'HOST')).toBe(true);
+  });
+
+  it('routes targeted encouragement through the host and then only to the recipient', () => {
+    const targetedEncouragement = {
+      type: 'encouragement' as const,
+      targetId: 'MIRA',
+    };
+
+    expect(shouldSendGroupEventToPeer({
+      event: targetedEncouragement,
+      peerId: 'HOST',
+      senderIsHost: false,
+      hostPeerId: 'HOST',
+    })).toBe(true);
+    expect(shouldSendGroupEventToPeer({
+      event: targetedEncouragement,
+      peerId: 'MIRA',
+      senderIsHost: true,
+      hostPeerId: 'HOST',
+    })).toBe(true);
+    expect(shouldSendGroupEventToPeer({
+      event: targetedEncouragement,
+      peerId: 'SAM',
+      senderIsHost: true,
+      hostPeerId: 'HOST',
+    })).toBe(false);
+    expect(shouldSendGroupEventToPeer({
+      event: targetedEncouragement,
+      peerId: 'MIRA',
+      excludePeerId: 'MIRA',
+      senderIsHost: true,
+      hostPeerId: 'HOST',
+    })).toBe(false);
+  });
+
+  it('continues broadcasting untargeted group events', () => {
+    expect(shouldSendGroupEventToPeer({
+      event: { type: 'timer-started' },
+      peerId: 'SAM',
+      senderIsHost: true,
+      hostPeerId: 'HOST',
+    })).toBe(true);
   });
 
   it('only attempts PeerJS reconnects for disconnected, non-destroyed peers', () => {

@@ -434,6 +434,30 @@ describe('buildEndSessionStats', () => {
     expect(stats.categoryStats).toEqual({ 'Deep Work': 10 });
   });
 
+  it('does not inflate partial logged focus from a stale timer pomodoro count', () => {
+    const stats = buildEndSessionStats({
+      logs: [
+        makeLog({
+          start: '2026-07-18T09:00:00.000Z',
+          end: '2026-07-18T09:12:30.000Z',
+          duration: 12.5 * 60,
+          reason: 'Session End',
+          categoryId: 1,
+        }),
+      ],
+      sessionStartTime: '2026-07-18T09:00:00.000Z',
+      sessionEndTime: '2026-07-18T09:12:30.000Z',
+      categories,
+      pomodoroCount: 4,
+      settings: { timerPreset: 'classic' },
+      tasksCompleted: 0,
+    });
+
+    expect(stats.totalWorkMinutes).toBe(12.5);
+    expect(stats.pomosCompleted).toBe(0);
+    expect(stats.categoryStats).toEqual({ 'Deep Work': 12.5 });
+  });
+
   it('deduplicates repeated timer windows before totaling session stats', () => {
     const stats = buildEndSessionStats({
       logs: [
@@ -608,7 +632,7 @@ describe('buildEndSessionStats', () => {
     expect(stats.miniPomosCompleted).toBe(3);
   });
 
-  it('repairs compact session minutes when one mini-pomodoro completion log is missing', () => {
+  it('does not repair compact session minutes above logged focus windows from timer count', () => {
     const sessionStartMs = Date.parse('2026-07-18T09:00:00.000Z');
     const logs: LogEntry[] = Array.from({ length: 15 }, (_, index) => {
       const start = new Date(sessionStartMs + index * 15 * 60_000);
@@ -632,13 +656,12 @@ describe('buildEndSessionStats', () => {
       tasksCompleted: 0,
     });
 
-    expect(stats.totalWorkMinutes).toBe(240);
-    expect(stats.pomosCompleted).toBe(8);
-    expect(stats.miniPomosCompleted).toBe(16);
+    expect(stats.totalWorkMinutes).toBe(225);
+    expect(stats.pomosCompleted).toBe(7.5);
+    expect(stats.miniPomosCompleted).toBe(15);
     expect(stats.categoryStats).toEqual({
       'Deep Work': 120,
       Admin: 105,
-      Uncategorized: 15,
     });
   });
 

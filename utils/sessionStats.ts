@@ -347,18 +347,23 @@ export const buildEndSessionStats = ({
   );
   const safePomodoroCount = Number.isFinite(pomodoroCount) ? Math.max(0, pomodoroCount) : 0;
   const timerPomosCompleted = getStandardPomodoroCountForTimer(safePomodoroCount, settings);
+  const hasLoggedOrPendingWork = loggedAndPendingWorkMinutes > 0.01;
   const canUseTimerPomodoroCount = (() => {
-    if (loggedCompletionStats.completedLogs === 0) return true;
-    if (settings.timerPreset === 'custom') return true;
-    const requiredSecondsPerTimerCount = settings.timerPreset === 'compact' ? 15 * 60 : 25 * 60;
+    if (safePomodoroCount <= 0) return false;
+    if (!hasLoggedOrPendingWork) return true;
+    const requiredSecondsPerTimerCount = settings.timerPreset === 'compact'
+      ? 15 * 60
+      : (
+          typeof settings.workDuration === 'number'
+          && Number.isFinite(settings.workDuration)
+          && settings.workDuration > 0
+            ? settings.workDuration
+            : 25 * 60
+        );
     const availableWorkSeconds = loggedAndPendingWorkMinutes * 60;
     return (safePomodoroCount * requiredSecondsPerTimerCount) <= (availableWorkSeconds + 1);
   })();
-  const canRepairFromPresetTimerCount = (
-    settings.timerPreset === 'compact'
-    && safePomodoroCount > loggedCompletionStats.completedLogs
-  );
-  const shouldUseTimerPomodoroCount = canUseTimerPomodoroCount || canRepairFromPresetTimerCount;
+  const shouldUseTimerPomodoroCount = canUseTimerPomodoroCount;
   const boundedTimerPomosCompleted = shouldUseTimerPomodoroCount ? timerPomosCompleted : 0;
   const pomosCompleted = Math.max(
     loggedCompletionStats.standardPomosCompleted,
@@ -376,16 +381,12 @@ export const buildEndSessionStats = ({
   const timerCountWorkMinutes = safePomodoroCount > 0
     ? (safePomodoroCount * safeWorkDurationSeconds) / 60
     : 0;
-  const completedTimerWorkFloorMinutes = settings.timerPreset === 'compact'
-    ? timerCountWorkMinutes
-    : 0;
-  const fallbackCompletedWorkMinutes = loggedCompletionStats.completedLogs === 0 && canUseTimerPomodoroCount
+  const fallbackCompletedWorkMinutes = !hasLoggedOrPendingWork && canUseTimerPomodoroCount
     ? timerCountWorkMinutes
     : 0;
   const totalWorkMinutes = Math.max(
     loggedAndPendingWorkMinutes,
     fallbackCompletedWorkMinutes,
-    completedTimerWorkFloorMinutes,
   );
 
   const trackedCategoryMinutes = Array.from(categoryDetailsByKey.values()).reduce(

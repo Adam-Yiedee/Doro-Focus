@@ -1,7 +1,7 @@
 
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Flame, Heart, Users, X } from 'lucide-react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, Flame, Heart, Minus, Users, X } from 'lucide-react';
 import { useTimer } from '../context/TimerContext';
 import TimerDisplay from './TimerDisplay';
 import Tasks from './Tasks';
@@ -371,20 +371,20 @@ const getGroupGoalEncouragementOptions = ({
   const options: string[] = [];
 
   if (participantCount > 1 && rank === 1) {
-    options.push(isSelf ? 'First place energy. Keep setting the pace.' : `First place energy, ${name}. Keep setting the pace.`);
+    options.push(isSelf ? 'Leading the room. Keep the pace steady.' : `Leading the room, ${name}. Keep the pace steady.`);
   }
   if (roundedValue >= 3) {
     options.push(isSelf
-      ? `${formatPomodoroCount(roundedValue)} ${unitLabel.toLowerCase()} down. That is serious momentum.`
-      : `${formatPomodoroCount(roundedValue)} ${unitLabel.toLowerCase()} down, ${name}. That is serious momentum.`);
+      ? `${formatPomodoroCount(roundedValue)} ${unitLabel.toLowerCase()} in. Strong pace, clean focus.`
+      : `${formatPomodoroCount(roundedValue)} ${unitLabel.toLowerCase()} in, ${name}. Strong pace, clean focus.`);
   }
   if (participantCount > 1 && rank === participantCount) {
-    options.push(isSelf ? 'One focused block and you are right back in it.' : `${name}, one focused block and you are right back in it.`);
+    options.push(isSelf ? 'One steady block closes the gap. Stay with it.' : `${name}, one steady block closes the gap. Stay with it.`);
   }
   if (subject) {
-    options.push(isSelf ? `${subject} is moving. Keep going.` : `${subject} is moving, ${name}. Keep going.`);
+    options.push(isSelf ? `Stay with ${subject}. Real progress is happening.` : `Stay with ${subject}, ${name}. Real progress is happening.`);
   }
-  options.push(isSelf ? 'You have got this. Stay with it.' : `You have got this, ${name}. Stay with it.`);
+  options.push(isSelf ? 'Keep the rhythm. The next focused minute counts.' : `Keep the rhythm, ${name}. The next focused minute counts.`);
 
   return Array.from(new Set(options)).slice(0, 4);
 };
@@ -395,8 +395,9 @@ const GroupStudyGoalPanel: React.FC<{
   members?: GroupMember[];
   warning?: string | null;
   isPreview?: boolean;
+  onHide?: () => void;
   onSendEncouragement?: (member: GroupGoalProgress, message: string) => boolean | void;
-}> = ({ sessionConfig, progress, members = [], warning, isPreview = false, onSendEncouragement }) => {
+}> = ({ sessionConfig, progress, members = [], warning, isPreview = false, onHide, onSendEncouragement }) => {
   const [encouragementMenuMemberId, setEncouragementMenuMemberId] = useState<string | null>(null);
   const [sentEncouragementMemberId, setSentEncouragementMemberId] = useState<string | null>(null);
   const encouragementMenuRef = useRef<HTMLDivElement | null>(null);
@@ -421,23 +422,28 @@ const GroupStudyGoalPanel: React.FC<{
     const sortedMembers = [...members]
       .filter(member => typeof member.name === 'string' && member.name.trim())
       .sort((a, b) => Number(b.isHost) - Number(a.isHost) || a.name.localeCompare(b.name));
-    const memberCount = sortedMembers.length;
-    const memberSummary = memberCount === 0
-      ? 'Waiting for study partners'
-      : memberCount === 1
-        ? 'Just you for now'
-        : `${memberCount} people in this session`;
 
     return (
-      <aside className="doro-group-goal-panel w-full max-w-[21rem] shrink-0 rounded-[1.25rem] border p-3">
+      <aside className="doro-group-goal-panel w-full rounded-[1.25rem] border p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/42">{isPreview ? 'Preview' : 'Group Study'}</div>
             <div className="mt-1 text-sm font-bold text-white/90">Studying with...</div>
-            <div className="mt-1 text-xs font-semibold leading-relaxed text-white/48">{memberSummary}</div>
           </div>
-          <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
-            <Users size={16} strokeWidth={2.2} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onHide && (
+              <button
+                type="button"
+                className="doro-group-goal-hide-button"
+                onClick={onHide}
+                aria-label="Hide group goal panel"
+              >
+                <Minus size={14} strokeWidth={2.4} aria-hidden="true" />
+              </button>
+            )}
+            <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
+              <Users size={16} strokeWidth={2.2} />
+            </div>
           </div>
         </div>
 
@@ -470,14 +476,26 @@ const GroupStudyGoalPanel: React.FC<{
   const rankByMemberId = new Map(rankedProgress.map((item, index) => [item.memberId, index + 1]));
 
   return (
-    <aside className="doro-group-goal-panel w-full max-w-[21rem] shrink-0 rounded-[1.25rem] border p-3">
+    <aside className="doro-group-goal-panel w-full rounded-[1.25rem] border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/42">{isPreview ? 'Preview Goal' : 'Group Goal'}</div>
           <div className="mt-1 text-sm font-bold text-white/90">{isPooled ? 'Pooled Total' : 'Everyone Live'}</div>
         </div>
-        <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
-          <Users size={16} strokeWidth={2.2} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onHide && (
+            <button
+              type="button"
+              className="doro-group-goal-hide-button"
+              onClick={onHide}
+              aria-label="Hide group goal panel"
+            >
+              <Minus size={14} strokeWidth={2.4} aria-hidden="true" />
+            </button>
+          )}
+          <div className="doro-group-goal-icon flex h-9 w-9 items-center justify-center rounded-[0.72rem] border text-white/72">
+            <Users size={16} strokeWidth={2.2} />
+          </div>
         </div>
       </div>
 
@@ -524,7 +542,6 @@ const GroupStudyGoalPanel: React.FC<{
                 <div className="min-w-0 text-xs font-bold text-white/78">
                   <span
                     className="doro-group-goal-name-tip"
-                    title={tooltip}
                     data-tooltip={tooltip}
                     tabIndex={0}
                   >
@@ -1879,6 +1896,9 @@ const Layout: React.FC = () => {
   const topIconClass = isLightTheme ? 'text-slate-700' : 'text-white/90';
   const focusStreakSnapshot = focusStreakBanner?.snapshot || null;
   const shouldRenderFocusStreakMoment = Boolean(focusStreakBanner?.armed && focusStreakSnapshot);
+  const [isGroupGoalPanelHidden, setIsGroupGoalPanelHidden] = useState(false);
+  const groupGoalPanelRef = useRef<HTMLDivElement>(null);
+  const [groupGoalPanelHeight, setGroupGoalPanelHeight] = useState(0);
   const shouldShowGroupStudyPanel = Boolean(groupSessionId && !isFocusShareSessionConfig(groupSessionConfig));
   const groupStudyPanel = developerGroupPreview
     ? {
@@ -1894,6 +1914,34 @@ const Layout: React.FC = () => {
         isPreview: false,
       }
       : null;
+  const hasGroupStudyPanel = Boolean(groupStudyPanel);
+
+  useEffect(() => {
+    if (!hasGroupStudyPanel) setIsGroupGoalPanelHidden(false);
+  }, [hasGroupStudyPanel]);
+
+  useLayoutEffect(() => {
+    const panel = groupGoalPanelRef.current;
+    if (!hasGroupStudyPanel || !panel) {
+      setGroupGoalPanelHeight(0);
+      return;
+    }
+
+    const updateHeight = () => {
+      const nextHeight = Math.ceil(panel.getBoundingClientRect().height);
+      setGroupGoalPanelHeight(currentHeight => currentHeight === nextHeight ? currentHeight : nextHeight);
+    };
+
+    updateHeight();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(updateHeight);
+      observer.observe(panel);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, [hasGroupStudyPanel]);
 
   return (
     <div 
@@ -1914,6 +1962,122 @@ const Layout: React.FC = () => {
             inset 0 1px 0 rgba(255,255,255,0.16);
           transform: translateZ(0);
           backface-visibility: hidden;
+        }
+        .doro-timer-panel-row {
+          position: relative;
+        }
+        .doro-group-goal-stage {
+          position: relative;
+          z-index: 34;
+          width: 100%;
+          max-width: 100%;
+          height: var(--doro-group-goal-panel-height, 0px);
+          margin: 0 auto 1rem;
+          flex: 0 0 auto;
+          transform: translate3d(0, 0, 0);
+          transition:
+            height 460ms cubic-bezier(0.22, 1, 0.36, 1),
+            margin-bottom 460ms cubic-bezier(0.22, 1, 0.36, 1),
+            transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-group-goal-stage.is-collapsed {
+          height: 0;
+          margin-bottom: 0;
+        }
+        .doro-group-goal-dock {
+          position: absolute;
+          top: 0;
+          left: 50%;
+          width: min(21rem, 100%);
+          max-width: 100%;
+          opacity: 1;
+          visibility: visible;
+          transform: translate3d(-50%, 0, 0) scale(1);
+          transform-origin: top left;
+          filter: blur(0);
+          transition:
+            opacity 240ms ease 90ms,
+            transform 460ms cubic-bezier(0.22, 1, 0.36, 1),
+            filter 260ms ease 60ms,
+            visibility 0ms linear 0ms;
+        }
+        .doro-group-goal-stage.is-collapsed .doro-group-goal-dock {
+          visibility: hidden;
+          pointer-events: none;
+          opacity: 0;
+          transform: translate3d(-50%, -0.2rem, 0) scale(0.94);
+          filter: blur(2px);
+          transition:
+            opacity 190ms ease,
+            transform 390ms cubic-bezier(0.32, 0, 0.2, 1),
+            filter 190ms ease,
+            visibility 0ms linear 340ms;
+        }
+        .doro-group-goal-top-toggle {
+          display: inline-flex;
+          width: 0;
+          min-width: 0;
+          overflow: hidden;
+          pointer-events: none;
+          opacity: 0;
+          transform: translate3d(0.45rem, 0, 0) scale(0.9);
+          transform-origin: center right;
+          transition:
+            width 360ms cubic-bezier(0.22, 1, 0.36, 1),
+            opacity 180ms ease,
+            transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .doro-group-goal-top-toggle.is-visible {
+          width: 2.375rem;
+          pointer-events: auto;
+          opacity: 1;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        .doro-group-goal-hide-button {
+          display: inline-flex;
+          width: 2rem;
+          height: 2rem;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 0.68rem;
+          background: rgba(255, 255, 255, 0.07);
+          color: rgba(255, 255, 255, 0.62);
+          outline: none;
+          transition:
+            transform 180ms ease,
+            background-color 180ms ease,
+            border-color 180ms ease,
+            color 180ms ease;
+        }
+        .doro-group-goal-hide-button:hover,
+        .doro-group-goal-hide-button:focus-visible {
+          background: rgba(255, 255, 255, 0.14);
+          border-color: rgba(255, 255, 255, 0.26);
+          color: rgba(255, 255, 255, 0.9);
+          transform: translateY(-1px);
+        }
+        @media (min-width: 1280px) {
+          .doro-group-goal-stage {
+            position: absolute;
+            top: clamp(5.5rem, 16vh, 9rem);
+            right: calc(100% + 0.9rem);
+            width: clamp(13.5rem, calc((100vw - min(64rem, 100vw)) / 2 - 1.25rem), 17rem);
+            margin: 0;
+            transform: translate3d(0, 0, 0);
+          }
+          .doro-group-goal-stage.is-collapsed {
+            transform: translate3d(0.45rem, 0, 0);
+          }
+          .doro-group-goal-dock {
+            left: 0;
+            width: 100%;
+            transform: translate3d(0, 0, 0) scale(1);
+            transform-origin: top right;
+          }
+          .doro-group-goal-stage.is-collapsed .doro-group-goal-dock {
+            transform: translate3d(0.35rem, -0.2rem, 0) scale(0.94);
+          }
         }
         .doro-group-goal-icon,
         .doro-group-goal-row,
@@ -3247,6 +3411,12 @@ const Layout: React.FC = () => {
           }
         }
         @media (prefers-reduced-motion: reduce) {
+          .doro-group-goal-stage,
+          .doro-group-goal-dock,
+          .doro-group-goal-top-toggle {
+            transition-duration: 0.01ms !important;
+            transition-delay: 0ms !important;
+          }
           .doro-all-tasks-celebration,
           .doro-all-tasks-celebration-backdrop,
           .doro-all-tasks-celebration-card,
@@ -3458,7 +3628,7 @@ const Layout: React.FC = () => {
                 key={notice.id}
                 onClick={() => dismissBanner(notice.id, 'pop')}
                 aria-label={`Dismiss encouragement from ${notice.actorName}`}
-                className={`doro-encouragement-banner pointer-events-auto relative w-full min-h-[3.05rem] overflow-hidden rounded-xl border border-rose-100/28 px-4 py-2.5 text-left text-white outline-none transition-[border-color,box-shadow,transform] duration-300 hover:border-rose-50/50 focus-visible:ring-2 focus-visible:ring-rose-100/55 ${
+                className={`doro-encouragement-banner pointer-events-auto relative w-full min-h-[3.45rem] overflow-hidden rounded-xl border border-rose-100/28 px-4 py-3 text-left text-white outline-none transition-[border-color,box-shadow,transform] duration-300 hover:border-rose-50/50 focus-visible:ring-2 focus-visible:ring-rose-100/55 ${
                   settings.disableBlur
                     ? 'bg-red-950'
                     : 'bg-[linear-gradient(135deg,#7f1d1d_0%,#be123c_48%,#f43f5e_100%)]'
@@ -3466,13 +3636,13 @@ const Layout: React.FC = () => {
                 style={{ animationDelay: `${i * 70}ms` }}
               >
                 <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_9%_-18%,rgba(255,228,230,0.32),transparent_38%),radial-gradient(circle_at_96%_-12%,rgba(255,255,255,0.16),transparent_34%)]" />
-                <div className="doro-encouragement-content relative z-10 flex min-w-0 items-center gap-2.5">
+                <div className="doro-encouragement-content relative z-10 flex min-w-0 items-start gap-2.5">
                   <Heart size={24} strokeWidth={2.35} className="doro-encouragement-heart shrink-0 text-rose-50" aria-hidden="true" />
-                  <span className="doro-encouragement-text-3d min-w-0 flex flex-1 items-baseline gap-2 overflow-hidden whitespace-nowrap text-[0.95rem] font-black leading-none text-white">
-                    <span className="doro-encouragement-actor shrink-0 text-[10px] font-black uppercase leading-none tracking-[0.18em] text-rose-100/78">
+                  <span className="doro-encouragement-text-3d min-w-0 flex flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 overflow-visible whitespace-normal break-words text-[0.95rem] font-black leading-snug text-white">
+                    <span className="doro-encouragement-actor shrink-0 text-[10px] font-black uppercase leading-tight tracking-[0.18em] text-rose-100/78">
                       {notice.actorName}
                     </span>
-                    <span className="doro-encouragement-message min-w-0 truncate">
+                    <span className="doro-encouragement-message min-w-0 flex-1 whitespace-normal break-words leading-snug">
                       {notice.message}
                     </span>
                   </span>
@@ -3660,6 +3830,23 @@ const Layout: React.FC = () => {
         {/* Top Bar */}
         <div className="doro-mobile-topbar w-full max-w-4xl flex justify-end items-center z-30 mb-4">
           <div className="flex gap-2">
+            {groupStudyPanel && (
+              <span
+                className={`doro-group-goal-top-toggle ${isGroupGoalPanelHidden ? 'is-visible' : ''}`}
+                aria-hidden={!isGroupGoalPanelHidden}
+              >
+                <button
+                  type="button"
+                  onClick={() => setIsGroupGoalPanelHidden(false)}
+                  className={`shrink-0 p-2.5 rounded-xl transition-all active:scale-95 hover:shadow-md duration-500 ${chromeButtonClass} opacity-70 hover:opacity-100`}
+                  aria-label="Show group goal panel"
+                  title="Show group goal panel"
+                  tabIndex={isGroupGoalPanelHidden ? 0 : -1}
+                >
+                  <Users size={18} strokeWidth={2.2} className={topIconClass} aria-hidden="true" />
+                </button>
+              </span>
+            )}
             <button 
               onClick={() => setShowPauseModal(true)}
               className={`p-2.5 rounded-xl transition-all active:scale-95 hover:shadow-md duration-500 ${chromeButtonClass} opacity-70 hover:opacity-100`}
@@ -3678,7 +3865,25 @@ const Layout: React.FC = () => {
         </div>
 
         {/* Main Content Area */}
-        <div className="w-full max-w-5xl z-10">
+        <div className="doro-main-shell-wrap relative w-full max-w-5xl overflow-visible z-10">
+          {groupStudyPanel && (
+            <div
+              className={`doro-group-goal-stage ${isGroupGoalPanelHidden ? 'is-collapsed' : ''}`}
+              style={{ '--doro-group-goal-panel-height': `${groupGoalPanelHeight}px` } as React.CSSProperties}
+            >
+              <div ref={groupGoalPanelRef} className="doro-group-goal-dock">
+                <GroupStudyGoalPanel
+                  sessionConfig={groupStudyPanel.sessionConfig}
+                  progress={groupStudyPanel.progress}
+                  members={groupStudyPanel.members}
+                  warning={groupStudyPanel.warning}
+                  isPreview={groupStudyPanel.isPreview}
+                  onHide={() => setIsGroupGoalPanelHidden(true)}
+                  onSendEncouragement={(member, message) => sendGroupEncouragement(member.name, message, member.memberId)}
+                />
+              </div>
+            </div>
+          )}
           <div
             className={`doro-main-surface relative overflow-hidden rounded-[2rem] md:rounded-[2.6rem] px-4 py-5 md:px-7 md:py-7 ${mainSurfaceClass}`}
             style={mainSurfaceShellStyle}
@@ -3687,18 +3892,8 @@ const Layout: React.FC = () => {
             <div className="doro-main-surface-inner relative flex flex-col gap-12">
               {/* Timer Section */}
               <div className="doro-timer-section w-full flex justify-center animate-slide-up py-6 md:py-8">
-                <div className="flex w-full flex-col items-center justify-center gap-4 xl:flex-row xl:items-center">
+                <div className="doro-timer-panel-row flex w-full flex-col items-center justify-center gap-4 xl:flex-row xl:items-center">
                   <TimerDisplay />
-                  {groupStudyPanel && (
-                    <GroupStudyGoalPanel
-                      sessionConfig={groupStudyPanel.sessionConfig}
-                      progress={groupStudyPanel.progress}
-                      members={groupStudyPanel.members}
-                      warning={groupStudyPanel.warning}
-                      isPreview={groupStudyPanel.isPreview}
-                      onSendEncouragement={(member, message) => sendGroupEncouragement(member.name, message, member.memberId)}
-                    />
-                  )}
                 </div>
               </div>
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  convertTaskPomodoroUnits,
   getAccountStatsPomodoroEquivalent,
   getAccountStatsFocusSeconds,
   getAccountStatsSessionPomodoroEquivalent,
@@ -7,8 +8,49 @@ import {
   MINI_POMODORO_COMPLETE_REASON,
   POMODORO_COMPLETE_REASON,
 } from './pomodoroAccounting';
+import type { Task } from '../types';
+
+const createTask = (overrides: Partial<Task> = {}): Task => ({
+  id: 1,
+  name: 'Task',
+  estimated: 4,
+  completed: 1,
+  checked: false,
+  selected: true,
+  categoryId: null,
+  subtasks: [],
+  ...overrides,
+});
 
 describe('pomodoro accounting', () => {
+  it('doubles task estimates and progress when switching from pomos to mini-pomos', () => {
+    const tasks = [createTask({
+      subtasks: [createTask({ id: 2, estimated: 1.5, completed: 0.5, selected: false })],
+    })];
+
+    const converted = convertTaskPomodoroUnits(tasks, { timerPreset: 'classic' }, { timerPreset: 'compact' });
+
+    expect(converted[0]).toMatchObject({ estimated: 8, completed: 2 });
+    expect(converted[0].subtasks[0]).toMatchObject({ estimated: 3, completed: 1 });
+  });
+
+  it('converts odd mini-pomo task counts to exact half-pomos in traditional and unstructured modes', () => {
+    const tasks = [createTask({ estimated: 3, completed: 1 })];
+
+    const traditional = convertTaskPomodoroUnits(tasks, { timerPreset: 'compact' }, { timerPreset: 'classic' });
+    const unstructured = convertTaskPomodoroUnits(tasks, { timerPreset: 'compact' }, { timerPreset: 'focus' });
+
+    expect(traditional[0]).toMatchObject({ estimated: 1.5, completed: 0.5 });
+    expect(unstructured[0]).toMatchObject({ estimated: 1.5, completed: 0.5 });
+  });
+
+  it('keeps task units unchanged between traditional and unstructured modes', () => {
+    const tasks = [createTask()];
+
+    expect(convertTaskPomodoroUnits(tasks, { timerPreset: 'classic' }, { timerPreset: 'focus' })).toBe(tasks);
+    expect(convertTaskPomodoroUnits(tasks, { timerPreset: 'focus' }, { timerPreset: 'classic' })).toBe(tasks);
+  });
+
   it('counts mini-pomos as half standard equivalents for timer display accounting', () => {
     const stats = getPomodoroCompletionStatsFromLogs([
       { type: 'work', reason: MINI_POMODORO_COMPLETE_REASON },
@@ -35,12 +77,12 @@ describe('pomodoro accounting', () => {
     expect(stats.miniPomosCompleted).toBeUndefined();
   });
 
-  it('counts completed mini-pomos from their completion unit in account statistics', () => {
+  it('converts account pomodoros from credited focus time', () => {
     expect(getAccountStatsPomodoroEquivalent({
       type: 'work',
       reason: MINI_POMODORO_COMPLETE_REASON,
       duration: 900,
-    })).toBeCloseTo(0.5, 5);
+    })).toBeCloseTo(0.6, 5);
 
     expect(getAccountStatsSessionPomodoroEquivalent({
       id: 'mini-session',
@@ -53,7 +95,7 @@ describe('pomodoro accounting', () => {
         miniPomosCompleted: 11,
         tasksCompleted: 0,
       },
-    })).toBeCloseTo(5.5, 5);
+    })).toBeCloseTo(6.6, 5);
   });
 
   it('uses the mini-pomo preset duration for completed mini-pomo focus time', () => {
@@ -96,7 +138,7 @@ describe('pomodoro accounting', () => {
       type: 'work',
       reason: POMODORO_COMPLETE_REASON,
       duration: 30 * 60,
-    })).toBeCloseTo(1, 5);
+    })).toBeCloseTo(1.2, 5);
   });
 
   it('converts manually logged focus minutes into account pomodoro equivalents', () => {

@@ -94,7 +94,6 @@ export const calculateLifetimeStatsFromData = (
     sessionMinutes: number;
     pomos: number;
     categoryBreakdown: Record<string, number>;
-    canOverrideLogDay: boolean;
   };
 
   const createDayTotals = (): DayTotals => ({
@@ -102,7 +101,6 @@ export const calculateLifetimeStatsFromData = (
     sessionMinutes: 0,
     pomos: 0,
     categoryBreakdown: {},
-    canOverrideLogDay: false,
   });
 
   const getDayTotals = (map: Map<string, DayTotals>, key: string) => {
@@ -194,11 +192,6 @@ export const calculateLifetimeStatsFromData = (
     totals.focusMinutes += getSessionWorkMinutes(session);
     totals.sessionMinutes += getSessionTotalMinutes(session);
     totals.pomos += getAccountStatsSessionPomodoroEquivalent(session);
-    const miniPomosCompleted = Number(session.stats?.miniPomosCompleted || 0);
-    if (Number.isFinite(miniPomosCompleted) && miniPomosCompleted > 0) {
-      totals.canOverrideLogDay = true;
-    }
-
     const categoryDetails = Array.isArray(session.stats?.categoryDetails)
       ? session.stats.categoryDetails
       : [];
@@ -243,27 +236,18 @@ export const calculateLifetimeStatsFromData = (
 
     const hasTimerFocus = timerTotals.focusMinutes > 0.01;
     const hasTimerSession = timerTotals.sessionMinutes > 0.01;
-    const canUseSessionOverLogs = !hasTimerFocus || sessionTotals.canOverrideLogDay;
-    const shouldUseSessionFocus = (
-      sessionTotals.focusMinutes > timerTotals.focusMinutes + 0.01
-      && canUseSessionOverLogs
-    );
+    const shouldUseSessionFocus = !hasTimerFocus && sessionTotals.focusMinutes > 0.01;
     const chosenFocusTotals = shouldUseSessionFocus ? sessionTotals : timerTotals;
     const reconciledDayFocusMinutes = shouldUseSessionFocus
       ? sessionTotals.focusMinutes
       : timerTotals.focusMinutes;
     const reconciledDaySessionMinutes = (
       sessionTotals.sessionMinutes > timerTotals.sessionMinutes + 0.01
-      && (!hasTimerSession || sessionTotals.canOverrideLogDay)
+      && (!hasTimerSession || !hasTimerFocus)
     )
       ? sessionTotals.sessionMinutes
       : timerTotals.sessionMinutes;
-    const reconciledDayPomos = (
-      sessionTotals.pomos > timerTotals.pomos + 0.0001
-      && canUseSessionOverLogs
-    )
-      ? sessionTotals.pomos
-      : timerTotals.pomos;
+    const reconciledDayPomos = shouldUseSessionFocus ? sessionTotals.pomos : timerTotals.pomos;
 
     reconciledFocusMinutes += reconciledDayFocusMinutes;
     reconciledSessionMinutes += reconciledDaySessionMinutes;

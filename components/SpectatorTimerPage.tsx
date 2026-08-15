@@ -922,7 +922,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
         <section className="doro-spectator-shell relative w-full overflow-visible rounded-[1.7rem] border border-white/[0.13] bg-white/[0.072] px-4 py-5 shadow-[0_34px_78px_-48px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.065)] backdrop-blur-xl md:px-7 md:py-7">
           <div className="pointer-events-none absolute inset-0 rounded-[inherit] border border-white/[0.08] shadow-[inset_0_-34px_70px_rgba(0,0,0,0.08)]" />
 
-          <div className="doro-spectator-headline-card relative mx-auto w-full max-w-[26rem] rounded-[1.35rem] border border-white/[0.16] px-4 py-5 text-center sm:max-w-[28rem] md:max-w-[32rem] md:rounded-[1.55rem] md:px-8 md:py-6 lg:max-w-[34rem]">
+          <div className="doro-spectator-headline-card relative mx-auto w-full max-w-[calc(84vw+0.75rem)] rounded-[1.35rem] border border-white/[0.16] px-4 py-5 text-center sm:max-w-[26rem] md:max-w-[29.5rem] md:rounded-[1.55rem] md:px-8 md:py-6 lg:max-w-[31.5rem]">
             <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/48">
               {statusLabel}
             </div>
@@ -931,7 +931,7 @@ const SpectatorTimerPage: React.FC<SpectatorTimerPageProps> = ({
             </div>
           </div>
 
-          <div className="relative mx-auto mt-5 flex w-full max-w-[26rem] flex-row items-center justify-center gap-3 sm:max-w-[28rem] sm:gap-4 md:mt-7 md:max-w-[32rem] md:gap-6 lg:max-w-[34rem]">
+          <div className="relative mx-auto mt-5 flex w-full max-w-[calc(84vw+0.75rem)] flex-row items-center justify-center gap-3 sm:max-w-[26rem] sm:gap-4 md:mt-7 md:max-w-[29.5rem] md:gap-6 lg:max-w-[31.5rem]">
             <SpectatorTimerTile
               type="work"
               time={timerValues.focusTime}

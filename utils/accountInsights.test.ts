@@ -259,7 +259,7 @@ describe('computeAccountInsights', () => {
     });
   });
 
-  it('counts completed mini-pomodoros by completion unit in today and trend stats', () => {
+  it('converts completed mini-pomodoro focus time in today and trend stats', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({
       joinedAt: '2026-01-01T00:00:00',
@@ -288,9 +288,9 @@ describe('computeAccountInsights', () => {
     });
 
     expect(insights.today.focusMinutes).toBeCloseTo(45, 5);
-    expect(insights.today.pomodoros).toBeCloseTo(1.5, 5);
-    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(1.5, 5);
-    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(1.5, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(1.8, 5);
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(1.8, 5);
+    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(1.8, 5);
   });
 
   it('uses canonical mini-pomo focus minutes when completed mini logs have short saved durations', () => {
@@ -316,16 +316,15 @@ describe('computeAccountInsights', () => {
     });
 
     expect(insights.today.focusMinutes).toBeCloseTo(240, 5);
-    expect(insights.today.pomodoros).toBeCloseTo(8, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(9.6, 5);
     expect(insights.weekComparison.thisWeek.focusMinutes).toBeCloseTo(240, 5);
-    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(8, 5);
-    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)).toMatchObject({
-      focusMinutes: 240,
-      pomodoros: 8,
-    });
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(9.6, 5);
+    const todayTrend = insights.dailyFocusTrend.find((point) => point.dateKey === today);
+    expect(todayTrend?.focusMinutes).toBeCloseTo(240, 5);
+    expect(todayTrend?.pomodoros).toBeCloseTo(9.6, 5);
   });
 
-  it('keeps partial session-end work minute pomos while counting completed minis by unit', () => {
+  it('keeps partial session-end work minutes in time-based pomos', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({
       joinedAt: '2026-01-01T00:00:00',
@@ -360,12 +359,12 @@ describe('computeAccountInsights', () => {
     });
 
     expect(insights.today.focusMinutes).toBeCloseTo(240, 5);
-    expect(insights.today.pomodoros).toBeCloseTo(9.4, 5);
-    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(9.4, 5);
-    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(9.4, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(9.6, 5);
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(9.6, 5);
+    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)?.pomodoros).toBeCloseTo(9.6, 5);
   });
 
-  it('reconciles today snapshot from archived compact session totals when raw mini-pomo logs undercount', () => {
+  it('prefers raw today focus logs over larger archived compact session totals', () => {
     const today = '2026-01-14';
     const formatTime = (minutes: number) => {
       const hour = Math.floor(minutes / 60).toString().padStart(2, '0');
@@ -402,20 +401,19 @@ describe('computeAccountInsights', () => {
       sessions,
     });
 
-    expect(insights.today.focusMinutes).toBeCloseTo(240, 5);
-    expect(insights.today.pomodoros).toBeCloseTo(8, 5);
+    expect(insights.today.focusMinutes).toBeCloseTo(225, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(9, 5);
     expect(insights.today.sessions).toBe(1);
     expect(insights.today.topCategoryName).toBe('Study');
-    expect(insights.weekComparison.thisWeek.focusMinutes).toBeCloseTo(240, 5);
-    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(8, 5);
-    expect(insights.dailyFocusTrend.find((point) => point.dateKey === today)).toMatchObject({
-      focusMinutes: 240,
-      pomodoros: 8,
-      sessions: 1,
-    });
+    expect(insights.weekComparison.thisWeek.focusMinutes).toBeCloseTo(225, 5);
+    expect(insights.weekComparison.thisWeek.pomodoros).toBeCloseTo(9, 5);
+    const todayTrend = insights.dailyFocusTrend.find((point) => point.dateKey === today);
+    expect(todayTrend?.focusMinutes).toBeCloseTo(225, 5);
+    expect(todayTrend?.pomodoros).toBeCloseTo(9, 5);
+    expect(todayTrend?.sessions).toBe(1);
     expect(insights.categorySlices[0]).toMatchObject({
       name: 'Study',
-      minutes: 240,
+      minutes: 225,
     });
   });
 

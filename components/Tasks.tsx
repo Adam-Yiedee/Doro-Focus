@@ -9,9 +9,11 @@ import { PASTEL_SWATCHES as PRESET_COLORS } from '../utils/palette';
 import { getTimerPomoUnitLabel } from '../utils/pomodoroAccounting';
 import { getPomodoroCycleProgress, getProjectedTaskFinishSeconds, getRemainingPomodorosForTask } from '../utils/timerRuntime';
 
-const clampPomoEstimate = (value: number) => {
-  if (!Number.isFinite(value)) return 1;
-  return Math.min(99, Math.max(1, Math.floor(value)));
+const clampPomoEstimate = (value: number, step = 1) => {
+  const safeStep = step === 0.5 ? 0.5 : 1;
+  if (!Number.isFinite(value)) return safeStep;
+  const rounded = Math.round(value / safeStep) * safeStep;
+  return Math.min(99, Math.max(safeStep, rounded));
 };
 
 const clampSubEstimate = (value: number) => {
@@ -116,7 +118,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
   onDragEndTask,
   registerTaskRef,
 }) => {
-  const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories, requestNewCategoryFlow } = useTimer();
+  const { updateTask, deleteTask, selectTask, toggleTaskExpansion, addTask, categories, requestNewCategoryFlow, settings } = useTimer();
+  const estimateStep = settings.timerPreset === 'compact' ? 1 : 0.5;
   const [isEditing, setIsEditing] = useState(false);
   const [editCloseState, setEditCloseState] = useState<'save' | 'cancel' | null>(null);
   const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
@@ -174,7 +177,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   };
 
   const handleSave = () => {
-    const safeEst = clampPomoEstimate(editEst);
+    const safeEst = clampPomoEstimate(editEst, estimateStep);
     updateTask({ ...task, name: editName.trim() || task.name, estimated: safeEst, color: editColor, categoryId: editCategoryId });
     setEditCloseState('save');
     settleTaskAfterEdit();
@@ -427,7 +430,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               <div className="doro-task-estimate-stepper flex items-center rounded-lg border border-white/15 bg-black/18 overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => setEditEst(prev => clampPomoEstimate(prev - 1))}
+                  onClick={() => setEditEst(prev => clampPomoEstimate(prev - estimateStep, estimateStep))}
                   className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                   aria-label="Decrease estimate"
                 >
@@ -439,13 +442,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
                   value={editEst}
                   onChange={e => {
                     const next = Number(e.target.value.replace(/[^\d]/g, ''));
-                    if (!Number.isNaN(next)) setEditEst(clampPomoEstimate(next));
+                    if (!Number.isNaN(next)) setEditEst(clampPomoEstimate(next, estimateStep));
                   }}
                   className="w-8 bg-transparent text-center text-white font-mono font-bold text-xs outline-none"
                 />
                 <button
                   type="button"
-                  onClick={() => setEditEst(prev => clampPomoEstimate(prev + 1))}
+                  onClick={() => setEditEst(prev => clampPomoEstimate(prev + estimateStep, estimateStep))}
                   className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                   aria-label="Increase estimate"
                 >
@@ -756,6 +759,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     captured: false,
   });
   const activeCategories = useMemo(() => getActiveCategories(categories), [categories]);
+  const taskEstimateStep = settings.timerPreset === 'compact' ? 1 : 0.5;
 
   const todayKey = getDateKey(new Date());
 
@@ -1102,12 +1106,12 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
     if (!submittedName && newCatId === null) return;
 
     const now = Date.now();
-    const submitKey = `${submittedName}|${newCatId ?? 'none'}|${clampPomoEstimate(newEst)}|${newColor}`;
+    const submitKey = `${submittedName}|${newCatId ?? 'none'}|${clampPomoEstimate(newEst, taskEstimateStep)}|${newColor}`;
     const lastSubmit = lastTaskSubmitRef.current;
     if (lastSubmit?.key === submitKey && now - lastSubmit.at < 500) return;
     lastTaskSubmitRef.current = { key: submitKey, at: now };
 
-    addTask(submittedName, clampPomoEstimate(newEst), newCatId, undefined, newColor);
+    addTask(submittedName, clampPomoEstimate(newEst, taskEstimateStep), newCatId, undefined, newColor);
     setNewName('');
     setNewEst(1);
     setIsPreviewingNewTaskColor(false);
@@ -2200,7 +2204,7 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                           <button
                               type="button"
                               onPointerDown={preserveMobileTaskComposerFocus}
-                              onClick={() => setNewEst(prev => clampPomoEstimate(prev - 1))}
+                              onClick={() => setNewEst(prev => clampPomoEstimate(prev - taskEstimateStep, taskEstimateStep))}
                               className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                               aria-label="Decrease new task estimate"
                           >
@@ -2212,14 +2216,14 @@ const Tasks: React.FC<TasksProps> = ({ onPreviewSurfaceColorChange }) => {
                               value={newEst}
                               onChange={e => {
                                   const next = Number(e.target.value.replace(/[^\d]/g, ''));
-                                  if (!Number.isNaN(next)) setNewEst(clampPomoEstimate(next));
+                                  if (!Number.isNaN(next)) setNewEst(clampPomoEstimate(next, taskEstimateStep));
                               }}
                               className="w-8 bg-transparent text-center text-white font-mono font-bold text-xs outline-none"
                           />
                           <button
                               type="button"
                               onPointerDown={preserveMobileTaskComposerFocus}
-                              onClick={() => setNewEst(prev => clampPomoEstimate(prev + 1))}
+                              onClick={() => setNewEst(prev => clampPomoEstimate(prev + taskEstimateStep, taskEstimateStep))}
                               className="px-2 py-1 text-white/65 hover:text-white hover:bg-white/12 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                               aria-label="Increase new task estimate"
                           >

@@ -253,9 +253,9 @@ const AllPauseModal: React.FC<{ onClose: () => void, isOpen: boolean }> = ({ onC
 };
 
 export const ResumeModal: React.FC = () => {
-  const { allPauseActive, allPauseTime, resumeFromPause, activeMode, activeColor, endSession } = useTimer();
+  const { allPauseActive, allPauseTime, focusFlipPauseActive, resumeFromPause, activeMode, activeColor, endSession } = useTimer();
 
-  if (!allPauseActive) return null;
+  if (!allPauseActive || focusFlipPauseActive) return null;
 
   const mins = Math.floor(allPauseTime / 60);
   const secs = Math.floor(allPauseTime % 60);

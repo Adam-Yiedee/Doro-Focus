@@ -505,7 +505,7 @@ const SummaryView: React.FC = () => {
     : getMutedSurfaceColor(activeColor, DEFAULT_WORK_SURFACE);
   const surfaceStyle = { backgroundColor: surfaceColor };
   const taskSurfaceClass = 'rounded-lg border border-white/[0.13] bg-white/[0.072] shadow-[0_26px_54px_-34px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.065)] transform-gpu transition-[background-color,border-color,box-shadow,transform,color] duration-300 ease-out hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.12] hover:shadow-[0_34px_68px_-34px_rgba(0,0,0,0.92),inset_0_1px_0_rgba(255,255,255,0.085)]';
-  const statCardClass = `relative flex h-full min-h-[8.7rem] overflow-hidden flex-col items-center justify-center gap-2.5 px-3 py-4 text-center sm:min-h-[9.25rem] sm:gap-3 sm:px-5 ${taskSurfaceClass}`;
+  const statCardClass = `relative flex h-[8.7rem] overflow-hidden flex-col items-center justify-center px-3 text-center sm:h-[9.25rem] sm:px-5 ${taskSurfaceClass}`;
   const sectionCardClass = `w-full px-4 py-4 sm:px-5 ${taskSurfaceClass}`;
   const compactButtonClass = `inline-flex h-10 items-center justify-center gap-2 px-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/62 hover:text-white active:translate-y-0 active:scale-95 ${taskSurfaceClass}`;
   const primaryButtonClass = `inline-flex min-h-12 w-full items-center justify-center gap-2 px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/74 hover:text-white active:translate-y-0 active:scale-[0.99] sm:w-auto sm:min-w-[14rem] ${taskSurfaceClass}`;
@@ -787,7 +787,10 @@ const SummaryView: React.FC = () => {
                 {statCards.map((card, index) => {
                   const Icon = card.icon;
                   const timing = statTimings[index];
-                  const valueClassName = card.valueClassName || 'text-[2.35rem] md:text-[2.75rem]';
+                  const hasHelper = Boolean(card.helper);
+                  const valueClassName = card.valueClassName || (hasHelper
+                    ? 'text-[2.1rem] md:text-[2.4rem]'
+                    : 'text-[2.35rem] md:text-[2.75rem]');
                   return (
                     <div
                       key={card.label}
@@ -795,7 +798,7 @@ const SummaryView: React.FC = () => {
                       style={{ ['--doro-summary-delay' as any]: `${timing.revealDelayMs}ms` }}
                     >
                       <div
-                        className={statCardClass}
+                        className={`${statCardClass} ${hasHelper ? 'gap-1.5 py-2.5 sm:py-3' : 'gap-2.5 py-4 sm:gap-3'}`}
                         style={{
                           background: `linear-gradient(180deg, rgba(255,255,255,0.155), rgba(255,255,255,0.078)), ${summaryRgba(card.accent, 0.07)}`,
                           borderColor: 'rgba(255,255,255,0.16)',
@@ -804,7 +807,7 @@ const SummaryView: React.FC = () => {
                       >
                         <span className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_0_48px_rgba(255,255,255,0.065),inset_0_-14px_30px_rgba(0,0,0,0.05)]" />
                         <span
-                          className="relative z-10 flex h-8 w-8 items-center justify-center rounded-xl border shadow-[0_18px_34px_-24px_rgba(0,0,0,0.84)]"
+                          className={`relative z-10 flex shrink-0 items-center justify-center border shadow-[0_18px_34px_-24px_rgba(0,0,0,0.84)] ${hasHelper ? 'h-7 w-7 rounded-lg' : 'h-8 w-8 rounded-xl'}`}
                           style={{
                             color: '#ffffff',
                             backgroundColor: summaryRgba(card.accent, 0.34),
@@ -812,10 +815,10 @@ const SummaryView: React.FC = () => {
                             boxShadow: `0 18px 34px -24px rgba(0,0,0,0.78), 0 8px 18px -12px ${summaryRgba(card.accent, 0.46)}, inset 0 1px 0 rgba(255,255,255,0.14)`,
                           }}
                         >
-                          <Icon size={16} strokeWidth={2.4} />
+                          <Icon size={hasHelper ? 14 : 16} strokeWidth={2.4} />
                         </span>
                         <span
-                          className="relative z-10 max-w-[11rem] text-center text-[11px] font-bold uppercase leading-snug tracking-[0.09em]"
+                          className={`relative z-10 max-w-[11rem] text-center font-bold uppercase tracking-[0.09em] ${hasHelper ? 'text-[10px] leading-tight' : 'text-[11px] leading-snug'}`}
                           style={{
                             color: '#ffffff',
                             textShadow: `0 1px 2px rgba(0,0,0,0.28), 0 8px 18px ${summaryRgba(card.accent, 0.18)}`,
@@ -836,7 +839,7 @@ const SummaryView: React.FC = () => {
                           }}
                         />
                         {card.helper && (
-                          <span className="min-h-[1.75rem] max-w-[12rem] text-center text-[11px] font-semibold leading-snug text-white/52">
+                          <span className="max-w-[12rem] text-center text-[10px] font-semibold leading-tight text-white/52">
                             {card.helper}
                           </span>
                         )}

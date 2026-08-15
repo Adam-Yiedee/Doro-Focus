@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getBreakSquareDisplayOptions, getFocusTimerSingleLabel } from './TimerDisplay';
+import { getBreakSquareDisplayOptions, getFocusTimerFlipAction, getFocusTimerSingleLabel } from './TimerDisplay';
 
 describe('TimerDisplay break square display options', () => {
   it('shows the delayed-start countdown in focus timer mode', () => {
@@ -59,5 +59,36 @@ describe('focus timer single display label', () => {
       isReadyToStart: false,
       activeTaskName: '',
     })).toBe('Focus Timer');
+  });
+});
+
+describe('focus timer flip behavior', () => {
+  it('pauses a running focus timer when the break face is requested', () => {
+    expect(getFocusTimerFlipAction({
+      nextFace: 'break',
+      timerStarted: true,
+      focusFlipPauseActive: false,
+    })).toBe('pause');
+  });
+
+  it('resumes only a timer that was paused by the flip interaction', () => {
+    expect(getFocusTimerFlipAction({
+      nextFace: 'work',
+      timerStarted: false,
+      focusFlipPauseActive: true,
+    })).toBe('resume');
+    expect(getFocusTimerFlipAction({
+      nextFace: 'work',
+      timerStarted: false,
+      focusFlipPauseActive: false,
+    })).toBeNull();
+  });
+
+  it('does not convert an already-stopped timer into a flip pause', () => {
+    expect(getFocusTimerFlipAction({
+      nextFace: 'break',
+      timerStarted: false,
+      focusFlipPauseActive: false,
+    })).toBeNull();
   });
 });

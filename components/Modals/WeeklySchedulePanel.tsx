@@ -7,9 +7,11 @@ import { getIcon } from '../../utils/icons';
 import { getTimerPomoUnitLabel } from '../../utils/pomodoroAccounting';
 import TaskCategoryPicker from '../TaskCategoryPicker';
 
-const clampEstimate = (value: number) => {
-  if (!Number.isFinite(value)) return 1;
-  return Math.min(99, Math.max(1, Math.floor(value)));
+const clampEstimate = (value: number, step = 1) => {
+  const safeStep = step === 0.5 ? 0.5 : 1;
+  if (!Number.isFinite(value)) return safeStep;
+  const rounded = Math.round(value / safeStep) * safeStep;
+  return Math.min(99, Math.max(safeStep, rounded));
 };
 
 const addDays = (date: Date, days: number) => {
@@ -164,6 +166,7 @@ const ScheduleTaskCard: React.FC<{
   pomoUnitLabel,
   pluralPomoUnitLabel,
 }) => {
+  const estimateStep = pomoUnitLabel === 'Mini-Pomo' ? 1 : 0.5;
   const [isEditing, setIsEditing] = useState(false);
   const [editCloseState, setEditCloseState] = useState<'save' | 'cancel' | null>(null);
   const [isSettlingAfterEdit, setIsSettlingAfterEdit] = useState(false);
@@ -281,7 +284,7 @@ const ScheduleTaskCard: React.FC<{
           <div className="flex items-center rounded-md border border-white/15 bg-black/20 overflow-hidden">
             <button
               type="button"
-              onClick={() => setEstimated(prev => clampEstimate(prev - 1))}
+              onClick={() => setEstimated(prev => clampEstimate(prev - estimateStep, estimateStep))}
               className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Decrease predicted pomodoros"
             >
@@ -290,7 +293,7 @@ const ScheduleTaskCard: React.FC<{
             <div className="w-8 text-center text-xs text-white font-mono font-bold">{estimated}</div>
             <button
               type="button"
-              onClick={() => setEstimated(prev => clampEstimate(prev + 1))}
+              onClick={() => setEstimated(prev => clampEstimate(prev + estimateStep, estimateStep))}
               className="schedule-glass-button schedule-glass-button--icon px-2 py-1 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Increase predicted pomodoros"
             >
@@ -330,7 +333,7 @@ const ScheduleTaskCard: React.FC<{
               onSave({
                 ...task,
                 name: name.trim() || task.name,
-                estimated: clampEstimate(estimated),
+                estimated: clampEstimate(estimated, estimateStep),
                 color,
                 categoryId,
               });
@@ -448,6 +451,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
   const isLightTheme = settings.themeMode !== 'dark';
   const pomoUnitLabel = getTimerPomoUnitLabel(settings, false);
   const pluralPomoUnitLabel = getTimerPomoUnitLabel(settings);
+  const taskEstimateStep = settings.timerPreset === 'compact' ? 1 : 0.5;
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
   const [hoveredTaskTarget, setHoveredTaskTarget] = useState<{ taskId: number; position: DragInsertPosition } | null>(null);
   const [dropAnimatedTaskId, setDropAnimatedTaskId] = useState<number | null>(null);
@@ -884,7 +888,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
     if (!trimmedName || closingAddDate === dateKey) return;
     const createdTaskId = addDetailedTask({
       name: trimmedName,
-      estimated: clampEstimate(newTaskEst),
+      estimated: clampEstimate(newTaskEst, taskEstimateStep),
       color: newTaskColor,
       categoryId: newTaskCategoryId,
       scheduledDate: dateKey,
@@ -2053,7 +2057,7 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                             <div className="doro-task-estimate-stepper flex items-center overflow-hidden rounded-lg border border-white/20 bg-black/20">
                               <button
                                 type="button"
-                                onClick={() => setNewTaskEst((value) => clampEstimate(value - 1))}
+                                onClick={() => setNewTaskEst((value) => clampEstimate(value - taskEstimateStep, taskEstimateStep))}
                                 className="px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                                 aria-label="Decrease new task estimate"
                               >
@@ -2065,14 +2069,14 @@ const WeeklySchedulePanel: React.FC<WeeklySchedulePanelProps> = ({ isOpen, onClo
                                 value={newTaskEst}
                                 onChange={(event) => {
                                   const next = Number(event.target.value.replace(/[^\d]/g, ''));
-                                  if (!Number.isNaN(next)) setNewTaskEst(clampEstimate(next));
+                                  if (!Number.isNaN(next)) setNewTaskEst(clampEstimate(next, taskEstimateStep));
                                 }}
                                 className="w-8 bg-transparent text-center text-xs font-mono font-bold text-white outline-none"
                                 aria-label="New task estimate"
                               />
                               <button
                                 type="button"
-                                onClick={() => setNewTaskEst((value) => clampEstimate(value + 1))}
+                                onClick={() => setNewTaskEst((value) => clampEstimate(value + taskEstimateStep, taskEstimateStep))}
                                 className="px-2 py-1 text-white/65 transition-all duration-200 hover:-translate-y-[1px] hover:bg-white/[0.12] hover:text-white hover:shadow-[0_4px_10px_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-95"
                                 aria-label="Increase new task estimate"
                               >
