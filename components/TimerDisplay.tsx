@@ -588,7 +588,6 @@ interface FocusTimerSingleDisplayProps {
   isIdle: boolean;
   timerStarted: boolean;
   focusFlipPauseActive: boolean;
-  surfaceColor: string;
   disableBlur: boolean;
   canStartOnClick: boolean;
   onStart: () => void;
@@ -611,7 +610,6 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
   isIdle,
   timerStarted,
   focusFlipPauseActive,
-  surfaceColor,
   disableBlur,
   canStartOnClick,
   onStart,
@@ -886,10 +884,7 @@ const FocusTimerSingleDisplay: React.FC<FocusTimerSingleDisplayProps> = ({
       type="button"
       aria-label={canStartOnClick ? 'Start focus timer' : visibleFace === 'work' ? 'Show break timer' : 'Show active timer'}
       className={`doro-focus-single-card ${focusLabelLengthClass} ${isFlipped ? 'is-flipped' : ''} ${isFlipAnimating ? 'is-flip-animating' : ''} ${flipDirection ? `is-flip-${flipDirection}` : ''} ${isHoldPriming ? 'is-hold-priming' : ''} ${canStartOnClick ? 'is-ready-to-start' : ''} ${isIdle ? 'is-idle' : ''} ${disableBlur ? 'is-blur-disabled' : ''}`}
-      style={{
-        ...focusCardStyle,
-        ['--doro-focus-single-surface' as any]: surfaceColor,
-      }}
+      style={focusCardStyle}
       onPointerEnter={(event) => {
         if (event.pointerType === 'mouse' || event.pointerType === 'pen') {
           setIsHovered(true);
@@ -2133,12 +2128,6 @@ const TimerDisplay: React.FC = () => {
         .doro-focus-single-card:focus-visible .doro-focus-single-face {
           border-color: rgba(255, 255, 255, 0.24);
           background: rgba(255, 255, 255, 0.11);
-        }
-        .doro-focus-single-card.is-flip-animating .doro-focus-single-face,
-        .doro-focus-single-card.is-flip-animating:hover .doro-focus-single-face,
-        .doro-focus-single-card.is-flip-animating:focus-visible .doro-focus-single-face {
-          background-color: color-mix(in srgb, var(--doro-focus-single-surface, ${DEFAULT_WORK_SURFACE}) 90%, white 10%);
-          background-image: none;
         }
         .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating):hover .doro-focus-single-face,
         .doro-focus-single-card:not(.is-blur-disabled):not(.is-flip-animating):focus-visible .doro-focus-single-face {
@@ -3647,7 +3636,6 @@ const TimerDisplay: React.FC = () => {
             isIdle={isIdle}
             timerStarted={timerStarted}
             focusFlipPauseActive={focusFlipPauseActive}
-            surfaceColor={idlePresetSurfaceColor}
             disableBlur={settings.disableBlur}
             canStartOnClick={isFocusTimerReadyToStart}
             onStart={startTimer}
