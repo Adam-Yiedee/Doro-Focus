@@ -4310,15 +4310,16 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, []);
 
-  const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task) => {
+  const logActivity = useCallback((type: LogEntry['type'], start: Date, duration: number, reason: string = '', taskOverride?: Task, endOverride?: Date) => {
     const selectedTask = taskOverride || findSelectedTask(tasks);
     const currentContext = findActiveContext(tasks);
     const effectiveCategoryId = typeof currentContext.categoryId === 'number' && Number.isFinite(currentContext.categoryId)
       ? currentContext.categoryId
       : selectedTask?.categoryId ?? null;
     const categorySnapshot = buildCategorySnapshot(categories, effectiveCategoryId);
+    const end = endOverride || new Date();
     const entry: LogEntry = {
-      type, start: start.toISOString(), end: new Date().toISOString(),
+      type, start: start.toISOString(), end: end.toISOString(),
       duration, reason, task: selectedTask ? { id: selectedTask.id, name: selectedTask.name } : null,
       color: currentContext.color,
       categoryId: selectedTask ? effectiveCategoryId : null,
@@ -5857,14 +5858,29 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     emitLocalGroupEvent('timer-paused', { reason: reason || undefined });
   };
 
+  const getAllPauseDurationAt = (nowMs: number) => {
+    const runtime = runtimeRef.current;
+    if (runtime.phase === 'all-pause') {
+      const derivedPauseTime = deriveRuntimeValues(runtime, nowMs).allPauseTime;
+      if (Number.isFinite(derivedPauseTime)) return Math.max(0, derivedPauseTime);
+    }
+
+    if (typeof allPauseStartTime === 'number' && Number.isFinite(allPauseStartTime)) {
+      return Math.max(0, (nowMs - allPauseStartTime) / 1000);
+    }
+
+    return Number.isFinite(allPauseTime) ? Math.max(0, allPauseTime) : 0;
+  };
+
   const endAllPause = () => {
     if (blockGuestTimerControl()) return;
+    const pauseEndMs = Date.now();
     setAllPauseActive(false);
     if (allPauseStartTime) {
       const start = new Date(allPauseStartTime);
-      logActivity('allpause', start, allPauseTime, allPauseReason);
+      logActivity('allpause', start, getAllPauseDurationAt(pauseEndMs), allPauseReason, undefined, new Date(pauseEndMs));
     }
-    currentActivityStartRef.current = new Date();
+    currentActivityStartRef.current = new Date(pauseEndMs);
     anchorRuntimePhase('idle', {
       activityStartIso: currentActivityStartRef.current.toISOString(),
     });
@@ -5872,6 +5888,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const resumeFromPause = (action: 'work' | 'break', adjustAmount: number, logPauseAs?: 'work' | 'break') => {
     if (blockGuestTimerControl()) return;
+    const pauseEndMs = Date.now();
     setAllPauseActive(false);
     if (allPauseStartTime) {
        const start = new Date(allPauseStartTime);
@@ -5882,7 +5899,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
            ? `${pauseReason} (Pause Credit: Resting)`
            : pauseReason;
        // Paused time is never productive focus time; always record as pause for stats integrity.
-       logActivity('allpause', start, allPauseTime, pauseLabel);
+       logActivity('allpause', start, getAllPauseDurationAt(pauseEndMs), pauseLabel, undefined, new Date(pauseEndMs));
     }
     setActiveMode(action);
     setIsIdle(false);
@@ -5890,7 +5907,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const nextBreakTime = action === 'break' ? breakTime - adjustAmount : breakTime;
     if (action === 'work') setWorkTime(nextWorkTime);
     else setBreakTime(nextBreakTime);
-    const now = new Date();
+    const now = new Date(pauseEndMs);
     currentActivityStartRef.current = now;
     startTimerInternal({
       mode: action,
@@ -5990,6 +6007,10 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       : Date.now();
     const effectiveEndDate = new Date(effectiveEndMs);
     const effectiveEndIso = effectiveEndDate.toISOString();
+    const creditedSessionEndMs = allPauseActive && typeof allPauseStartTime === 'number' && Number.isFinite(allPauseStartTime)
+      ? Math.min(effectiveEndMs, allPauseStartTime)
+      : effectiveEndMs;
+    const creditedSessionEndIso = new Date(creditedSessionEndMs).toISOString();
     const delayedStartTargetIso = delayedStartTargetTimeRef.current;
     const delayedStartEndState = getDelayedStartBoundaryState(delayedStartTargetIso, effectiveEndMs);
     const isCancellingDelayedStart = Boolean(
@@ -6092,6 +6113,25 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       categoryId: pendingActiveCategoryId ?? null,
       ...pendingActiveCategorySnapshot,
     });
+    const createAllPauseEndEntry = (): LogEntry | null => {
+      if (!allPauseActive || typeof allPauseStartTime !== 'number' || !Number.isFinite(allPauseStartTime)) return null;
+
+      const durationSeconds = getAllPauseDurationAt(effectiveEndMs);
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0.5) return null;
+
+      return {
+        type: 'allpause',
+        start: new Date(allPauseStartTime).toISOString(),
+        end: effectiveEndIso,
+        duration: durationSeconds,
+        reason: allPauseReason || 'Paused',
+        source: 'timer',
+        task: selectedTask,
+        color: activeColor,
+        categoryId: pendingActiveCategoryId ?? null,
+        ...pendingActiveCategorySnapshot,
+      };
+    };
 
     const runtimeAtEnd = deriveRuntimeValues(runtimeRef.current, effectiveEndMs);
     const focusedGraceDurationSeconds = (
@@ -6152,14 +6192,17 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
 
-    const baseLogs = logsRef.current;
+    const allPauseEndEntry = createAllPauseEndEntry();
+    const baseLogs = allPauseEndEntry
+      ? [allPauseEndEntry, ...logsRef.current]
+      : logsRef.current;
     const checkedTaskIds = getCheckedTaskIdSet(tasks);
     const baselineCheckedTaskIds = (
       sessionTaskBaselineRef.current?.sessionStartTime === effectiveSessionStartTime
         ? sessionTaskBaselineRef.current.checkedTaskIds
         : checkedTaskIds
     );
-    const completedTaskIds = getSessionTaskCompletionIdsFromLogs(baseLogs, effectiveSessionStartTime, effectiveEndIso);
+    const completedTaskIds = getSessionTaskCompletionIdsFromLogs(baseLogs, effectiveSessionStartTime, creditedSessionEndIso);
     if (effectiveSessionStartTime) {
       checkedTaskIds.forEach((taskId) => {
         if (!baselineCheckedTaskIds.has(taskId)) completedTaskIds.add(taskId);
@@ -6171,7 +6214,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const sessionSummary = buildEndSessionStats({
       logs: baseLogs,
       sessionStartTime: effectiveSessionStartTime,
-      sessionEndTime: effectiveEndIso,
+      sessionEndTime: creditedSessionEndIso,
       categories,
       pendingActivity,
       pomodoroCount,
@@ -6184,7 +6227,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const logsIncludingSessionEnd = sessionEndEntry
       ? [sessionEndEntry, ...baseLogs]
       : baseLogs;
-    if (sessionEndEntry) {
+    if (sessionEndEntry || allPauseEndEntry) {
       logsRef.current = logsIncludingSessionEnd;
       setLogs(logsIncludingSessionEnd);
     }
@@ -6194,7 +6237,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const record: SessionRecord = {
             id: Date.now().toString(),
             startTime: effectiveSessionStartTime,
-            endTime: effectiveEndIso,
+            endTime: creditedSessionEndIso,
             stats: {
                 totalWorkMinutes: sessionSummary.totalWorkMinutes,
                 totalBreakMinutes: sessionSummary.totalBreakMinutes,
@@ -6225,7 +6268,7 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     setSessionStats({
         sessionStartTime: effectiveSessionStartTime,
-        sessionEndTime: effectiveEndIso,
+        sessionEndTime: creditedSessionEndIso,
         totalWorkMinutes: sessionSummary.totalWorkMinutes,
         totalBreakMinutes: sessionSummary.totalBreakMinutes,
         tasksCompleted: sessionSummary.tasksCompleted,

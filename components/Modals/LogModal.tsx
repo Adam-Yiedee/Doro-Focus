@@ -3672,7 +3672,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         label: "Today's Top Category",
         value: insights.today.topCategoryName || '--',
         color: todayTopCategoryColor,
-        valueClassName: `text-[1.8rem] font-bold tracking-tight leading-tight break-words ${isLightTheme ? 'text-slate-900' : 'text-white'}`,
+        valueClassName: `min-w-0 max-w-full whitespace-normal text-[1.45rem] font-bold tracking-tight leading-[1.08] break-words [word-break:normal] sm:text-[1.55rem] ${isLightTheme ? 'text-slate-900' : 'text-white'}`,
       },
     ];
     const todayMeta = insights.today.firstStartMinutes !== null
@@ -3734,7 +3734,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
           <div className={`${overviewCardLabelClassName} min-h-[1.7rem] pr-1 leading-[1.15] whitespace-normal text-balance`}>
             {card.label}
           </div>
-          <div className={`mt-4 ${card.valueClassName || overviewCardValueClassName}`}>
+          <div className={`mt-4 min-w-0 max-w-full ${card.valueClassName || overviewCardValueClassName}`} title={card.value}>
             {card.value}
           </div>
         </div>

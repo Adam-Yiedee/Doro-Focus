@@ -2277,8 +2277,10 @@ const TimerDisplay: React.FC = () => {
         }
         .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
           margin-top: 0;
-          font-size: 3.1rem;
-          line-height: 0.98;
+          max-width: 100%;
+          padding: 0 0.16em 0.18em;
+          font-size: 2.75rem;
+          line-height: 1.04;
           text-transform: none;
           text-shadow: none;
           transform: translate3d(0, -0.05rem, 0) scale(1);
@@ -2286,10 +2288,12 @@ const TimerDisplay: React.FC = () => {
         }
         .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value span {
           display: -webkit-box;
+          max-width: 100%;
+          box-sizing: border-box;
           -webkit-box-orient: vertical;
           overflow: hidden;
           overflow-wrap: anywhere;
-          padding-bottom: 0.08em;
+          padding: 0 0.08em 0.12em;
           text-wrap: balance;
           white-space: normal;
         }
@@ -2349,7 +2353,9 @@ const TimerDisplay: React.FC = () => {
           .doro-focus-single-value {
             font-size: clamp(4.35rem, 25cqw, 4.85rem);
           }
-          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value,
+          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 3.05rem;
+          }
           .doro-focus-single-face-content.is-word-face .doro-focus-single-value {
             font-size: 3.55rem;
           }
@@ -2368,8 +2374,8 @@ const TimerDisplay: React.FC = () => {
             font-size: clamp(4.6rem, 25cqw, 6rem);
           }
           .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
-            font-size: 3.75rem;
-            line-height: 0.92;
+            font-size: 3.2rem;
+            line-height: 1.03;
           }
           .doro-focus-single-card.doro-focus-label-medium .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
             font-size: 3.15rem;
@@ -2388,7 +2394,9 @@ const TimerDisplay: React.FC = () => {
           .doro-focus-single-value {
             font-size: clamp(5.4rem, 30cqw, 7.5rem);
           }
-          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value,
+          .doro-focus-single-face-content.is-display-hidden .doro-focus-single-value {
+            font-size: 3.55rem;
+          }
           .doro-focus-single-face-content.is-word-face .doro-focus-single-value {
             font-size: 4.5rem;
           }
@@ -2481,6 +2489,7 @@ const TimerDisplay: React.FC = () => {
         }
         .doro-focus-timer-is-hidden .doro-focus-timer-label {
           top: 50%;
+          padding: 0 0.08em 0.14em;
           letter-spacing: 0;
           text-transform: none;
           opacity: 1;
@@ -2488,7 +2497,10 @@ const TimerDisplay: React.FC = () => {
         }
         .doro-focus-timer-is-hidden .doro-focus-timer-label-text {
           display: -webkit-box;
+          max-width: 100%;
+          box-sizing: border-box;
           -webkit-box-orient: vertical;
+          padding: 0 0.07em 0.12em;
           white-space: normal;
           overflow: hidden;
           text-overflow: clip;
@@ -2496,22 +2508,22 @@ const TimerDisplay: React.FC = () => {
           text-wrap: balance;
         }
         .doro-focus-timer-is-hidden.doro-focus-label-short .doro-focus-timer-label {
-          font-size: clamp(2.35rem, 16cqw, 4.55rem);
-          line-height: 0.9;
+          font-size: clamp(2rem, 15cqw, 3.7rem);
+          line-height: 0.96;
         }
         .doro-focus-timer-is-hidden.doro-focus-label-short .doro-focus-timer-label-text {
           -webkit-line-clamp: 2;
         }
         .doro-focus-timer-is-hidden.doro-focus-label-medium .doro-focus-timer-label {
           font-size: clamp(1.75rem, 12cqw, 3.45rem);
-          line-height: 0.94;
+          line-height: 0.98;
         }
         .doro-focus-timer-is-hidden.doro-focus-label-medium .doro-focus-timer-label-text {
           -webkit-line-clamp: 3;
         }
         .doro-focus-timer-is-hidden.doro-focus-label-long .doro-focus-timer-label {
           font-size: clamp(1.22rem, 8.7cqw, 2.55rem);
-          line-height: 1.03;
+          line-height: 1.05;
         }
         .doro-focus-timer-is-hidden.doro-focus-label-long .doro-focus-timer-label-text {
           -webkit-line-clamp: 4;

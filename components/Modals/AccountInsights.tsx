@@ -1079,7 +1079,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
       trail: insights.today.topCategoryName ? 'Leading category so far' : 'Add categories to tasks',
       fill: insights.today.topCategoryName ? 100 : 0,
       color: todayTopCategoryColor,
-      valueClassName: 'text-xl font-bold tracking-tight leading-tight text-white break-words',
+      valueClassName: 'min-w-0 max-w-full whitespace-normal text-[1.15rem] font-bold tracking-tight leading-[1.12] text-white break-words [word-break:normal] sm:text-xl',
     },
   ];
   const getInsightInsetStyle = (color: string): React.CSSProperties => ({
@@ -1114,7 +1114,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
     >
       <div className="relative">
         <div className={`${insetLabelClassName} truncate`}>{card.label}</div>
-        <div className={`mt-3 ${card.valueClassName || insetValueClassName}`}>{card.value}</div>
+        <div className={`mt-3 min-w-0 max-w-full ${card.valueClassName || insetValueClassName}`} title={card.value}>{card.value}</div>
         {card.helper && <div className="mt-1"><div className={insetHelperClassName}>{card.helper}</div></div>}
       </div>
       <div className={`pointer-events-none absolute inset-x-4 bottom-0 h-px ${isLightTheme ? 'bg-slate-300/55' : 'bg-white/6'}`} />
@@ -1575,7 +1575,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
                     <span className="h-2 w-2 rounded-full" style={{ backgroundColor: card.color }} />
                     {card.label}
                   </div>
-                  <div className={`mt-3 ${card.valueClassName || 'text-[1.65rem] font-mono font-bold tracking-tight text-white'}`}>
+                  <div className={`mt-3 min-w-0 max-w-full ${card.valueClassName || 'text-[1.65rem] font-mono font-bold tracking-tight text-white'}`} title={card.value}>
                     {card.value}
                   </div>
                   <div className="mt-1 text-[11px] leading-relaxed text-white/48">{card.helper}</div>

@@ -4,9 +4,13 @@ import { LONG_GRACE_SESSION_TIMEOUT_SECONDS } from './timerRuntime';
 import {
   getAccountStatsFocusSeconds,
   getAccountStatsPomodoroEquivalent,
-  getAccountStatsSessionPomodoroEquivalent,
 } from './pomodoroAccounting';
 import { isProductiveFocusLog } from './logClassification';
+import {
+  buildAccountPauseWindows,
+  getAccountSessionCategoryScale,
+  getAccountSessionTotals,
+} from './accountSessionTotals';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -245,31 +249,28 @@ const addSessionCategoryMinutes = (
   totals: AccountInsightDayTotals,
   session: SessionRecord,
   categoriesById: ReturnType<typeof getCategoryMapById>,
+  creditedWorkMinutes: number,
 ) => {
   const categoryDetails = Array.isArray(session.stats?.categoryDetails)
     ? session.stats.categoryDetails
     : [];
+  const categoryScale = getAccountSessionCategoryScale(session, creditedWorkMinutes);
 
   if (categoryDetails.length > 0) {
     categoryDetails.forEach((detail) => {
       const safeDetail = detail as SessionCategoryStat;
       const minutes = Number(safeDetail.minutes);
       if (!Number.isFinite(minutes) || minutes <= 0) return;
-      addCategoryMinutes(totals, resolveLogEntryCategory(safeDetail, categoriesById).name || 'Uncategorized', minutes);
+      addCategoryMinutes(totals, resolveLogEntryCategory(safeDetail, categoriesById).name || 'Uncategorized', minutes * categoryScale);
     });
     return;
   }
 
   if (session.stats?.categoryStats && typeof session.stats.categoryStats === 'object') {
     Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
-      addCategoryMinutes(totals, name, Number(minutes));
+      addCategoryMinutes(totals, name, Number(minutes) * categoryScale);
     });
   }
-};
-
-const getSessionWorkMinutes = (session: SessionRecord) => {
-  const minutes = Number(session.stats?.totalWorkMinutes || 0);
-  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
 };
 
 export const normalizeAccountLogWindow = (entry: LogEntry): AccountLogWindow | null => {
@@ -445,11 +446,13 @@ export const computeAccountInsights = ({
   nowMs?: number;
 }): AccountInsights => {
   const categoriesById = getCategoryMapById(categories);
+  const pauseWindows = buildAccountPauseWindows(logs);
 
   const normalizedLogs = logs
     .map(normalizeLogWindow)
     .filter((entry): entry is NormalizedLogWindow => Boolean(entry))
     .filter((entry) => entry.entry.type !== 'task-complete')
+    .filter((entry) => entry.entry.type !== 'allpause')
     .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
 
   const productiveWindows = normalizedLogs.filter((window) => isProductiveFocusLog(window.entry));
@@ -576,10 +579,11 @@ export const computeAccountInsights = ({
     if (!Number.isFinite(sessionStartMs)) return;
     const dateKey = getLocalDateKey(sessionStartMs);
     const totals = getDayTotals(sessionDayTotals, dateKey);
-    totals.focusMinutes += getSessionWorkMinutes(session);
-    totals.pomodoros += getAccountStatsSessionPomodoroEquivalent(session);
+    const accountSessionTotals = getAccountSessionTotals(session, pauseWindows);
+    totals.focusMinutes += accountSessionTotals.workMinutes;
+    totals.pomodoros += accountSessionTotals.pomodoros;
     totals.sessions += 1;
-    addSessionCategoryMinutes(totals, session, categoriesById);
+    addSessionCategoryMinutes(totals, session, categoriesById, accountSessionTotals.workMinutes);
   });
 
   const todayDateKey = getLocalDateKey(todayStartMs);

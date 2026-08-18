@@ -535,6 +535,7 @@ const GroupStudyGoalPanel: React.FC<{
           return (
             <div
               key={item.memberId}
+              ref={isEncouragementOpen ? encouragementMenuRef : undefined}
               className={`doro-group-goal-row rounded-[0.85rem] border px-3 py-2 ${isEncouragementOpen ? 'doro-group-goal-row-menu-open' : ''}`}
               style={{ '--doro-group-goal-color': participantColor } as React.CSSProperties}
             >
@@ -553,7 +554,6 @@ const GroupStudyGoalPanel: React.FC<{
                 <div className="flex shrink-0 items-center gap-1.5">
                   {onSendEncouragement && (
                     <div
-                      ref={isEncouragementOpen ? encouragementMenuRef : undefined}
                       className={`doro-group-goal-encouragement relative ${isEncouragementOpen ? 'is-open' : ''} ${encouragementSent ? 'is-sent' : ''}`}
                     >
                       <button
@@ -566,35 +566,34 @@ const GroupStudyGoalPanel: React.FC<{
                       >
                         <Heart size={12} strokeWidth={2.4} fill={encouragementSent ? 'currentColor' : 'none'} />
                       </button>
-
-                      {isEncouragementOpen && (
-                        <div className="doro-group-goal-encouragement-menu">
-                          {encouragementOptions.map(option => (
-                            <button
-                              key={option}
-                              type="button"
-                              className="doro-group-goal-encouragement-option"
-                              onClick={() => {
-                                const sent = onSendEncouragement(item, option);
-                                if (sent !== false) {
-                                  setSentEncouragementMemberId(item.memberId);
-                                  window.setTimeout(() => {
-                                    setSentEncouragementMemberId(current => current === item.memberId ? null : current);
-                                  }, 1500);
-                                }
-                                setEncouragementMenuMemberId(null);
-                              }}
-                            >
-                              {option}
-                            </button>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   )}
                   <div className="text-[11px] font-black tabular-nums text-white/72">{formatPomodoroCount(value)}</div>
                 </div>
               </div>
+              {isEncouragementOpen && onSendEncouragement && (
+                <div className="doro-group-goal-encouragement-menu">
+                  {encouragementOptions.map(option => (
+                    <button
+                      key={option}
+                      type="button"
+                      className="doro-group-goal-encouragement-option"
+                      onClick={() => {
+                        const sent = onSendEncouragement(item, option);
+                        if (sent !== false) {
+                          setSentEncouragementMemberId(item.memberId);
+                          window.setTimeout(() => {
+                            setSentEncouragementMemberId(current => current === item.memberId ? null : current);
+                          }, 1500);
+                        }
+                        setEncouragementMenuMemberId(null);
+                      }}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="doro-group-goal-rail mt-1.5 h-1.5 overflow-hidden rounded-full border">
                 <div className="doro-group-goal-row-fill h-full rounded-full transition-[width,background-color] duration-500" style={{ width: `${rowPercent}%` }} />
               </div>
@@ -2227,11 +2226,11 @@ const Layout: React.FC = () => {
         }
         .doro-group-goal-encouragement-menu {
           position: absolute;
-          top: calc(100% + 0.45rem);
-          right: -0.15rem;
+          top: 2.15rem;
+          right: 0.7rem;
           z-index: 80;
           display: grid;
-          width: min(15.5rem, calc(100vw - 2rem));
+          width: min(15.5rem, calc(100vw - 2rem), calc(100% - 1.4rem));
           max-height: 13rem;
           overflow-y: auto;
           gap: 0.12rem;

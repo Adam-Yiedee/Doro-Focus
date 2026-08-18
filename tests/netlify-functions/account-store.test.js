@@ -231,6 +231,56 @@ describe('account store blob compatibility', () => {
     });
   });
 
+  it('caps server-rebuilt archived session totals by non-paused time', () => {
+    const stats = calculateLifetimeStatsFromAccountData([
+      {
+        id: 'paused-session',
+        startTime: '2026-03-12T08:00:00.000Z',
+        endTime: '2026-03-12T12:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 9.6,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+      {
+        id: 'clean-session',
+        startTime: '2026-03-12T13:00:00.000Z',
+        endTime: '2026-03-12T17:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 9.6,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+    ], [
+      {
+        type: 'allpause',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T11:00:00.000Z',
+        duration: 7200,
+        reason: 'Paused',
+        task: null,
+        color: undefined,
+        categoryId: null,
+      },
+    ], [
+      { id: 2, name: 'Study', color: '#4FAE9B', icon: 'book' },
+    ]);
+
+    expect(stats).toMatchObject({
+      totalFocusHours: 6,
+      totalSessionHours: 6,
+      totalSessions: 2,
+      categoryBreakdown: { Study: 360 },
+    });
+    expect(stats.totalPomos).toBeCloseTo(14.4, 5);
+  });
+
   it('tracks manually logged focus separately while counting it as focus time and standard pomos', () => {
     const stats = calculateLifetimeStatsFromAccountData([], [
       {

@@ -417,6 +417,66 @@ describe('computeAccountInsights', () => {
     });
   });
 
+  it('caps archived account focus totals by non-paused session time', () => {
+    const today = '2026-01-14';
+    const sessions: SessionRecord[] = [
+      {
+        id: 'paused-session',
+        startTime: `${today}T08:00:00`,
+        endTime: `${today}T12:00:00`,
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 9.6,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+      {
+        id: 'clean-session',
+        startTime: `${today}T13:00:00`,
+        endTime: `${today}T17:00:00`,
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 9.6,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+    ];
+
+    const insights = computeAccountInsights({
+      joinedAt: '2026-01-01T00:00:00',
+      nowMs: Date.parse(`${today}T23:00:00`),
+      categories,
+      logs: [
+        makeLog({
+          type: 'allpause',
+          start: `${today}T09:00:00`,
+          end: `${today}T11:00:00`,
+          reason: 'Paused',
+        }),
+      ],
+      sessions,
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(360, 5);
+    expect(insights.today.pomodoros).toBeCloseTo(14.4, 5);
+    expect(insights.today.sessions).toBe(2);
+    expect(insights.weekComparison.thisWeek.focusMinutes).toBeCloseTo(360, 5);
+    const todayTrend = insights.dailyFocusTrend.find((point) => point.dateKey === today);
+    expect(todayTrend).toMatchObject({
+      focusMinutes: 360,
+      sessions: 2,
+    });
+    expect(todayTrend?.pomodoros).toBeCloseTo(14.4, 5);
+    expect(insights.categorySlices[0]).toMatchObject({
+      name: 'Study',
+      minutes: 360,
+    });
+  });
+
   it('converts manually logged focus minutes to standard pomodoros in today and trend stats', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({

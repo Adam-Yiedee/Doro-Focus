@@ -3,9 +3,13 @@ import { getCategoryMapById, resolveLogEntryCategory } from './categoryTracking'
 import {
   getAccountStatsFocusSeconds,
   getAccountStatsPomodoroEquivalent,
-  getAccountStatsSessionPomodoroEquivalent,
 } from './pomodoroAccounting';
 import { isProductiveFocusLog } from './logClassification';
+import {
+  buildAccountPauseWindows,
+  getAccountSessionCategoryScale,
+  getAccountSessionTotals,
+} from './accountSessionTotals';
 
 export const EMPTY_LIFETIME_STATS: User['lifetimeStats'] = {
   totalFocusHours: 0,
@@ -37,19 +41,6 @@ const isTimerSessionDurationLog = (entry: LogEntry): boolean => {
   return isProductiveFocusLog(entry);
 };
 
-const getSessionWorkMinutes = (session: SessionRecord): number => {
-  const minutes = Number(session.stats?.totalWorkMinutes || 0);
-  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
-};
-
-const getSessionTotalMinutes = (session: SessionRecord): number => {
-  const workMinutes = Number(session.stats?.totalWorkMinutes || 0);
-  const breakMinutes = Number(session.stats?.totalBreakMinutes || 0);
-  const totalMinutes = Math.max(0, Number.isFinite(workMinutes) ? workMinutes : 0)
-    + Math.max(0, Number.isFinite(breakMinutes) ? breakMinutes : 0);
-  return totalMinutes > 0 ? totalMinutes : 0;
-};
-
 const getLocalDateKeyFromIso = (iso: string): string | null => {
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return null;
@@ -78,6 +69,7 @@ export const calculateLifetimeStatsFromData = (
   const safeLogs = Array.isArray(currentLogs) ? currentLogs : [];
   const safeCategories = Array.isArray(categories) ? categories : [];
   const categoryMap = getCategoryMapById(safeCategories);
+  const pauseWindows = buildAccountPauseWindows(safeLogs);
 
   const productiveLogs = safeLogs.filter((entry) => {
     if (!isProductiveFocusLog(entry)) return false;
@@ -189,9 +181,11 @@ export const calculateLifetimeStatsFromData = (
   safeSessions.forEach((session, index) => {
     const dateKey = getLocalDateKeyFromIso(session.startTime) || `__session_${index}`;
     const totals = getDayTotals(sessionDays, dateKey);
-    totals.focusMinutes += getSessionWorkMinutes(session);
-    totals.sessionMinutes += getSessionTotalMinutes(session);
-    totals.pomos += getAccountStatsSessionPomodoroEquivalent(session);
+    const accountSessionTotals = getAccountSessionTotals(session, pauseWindows);
+    totals.focusMinutes += accountSessionTotals.workMinutes;
+    totals.sessionMinutes += accountSessionTotals.sessionMinutes;
+    totals.pomos += accountSessionTotals.pomodoros;
+    const categoryScale = getAccountSessionCategoryScale(session, accountSessionTotals.workMinutes);
     const categoryDetails = Array.isArray(session.stats?.categoryDetails)
       ? session.stats.categoryDetails
       : [];
@@ -201,15 +195,15 @@ export const calculateLifetimeStatsFromData = (
         const safeMinutes = Number(safeDetail.minutes);
         if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
         const key = resolveLogEntryCategory(safeDetail, categoryMap).name || 'Uncategorized';
-        addCategoryMinutes(totals.categoryBreakdown, key, safeMinutes);
+        addCategoryMinutes(totals.categoryBreakdown, key, safeMinutes * categoryScale);
       });
     } else if (session.stats?.categoryStats) {
       Object.entries(session.stats.categoryStats).forEach(([name, minutes]) => {
-        addCategoryMinutes(totals.categoryBreakdown, name, Number(minutes));
+        addCategoryMinutes(totals.categoryBreakdown, name, Number(minutes) * categoryScale);
       });
     }
 
-    if (!dateKey.startsWith('__') && totals.focusMinutes > 0) {
+    if (!dateKey.startsWith('__') && accountSessionTotals.workMinutes > 0) {
       productiveDates.add(dateKey);
     }
   });

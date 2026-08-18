@@ -305,27 +305,118 @@ const getTodayPomodoroCountFromLogs = (logs, nowMs = Date.now()) => {
   }, 0);
 };
 
-const getSessionWorkMinutes = (session) => {
-  const mins = Number(session?.stats?.totalWorkMinutes || 0);
-  return Number.isFinite(mins) && mins > 0 ? mins : 0;
+const getPositiveMinutes = (value) => {
+  const minutes = Number(value || 0);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
 };
 
-const getSessionTotalMinutes = (session) => {
-  const workMinutes = Number(session?.stats?.totalWorkMinutes || 0);
-  const breakMinutes = Number(session?.stats?.totalBreakMinutes || 0);
-  const totalMinutes = Math.max(0, Number.isFinite(workMinutes) ? workMinutes : 0)
-    + Math.max(0, Number.isFinite(breakMinutes) ? breakMinutes : 0);
-  return totalMinutes > 0 ? totalMinutes : 0;
+const getPauseLogWindow = (entry) => {
+  if (!entry || entry.type !== 'allpause') return null;
+  const startMs = Date.parse(entry.start);
+  if (!Number.isFinite(startMs)) return null;
+
+  const durationSeconds = getPositiveDurationSeconds(entry);
+  const durationEndMs = durationSeconds > 0 ? startMs + (durationSeconds * 1000) : null;
+  const parsedEndMs = Date.parse(entry.end);
+  const endMs = Math.max(
+    startMs,
+    durationEndMs ?? startMs,
+    Number.isFinite(parsedEndMs) ? parsedEndMs : startMs,
+  );
+
+  return endMs > startMs ? { startMs, endMs } : null;
 };
 
-const getSessionPomodoros = (session) => {
-  const workMinutes = getSessionWorkMinutes(session);
-  if (workMinutes > 0) return workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
+const buildAccountPauseWindows = (logs) => {
+  return (Array.isArray(logs) ? logs : [])
+    .map(getPauseLogWindow)
+    .filter(Boolean);
+};
 
+const getSessionPauseMinutes = (sessionStartMs, sessionEndMs, pauseWindows) => {
+  return pauseWindows.reduce((totalMs, window) => {
+    const overlapStartMs = Math.max(sessionStartMs, window.startMs);
+    const overlapEndMs = Math.min(sessionEndMs, window.endMs);
+    return overlapEndMs > overlapStartMs
+      ? totalMs + (overlapEndMs - overlapStartMs)
+      : totalMs;
+  }, 0) / 60000;
+};
+
+const getRawSessionWorkMinutes = (session) => {
+  return getPositiveMinutes(session?.stats?.totalWorkMinutes);
+};
+
+const getRawSessionBreakMinutes = (session) => {
+  return getPositiveMinutes(session?.stats?.totalBreakMinutes);
+};
+
+const getRawSessionTotalMinutes = (session) => {
+  return getRawSessionWorkMinutes(session) + getRawSessionBreakMinutes(session);
+};
+
+const getRawSessionCategoryMinutes = (session) => {
+  const categoryDetails = Array.isArray(session?.stats?.categoryDetails) ? session.stats.categoryDetails : [];
+  if (categoryDetails.length > 0) {
+    return categoryDetails.reduce((total, detail) => total + getPositiveMinutes(detail?.minutes), 0);
+  }
+
+  const categoryStats = session?.stats?.categoryStats;
+  if (categoryStats && typeof categoryStats === 'object') {
+    return Object.values(categoryStats).reduce((total, minutes) => total + getPositiveMinutes(minutes), 0);
+  }
+
+  return 0;
+};
+
+const getAccountSessionTotals = (session, pauseWindows) => {
+  const rawWorkMinutes = getRawSessionWorkMinutes(session);
+  const rawBreakMinutes = getRawSessionBreakMinutes(session);
+  const rawSessionMinutes = getRawSessionTotalMinutes(session);
+  const sessionStartMs = Date.parse(session?.startTime);
+  const sessionEndMs = Date.parse(session?.endTime);
+  let maximumCreditedMinutes = null;
+
+  if (Number.isFinite(sessionStartMs) && Number.isFinite(sessionEndMs) && sessionEndMs > sessionStartMs) {
+    const pauseMinutes = getSessionPauseMinutes(sessionStartMs, sessionEndMs, pauseWindows);
+    if (pauseMinutes > 0.01) {
+      const wallMinutes = (sessionEndMs - sessionStartMs) / 60000;
+      maximumCreditedMinutes = Math.max(0, wallMinutes - pauseMinutes);
+    }
+  }
+
+  const sessionMinutes = maximumCreditedMinutes === null
+    ? rawSessionMinutes
+    : Math.min(rawSessionMinutes, maximumCreditedMinutes);
+  const breakMinutes = maximumCreditedMinutes === null
+    ? rawBreakMinutes
+    : Math.min(rawBreakMinutes, sessionMinutes);
+  const workMinutes = maximumCreditedMinutes === null
+    ? rawWorkMinutes
+    : Math.min(rawWorkMinutes, Math.max(0, sessionMinutes - breakMinutes), maximumCreditedMinutes);
+  const maxPomos = maximumCreditedMinutes === null
+    ? Number.POSITIVE_INFINITY
+    : maximumCreditedMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60);
   const pomos = Number(session?.stats?.pomosCompleted || 0);
-  if (Number.isFinite(pomos) && pomos >= 0) return pomos;
   const miniPomos = Number(session?.stats?.miniPomosCompleted || 0);
-  return Number.isFinite(miniPomos) && miniPomos > 0 ? miniPomos * 0.5 : 0;
+  const fallbackPomos = Number.isFinite(pomos) && pomos >= 0
+    ? pomos
+    : (Number.isFinite(miniPomos) && miniPomos > 0 ? miniPomos * 0.5 : 0);
+
+  return {
+    workMinutes,
+    sessionMinutes,
+    pomodoros: workMinutes > 0
+      ? workMinutes / (ACCOUNT_STATS_POMODORO_SECONDS / 60)
+      : Math.min(fallbackPomos, maxPomos),
+  };
+};
+
+const getAccountSessionCategoryScale = (session, creditedWorkMinutes) => {
+  const rawCategoryMinutes = getRawSessionCategoryMinutes(session);
+  if (rawCategoryMinutes <= 0) return 1;
+  if (creditedWorkMinutes <= 0) return 0;
+  return Math.min(1, creditedWorkMinutes / rawCategoryMinutes);
 };
 
 const getResolvedCategoryName = (entry, categoryMap) => {
@@ -341,6 +432,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
   const safeSessions = Array.isArray(sessions) ? sessions : [];
   const safeLogs = Array.isArray(logs) ? logs : [];
   const safeCategories = Array.isArray(categories) ? categories : [];
+  const pauseWindows = buildAccountPauseWindows(safeLogs);
 
   const productiveLogs = safeLogs.filter((entry) => {
     if (!isProductiveFocusLog(entry)) return false;
@@ -382,9 +474,12 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     const sessionDateKey = getLocalDateKeyFromIso(session?.startTime);
     return !sessionDateKey || !timerSessionLogDateKeys.has(sessionDateKey);
   });
-  const workMinutesFromFallbackSessions = fallbackSessions.reduce((acc, session) => acc + getSessionWorkMinutes(session), 0);
+  const workMinutesFromFallbackSessions = fallbackSessions.reduce(
+    (acc, session) => acc + getAccountSessionTotals(session, pauseWindows).workMinutes,
+    0,
+  );
   const totalSessionMinutesFromFallbackSessions = totalTimeFallbackSessions.reduce(
-    (acc, session) => acc + getSessionTotalMinutes(session),
+    (acc, session) => acc + getAccountSessionTotals(session, pauseWindows).sessionMinutes,
     0,
   );
 
@@ -403,13 +498,15 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     categoryBreakdown[key] = (categoryBreakdown[key] || 0) + minutes;
   });
   fallbackSessions.forEach((session) => {
+    const accountSessionTotals = getAccountSessionTotals(session, pauseWindows);
+    const categoryScale = getAccountSessionCategoryScale(session, accountSessionTotals.workMinutes);
     const categoryDetails = Array.isArray(session?.stats?.categoryDetails) ? session.stats.categoryDetails : [];
     if (categoryDetails.length > 0) {
       categoryDetails.forEach((detail) => {
         const safeMinutes = Number(detail?.minutes);
         if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
         const key = getResolvedCategoryName(detail, categoryMap);
-        categoryBreakdown[key] = (categoryBreakdown[key] || 0) + safeMinutes;
+        categoryBreakdown[key] = (categoryBreakdown[key] || 0) + (safeMinutes * categoryScale);
       });
       return;
     }
@@ -418,7 +515,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     Object.entries(categoryStats).forEach(([name, minutes]) => {
       const safeMinutes = Number(minutes);
       if (!name || !Number.isFinite(safeMinutes) || safeMinutes <= 0) return;
-      categoryBreakdown[name] = (categoryBreakdown[name] || 0) + safeMinutes;
+      categoryBreakdown[name] = (categoryBreakdown[name] || 0) + (safeMinutes * categoryScale);
     });
   });
 
@@ -428,7 +525,7 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     if (key) productiveDates.add(key);
   });
   fallbackSessions.forEach((session) => {
-    const mins = getSessionWorkMinutes(session);
+    const mins = getAccountSessionTotals(session, pauseWindows).workMinutes;
     if (mins <= 0) return;
     const key = getLocalDateKeyFromIso(session?.startTime);
     if (key) productiveDates.add(key);
@@ -469,7 +566,10 @@ export const calculateLifetimeStatsFromAccountData = (sessions, logs, categories
     totalSessionHours: (sessionSecondsFromLogs / 3600) + (totalSessionMinutesFromFallbackSessions / 60),
     manualFocusHours: manualWorkSecondsFromLogs / 3600,
     totalSessions: safeSessions.length,
-    totalPomos: completedPomodoroWeightFromLogs + fallbackSessions.reduce((acc, session) => acc + getSessionPomodoros(session), 0),
+    totalPomos: completedPomodoroWeightFromLogs + fallbackSessions.reduce(
+      (acc, session) => acc + getAccountSessionTotals(session, pauseWindows).pomodoros,
+      0,
+    ),
     activeDays: sortedDates.length,
     currentStreak,
     bestStreak,

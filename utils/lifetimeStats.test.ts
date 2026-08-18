@@ -358,6 +358,50 @@ describe('calculateLifetimeStatsFromData', () => {
     expect(stats.categoryBreakdown).toEqual({ Study: 75 });
   });
 
+  it('caps archived lifetime totals by non-paused session time', () => {
+    const sessions: SessionRecord[] = [
+      {
+        id: 'paused-session',
+        startTime: '2026-03-12T08:00:00.000Z',
+        endTime: '2026-03-12T12:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 9.6,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+      {
+        id: 'clean-session',
+        startTime: '2026-03-12T13:00:00.000Z',
+        endTime: '2026-03-12T17:00:00.000Z',
+        stats: {
+          totalWorkMinutes: 240,
+          totalBreakMinutes: 0,
+          pomosCompleted: 9.6,
+          tasksCompleted: 0,
+          categoryStats: { Study: 240 },
+        },
+      },
+    ];
+
+    const stats = calculateLifetimeStatsFromData(sessions, [
+      makeLog({
+        type: 'allpause',
+        start: '2026-03-12T09:00:00.000Z',
+        end: '2026-03-12T11:00:00.000Z',
+        reason: 'Paused',
+      }),
+    ], categories);
+
+    expect(stats.totalFocusHours).toBeCloseTo(6, 5);
+    expect(stats.totalSessionHours).toBeCloseTo(6, 5);
+    expect(stats.totalPomos).toBeCloseTo(14.4, 5);
+    expect(stats.totalSessions).toBe(2);
+    expect(stats.categoryBreakdown).toEqual({ Study: 360 });
+  });
+
   it('merges legacy session days with newer log-backed days without double-counting overlapping dates', () => {
     const sessions: SessionRecord[] = [
       {
