@@ -212,6 +212,94 @@ describe('computeAccountInsights', () => {
     expect(insights.sessionLanes.find((lane) => lane.dateKey === '2026-01-14')?.sessions[0].durationMinutes).toBeCloseTo(35, 5);
   });
 
+  it('splits log-derived sessions at long idle gaps instead of spanning the day', () => {
+    const today = '2026-01-14';
+    const insights = computeAccountInsights({
+      joinedAt: `${today}T00:00:00`,
+      nowMs: Date.parse(`${today}T23:00:00`),
+      categories,
+      logs: [
+        makeLog({
+          start: `${today}T08:00:00`,
+          end: `${today}T08:25:00`,
+          reason: 'Pomodoro Complete',
+          categoryId: 1,
+        }),
+        makeLog({
+          start: `${today}T17:00:00`,
+          end: `${today}T17:20:00`,
+          reason: 'Session End',
+          categoryId: 2,
+        }),
+      ],
+    });
+
+    expect(insights.sessions).toHaveLength(2);
+    expect(insights.sessions[0]).toMatchObject({
+      startMs: Date.parse(`${today}T08:00:00`),
+      endMs: Date.parse(`${today}T08:25:00`),
+      visualEndMs: Date.parse(`${today}T08:25:00`),
+      closed: false,
+    });
+    expect(insights.sessions[1]).toMatchObject({
+      startMs: Date.parse(`${today}T17:00:00`),
+      endMs: Date.parse(`${today}T17:20:00`),
+      visualEndMs: Date.parse(`${today}T17:20:00`),
+      closed: true,
+    });
+
+    const todayLane = insights.sessionLanes.find((lane) => lane.dateKey === today);
+    expect(todayLane?.sessions).toHaveLength(2);
+    expect(todayLane?.sessions[0]).toMatchObject({
+      startMinutes: 8 * 60,
+      endMinutes: (8 * 60) + 25,
+    });
+    expect(todayLane?.sessions[1]).toMatchObject({
+      startMinutes: 17 * 60,
+      endMinutes: (17 * 60) + 20,
+    });
+  });
+
+  it('bounds archived-only session clock bars to credited session duration', () => {
+    const today = '2026-01-14';
+    const sessions: SessionRecord[] = [
+      {
+        id: 'archived-day-span',
+        startTime: `${today}T08:00:00`,
+        endTime: `${today}T17:00:00`,
+        stats: {
+          totalWorkMinutes: 25,
+          totalBreakMinutes: 5,
+          pomosCompleted: 1,
+          tasksCompleted: 0,
+          categoryStats: { Writing: 25 },
+        },
+      },
+    ];
+
+    const insights = computeAccountInsights({
+      joinedAt: `${today}T00:00:00`,
+      nowMs: Date.parse(`${today}T23:00:00`),
+      categories,
+      logs: [],
+      sessions,
+    });
+
+    expect(insights.today.focusMinutes).toBeCloseTo(25, 5);
+    expect(insights.today.sessions).toBe(1);
+    expect(insights.sessions[0]).toMatchObject({
+      startMs: Date.parse(`${today}T08:00:00`),
+      endMs: Date.parse(`${today}T17:00:00`),
+      visualEndMs: Date.parse(`${today}T08:30:00`),
+      totalDurationMinutes: 30,
+    });
+    expect(insights.sessionLanes.find((lane) => lane.dateKey === today)?.sessions[0]).toMatchObject({
+      startMinutes: 8 * 60,
+      endMinutes: (8 * 60) + 30,
+      durationMinutes: 30,
+    });
+  });
+
   it('uses logged duration instead of wall-clock span for account focus minutes', () => {
     const today = '2026-01-14';
     const insights = computeAccountInsights({

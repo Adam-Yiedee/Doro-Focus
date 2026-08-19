@@ -15,9 +15,11 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 const SESSION_SPLIT_GRACE_SECONDS = LONG_GRACE_SESSION_TIMEOUT_SECONDS;
+const SESSION_SPLIT_IDLE_GAP_MS = LONG_GRACE_SESSION_TIMEOUT_SECONDS * 1000;
 const QUIT_TIME_BUCKET_MINUTES = 30;
 const DAILY_TREND_DAYS = 14;
 const SESSION_LANE_DAYS = 7;
+const MS_PER_MINUTE = 60_000;
 
 export const WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
 export const WEEKDAY_SHORT_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
@@ -60,6 +62,7 @@ export interface AccountWeekComparison {
 export interface AccountInsightSession {
   startMs: number;
   endMs: number | null;
+  visualEndMs?: number | null;
   closed: boolean;
   totalDurationMinutes: number;
 }
@@ -336,6 +339,53 @@ const averageClockMinutes = (values: number[]) => {
   return averageTimeOfDayMinutes(sorted);
 };
 
+const getSessionComparableEndMs = (session: AccountInsightSession) => (
+  session.visualEndMs
+  ?? session.endMs
+  ?? session.startMs + Math.max(1, session.totalDurationMinutes) * MS_PER_MINUTE
+);
+
+const sessionRangesOverlap = (left: AccountInsightSession, right: AccountInsightSession) => {
+  const leftEndMs = getSessionComparableEndMs(left);
+  const rightEndMs = getSessionComparableEndMs(right);
+  const overlapMs = Math.min(leftEndMs, rightEndMs) - Math.max(left.startMs, right.startMs);
+  if (overlapMs <= 0) return false;
+
+  const shortestMs = Math.max(
+    MS_PER_MINUTE,
+    Math.min(leftEndMs - left.startMs, rightEndMs - right.startMs),
+  );
+  return overlapMs >= Math.min(5 * MS_PER_MINUTE, shortestMs * 0.5);
+};
+
+const getArchivedInsightSession = (
+  session: SessionRecord,
+  pauseWindows: ReturnType<typeof buildAccountPauseWindows>,
+): AccountInsightSession | null => {
+  const startMs = Date.parse(session.startTime);
+  const endMs = Date.parse(session.endTime);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  const totals = getAccountSessionTotals(session, pauseWindows);
+  const wallMinutes = (endMs - startMs) / MS_PER_MINUTE;
+  const totalDurationMinutes = Math.max(
+    1,
+    totals.sessionMinutes > 0 ? totals.sessionMinutes : wallMinutes,
+  );
+  const visualEndMs = Math.min(
+    endMs,
+    startMs + Math.max(1, totalDurationMinutes) * MS_PER_MINUTE,
+  );
+
+  return {
+    startMs,
+    endMs,
+    visualEndMs: Math.max(startMs + MS_PER_MINUTE, visualEndMs),
+    closed: true,
+    totalDurationMinutes,
+  };
+};
+
 const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightSession[] => {
   const sessions: AccountInsightSession[] = [];
   let currentStartMs: number | null = null;
@@ -343,25 +393,41 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
   let currentTotalDurationMs = 0;
   let pendingStartMs: number | null = null;
 
+  const finishCurrentSession = (endMs: number | null, closed: boolean) => {
+    if (currentStartMs === null || endMs === null || endMs <= currentStartMs) return;
+    sessions.push({
+      startMs: currentStartMs,
+      endMs,
+      visualEndMs: endMs,
+      closed,
+      totalDurationMinutes: Math.max(1, currentTotalDurationMs / MS_PER_MINUTE),
+    });
+    currentStartMs = null;
+    currentLastEndMs = null;
+    currentTotalDurationMs = 0;
+  };
+
   windows.forEach((window) => {
     if (isNeutralGraceBoundary(window.entry)) {
-      if (currentStartMs !== null && window.startMs > currentStartMs) {
-        sessions.push({
-          startMs: currentStartMs,
-          endMs: window.startMs,
-          closed: true,
-          totalDurationMinutes: Math.max(1, currentTotalDurationMs / 60_000),
-        });
-      }
-      currentStartMs = null;
-      currentLastEndMs = null;
-      currentTotalDurationMs = 0;
+      finishCurrentSession(window.startMs, true);
       pendingStartMs = window.endMs;
       return;
     }
 
     if (isNeutralGraceWindow(window.entry)) {
       return;
+    }
+
+    if (
+      currentStartMs !== null
+      && currentLastEndMs !== null
+      && (
+        window.startMs - currentLastEndMs > SESSION_SPLIT_IDLE_GAP_MS
+        || startOfLocalDay(window.startMs) !== startOfLocalDay(currentLastEndMs)
+      )
+    ) {
+      finishCurrentSession(currentLastEndMs, false);
+      pendingStartMs = null;
     }
 
     if (currentStartMs === null) {
@@ -374,29 +440,26 @@ const buildAnalyticsSessions = (windows: NormalizedLogWindow[]): AccountInsightS
     }
 
     if (isSessionEndLog(window.entry) && currentStartMs !== null && currentLastEndMs > currentStartMs) {
-      sessions.push({
-        startMs: currentStartMs,
-        endMs: currentLastEndMs,
-        closed: true,
-        totalDurationMinutes: Math.max(1, currentTotalDurationMs / 60_000),
-      });
-      currentStartMs = null;
-      currentLastEndMs = null;
-      currentTotalDurationMs = 0;
+      finishCurrentSession(currentLastEndMs, true);
     }
   });
 
-  if (currentStartMs !== null && currentLastEndMs !== null && currentLastEndMs > currentStartMs) {
-    sessions.push({
-      startMs: currentStartMs,
-      endMs: currentLastEndMs,
-      closed: false,
-      totalDurationMinutes: Math.max(1, currentTotalDurationMs / 60_000),
-    });
-  }
+  finishCurrentSession(currentLastEndMs, false);
 
   return sessions;
 };
+
+const mergeArchivedAndLogSessions = (
+  logSessions: AccountInsightSession[],
+  archivedSessions: AccountInsightSession[],
+) => (
+  [
+    ...logSessions,
+    ...archivedSessions.filter(
+      (archivedSession) => !logSessions.some((logSession) => sessionRangesOverlap(logSession, archivedSession)),
+    ),
+  ].sort((a, b) => a.startMs - b.startMs || getSessionComparableEndMs(a) - getSessionComparableEndMs(b))
+);
 
 const distributeByHour = (
   startMs: number,
@@ -462,7 +525,12 @@ export const computeAccountInsights = ({
       pomodoroWeight: getAccountStatsPomodoroEquivalent(window.entry),
     }))
     .filter((window) => window.pomodoroWeight > 0);
-  const analyticsSessions = buildAnalyticsSessions(normalizedLogs);
+  const logAnalyticsSessions = buildAnalyticsSessions(normalizedLogs);
+  const safeSessionRecords = Array.isArray(sessionRecords) ? sessionRecords : [];
+  const archivedAnalyticsSessions = safeSessionRecords
+    .map((session) => getArchivedInsightSession(session, pauseWindows))
+    .filter((session): session is AccountInsightSession => Boolean(session));
+  const analyticsSessions = mergeArchivedAndLogSessions(logAnalyticsSessions, archivedAnalyticsSessions);
 
   const todayStartMs = startOfLocalDay(nowMs);
   const tomorrowStartMs = todayStartMs + DAY_MS;
@@ -573,7 +641,6 @@ export const computeAccountInsights = ({
     else if (window.endMs >= lastWeekStartMs && window.endMs < thisWeekStartMs) lastWeekPomos += window.pomodoroWeight;
   });
 
-  const safeSessionRecords = Array.isArray(sessionRecords) ? sessionRecords : [];
   safeSessionRecords.forEach((session) => {
     const sessionStartMs = Date.parse(session.startTime);
     if (!Number.isFinite(sessionStartMs)) return;
@@ -746,8 +813,8 @@ export const computeAccountInsights = ({
 
     const lane = sessionLaneMap.get(dateKey);
     if (!lane) return;
-    const sessionEndMs = session.endMs;
-    const sessionEndDate = sessionEndMs !== null ? new Date(sessionEndMs) : null;
+    const sessionEndMs = session.visualEndMs ?? session.endMs;
+    const sessionEndDate = sessionEndMs !== null && sessionEndMs !== undefined ? new Date(sessionEndMs) : null;
     const startMinutes = getMinutesOfDay(session.startMs);
     const endMinutes = sessionEndDate && getLocalDateKey(sessionEndMs as number) === dateKey
       ? getMinutesOfDay(sessionEndMs as number)

@@ -503,7 +503,7 @@ const AccountInsights: React.FC<AccountInsightsProps> = ({
 
     insights.sessions.forEach((session) => {
       const dateKey = getLocalDateKey(session.startMs);
-      const sessionEndMs = session.endMs;
+      const sessionEndMs = session.visualEndMs ?? session.endMs;
       const dayStartMs = startOfLocalDay(session.startMs);
       const dayEndMs = dayStartMs + DAY_MS;
       const visualEndMs = sessionEndMs ?? Math.min(dayEndMs, session.startMs + Math.max(1, session.totalDurationMinutes) * 60_000);

@@ -789,10 +789,8 @@ const getAccountLogDurationSeconds = (entry: LogEntry) => (
 );
 
 const getAccountLogEndIso = (entry: LogEntry) => {
-  if (isProductiveFocusLog(entry)) {
-    const normalized = normalizeAccountLogWindow(entry);
-    if (normalized) return new Date(normalized.endMs).toISOString();
-  }
+  const normalized = normalizeAccountLogWindow(entry);
+  if (normalized) return new Date(normalized.endMs).toISOString();
 
   return entry.end;
 };
@@ -837,7 +835,7 @@ const getLogEntryModeLabel = (entry: LogEntry) => {
 
 const hasContinuousLogTransition = (previousEntry: LogEntry | null, entry: LogEntry) => {
   if (!previousEntry) return false;
-  const previousEndMs = new Date(previousEntry.end).getTime();
+  const previousEndMs = new Date(getAccountLogEndIso(previousEntry)).getTime();
   const currentStartMs = new Date(entry.start).getTime();
   if (Number.isNaN(previousEndMs) || Number.isNaN(currentStartMs)) return false;
   return Math.abs(currentStartMs - previousEndMs) <= 120_000;
@@ -1473,7 +1471,7 @@ const LogModal: React.FC<LogModalProps> = ({ isOpen, onClose }) => {
         totals,
         tracked,
         firstStart: firstEntry?.start || null,
-        lastEnd: lastEntry?.end || firstEntry?.end || null,
+        lastEnd: lastEntry ? getAccountLogEndIso(lastEntry) : (firstEntry ? getAccountLogEndIso(firstEntry) : null),
       };
     });
   }, [categoriesById, orderedLogs]);
