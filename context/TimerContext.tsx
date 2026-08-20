@@ -121,7 +121,7 @@ import {
   getSessionTaskCompletionIdsFromLogs,
 } from '../utils/sessionStats';
 import {
-  DEFAULT_TAB_TITLE,
+  getTimerBaseTabTitle,
   getTimerTabTitleNotification,
   shouldShowTimerTabTitleNotification,
   type TimerTabTitleNotification,
@@ -4494,10 +4494,15 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (typeof navigator !== 'undefined' && "vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 200]);
   }, []);
 
+  const getBaseTimerTabTitle = useCallback(() => getTimerBaseTabTitle({
+    timerPreset: settings.timerPreset,
+    activeMode,
+  }), [activeMode, settings.timerPreset]);
+
   const resetTimerTabTitle = useCallback(() => {
     if (typeof document === 'undefined') return;
-    document.title = DEFAULT_TAB_TITLE;
-  }, []);
+    document.title = getBaseTimerTabTitle();
+  }, [getBaseTimerTabTitle]);
 
   const showTimerTabTitleNotification = useCallback((notification: TimerTabTitleNotification) => {
     if (typeof document === 'undefined') return;
@@ -4507,8 +4512,8 @@ export const TimerProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       hasFocus,
     })
       ? getTimerTabTitleNotification(notification)
-      : DEFAULT_TAB_TITLE;
-  }, []);
+      : getBaseTimerTabTitle();
+  }, [getBaseTimerTabTitle]);
 
   useEffect(() => {
     resetTimerTabTitle();
